@@ -1,0 +1,1106 @@
+{
+  "started_at_utc": "2026-09-13T14:18:59.081987+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step04.py",
+  "source_sha256": "8903386a797dae3b646be49b5ab8881e2537c2e86ed0c22b2dc107fd35835431",
+  "benchmark_sha256": "3dda20e6cc09ff197c0e197fce71863a3bb1130a701e5fd44d98780bd7642794",
+  "regression_helper_sha256": "8e4d4862d0536231bb238d8d0091041a2c508fe1879fd78b07c786a0d7c06a3f",
+  "mode": "callback",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "torch": "2.13.0+cu130",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "num_threads": 1,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        3
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 10
+    }
+  ],
+  "expected_new_tokens": 8,
+  "completed_requests": 3,
+  "min_run_time_s": 1.0,
+  "boundary": "complete three-request call; excludes fixtures, imports, checks, tracing, printing",
+  "no_callback_regression": [
+    {
+      "name": "A/B/C",
+      "requests": [
+        {
+          "request_id": "A",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "B",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "C",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "model_calls": 8
+    },
+    {
+      "name": "empty",
+      "requests": [],
+      "expected": [],
+      "expected_model_inputs": [],
+      "actual": [],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "mixed_budget",
+      "requests": [
+        {
+          "request_id": "short",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        },
+        {
+          "request_id": "zero",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "end",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 5
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 3
+    },
+    {
+      "name": "all_zero",
+      "requests": [
+        {
+          "request_id": "Z0",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "Z1",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 0
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "Z0",
+          "output_ids": []
+        },
+        {
+          "request_id": "Z1",
+          "output_ids": []
+        }
+      ],
+      "expected_model_inputs": [],
+      "actual": [
+        {
+          "request_id": "Z0",
+          "output_ids": []
+        },
+        {
+          "request_id": "Z1",
+          "output_ids": []
+        }
+      ],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "single_0",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "model_calls": 4
+    },
+    {
+      "name": "single_1",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 2
+    },
+    {
+      "name": "single_2",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            2
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "model_calls": 2
+    },
+    {
+      "name": "single_3",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": []
+        }
+      ],
+      "expected_model_inputs": [],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": []
+        }
+      ],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "single_4",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0,
+            1
+          ],
+          "max_new_tokens": 1
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            2
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            2
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 1
+    }
+  ],
+  "callback_checks": [
+    {
+      "name": "public_callback_contract",
+      "passed": false,
+      "error": "TypeError: generate_many() got an unexpected keyword argument 'on_finished'"
+    },
+    {
+      "name": "A/B/C",
+      "tested_keyword": "on_finish",
+      "requests": [
+        {
+          "request_id": "A",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "B",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "C",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected_events": [
+        {
+          "result": {
+            "request_id": "B",
+            "output_ids": [
+              4
+            ]
+          },
+          "model_calls": 2
+        },
+        {
+          "result": {
+            "request_id": "C",
+            "output_ids": [
+              2,
+              3,
+              4
+            ]
+          },
+          "model_calls": 7
+        },
+        {
+          "result": {
+            "request_id": "A",
+            "output_ids": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "model_calls": 8
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "events": [
+        {
+          "result": {
+            "request_id": "B",
+            "output_ids": [
+              4
+            ]
+          },
+          "model_calls": 2
+        },
+        {
+          "result": {
+            "request_id": "C",
+            "output_ids": [
+              2,
+              3,
+              4
+            ]
+          },
+          "model_calls": 7
+        },
+        {
+          "result": {
+            "request_id": "A",
+            "output_ids": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "model_calls": 8
+        }
+      ],
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "callback_arg_counts": [
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "name": "mixed_zero",
+      "tested_keyword": "on_finish",
+      "requests": [
+        {
+          "request_id": "short",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        },
+        {
+          "request_id": "zero",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "end",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 5
+        }
+      ],
+      "expected_events": [
+        {
+          "result": {
+            "request_id": "zero",
+            "output_ids": []
+          },
+          "model_calls": 0
+        },
+        {
+          "result": {
+            "request_id": "end",
+            "output_ids": [
+              4
+            ]
+          },
+          "model_calls": 2
+        },
+        {
+          "result": {
+            "request_id": "short",
+            "output_ids": [
+              1,
+              2
+            ]
+          },
+          "model_calls": 3
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "passed": false,
+      "error": "AssertionError: 回调顺序/时机/次数/内容错误",
+      "events": [
+        {
+          "result": {
+            "request_id": "zero",
+            "output_ids": []
+          },
+          "model_calls": 1
+        },
+        {
+          "result": {
+            "request_id": "end",
+            "output_ids": [
+              4
+            ]
+          },
+          "model_calls": 2
+        },
+        {
+          "result": {
+            "request_id": "short",
+            "output_ids": [
+              1,
+              2
+            ]
+          },
+          "model_calls": 3
+        }
+      ],
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "callback_arg_counts": [
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "name": "budget_before_other_request",
+      "tested_keyword": "on_finish",
+      "requests": [
+        {
+          "request_id": "A",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 1
+        },
+        {
+          "request_id": "B",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 2
+        }
+      ],
+      "expected_events": [
+        {
+          "result": {
+            "request_id": "A",
+            "output_ids": [
+              1
+            ]
+          },
+          "model_calls": 1
+        },
+        {
+          "result": {
+            "request_id": "B",
+            "output_ids": [
+              2,
+              3
+            ]
+          },
+          "model_calls": 3
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1,
+          2
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            2,
+            3
+          ]
+        }
+      ],
+      "passed": false,
+      "error": "AssertionError: 回调顺序/时机/次数/内容错误",
+      "events": [
+        {
+          "result": {
+            "request_id": "A",
+            "output_ids": [
+              1
+            ]
+          },
+          "model_calls": 2
+        },
+        {
+          "result": {
+            "request_id": "B",
+            "output_ids": [
+              2,
+              3
+            ]
+          },
+          "model_calls": 3
+        }
+      ],
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1,
+          2
+        ]
+      ],
+      "callback_arg_counts": [
+        2,
+        2
+      ]
+    },
+    {
+      "name": "all_zero",
+      "tested_keyword": "on_finish",
+      "requests": [
+        {
+          "request_id": "Z0",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "Z1",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 0
+        }
+      ],
+      "expected_events": [
+        {
+          "result": {
+            "request_id": "Z0",
+            "output_ids": []
+          },
+          "model_calls": 0
+        },
+        {
+          "result": {
+            "request_id": "Z1",
+            "output_ids": []
+          },
+          "model_calls": 0
+        }
+      ],
+      "expected_model_inputs": [],
+      "actual": [
+        {
+          "request_id": "Z0",
+          "output_ids": []
+        },
+        {
+          "request_id": "Z1",
+          "output_ids": []
+        }
+      ],
+      "passed": true,
+      "events": [
+        {
+          "result": {
+            "request_id": "Z0",
+            "output_ids": []
+          },
+          "model_calls": 0
+        },
+        {
+          "result": {
+            "request_id": "Z1",
+            "output_ids": []
+          },
+          "model_calls": 0
+        }
+      ],
+      "model_inputs": [],
+      "callback_arg_counts": [
+        2,
+        2
+      ]
+    },
+    {
+      "name": "empty",
+      "tested_keyword": "on_finish",
+      "requests": [],
+      "expected_events": [],
+      "expected_model_inputs": [],
+      "actual": [],
+      "passed": true,
+      "events": [],
+      "model_inputs": [],
+      "callback_arg_counts": []
+    }
+  ],
+  "status": "correctness_failed"
+}

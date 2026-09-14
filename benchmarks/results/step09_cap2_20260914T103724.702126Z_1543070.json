@@ -1,0 +1,374 @@
+{
+  "started_at_utc": "2026-09-14T10:37:23.595343+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step09.py",
+  "source_sha256": "9c9624a5ad5e7243e5a45c3ca8fb7a538ee8d70e53dae48f6070d74a24521c10",
+  "benchmark_sha256": "cb077de644908ed747e6738b3c4f4f97330a5b13f8e857e033283aa7c90a7687",
+  "fixture": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step09_contract_20260914T103446.129269Z.json",
+  "fixture_sha256": "7cd3ffa515bfa76b4dff669029df1e4290175f61e22d637ba952b42b62886f96",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "rng_state_sha256": "1ccf17250133dec5e96478acd63e13d728d0dbbabb30389415a302c6f872f81f",
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "callback": null,
+  "max_num_seqs": 2,
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "expected_new_tokens": 9,
+  "completed_requests": 3,
+  "boundary": "restore CPU RNG state + new Engine/model (random initialization and eval) + submit + query/step loop (including padding, inference_mode entry, forward, sample, writeback) + collect results; excludes imports, input fixtures, reference/tracing/checks",
+  "comparison_scope": "new real-model Engine lifecycle baseline, not comparable with step08 forward-only or step07 dummy-model workload",
+  "min_run_time_s": 1.0,
+  "workload_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_inputs": [
+      [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          2,
+          0,
+          0
+        ],
+        [
+          1,
+          2,
+          3,
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          2,
+          2
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0,
+          2
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0,
+          2,
+          2
+        ]
+      ]
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "forward_sample_calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "processed_input_positions_including_padding": 35
+  },
+  "post_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_inputs": [
+      [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          2,
+          0,
+          0
+        ],
+        [
+          1,
+          2,
+          3,
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          2,
+          2
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0,
+          2
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0,
+          0,
+          2,
+          2
+        ]
+      ]
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "forward_sample_calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "processed_input_positions_including_padding": 35
+  },
+  "status": "measured",
+  "median_us": 639.4654299947432,
+  "iqr_us": 65.92435503989687,
+  "number_per_run": 100,
+  "raw_times_s": [
+    0.06337615799566265,
+    0.06853925999894273,
+    0.06451692800328601,
+    0.06013170299411286,
+    0.05984351399820298,
+    0.06032664200756699,
+    0.06647096799861174,
+    0.06658677601080853,
+    0.06989784100733232,
+    0.07196620300237555,
+    0.06517509400146082,
+    0.059928807997494005,
+    0.0660755740100285,
+    0.058858185991994105,
+    0.05786816499312408,
+    0.05896074899646919
+  ],
+  "has_warnings": true
+}

@@ -1,0 +1,607 @@
+{
+  "started_at_utc": "2026-09-13T14:05:36.557896+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step03.py",
+  "source_sha256": "4758aeac0326edd625c59640541f02eca405d5042bd9444dc513929f78794941",
+  "benchmark_sha256": "8e4d4862d0536231bb238d8d0091041a2c508fe1879fd78b07c786a0d7c06a3f",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "num_threads": 1,
+  "seed": 0,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        3
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 10
+    }
+  ],
+  "expected_new_tokens": 8,
+  "completed_requests": 3,
+  "workload": "step03.generate_many(requests)",
+  "min_run_time_s": 1.0,
+  "boundary": "complete three-request call; excludes request fixture creation, imports, checks, printing",
+  "checks": [
+    {
+      "name": "A/B/C",
+      "requests": [
+        {
+          "request_id": "A",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "B",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "C",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "model_calls": 8
+    },
+    {
+      "name": "empty",
+      "requests": [],
+      "expected": [],
+      "expected_model_inputs": [],
+      "actual": [],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "mixed_budget",
+      "requests": [
+        {
+          "request_id": "short",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        },
+        {
+          "request_id": "zero",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "end",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 5
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 3
+    },
+    {
+      "name": "all_zero",
+      "requests": [
+        {
+          "request_id": "Z0",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "Z1",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 0
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "Z0",
+          "output_ids": []
+        },
+        {
+          "request_id": "Z1",
+          "output_ids": []
+        }
+      ],
+      "expected_model_inputs": [],
+      "actual": [
+        {
+          "request_id": "Z0",
+          "output_ids": []
+        },
+        {
+          "request_id": "Z1",
+          "output_ids": []
+        }
+      ],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "single_0",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ]
+      ],
+      "model_calls": 4
+    },
+    {
+      "name": "single_1",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            1,
+            2
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 2
+    },
+    {
+      "name": "single_2",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            2
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            3,
+            4
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "model_calls": 2
+    },
+    {
+      "name": "single_3",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": []
+        }
+      ],
+      "expected_model_inputs": [],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": []
+        }
+      ],
+      "passed": true,
+      "model_inputs": [],
+      "model_calls": 0
+    },
+    {
+      "name": "single_4",
+      "requests": [
+        {
+          "request_id": "S",
+          "prompt_ids": [
+            0,
+            1
+          ],
+          "max_new_tokens": 1
+        }
+      ],
+      "expected": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            2
+          ]
+        }
+      ],
+      "expected_model_inputs": [
+        [
+          0,
+          1
+        ]
+      ],
+      "actual": [
+        {
+          "request_id": "S",
+          "output_ids": [
+            2
+          ]
+        }
+      ],
+      "passed": true,
+      "model_inputs": [
+        [
+          0,
+          1
+        ]
+      ],
+      "model_calls": 1
+    }
+  ],
+  "status": "measured",
+  "median_us": 53.254815997206606,
+  "iqr_us": 1.1800119973486294,
+  "number_per_run": 1000,
+  "raw_times_s": [
+    0.054325193996191956,
+    0.0531503120000707,
+    0.05329591800546041,
+    0.05348912299814401,
+    0.0530460019945167,
+    0.05299432500032708,
+    0.05354249999800231,
+    0.053254815997206606,
+    0.054586398000537883,
+    0.05252756599657005,
+    0.055527313001221046,
+    0.052382770998519845,
+    0.05182068600697676,
+    0.05328429799556034,
+    0.05551604599895654,
+    0.05530063100013649,
+    0.052878356000292115,
+    0.05138858399732271,
+    0.052629313999204896
+  ],
+  "has_warnings": false
+}

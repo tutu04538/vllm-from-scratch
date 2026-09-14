@@ -1,0 +1,98 @@
+{
+  "started_at_utc": "2026-09-14T08:51:39.616906+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step08.py",
+  "source_sha256": "0b0acbb8da796bb1bf0f6396a0e23204aafa2788226076ec172b4fdcbafadf88",
+  "benchmark_sha256": "d4a33e50ab31ece44453ce6a13f41ce68405ebd411456301074f1bd0211fba62",
+  "reference_source": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/tools/verify_step08_contract.py",
+  "reference_sha256": "e8be6a178c3db04822db286320a6e82e3080add0737dd0c548e7e9afd64d0c16",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "pid": 1461739,
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "inference_mode": true,
+  "eval": true,
+  "batch_size": 1,
+  "seq_len": 1,
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "parameter_count": 528,
+  "boundary": "model(input_ids) in an existing inference_mode context; includes Module call, embeddings, positions/mask construction, attention and lm_head; excludes initialization, imports, input fixtures, correctness checks and Engine",
+  "comparison_scope": "new forward-only baseline, not comparable to previous Engine lifecycle timings",
+  "min_run_time_s": 1.0,
+  "workload_check": {
+    "input_ids": [
+      [
+        0
+      ]
+    ],
+    "output_shape": [
+      1,
+      1,
+      5
+    ],
+    "max_abs_error": 7.658266265586633e-08,
+    "parameters_reused": true,
+    "inputs_unchanged": true,
+    "requires_grad": false
+  },
+  "post_check": {
+    "input_ids": [
+      [
+        0
+      ]
+    ],
+    "output_shape": [
+      1,
+      1,
+      5
+    ],
+    "max_abs_error": 7.658266265586633e-08,
+    "parameters_reused": true,
+    "inputs_unchanged": true,
+    "requires_grad": false
+  },
+  "status": "measured",
+  "median_us": 34.89867699681781,
+  "iqr_us": 1.2238490016898111,
+  "number_per_run": 1000,
+  "raw_times_s": [
+    0.03403906899620779,
+    0.03339624500949867,
+    0.03442345099756494,
+    0.037048243000754155,
+    0.03538284399837721,
+    0.035647299999254756,
+    0.035113920996082015,
+    0.03395437900326215,
+    0.035937476000981405,
+    0.034378283002297394,
+    0.033895881002536044,
+    0.034283269007573836,
+    0.03574333799770102,
+    0.03451768400555011,
+    0.03489867699681781,
+    0.036909286995069124,
+    0.034508757991716266,
+    0.03509054900496267,
+    0.03595271898666397,
+    0.03846143599366769,
+    0.038544485010788776,
+    0.03461170200898778,
+    0.034561083011794835,
+    0.035258146992418915,
+    0.03564421000191942,
+    0.03474567500234116,
+    0.03559599599975627,
+    0.03471719700610265,
+    0.03439905500272289
+  ],
+  "has_warnings": false
+}

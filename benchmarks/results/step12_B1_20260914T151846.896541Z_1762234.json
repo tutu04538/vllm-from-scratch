@@ -1,0 +1,196 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-14T15:18:44.457049+00:00",
+  "pid": 1762234,
+  "sources": {
+    "step11": {
+      "path": "/home/user/proj/vllm-from-scratch/step11.py",
+      "sha256": "e91ecb5f3db1198afeda01520096ebc0dcda5870f7d7098852e66d76fbc1e927"
+    },
+    "step12": {
+      "path": "/home/user/proj/vllm-from-scratch/step12.py",
+      "sha256": "cb59b4d25e7102d3ebcb00cb4600a4b91efdde922fe8cad4a3bfc277294b26ba"
+    }
+  },
+  "acceptance": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step12_contract_20260914T151639.421994Z.json",
+  "acceptance_sha256": "93cbe6de52b7654bec5f1b1dee0b3e65a5148f480806460d846074b38474c2b6",
+  "regression": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step11_contract_20260914T151641.440164Z.json",
+  "regression_sha256": "c3d115f42538ad1d3c05d6399812376ad6d950e0ad543729197f8938a77dd241",
+  "benchmark_sha256": "cebeaa907bbbc728a2716a2cab0645ed93f54beaa68c0b7e86d597ebb9fae760",
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "batch_size": 1,
+  "past_lengths": [
+    3
+  ],
+  "prompts": [
+    [
+      [
+        0,
+        1,
+        2
+      ]
+    ]
+  ],
+  "input_ids": [
+    [
+      1
+    ]
+  ],
+  "boundary": "one decode round for all requests, initialized eval models in existing inference_mode; fixed prebuilt inputs and immutable prefill caches reused every trial; includes model calls, batch cache concatenation/padding/mask/output splitting and serial Python loop/result list; excludes model initialization, prefill, Engine, sampling, hooks and correctness checks; serial logits are not concatenated for timing",
+  "min_run_time_s": 1.0,
+  "measurement_order": [
+    "serial",
+    "batch"
+  ],
+  "projection_trace": {
+    "serial": {
+      "q_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "k_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "v_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ]
+    },
+    "batch": {
+      "q_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "k_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ],
+      "v_proj": [
+        [
+          1,
+          1,
+          8
+        ]
+      ]
+    }
+  },
+  "before_check": {
+    "logits_max_abs_errors": [
+      0.0
+    ],
+    "cache_lengths": [
+      4
+    ],
+    "old_caches_and_inputs_unchanged": true,
+    "parameters_unchanged": true
+  },
+  "after_check": {
+    "logits_max_abs_errors": [
+      0.0
+    ],
+    "cache_lengths": [
+      4
+    ],
+    "old_caches_and_inputs_unchanged": true,
+    "parameters_unchanged": true
+  },
+  "measurements": [
+    {
+      "mode": "serial",
+      "median_us": 38.32561800663825,
+      "iqr_us": 1.1982300202362273,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.037245250976411626,
+        0.03839927099761553,
+        0.0376877719827462,
+        0.038919779006391764,
+        0.03740738099440932,
+        0.03709530900232494,
+        0.05024203998618759,
+        0.03779330299585126,
+        0.03720226601581089,
+        0.0374573550070636,
+        0.03773339098552242,
+        0.03856923701823689,
+        0.040391968010226265,
+        0.04296758602140471,
+        0.03876814100658521,
+        0.03863698002533056,
+        0.037897408998105675,
+        0.03825196501566097,
+        0.03883028999553062,
+        0.03734236801392399,
+        0.03789100900758058,
+        0.039232439012266695,
+        0.03806444100337103,
+        0.03857074197730981,
+        0.03978945699054748,
+        0.03977452599792741
+      ]
+    },
+    {
+      "mode": "batch",
+      "median_us": 42.955176497343935,
+      "iqr_us": 1.3759147623204568,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.042070005991263315,
+        0.04237499198643491,
+        0.04371874200296588,
+        0.04270355301559903,
+        0.05242311500478536,
+        0.04259228700539097,
+        0.04399540601298213,
+        0.04309701800229959,
+        0.04229474702151492,
+        0.04388417198788375,
+        0.044377852987963706,
+        0.04295743300463073,
+        0.043672715983120725,
+        0.04249701599474065,
+        0.04409168299753219,
+        0.042952919990057126,
+        0.04187882199767046,
+        0.0432584949885495,
+        0.04238082899246365,
+        0.043075405003037304,
+        0.043767156021203846,
+        0.042251145001500845,
+        0.04129677198943682,
+        0.04139284300617874
+      ]
+    }
+  ]
+}

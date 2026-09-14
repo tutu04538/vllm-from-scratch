@@ -1,0 +1,377 @@
+{
+  "started_at_utc": "2026-09-14T13:31:29.344841+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step11.py",
+  "source_sha256": "e91ecb5f3db1198afeda01520096ebc0dcda5870f7d7098852e66d76fbc1e927",
+  "benchmark_sha256": "c40936ca025e833c7e1dce9a5e2d102f0ac2b089d9a2d61d431e2a52fb0ebe33",
+  "fixture": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step11_contract_20260914T133029.365676Z.json",
+  "fixture_sha256": "c3d115f42538ad1d3c05d6399812376ad6d950e0ad543729197f8938a77dd241",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "rng_state_sha256": "1ccf17250133dec5e96478acd63e13d728d0dbbabb30389415a302c6f872f81f",
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "callback": null,
+  "max_num_seqs": 1,
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "expected_new_tokens": 9,
+  "completed_requests": 3,
+  "boundary": "restore CPU RNG state + new Engine/model (random initialization and eval) + submit + query/step loop (including input preparation, inference_mode entry, forward, KV concatenation/storage/cleanup, sample, writeback) + collect results; excludes imports, input fixtures, reference/tracing/checks",
+  "comparison_scope": "same boundary and workload as step09 capacity=1; includes cache construction/concatenation/cleanup; not comparable with model-only timings",
+  "min_run_time_s": 1.0,
+  "workload_check": {
+    "outputs": [
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_inputs": [
+      [
+        [
+          0
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      [
+        [
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      [
+        [
+          0
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ]
+    ],
+    "sampled_tokens": [
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        0
+      ],
+      [
+        3
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "forward_sample_calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "processed_input_positions_including_padding": 13
+  },
+  "post_check": {
+    "outputs": [
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_inputs": [
+      [
+        [
+          0
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      [
+        [
+          3
+        ]
+      ],
+      [
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      [
+        [
+          0
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ],
+      [
+        [
+          2
+        ]
+      ]
+    ],
+    "sampled_tokens": [
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        0
+      ],
+      [
+        3
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "forward_sample_calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "processed_input_positions_including_padding": 13
+  },
+  "status": "measured",
+  "median_us": 673.4284298727289,
+  "iqr_us": 22.89413518155917,
+  "number_per_run": 100,
+  "raw_times_s": [
+    0.06644369298010133,
+    0.06825675000436604,
+    0.06738261302234605,
+    0.06621271901531145,
+    0.07125329598784447,
+    0.06748214000253938,
+    0.06897848902735859,
+    0.06531131500378251,
+    0.0644171699823346,
+    0.06603860799805261,
+    0.07046245198580436,
+    0.06734284298727289,
+    0.07177569100167602,
+    0.06718613402335905,
+    0.06733828398864716
+  ],
+  "has_warnings": false
+}

@@ -1,0 +1,18 @@
+{
+  "started_at_utc": "2026-09-13T08:26:33.184769+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step01.py",
+  "source_sha256": "2c93c3521d2d678dbf3a13c2d439b92007a5112ba3946225f34e2f00f3f4831b",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "num_threads": 1,
+  "workload": "generate([0], 10)",
+  "expected_new_tokens": 4,
+  "seed": 0,
+  "min_run_time_s": 1.0,
+  "boundary": "complete generate call; excludes imports, checks and printing",
+  "status": "correctness_failed",
+  "error": "AttributeError: 'list' object has no attribute 'type'"
+}

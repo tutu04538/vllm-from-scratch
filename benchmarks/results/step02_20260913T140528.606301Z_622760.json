@@ -1,0 +1,221 @@
+{
+  "started_at_utc": "2026-09-13T14:05:27.495524+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step02.py",
+  "source_sha256": "ab320a20871aa2c39dc7608ddc7a4f16740b28f9711e1fed1058bab078703eef",
+  "benchmark_sha256": "d47a1fbdbad0d5f211b9dceefb2f1979344987edb26c915f95b2c29578a0caf2",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "num_threads": 1,
+  "seed": 0,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        3
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 10
+    }
+  ],
+  "expected_new_tokens": 8,
+  "completed_requests": 3,
+  "workload": "step02.generate_many(requests)",
+  "min_run_time_s": 1.0,
+  "boundary": "complete three-request call; excludes request fixture creation, imports, checks, printing",
+  "checks": [
+    {
+      "requests": [
+        {
+          "request_id": "A",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "B",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 10
+        },
+        {
+          "request_id": "C",
+          "prompt_ids": [
+            1
+          ],
+          "max_new_tokens": 10
+        }
+      ],
+      "outputs": [
+        {
+          "request_id": "A",
+          "output_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "request_id": "B",
+          "output_ids": [
+            4
+          ]
+        },
+        {
+          "request_id": "C",
+          "output_ids": [
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3
+        ],
+        [
+          3
+        ],
+        [
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "model_calls": 8,
+      "passed": true
+    },
+    {
+      "requests": [],
+      "outputs": [],
+      "model_inputs": [],
+      "model_calls": 0,
+      "passed": true
+    },
+    {
+      "requests": [
+        {
+          "request_id": "short",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 2
+        },
+        {
+          "request_id": "zero",
+          "prompt_ids": [
+            0
+          ],
+          "max_new_tokens": 0
+        },
+        {
+          "request_id": "end",
+          "prompt_ids": [
+            3
+          ],
+          "max_new_tokens": 5
+        }
+      ],
+      "outputs": [
+        {
+          "request_id": "short",
+          "output_ids": [
+            1,
+            2
+          ]
+        },
+        {
+          "request_id": "zero",
+          "output_ids": []
+        },
+        {
+          "request_id": "end",
+          "output_ids": [
+            4
+          ]
+        }
+      ],
+      "model_inputs": [
+        [
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          3
+        ]
+      ],
+      "model_calls": 3,
+      "passed": true
+    }
+  ],
+  "status": "measured",
+  "median_us": 54.06359700282337,
+  "iqr_us": 1.8539749944466126,
+  "number_per_run": 1000,
+  "raw_times_s": [
+    0.05407418699905975,
+    0.057783366995863616,
+    0.055141594995802734,
+    0.05406359700282337,
+    0.05303584600187605,
+    0.05673261700576404,
+    0.054744084998674225,
+    0.053293727003620006,
+    0.055379596997227054,
+    0.05297671500011347,
+    0.0538606339978287,
+    0.052665470000647474,
+    0.053097602001798805,
+    0.05403931900218595,
+    0.05462123199686175,
+    0.06375565800408367,
+    0.05308012800378492,
+    0.052980662003392354,
+    0.05450104699411895
+  ],
+  "has_warnings": false
+}

@@ -1,0 +1,43 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local environments and credentials
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Build and coverage output
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor settings, local backups and temporary files
+.vscode/
+.idea/
+.backups/
+*.swp
+*.swo
+*~
+*.tmp
+*.log
+.DS_Store
+
+# Local model downloads and large profiling artifacts
+/models/
+/checkpoints/
+/profiler_traces/
+*.nsys-rep
+*.ncu-rep
+
+# Keep benchmarks/results/*.json tracked as reproducible experiment records.

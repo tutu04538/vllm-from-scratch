@@ -1,0 +1,110 @@
+{
+  "started_at_utc": "2026-09-14T08:52:02.813474+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step08.py",
+  "source_sha256": "0b0acbb8da796bb1bf0f6396a0e23204aafa2788226076ec172b4fdcbafadf88",
+  "benchmark_sha256": "d4a33e50ab31ece44453ce6a13f41ce68405ebd411456301074f1bd0211fba62",
+  "reference_source": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/tools/verify_step08_contract.py",
+  "reference_sha256": "e8be6a178c3db04822db286320a6e82e3080add0737dd0c548e7e9afd64d0c16",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "pid": 1462527,
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "inference_mode": true,
+  "eval": true,
+  "batch_size": 2,
+  "seq_len": 3,
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "parameter_count": 528,
+  "boundary": "model(input_ids) in an existing inference_mode context; includes Module call, embeddings, positions/mask construction, attention and lm_head; excludes initialization, imports, input fixtures, correctness checks and Engine",
+  "comparison_scope": "new forward-only baseline, not comparable to previous Engine lifecycle timings",
+  "min_run_time_s": 1.0,
+  "workload_check": {
+    "input_ids": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        3,
+        4,
+        0
+      ]
+    ],
+    "output_shape": [
+      2,
+      3,
+      5
+    ],
+    "max_abs_error": 7.658266265586633e-08,
+    "parameters_reused": true,
+    "inputs_unchanged": true,
+    "requires_grad": false
+  },
+  "post_check": {
+    "input_ids": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        3,
+        4,
+        0
+      ]
+    ],
+    "output_shape": [
+      2,
+      3,
+      5
+    ],
+    "max_abs_error": 7.658266265586633e-08,
+    "parameters_reused": true,
+    "inputs_unchanged": true,
+    "requires_grad": false
+  },
+  "status": "measured",
+  "median_us": 37.02956999768503,
+  "iqr_us": 2.482013500411998,
+  "number_per_run": 1000,
+  "raw_times_s": [
+    0.036347660003229976,
+    0.035975470003904775,
+    0.03696615798980929,
+    0.037204360007308424,
+    0.03887392400065437,
+    0.03887590799422469,
+    0.03702956999768503,
+    0.03606110799591988,
+    0.035437762999208644,
+    0.03750333600328304,
+    0.03500755199638661,
+    0.03608337198966183,
+    0.0373044879961526,
+    0.03735591800068505,
+    0.0370709929993609,
+    0.03539867099607363,
+    0.0353405380010372,
+    0.03511635900940746,
+    0.03506984299747273,
+    0.037194446005742066,
+    0.03641159200924449,
+    0.04025945799367037,
+    0.0353082310030004,
+    0.04044103900378104,
+    0.04156801200588234,
+    0.04049938000389375,
+    0.04185389199119527
+  ],
+  "has_warnings": false
+}

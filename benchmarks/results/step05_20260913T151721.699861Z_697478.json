@@ -1,0 +1,127 @@
+{
+  "started_at_utc": "2026-09-13T15:17:20.620136+00:00",
+  "source": "/home/user/proj/vllm-from-scratch/step05.py",
+  "source_sha256": "26881d4ba726029481bcb06226c7475366fad2354bdecff33c5083157b97fea9",
+  "benchmark_sha256": "cdc52b93e877472f672a5214586b99ec20959dbe54f4c570eca8dc5881e60858",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "num_threads": 1,
+  "seed": 0,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        3
+      ],
+      "max_new_tokens": 10
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 10
+    }
+  ],
+  "expected_new_tokens": 8,
+  "completed_requests": 3,
+  "boundary": "Engine and dummy model initialization + add_request + step/query loop + result collection; excludes imports, fixtures, assertions and tracing",
+  "min_run_time_s": 1.0,
+  "comparison_scope": "not directly comparable to step01-step04 generation-only timings",
+  "workload_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          4
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    ],
+    "model_inputs": [
+      [
+        0
+      ],
+      [
+        3
+      ],
+      [
+        1
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        1,
+        2,
+        3
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "model_initializations": 1
+  },
+  "status": "measured",
+  "median_us": 62.96762650163145,
+  "iqr_us": 1.7536155082780212,
+  "number_per_run": 1000,
+  "raw_times_s": [
+    0.062308020002092235,
+    0.06365192500379635,
+    0.06322243399336003,
+    0.06302208400302334,
+    0.06489964600041276,
+    0.062249774993688334,
+    0.06245229700289201,
+    0.06066615999588976,
+    0.060449897006037645,
+    0.06095337599981576,
+    0.06376138800260378,
+    0.06291316900023958,
+    0.0647072939973441,
+    0.06064817400329048,
+    0.06943939700431656,
+    0.06305550700199092
+  ],
+  "has_warnings": false
+}
