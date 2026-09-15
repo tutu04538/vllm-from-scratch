@@ -1,0 +1,384 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-15T09:06:11.179946+00:00",
+  "pid": 2400116,
+  "module": "step09",
+  "source": "/home/user/proj/vllm-from-scratch/step09.py",
+  "source_sha256": "9c9624a5ad5e7243e5a45c3ca8fb7a538ee8d70e53dae48f6070d74a24521c10",
+  "benchmark_sha256": "23872add52ac20654d7095061e05ac2e196f9db750b32937d7b5be28c678e08e",
+  "fixture": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step09_contract_20260915T090359.213207Z.json",
+  "fixture_sha256": "7cd3ffa515bfa76b4dff669029df1e4290175f61e22d637ba952b42b62886f96",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "max_num_seqs": 3,
+  "seed": 0,
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "rng_state_sha256": "1ccf17250133dec5e96478acd63e13d728d0dbbabb30389415a302c6f872f81f",
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "expected_new_tokens": 9,
+  "boundary": "restore fixed CPU RNG state + Engine/model initialization/eval + submit + query/step loop (input preparation, model calls, inference contexts, sampling, state/cache writeback and cleanup) + collect results; excludes imports, test fixtures, correctness hooks/checks; module-local diagnostic print temporarily replaced by noop without source edits, noop call cost included",
+  "debug_print_disabled": true,
+  "min_run_time_s": 1.0,
+  "before_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_calls": [
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            2,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3,
+            3
+          ],
+          [
+            0,
+            1,
+            0,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            2,
+            2,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            0,
+            0,
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            1,
+            0,
+            0,
+            2,
+            2
+          ]
+        ]
+      }
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3,
+        0
+      ],
+      [
+        2,
+        0,
+        2
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "processed_input_positions": 37,
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "stop_reasons": {
+      "A": "budget",
+      "B": "budget",
+      "C": "budget"
+    }
+  },
+  "after_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_calls": [
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            2,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3,
+            3
+          ],
+          [
+            0,
+            1,
+            0,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            2,
+            2,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            0,
+            0,
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "forward",
+        "ids": [
+          [
+            0,
+            1,
+            0,
+            0,
+            2,
+            2
+          ]
+        ]
+      }
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3,
+        0
+      ],
+      [
+        2,
+        0,
+        2
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "calls_per_step": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "processed_input_positions": 37,
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "stop_reasons": {
+      "A": "budget",
+      "B": "budget",
+      "C": "budget"
+    }
+  },
+  "median_us": 501.8287600250914,
+  "iqr_us": 26.537475059740224,
+  "has_warnings": false,
+  "number_per_run": 100,
+  "raw_times_s": [
+    0.050894492014776915,
+    0.04909974499605596,
+    0.050346609990810975,
+    0.04950139299035072,
+    0.05164337099995464,
+    0.04935715300962329,
+    0.051928845001384616,
+    0.04887843198957853,
+    0.04870275600114837,
+    0.06022885499987751,
+    0.05001914201420732,
+    0.05154680000850931,
+    0.04855195200070739,
+    0.04975743900286034,
+    0.04894473298918456,
+    0.0516141050029546,
+    0.04747412700089626,
+    0.05313929700059816,
+    0.053750730003230274,
+    0.05717447298229672
+  ]
+}

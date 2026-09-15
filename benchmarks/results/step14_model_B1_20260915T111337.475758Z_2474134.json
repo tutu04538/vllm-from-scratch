@@ -1,0 +1,170 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-15T11:13:35.084393+00:00",
+  "pid": 2474134,
+  "sources": {
+    "step13": {
+      "path": "/home/user/proj/vllm-from-scratch/step13.py",
+      "sha256": "69b8b609fed05a2965c354f59748a7503952dca470686f2d70d3362b3ee91d83"
+    },
+    "step14": {
+      "path": "/home/user/proj/vllm-from-scratch/step14.py",
+      "sha256": "16f71ab866aa243de19d1852d404cbfca484637f0937ffd2ac5aae5f96f3377e"
+    }
+  },
+  "benchmark_sha256": "590cbb3bc0c91876babb0310c51ba9489da271cff7c0b0c1f8246653ed387fd6",
+  "acceptance": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step14_model_contract_20260915T111116.735757Z.json",
+  "acceptance_sha256": "6c7324477840df7a3ca90c1666f4499677c71104df550cd969d697886c616e93",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "batch_size": 1,
+  "prompt_lengths": [
+    3
+  ],
+  "input_ids": [
+    [
+      0,
+      1,
+      2
+    ]
+  ],
+  "prompts": [
+    [
+      [
+        0,
+        1,
+        2
+      ]
+    ]
+  ],
+  "boundary": "one prefill for all prompts; preinitialized eval models in existing inference_mode; input tensors/right-padding/lengths prebuilt; includes embedding, projections, causal attention, lm_head and per-request KV construction/slicing (serial Python loop included); excludes imports, initialization, Engine, sampling, subsequent decode and correctness hooks/checks; padded query outputs computed but not compared; returned slices need not own compact storage",
+  "min_run_time_s": 1.0,
+  "measurement_order": [
+    "serial",
+    "batch"
+  ],
+  "before_check": {
+    "max_logits_abs_errors": [
+      0.0
+    ],
+    "cache_lengths": [
+      3
+    ],
+    "inputs_parameters_unchanged": true
+  },
+  "after_check": {
+    "max_logits_abs_errors": [
+      0.0
+    ],
+    "cache_lengths": [
+      3
+    ],
+    "inputs_parameters_unchanged": true
+  },
+  "k_projection_shapes": {
+    "serial": [
+      [
+        1,
+        3,
+        8
+      ]
+    ],
+    "batch": [
+      [
+        1,
+        3,
+        8
+      ]
+    ]
+  },
+  "projected_input_positions": {
+    "serial": 3,
+    "batch": 3
+  },
+  "measurements": [
+    {
+      "mode": "serial",
+      "median_us": 37.23036701558158,
+      "iqr_us": 1.2471254885895209,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.038269415992544964,
+        0.03724471101304516,
+        0.036919932026648894,
+        0.03805099500459619,
+        0.03723036701558158,
+        0.0370922279835213,
+        0.03634531600982882,
+        0.0369519519736059,
+        0.0376861389959231,
+        0.037642609007889405,
+        0.03793841801234521,
+        0.03666501701809466,
+        0.03663351901923306,
+        0.03665532998275012,
+        0.03630689298734069,
+        0.03668705001473427,
+        0.03790789999766275,
+        0.038293065008474514,
+        0.03867901401827112,
+        0.038151777000166476,
+        0.03743148600915447,
+        0.03794856200693175,
+        0.03669909099698998,
+        0.036500332003924996,
+        0.0362106779939495,
+        0.03709385500405915,
+        0.037857032992178574
+      ]
+    },
+    {
+      "mode": "batch",
+      "median_us": 37.221247010165825,
+      "iqr_us": 1.134203979745502,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.03616752297966741,
+        0.03781945499940775,
+        0.03736383799696341,
+        0.03657149299397133,
+        0.03811890599899925,
+        0.03732155202305876,
+        0.03757598900119774,
+        0.03681533501367085,
+        0.03695767899625935,
+        0.03753563002101146,
+        0.03787948697572574,
+        0.0386436139815487,
+        0.03791005699895322,
+        0.036161881987936795,
+        0.0364571749814786,
+        0.038029706018278375,
+        0.03715275099966675,
+        0.03738233199692331,
+        0.03677966201212257,
+        0.037221247010165825,
+        0.03762654997990467,
+        0.036662056983914226,
+        0.03606521899928339,
+        0.03609766499721445,
+        0.03611542299040593,
+        0.03864083701046184,
+        0.03660610402585007
+      ]
+    }
+  ]
+}

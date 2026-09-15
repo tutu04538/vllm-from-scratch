@@ -1,0 +1,437 @@
+{
+  "module": "step16",
+  "capacity": 1,
+  "source_sha256": "d45c670ea86c1936f8b90a6d3b5d3377ddb52a07e0ee3a18cff37598d509c6a1",
+  "script_sha256": "748f49eca7e157c55fb79183b0ab4ac9b0ddcf6075c10aaf56a00a466dd5a2eb",
+  "fixture": "step16_engine_contract_20260915T152918.255633Z.json",
+  "torch": "2.13.0+cu130",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "block_size": 4,
+  "num_kv_blocks": 8,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "outputs": [
+    {
+      "request_id": "A",
+      "output_ids": [
+        2,
+        2,
+        0
+      ]
+    },
+    {
+      "request_id": "B",
+      "output_ids": [
+        3,
+        0
+      ]
+    },
+    {
+      "request_id": "C",
+      "output_ids": [
+        0,
+        2,
+        2,
+        2
+      ]
+    }
+  ],
+  "validation": {
+    "calls": [
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            1,
+            2,
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      }
+    ],
+    "samples": [
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        0
+      ],
+      [
+        3
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "steps": 9,
+    "new_tokens": 9,
+    "model_calls": 9,
+    "processed_token_positions": 13,
+    "occupancy_before_each_sample": [
+      {
+        "running": [
+          "A"
+        ],
+        "reserved_blocks": 1,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 1,
+        "reserved_unused_token_slots": 3,
+        "free_blocks": 7,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A"
+        ],
+        "reserved_blocks": 1,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 2,
+        "reserved_unused_token_slots": 2,
+        "free_blocks": 7,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A"
+        ],
+        "reserved_blocks": 1,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 3,
+        "reserved_unused_token_slots": 1,
+        "free_blocks": 7,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "B"
+        ],
+        "reserved_blocks": 1,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 3,
+        "reserved_unused_token_slots": 1,
+        "free_blocks": 7,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "B"
+        ],
+        "reserved_blocks": 1,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 4,
+        "reserved_unused_token_slots": 0,
+        "free_blocks": 7,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 3,
+        "reserved_unused_token_slots": 5,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 4,
+        "reserved_unused_token_slots": 4,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 5,
+        "reserved_unused_token_slots": 3,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 6,
+        "reserved_unused_token_slots": 2,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      }
+    ],
+    "peak_persistent_kv_bytes": 2048
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 107.65057988464832,
+      "iqr_us": 4.966529959347097,
+      "iqr_over_median": 0.046135654491308103,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.010594310995656997,
+        0.01088390700169839,
+        0.010807375016156584,
+        0.010531701002037153,
+        0.010521060990868136,
+        0.010517454007640481,
+        0.010235121997538954,
+        0.011911056004464626,
+        0.011087054997915402,
+        0.01108203100739047,
+        0.01104530700831674,
+        0.010875846986891702,
+        0.011544744978891686,
+        0.011302693979814649,
+        0.010758451011497527,
+        0.010799971001688391,
+        0.011087510007200763,
+        0.010455098992679268,
+        0.010514807014260441,
+        0.01060210302239284,
+        0.010407067980850115,
+        0.010524301003897563,
+        0.011441308015491813,
+        0.011883211001986638,
+        0.011416116991313174,
+        0.01215022598626092,
+        0.010669587994925678,
+        0.0108357869903557,
+        0.01128625898854807,
+        0.010531648993492126,
+        0.01054915800341405,
+        0.010725050000473857,
+        0.011028857989003882,
+        0.01034462099778466,
+        0.01051699000527151,
+        0.010785144986584783,
+        0.010512594017200172,
+        0.010580447997199371,
+        0.010917009989498183,
+        0.010666193993529305,
+        0.010700440994696692,
+        0.010980671009747311,
+        0.010905986011493951,
+        0.01071463301195763,
+        0.010581105016171932,
+        0.010765057988464832,
+        0.010984099993947893
+      ],
+      "scope": "RNG restore + model/Engine init + pool init (step16); no generation; temporary result disposal included"
+    },
+    "steady_engine": {
+      "median_us": 685.8111949986778,
+      "iqr_us": 15.288307695300249,
+      "iqr_over_median": 0.022292298240085922,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.07039908898877911,
+        0.06710543201188557,
+        0.06954703101655468,
+        0.06809939898084849,
+        0.06806744000641629,
+        0.06983986697741784,
+        0.06904758300515823,
+        0.06811465599457733
+      ],
+      "scope": "existing model/Engine; submit + schedule + KV writes/gather + compute + sampling + output + release; no init/RNG restore"
+    },
+    "lifecycle": {
+      "median_us": 855.470348324161,
+      "iqr_us": 44.60770287550986,
+      "iqr_over_median": 0.05214406666799722,
+      "high_variance": false,
+      "number_per_run": 10,
+      "raw_times": [
+        0.008612259000074118,
+        0.008986024011392146,
+        0.008809680002741516,
+        0.008554240979719907,
+        0.009293673007050529,
+        0.008219111012294888,
+        0.008874415012542158,
+        0.00833500298904255,
+        0.008614741993369535,
+        0.008496071997797117,
+        0.008249061997048557,
+        0.008757080999203026,
+        0.008862439019139856,
+        0.009026398998685181,
+        0.009120326983975247,
+        0.00837595300981775,
+        0.0082079209969379,
+        0.008322056994074956,
+        0.008456062991172075,
+        0.008494648995110765,
+        0.00895377600681968,
+        0.00854287701076828,
+        0.00900701098726131,
+        0.00835807400289923,
+        0.008433065988356248,
+        0.00905155300279148,
+        0.009472504985751584,
+        0.008439013006864116,
+        0.008487662009429187,
+        0.008736168994801119,
+        0.008337298990227282,
+        0.008259068010374904,
+        0.008369841001695022,
+        0.00842276998446323,
+        0.008292250015074387,
+        0.008328297000844032,
+        0.008438805001787841,
+        0.008302439004182816,
+        0.008555165986763313,
+        0.00862786898505874,
+        0.008458229014649987,
+        0.008621991000836715,
+        0.008502976008458063,
+        0.00855358102126047,
+        0.00950235899654217,
+        0.009717807988636196,
+        0.0087922619713936,
+        0.009268505004001781,
+        0.008759042975725606,
+        0.009866738982964307,
+        0.008592992002377287,
+        0.008925526984967291,
+        0.008845392992952839,
+        0.008631794014945626,
+        0.008458467986201867,
+        0.008259584021288902,
+        0.008449996006675065,
+        0.009343829995486885
+      ],
+      "scope": "RNG restore + initialization + complete request processing + result/Engine disposal"
+    }
+  }
+}

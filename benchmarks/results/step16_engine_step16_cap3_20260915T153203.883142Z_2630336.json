@@ -1,0 +1,305 @@
+{
+  "module": "step16",
+  "capacity": 3,
+  "source_sha256": "d45c670ea86c1936f8b90a6d3b5d3377ddb52a07e0ee3a18cff37598d509c6a1",
+  "script_sha256": "748f49eca7e157c55fb79183b0ab4ac9b0ddcf6075c10aaf56a00a466dd5a2eb",
+  "fixture": "step16_engine_contract_20260915T152918.255633Z.json",
+  "torch": "2.13.0+cu130",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "block_size": 4,
+  "num_kv_blocks": 8,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "outputs": [
+    {
+      "request_id": "B",
+      "output_ids": [
+        3,
+        0
+      ]
+    },
+    {
+      "request_id": "A",
+      "output_ids": [
+        2,
+        2,
+        0
+      ]
+    },
+    {
+      "request_id": "C",
+      "output_ids": [
+        0,
+        2,
+        2,
+        2
+      ]
+    }
+  ],
+  "validation": {
+    "calls": [
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      }
+    ],
+    "samples": [
+      [
+        2,
+        3,
+        0
+      ],
+      [
+        2,
+        0,
+        2
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "steps": 4,
+    "new_tokens": 9,
+    "model_calls": 4,
+    "processed_token_positions": 15,
+    "occupancy_before_each_sample": [
+      {
+        "running": [
+          "A",
+          "B",
+          "C"
+        ],
+        "reserved_blocks": 4,
+        "valid_blocks": 3,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 7,
+        "reserved_unused_token_slots": 9,
+        "free_blocks": 4,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A",
+          "B",
+          "C"
+        ],
+        "reserved_blocks": 4,
+        "valid_blocks": 3,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 10,
+        "reserved_unused_token_slots": 6,
+        "free_blocks": 4,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A",
+          "C"
+        ],
+        "reserved_blocks": 3,
+        "valid_blocks": 3,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 8,
+        "reserved_unused_token_slots": 4,
+        "free_blocks": 5,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 6,
+        "reserved_unused_token_slots": 2,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      }
+    ],
+    "peak_persistent_kv_bytes": 2048
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 107.72419991553761,
+      "iqr_us": 4.46117992396468,
+      "iqr_over_median": 0.04141297802594514,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.01745041599497199,
+        0.012726112006930634,
+        0.013253961980808526,
+        0.01061024802038446,
+        0.010656985978130251,
+        0.010810492996824905,
+        0.01078718900680542,
+        0.01048144098604098,
+        0.01066483001341112,
+        0.010932847013464198,
+        0.01083519501844421,
+        0.011684396013151854,
+        0.010660839994670823,
+        0.010793774999910966,
+        0.011291167000308633,
+        0.010556627006735653,
+        0.010458431002916768,
+        0.011043645994504914,
+        0.010441569989779964,
+        0.010536385991144925,
+        0.010698536993004382,
+        0.010610236990032718,
+        0.011031786008970812,
+        0.010676699021132663,
+        0.011272586008999497,
+        0.010634301987010986,
+        0.010741975012933835,
+        0.011928843014175072,
+        0.01060609400155954,
+        0.010628385003656149,
+        0.010757650976302102,
+        0.010602534021018073,
+        0.01049445997341536,
+        0.010578804998658597,
+        0.010989775997586548,
+        0.011065140017308295,
+        0.011118760972749442,
+        0.010713720985222608,
+        0.011145914992084727,
+        0.010926392016699538,
+        0.010510266991332173,
+        0.010499099007574841,
+        0.011030262015992776,
+        0.011060594988521188,
+        0.010884318995522335,
+        0.011505122995004058
+      ],
+      "scope": "RNG restore + model/Engine init + pool init (step16); no generation; temporary result disposal included"
+    },
+    "steady_engine": {
+      "median_us": 382.15534994378686,
+      "iqr_us": 17.539477412356078,
+      "iqr_over_median": 0.04589619748862876,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.03621779498644173,
+        0.038863856985699385,
+        0.03745806700317189,
+        0.038991009001620114,
+        0.03963258198928088,
+        0.038553980994038284,
+        0.03879227500874549,
+        0.03696031801518984,
+        0.038854179001646116,
+        0.03683736399398185,
+        0.03601611600606702,
+        0.03876130699063651,
+        0.03777115800767206,
+        0.03787708899471909
+      ],
+      "scope": "existing model/Engine; submit + schedule + KV writes/gather + compute + sampling + output + release; no init/RNG restore"
+    },
+    "lifecycle": {
+      "median_us": 591.5667000226676,
+      "iqr_us": 15.385480073746303,
+      "iqr_over_median": 0.02600802254953966,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.054455233010230586,
+        0.0578581320005469,
+        0.05527507798979059,
+        0.058126948977587745,
+        0.059156670002266765,
+        0.05939668000792153,
+        0.0599285040225368,
+        0.060305330000119284,
+        0.059194586996454746
+      ],
+      "scope": "RNG restore + initialization + complete request processing + result/Engine disposal"
+    }
+  }
+}

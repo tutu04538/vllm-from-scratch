@@ -1,0 +1,269 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-15T13:24:56.064501+00:00",
+  "pid": 2551532,
+  "sources": {
+    "step14": {
+      "path": "/home/user/proj/vllm-from-scratch/step14.py",
+      "sha256": "16f71ab866aa243de19d1852d404cbfca484637f0937ffd2ac5aae5f96f3377e"
+    },
+    "step15": {
+      "path": "/home/user/proj/vllm-from-scratch/step15.py",
+      "sha256": "484ef9719a66adf7887f1ad03aeae172226513a13179d947022a33fb1af8162d"
+    }
+  },
+  "benchmark_sha256": "cee193f7e760b41228bc6ce29d4a5ac810c29e00497037852c0e5b31164f9241",
+  "acceptance": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step15_model_contract_20260915T132208.587713Z.json",
+  "acceptance_sha256": "84a68d8e9c6d4cc645f7a9aff3eb9c48c68feba854f58b2a9979d98efc5b4a57",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "batch_size": 2,
+  "prompt_lengths": [
+    3,
+    1
+  ],
+  "prompts": [
+    [
+      0,
+      1,
+      2
+    ],
+    [
+      1
+    ]
+  ],
+  "new_tokens": [
+    [
+      [
+        1
+      ],
+      [
+        2
+      ]
+    ],
+    [
+      [
+        2
+      ],
+      [
+        3
+      ]
+    ],
+    [
+      [
+        3
+      ],
+      [
+        4
+      ]
+    ],
+    [
+      [
+        4
+      ],
+      [
+        0
+      ]
+    ]
+  ],
+  "decode_steps": 4,
+  "boundary": "four batched decode calls, fixed inputs and same prefill prefix; initialized eval models in existing inference_mode; includes all cache append, scratch batching/padding, attention and output computation; new version includes resetting dictionary lengths at each trial, old version starts from immutable original caches; excludes initial prefill/cache preallocation/model initialization/Engine/sampling/checks; no copy or zero-fill of new buffers between trials",
+  "before_check": {
+    "max_final_logits_abs_error": 0.0,
+    "final_lengths": [
+      7,
+      5
+    ],
+    "storage_identity_and_prefix_stable": true,
+    "initial_old_cache_unchanged": true
+  },
+  "after_check": {
+    "max_final_logits_abs_error": 0.0,
+    "final_lengths": [
+      7,
+      5
+    ],
+    "storage_identity_and_prefix_stable": true,
+    "initial_old_cache_unchanged": true
+  },
+  "k_projection_shapes": {
+    "old": [
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ]
+    ],
+    "new": [
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ],
+      [
+        2,
+        1,
+        8
+      ]
+    ]
+  },
+  "measurement_order": [
+    "old",
+    "new"
+  ],
+  "min_run_time_s": 1.0,
+  "measurements": [
+    {
+      "mode": "old",
+      "median_us": 201.7435101151932,
+      "iqr_us": 7.101949886418897,
+      "has_warnings": false,
+      "number_per_run": 100,
+      "raw_times_s": [
+        0.019109017011942342,
+        0.019580324995331466,
+        0.019982889003586024,
+        0.02075439499458298,
+        0.019564426998840645,
+        0.01931610400788486,
+        0.020184971013804898,
+        0.019500747992424294,
+        0.019894050987204537,
+        0.0201407769927755,
+        0.020566571998642758,
+        0.020273583999369293,
+        0.020163731009233743,
+        0.02069791400572285,
+        0.019990322005469352,
+        0.020545683975797147,
+        0.020258894975995645,
+        0.019477277004625648,
+        0.019155114016029984,
+        0.019394165981793776,
+        0.020324990997323766,
+        0.020233729999745265,
+        0.01999442998203449,
+        0.021048513997811824,
+        0.01979384000878781,
+        0.019515192019753158,
+        0.02028120798058808,
+        0.020067929988726974,
+        0.019332720985403284,
+        0.020482913008891046,
+        0.019863443012582138,
+        0.020546680025290698,
+        0.020909831015160307,
+        0.020249574998160824,
+        0.02019100499455817,
+        0.02040481800213456,
+        0.021229509002296254,
+        0.019745262019569054,
+        0.019179362017894164,
+        0.019182238000212237,
+        0.020131144992774352,
+        0.020555117982439697,
+        0.020543280988931656,
+        0.020700060995295644,
+        0.020421666995389387,
+        0.019827832002192736,
+        0.020777708996320143,
+        0.02029568300349638,
+        0.020074017986189574,
+        0.020207280002068728
+      ]
+    },
+    {
+      "mode": "new",
+      "median_us": 212.9458202398382,
+      "iqr_us": 6.636735051870332,
+      "has_warnings": false,
+      "number_per_run": 100,
+      "raw_times_s": [
+        0.02217101099085994,
+        0.02206362597644329,
+        0.021682171995053068,
+        0.020729114999994636,
+        0.022173694014782086,
+        0.02160829701460898,
+        0.02127416801522486,
+        0.02147134000551887,
+        0.021960426005534828,
+        0.022032918001059443,
+        0.02260514398221858,
+        0.02114262999384664,
+        0.021556165011134,
+        0.021238121000351384,
+        0.021002574998419732,
+        0.021656964992871508,
+        0.02082746900850907,
+        0.021009214979130775,
+        0.022404801013180986,
+        0.02145162198576145,
+        0.022054910979932174,
+        0.020706484006950632,
+        0.021330515999579802,
+        0.021337576006771997,
+        0.02129458202398382,
+        0.021245651005301625,
+        0.021246640011668205,
+        0.020870334992650896,
+        0.020779711980139837,
+        0.021055205987067893,
+        0.02137712700641714,
+        0.020526340987998992,
+        0.022870355023769662,
+        0.021350444993004203,
+        0.021193416003370658,
+        0.02128762099891901,
+        0.020926410012179986,
+        0.0214683229860384,
+        0.021791598002891988,
+        0.021267899021040648,
+        0.020889337989501655,
+        0.02187400500406511,
+        0.02150130900554359,
+        0.020805531996302307,
+        0.02000607698573731,
+        0.019858934014337137,
+        0.021027280017733574
+      ]
+    }
+  ]
+}

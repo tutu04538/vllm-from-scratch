@@ -1,0 +1,396 @@
+{
+  "module": "step16",
+  "capacity": 2,
+  "source_sha256": "d45c670ea86c1936f8b90a6d3b5d3377ddb52a07e0ee3a18cff37598d509c6a1",
+  "script_sha256": "748f49eca7e157c55fb79183b0ab4ac9b0ddcf6075c10aaf56a00a466dd5a2eb",
+  "fixture": "step16_engine_contract_20260915T152918.255633Z.json",
+  "torch": "2.13.0+cu130",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "block_size": 4,
+  "num_kv_blocks": 8,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "outputs": [
+    {
+      "request_id": "B",
+      "output_ids": [
+        3,
+        0
+      ]
+    },
+    {
+      "request_id": "A",
+      "output_ids": [
+        2,
+        2,
+        0
+      ]
+    },
+    {
+      "request_id": "C",
+      "output_ids": [
+        0,
+        2,
+        2,
+        2
+      ]
+    }
+  ],
+  "validation": {
+    "calls": [
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      }
+    ],
+    "samples": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "steps": 6,
+    "new_tokens": 9,
+    "model_calls": 7,
+    "processed_token_positions": 15,
+    "occupancy_before_each_sample": [
+      {
+        "running": [
+          "A",
+          "B"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 4,
+        "reserved_unused_token_slots": 4,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A",
+          "B"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 6,
+        "reserved_unused_token_slots": 2,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "A",
+          "C"
+        ],
+        "reserved_blocks": 3,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 6,
+        "reserved_unused_token_slots": 6,
+        "free_blocks": 5,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 1,
+        "reserved_but_wholly_unused_blocks": 1,
+        "valid_tokens": 4,
+        "reserved_unused_token_slots": 4,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 5,
+        "reserved_unused_token_slots": 3,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      },
+      {
+        "running": [
+          "C"
+        ],
+        "reserved_blocks": 2,
+        "valid_blocks": 2,
+        "reserved_but_wholly_unused_blocks": 0,
+        "valid_tokens": 6,
+        "reserved_unused_token_slots": 2,
+        "free_blocks": 6,
+        "persistent_kv_bytes": 2048
+      }
+    ],
+    "peak_persistent_kv_bytes": 2048
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 109.89097994752228,
+      "iqr_us": 6.345042565953916,
+      "iqr_over_median": 0.05773943019694565,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011422857991419733,
+        0.011280781007371843,
+        0.010707703011576086,
+        0.011080525000579655,
+        0.0110469950013794,
+        0.01074361999053508,
+        0.010756343981483951,
+        0.010907052987022325,
+        0.010563282005023211,
+        0.010657095990609378,
+        0.010702868981752545,
+        0.010533967026276514,
+        0.011275124998064712,
+        0.011414017993956804,
+        0.010731669986853376,
+        0.010791458014864475,
+        0.012048642995068803,
+        0.010954280995065346,
+        0.01078527799108997,
+        0.011017629993148148,
+        0.011512967001181096,
+        0.01142667600652203,
+        0.011490329023217782,
+        0.011872825998580083,
+        0.010820582014275715,
+        0.011662263015750796,
+        0.01066071999957785,
+        0.010900413995841518,
+        0.011558745987713337,
+        0.010796446993481368,
+        0.011232904013013467,
+        0.011444092000601813,
+        0.010687660978874192,
+        0.010948971001198515,
+        0.011218768981052563,
+        0.01069150900002569,
+        0.01063649301067926,
+        0.012360886001260951,
+        0.011054590024286881,
+        0.011726116994395852,
+        0.010960565996356308,
+        0.011216970015084371,
+        0.011253555974690244,
+        0.011283166997600347,
+        0.010498866002308205,
+        0.010892113990848884
+      ],
+      "scope": "RNG restore + model/Engine init + pool init (step16); no generation; temporary result disposal included"
+    },
+    "steady_engine": {
+      "median_us": 573.6335000256076,
+      "iqr_us": 13.952430163044525,
+      "iqr_over_median": 0.024322899834862632,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.057361195009434596,
+        0.05603191500995308,
+        0.05667031998746097,
+        0.05820519899134524,
+        0.057363350002560765,
+        0.05806556300376542,
+        0.05570640999940224,
+        0.05741479800781235,
+        0.0583209460019134
+      ],
+      "scope": "existing model/Engine; submit + schedule + KV writes/gather + compute + sampling + output + release; no init/RNG restore"
+    },
+    "lifecycle": {
+      "median_us": 769.5597509155051,
+      "iqr_us": 67.24587510689153,
+      "iqr_over_median": 0.0873822663242102,
+      "high_variance": false,
+      "number_per_run": 10,
+      "raw_times": [
+        0.007951298990519717,
+        0.007708798017119989,
+        0.007387157995253801,
+        0.00753663998330012,
+        0.00758837498142384,
+        0.008299356995848939,
+        0.0076689450070261955,
+        0.0074279340042266995,
+        0.007384836993878707,
+        0.007682397001190111,
+        0.008501253993017599,
+        0.007661012990865856,
+        0.007481299981009215,
+        0.007561801990959793,
+        0.008025279006687924,
+        0.007576491974759847,
+        0.007396208995487541,
+        0.008783139986917377,
+        0.008805393008515239,
+        0.008388867980102077,
+        0.007658576010726392,
+        0.0074847709911409765,
+        0.00804631199571304,
+        0.007534250995377079,
+        0.007455254002707079,
+        0.007313643000088632,
+        0.007450147008057684,
+        0.007426216994645074,
+        0.0074585379916243255,
+        0.008927640999900177,
+        0.00834722799481824,
+        0.00853102101245895,
+        0.007647514983545989,
+        0.00815641597728245,
+        0.008197752002160996,
+        0.008151332993293181,
+        0.007929143001092598,
+        0.00866536601097323,
+        0.007521708001149818,
+        0.008654825011035427,
+        0.007796039019012824,
+        0.007401696988381445,
+        0.008640971995191649,
+        0.008080024999799207,
+        0.00846083601936698,
+        0.007954638014780357,
+        0.008582287991885096,
+        0.0076589300006162375,
+        0.007466976006980985,
+        0.007379113987553865,
+        0.007801250001648441,
+        0.007476680009858683,
+        0.007391860010102391,
+        0.007340523006860167,
+        0.00812845301697962,
+        0.007843828992918134,
+        0.007924801990156993,
+        0.0076482369913719594,
+        0.007645039993803948,
+        0.008349646988790482,
+        0.007710890000453219,
+        0.007382217008853331,
+        0.008012852020328864,
+        0.007979584974236786
+      ],
+      "scope": "RNG restore + initialization + complete request processing + result/Engine disposal"
+    }
+  }
+}

@@ -1,0 +1,393 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-15T11:12:55.428652+00:00",
+  "pid": 2473521,
+  "module": "step13",
+  "source": "/home/user/proj/vllm-from-scratch/step13.py",
+  "source_sha256": "69b8b609fed05a2965c354f59748a7503952dca470686f2d70d3362b3ee91d83",
+  "benchmark_sha256": "bce8b6e54d747c04b479cb5ca80b64ffe5d5af582fa8bbeaafab435c2ef9f274",
+  "fixture": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step13_contract_20260915T090330.639923Z.json",
+  "fixture_sha256": "803ec693accd5240bce001a23c0b9ff9820d7839dcf227a6e65fc2af4f2b8457",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "max_num_seqs": 2,
+  "seed": 0,
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "rng_state_sha256": "1ccf17250133dec5e96478acd63e13d728d0dbbabb30389415a302c6f872f81f",
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0,
+        1,
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "expected_new_tokens": 9,
+  "boundary": "restore fixed CPU RNG state + Engine/model initialization/eval + submit + query/step loop (input preparation, model calls, inference contexts, sampling, state/cache writeback and cleanup) + collect results; excludes imports, test fixtures, correctness hooks/checks; module-local diagnostic print temporarily replaced by noop without source edits, noop call cost included",
+  "debug_print_disabled": true,
+  "min_run_time_s": 1.0,
+  "before_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_calls": [
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            1,
+            2,
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      }
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "calls_per_step": [
+      [
+        2,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "processed_input_positions": 13,
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "stop_reasons": {
+      "A": "budget",
+      "B": "budget",
+      "C": "budget"
+    }
+  },
+  "after_check": {
+    "outputs": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0,
+          2,
+          2,
+          2
+        ]
+      }
+    ],
+    "model_calls": [
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            1,
+            2,
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      },
+      {
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      },
+      {
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ]
+      }
+    ],
+    "sampled_tokens": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ],
+      [
+        2
+      ]
+    ],
+    "calls_per_step": [
+      [
+        2,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "processed_input_positions": 13,
+    "initialization_count": 1,
+    "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+    "stop_reasons": {
+      "A": "budget",
+      "B": "budget",
+      "C": "budget"
+    }
+  },
+  "median_us": 773.9382600993849,
+  "iqr_us": 36.595059791579835,
+  "has_warnings": false,
+  "number_per_run": 100,
+  "raw_times_s": [
+    0.07697122500394471,
+    0.08078865200513974,
+    0.08018668601289392,
+    0.08961576002184302,
+    0.07340069598285481,
+    0.07792208000319079,
+    0.08011340198572725,
+    0.07501794799463823,
+    0.07676011801231652,
+    0.07938337899395265,
+    0.07228182698599994,
+    0.0773938260099385,
+    0.07645389600656927
+  ]
+}

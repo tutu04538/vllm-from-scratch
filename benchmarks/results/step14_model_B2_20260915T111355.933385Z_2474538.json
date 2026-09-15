@@ -1,0 +1,173 @@
+{
+  "status": "measured",
+  "started_at_utc": "2026-09-15T11:13:53.472444+00:00",
+  "pid": 2474538,
+  "sources": {
+    "step13": {
+      "path": "/home/user/proj/vllm-from-scratch/step13.py",
+      "sha256": "69b8b609fed05a2965c354f59748a7503952dca470686f2d70d3362b3ee91d83"
+    },
+    "step14": {
+      "path": "/home/user/proj/vllm-from-scratch/step14.py",
+      "sha256": "16f71ab866aa243de19d1852d404cbfca484637f0937ffd2ac5aae5f96f3377e"
+    }
+  },
+  "benchmark_sha256": "590cbb3bc0c91876babb0310c51ba9489da271cff7c0b0c1f8246653ed387fd6",
+  "acceptance": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step14_model_contract_20260915T111116.735757Z.json",
+  "acceptance_sha256": "6c7324477840df7a3ca90c1666f4499677c71104df550cd969d697886c616e93",
+  "python": "3.12.14 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:46:43) [GCC 14.3.0]",
+  "python_executable": "/home/user/anaconda3/envs/vllm-omni-dev/bin/python",
+  "torch": "2.13.0+cu130",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "device": "cpu",
+  "dtype": "float32",
+  "num_threads": 1,
+  "seed": 0,
+  "parameter_sha256": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "model_config": {
+    "vocab_size": 5,
+    "d_model": 8,
+    "max_seq_len": 32
+  },
+  "batch_size": 2,
+  "prompt_lengths": [
+    3,
+    1
+  ],
+  "input_ids": [
+    [
+      0,
+      1,
+      2
+    ],
+    [
+      1,
+      0,
+      0
+    ]
+  ],
+  "prompts": [
+    [
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    [
+      [
+        1
+      ]
+    ]
+  ],
+  "boundary": "one prefill for all prompts; preinitialized eval models in existing inference_mode; input tensors/right-padding/lengths prebuilt; includes embedding, projections, causal attention, lm_head and per-request KV construction/slicing (serial Python loop included); excludes imports, initialization, Engine, sampling, subsequent decode and correctness hooks/checks; padded query outputs computed but not compared; returned slices need not own compact storage",
+  "min_run_time_s": 1.0,
+  "measurement_order": [
+    "batch",
+    "serial"
+  ],
+  "before_check": {
+    "max_logits_abs_errors": [
+      0.0,
+      5.960464477539063e-08
+    ],
+    "cache_lengths": [
+      3,
+      1
+    ],
+    "inputs_parameters_unchanged": true
+  },
+  "after_check": {
+    "max_logits_abs_errors": [
+      0.0,
+      5.960464477539063e-08
+    ],
+    "cache_lengths": [
+      3,
+      1
+    ],
+    "inputs_parameters_unchanged": true
+  },
+  "k_projection_shapes": {
+    "serial": [
+      [
+        1,
+        3,
+        8
+      ],
+      [
+        1,
+        1,
+        8
+      ]
+    ],
+    "batch": [
+      [
+        2,
+        3,
+        8
+      ]
+    ]
+  },
+  "projected_input_positions": {
+    "serial": 4,
+    "batch": 6
+  },
+  "measurements": [
+    {
+      "mode": "batch",
+      "median_us": 41.94780900434125,
+      "iqr_us": 1.7037664874806095,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.04712542600464076,
+        0.04663910099770874,
+        0.04292290101875551,
+        0.0433494399767369,
+        0.0440418419893831,
+        0.04316508199553937,
+        0.04210920000332408,
+        0.04120026301825419,
+        0.041805366025073454,
+        0.041357493988471106,
+        0.04175482300342992,
+        0.04222620898508467,
+        0.04175996800768189,
+        0.041771569987758994,
+        0.04150821501389146,
+        0.040458186995238066,
+        0.0418074150220491,
+        0.042624985973816365,
+        0.04500501899747178,
+        0.042088202986633405,
+        0.040889814001275226,
+        0.040809222002280876,
+        0.03934274200582877,
+        0.04320195899344981
+      ]
+    },
+    {
+      "mode": "serial",
+      "median_us": 77.42732198676094,
+      "iqr_us": 0.8964340086095005,
+      "has_warnings": false,
+      "number_per_run": 1000,
+      "raw_times_s": [
+        0.07868930700351484,
+        0.07725987900630571,
+        0.07771425601094961,
+        0.07742732198676094,
+        0.07501779400627129,
+        0.07418788998620585,
+        0.0756845950090792,
+        0.0785268189792987,
+        0.07666670699836686,
+        0.07756314100697637,
+        0.07728833999135531,
+        0.07742899699951522,
+        0.07753313702414744
+      ]
+    }
+  ]
+}
