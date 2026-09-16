@@ -1,0 +1,388 @@
+{
+  "mode": "step16",
+  "module": "step16",
+  "workload": "arrival",
+  "capacity": 2,
+  "token_budget": null,
+  "source_sha256": "d45c670ea86c1936f8b90a6d3b5d3377ddb52a07e0ee3a18cff37598d509c6a1",
+  "script_sha256": "97cb39bc85b9f3080474300548ae4f6c660d6ccb5c724135fe3dc5aa57bcb42b",
+  "fixture": "step16_engine_contract_20260916T071055.671479Z.json",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "block_size": 4,
+  "num_kv_blocks": 8,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        0,
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 1
+    }
+  ],
+  "outputs": [
+    {
+      "request_id": "B",
+      "output_ids": [
+        0
+      ]
+    },
+    {
+      "request_id": "A",
+      "output_ids": [
+        2,
+        2,
+        0,
+        2
+      ]
+    }
+  ],
+  "validation": {
+    "steps": [
+      {
+        "step": 1,
+        "true_tokens": 1,
+        "padded_positions": 1,
+        "model_calls": 1,
+        "outputs": {
+          "A": [
+            2
+          ]
+        },
+        "finished": []
+      },
+      {
+        "step": 2,
+        "true_tokens": 10,
+        "padded_positions": 10,
+        "model_calls": 2,
+        "outputs": {
+          "A": [
+            2,
+            2
+          ],
+          "B": [
+            0
+          ]
+        },
+        "finished": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "step": 3,
+        "true_tokens": 1,
+        "padded_positions": 1,
+        "model_calls": 1,
+        "outputs": {
+          "A": [
+            2,
+            2,
+            0
+          ],
+          "B": [
+            0
+          ]
+        },
+        "finished": []
+      },
+      {
+        "step": 4,
+        "true_tokens": 1,
+        "padded_positions": 1,
+        "model_calls": 1,
+        "outputs": {
+          "A": [
+            2,
+            2,
+            0,
+            2
+          ],
+          "B": [
+            0
+          ]
+        },
+        "finished": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              2,
+              2,
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "step": 1,
+        "kind": "prefill",
+        "ids": [
+          [
+            0
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 2,
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            2,
+            3,
+            4,
+            0,
+            1,
+            2,
+            3
+          ]
+        ],
+        "real_lengths": [
+          9
+        ],
+        "true_tokens": 9,
+        "padded_positions": 9
+      },
+      {
+        "step": 2,
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 3,
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 4,
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      }
+    ],
+    "samples": [
+      {
+        "step": 1,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          2
+        ],
+        "reserved_blocks": 1,
+        "wholly_unused_reserved_blocks": 0
+      },
+      {
+        "step": 2,
+        "ready": [
+          "A",
+          "B"
+        ],
+        "tokens": [
+          2,
+          0
+        ],
+        "reserved_blocks": 4,
+        "wholly_unused_reserved_blocks": 0
+      },
+      {
+        "step": 3,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          0
+        ],
+        "reserved_blocks": 1,
+        "wholly_unused_reserved_blocks": 0
+      },
+      {
+        "step": 4,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          2
+        ],
+        "reserved_blocks": 1,
+        "wholly_unused_reserved_blocks": 0
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "B": [
+        2
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 5,
+    "new_tokens": 5,
+    "total_true_tokens": 13,
+    "total_padded_positions": 13
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 115.09462521644309,
+      "iqr_us": 5.914377106819307,
+      "iqr_over_median": 0.051387083416770576,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.010988808993715793,
+        0.011189709999598563,
+        0.010920820001047105,
+        0.011632284964434803,
+        0.011272832984104753,
+        0.011558904021512717,
+        0.01243036799132824,
+        0.011670275998767465,
+        0.011188641015905887,
+        0.011812613985966891,
+        0.011181637004483491,
+        0.01144391403067857,
+        0.011840716993901879,
+        0.011511142016388476,
+        0.011961187003180385,
+        0.011225100024603307,
+        0.011117841000668705,
+        0.011766898969653994,
+        0.011551300005521625,
+        0.01139660197077319,
+        0.01189716998487711,
+        0.011272548988927156,
+        0.010897513013333082,
+        0.012054002028889954,
+        0.0116841159760952,
+        0.01102938299300149,
+        0.012703294982202351,
+        0.011573395982850343,
+        0.011460894951596856,
+        0.012007587007246912,
+        0.011724179028533399,
+        0.011087173013947904,
+        0.012405401968862861,
+        0.011308001994621009,
+        0.011350058019161224,
+        0.011507783026900142,
+        0.011138665024191141,
+        0.01113206398440525,
+        0.01183884497731924,
+        0.011531224008649588,
+        0.011630307009909302,
+        0.011124069045763463,
+        0.011126396944746375,
+        0.01239523000549525
+      ]
+    },
+    "steady_engine": {
+      "median_us": 387.7033601747826,
+      "iqr_us": 22.0340600935742,
+      "iqr_over_median": 0.05683226496577412,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.04572307300986722,
+        0.039827431028243154,
+        0.03655794897349551,
+        0.04763179400470108,
+        0.040358364989515394,
+        0.03901598701486364,
+        0.038244144001509994,
+        0.03912510903319344,
+        0.0375944190309383,
+        0.037534049013629556,
+        0.03877033601747826,
+        0.038459060015156865,
+        0.03762402501888573
+      ]
+    },
+    "lifecycle": {
+      "median_us": 589.3277900759131,
+      "iqr_us": 15.178710455075002,
+      "iqr_over_median": 0.02575597267035343,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.05940647900570184,
+        0.05788860796019435,
+        0.05893277900759131,
+        0.058234825963154435,
+        0.05921043403213844,
+        0.05757074395660311,
+        0.06089916097698733,
+        0.05756860302062705,
+        0.06184568698517978
+      ]
+    }
+  },
+  "scopes": {
+    "initialize": "RNG restore, model/Engine/pool creation, temporary result disposal; no generation",
+    "steady_engine": "reused initialized Engine, submit/schedule/padding/gather/compute/sample/results/release; no RNG restore or model init",
+    "lifecycle": "RNG restore, Engine init, all request processing and result/Engine disposal"
+  },
+  "notes": "CPU wall time; module debug print patched to noop outside timers. Step indices are not TTFT or inter-token latency measurements. Input/cache validation outside timers."
+}

@@ -1,0 +1,456 @@
+{
+  "mode": "step17_refactor",
+  "module": "step17_refactor",
+  "workload": "arrival",
+  "capacity": 2,
+  "token_budget": 4,
+  "source_sha256": "7c90996bd43b4cfb933a07bfa291372adad04d59e2e405069e3ea2bd52c384f4",
+  "script_sha256": "43ddf9391fae652ee5f7d924c8d616f2c7c5dbdbf26a7f06b6d65b4953c586d4",
+  "fixture": "step17_refactor_engine_contract_20260916T113523.753028Z.json",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "block_size": 4,
+  "num_kv_blocks": 8,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        0,
+        1,
+        2,
+        3
+      ],
+      "max_new_tokens": 1
+    }
+  ],
+  "outputs": [
+    {
+      "request_id": "A",
+      "output_ids": [
+        2,
+        2,
+        0,
+        2
+      ]
+    },
+    {
+      "request_id": "B",
+      "output_ids": [
+        0
+      ]
+    }
+  ],
+  "validation": {
+    "steps": [
+      {
+        "step": 1,
+        "true_tokens": 1,
+        "padded_positions": 1,
+        "model_calls": 1,
+        "outputs": {
+          "A": [
+            2
+          ]
+        },
+        "finished": []
+      },
+      {
+        "step": 2,
+        "true_tokens": 4,
+        "padded_positions": 4,
+        "model_calls": 2,
+        "outputs": {
+          "A": [
+            2,
+            2
+          ],
+          "B": []
+        },
+        "finished": []
+      },
+      {
+        "step": 3,
+        "true_tokens": 4,
+        "padded_positions": 4,
+        "model_calls": 2,
+        "outputs": {
+          "A": [
+            2,
+            2,
+            0
+          ],
+          "B": []
+        },
+        "finished": []
+      },
+      {
+        "step": 4,
+        "true_tokens": 4,
+        "padded_positions": 4,
+        "model_calls": 2,
+        "outputs": {
+          "A": [
+            2,
+            2,
+            0,
+            2
+          ],
+          "B": [
+            0
+          ]
+        },
+        "finished": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              2,
+              2,
+              0,
+              2
+            ]
+          },
+          {
+            "request_id": "B",
+            "output_ids": [
+              0
+            ]
+          }
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "step": 1,
+        "kind": "prefill",
+        "ids": [
+          [
+            0
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 2,
+        "kind": "prefill",
+        "ids": [
+          [
+            0,
+            1,
+            2
+          ]
+        ],
+        "real_lengths": [
+          3
+        ],
+        "true_tokens": 3,
+        "padded_positions": 3
+      },
+      {
+        "step": 2,
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 3,
+        "kind": "prefill",
+        "ids": [
+          [
+            3,
+            4,
+            0
+          ]
+        ],
+        "real_lengths": [
+          3
+        ],
+        "true_tokens": 3,
+        "padded_positions": 3
+      },
+      {
+        "step": 3,
+        "kind": "decode",
+        "ids": [
+          [
+            2
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      },
+      {
+        "step": 4,
+        "kind": "prefill",
+        "ids": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "real_lengths": [
+          3
+        ],
+        "true_tokens": 3,
+        "padded_positions": 3
+      },
+      {
+        "step": 4,
+        "kind": "decode",
+        "ids": [
+          [
+            0
+          ]
+        ],
+        "real_lengths": [
+          1
+        ],
+        "true_tokens": 1,
+        "padded_positions": 1
+      }
+    ],
+    "samples": [
+      {
+        "step": 1,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          2
+        ],
+        "reserved_blocks": 1,
+        "wholly_unused_reserved_blocks": 0
+      },
+      {
+        "step": 2,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          2
+        ],
+        "reserved_blocks": 4,
+        "wholly_unused_reserved_blocks": 2
+      },
+      {
+        "step": 3,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          0
+        ],
+        "reserved_blocks": 4,
+        "wholly_unused_reserved_blocks": 1
+      },
+      {
+        "step": 4,
+        "ready": [
+          "B"
+        ],
+        "tokens": [
+          0
+        ],
+        "reserved_blocks": 4,
+        "wholly_unused_reserved_blocks": 0
+      },
+      {
+        "step": 4,
+        "ready": [
+          "A"
+        ],
+        "tokens": [
+          2
+        ],
+        "reserved_blocks": 4,
+        "wholly_unused_reserved_blocks": 0
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "B": [
+        4
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 7,
+    "new_tokens": 5,
+    "total_true_tokens": 13,
+    "total_padded_positions": 13
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 117.52913007512689,
+      "iqr_us": 5.939544935245066,
+      "iqr_over_median": 0.05053678974266545,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.012136864010244608,
+        0.011752913007512689,
+        0.011548937007319182,
+        0.012183001963421702,
+        0.011125878023449332,
+        0.011685544974170625,
+        0.012068526004441082,
+        0.011869776993989944,
+        0.011347303981892765,
+        0.012062784982845187,
+        0.011993109015747905,
+        0.011438927962444723,
+        0.012769666034728289,
+        0.011709431011695415,
+        0.011862872983328998,
+        0.011570222035516053,
+        0.011668269988149405,
+        0.011604177008848637,
+        0.010822143987752497,
+        0.010782822035253048,
+        0.011719478003215045,
+        0.01132762199267745,
+        0.011243495042435825,
+        0.011332263005897403,
+        0.011849551985505968,
+        0.011711543949786574,
+        0.01311271300073713,
+        0.012033942970447242,
+        0.011976058012805879,
+        0.012680007028393447,
+        0.012293146981392056,
+        0.012988664966542274,
+        0.011413606989663094,
+        0.011253467993810773,
+        0.013134526961948723,
+        0.01158346701413393,
+        0.011629946995526552,
+        0.012170204019639641,
+        0.01217294402886182,
+        0.012027318007312715,
+        0.012520070013124496,
+        0.011701537994667888,
+        0.012197996024042368
+      ]
+    },
+    "steady_engine": {
+      "median_us": 669.9694698909298,
+      "iqr_us": 37.87242982070907,
+      "iqr_over_median": 0.0565285905145419,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.06908470898633823,
+        0.06988351698964834,
+        0.0662934859865345,
+        0.06447404797654599,
+        0.06403951096581295,
+        0.07258026499766856,
+        0.06583820801461115,
+        0.06770040799165145
+      ]
+    },
+    "lifecycle": {
+      "median_us": 954.662897856906,
+      "iqr_us": 93.72899658046654,
+      "iqr_over_median": 0.09818020244724703,
+      "high_variance": false,
+      "number_per_run": 10,
+      "raw_times": [
+        0.008241351984906942,
+        0.009071377979125828,
+        0.00986997300060466,
+        0.010511722997762263,
+        0.010011353995651007,
+        0.009963060962036252,
+        0.010078292980324477,
+        0.010089393006637692,
+        0.009223230998031795,
+        0.009035400988068432,
+        0.010509787010960281,
+        0.00929440202889964,
+        0.009610951005015522,
+        0.009602525038644671,
+        0.009879709978122264,
+        0.009605183964595199,
+        0.009406272030901164,
+        0.010124376974999905,
+        0.00963407102972269,
+        0.008255639986600727,
+        0.010185819992329925,
+        0.010925200011115521,
+        0.008298469998408109,
+        0.010174004011787474,
+        0.010054400947410613,
+        0.008914704027120024,
+        0.00959402701118961,
+        0.010058446030598134,
+        0.009382880991324782,
+        0.009720622969325632,
+        0.009223723027389497,
+        0.010028269025497139,
+        0.008228734950535,
+        0.008135530049912632,
+        0.008290307014249265,
+        0.008996528980787843,
+        0.00954662897856906,
+        0.008881387999281287,
+        0.009220769978128374,
+        0.009260881983209401,
+        0.00862396601587534,
+        0.009867407963611186,
+        0.009897543000988662,
+        0.008627441013231874,
+        0.009025770996231586,
+        0.009543675987515599,
+        0.009819503000471741,
+        0.01009792200056836,
+        0.008913649013265967,
+        0.009677680034656078,
+        0.009261300961952657,
+        0.008874649996869266,
+        0.009328237967565656
+      ]
+    }
+  },
+  "scopes": {
+    "initialize": "RNG restore, model/Engine/pool creation, temporary result disposal; no generation",
+    "steady_engine": "reused initialized Engine, submit/schedule/padding/gather/compute/sample/results/release; no RNG restore or model init",
+    "lifecycle": "RNG restore, Engine init, all request processing and result/Engine disposal"
+  },
+  "notes": "CPU wall time; module debug print patched to noop outside timers. Step indices are not TTFT or inter-token latency measurements. Input/cache validation outside timers."
+}
