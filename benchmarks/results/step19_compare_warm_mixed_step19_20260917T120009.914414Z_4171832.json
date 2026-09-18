@@ -1,0 +1,594 @@
+{
+  "mode": "step19",
+  "workload": "warm_mixed",
+  "source_sha256": "2b09d7350eb03f8ca9e190aafda45115b6a563f997944cbb3d2abb76feb4b4e5",
+  "script_sha256": "9a23f0ceb2406204afa6a04335d2044f44f59a91b56eaf83e84d3052b7bc5662",
+  "fixtures": {
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_prefix_contract_20260917T115612.449434Z.json",
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_model_contract_20260917T115608.228852Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_disabled_engine_contract_20260917T115721.850055Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "capacity": 3,
+  "block_size": 4,
+  "num_kv_blocks": 24,
+  "token_budget": 5,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        1,
+        0,
+        3
+      ],
+      "max_new_tokens": 1
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        2
+      ],
+      "max_new_tokens": 1
+    }
+  ],
+  "validation": {
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "inputs": [
+              0,
+              1,
+              2
+            ],
+            "counts": [
+              3
+            ],
+            "lengths_before": [
+              0
+            ],
+            "writes": {
+              "written_positions": 3,
+              "tables": [
+                [
+                  1,
+                  2
+                ]
+              ],
+              "lengths": [
+                3
+              ]
+            },
+            "max_logits_error": 7.658266265586633e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  3
+                ]
+              ],
+              "position_embedding": [
+                [
+                  0,
+                  1,
+                  2
+                ]
+              ],
+              "q_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  3,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A"
+            ],
+            "max_logits_error": 2.7393723928126334e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              0,
+              1,
+              0,
+              3,
+              2
+            ],
+            "counts": [
+              1,
+              3,
+              1
+            ],
+            "lengths_before": [
+              3,
+              4,
+              0
+            ],
+            "writes": {
+              "written_positions": 5,
+              "tables": [
+                [
+                  1,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                4,
+                7,
+                1
+              ]
+            },
+            "max_logits_error": 7.449458400143882e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  5
+                ]
+              ],
+              "position_embedding": [
+                [
+                  3,
+                  4,
+                  5,
+                  6,
+                  0
+                ]
+              ],
+              "q_proj": [
+                [
+                  5,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  5,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  5,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 7.027233683842837e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              0
+            ]
+          },
+          {
+            "request_id": "C",
+            "output_ids": [
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "inputs": [
+              0
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              4
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  1,
+                  2
+                ]
+              ],
+              "lengths": [
+                5
+              ]
+            },
+            "max_logits_error": 7.651158470678432e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  1
+                ]
+              ],
+              "position_embedding": [
+                [
+                  4
+                ]
+              ],
+              "q_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  1,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A"
+            ],
+            "max_logits_error": 7.651158470678432e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "inputs": [
+              2
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              5
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  1,
+                  2
+                ]
+              ],
+              "lengths": [
+                6
+              ]
+            },
+            "max_logits_error": 2.366906182160733e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  1
+                ]
+              ],
+              "position_embedding": [
+                [
+                  5
+                ]
+              ],
+              "q_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  1,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A"
+            ],
+            "max_logits_error": 2.366906182160733e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              0,
+              0,
+              2,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          0
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          0,
+          0,
+          2,
+          2
+        ]
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "B": [
+        2
+      ],
+      "C": [
+        2
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 4,
+    "true_tokens": 10,
+    "projected_positions": 10,
+    "hit_tokens": 4,
+    "new_tokens": 6,
+    "initial_cached_blocks": 1,
+    "final_cached_blocks": 1
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 115.36686972249299,
+      "iqr_us": 10.21404546918348,
+      "iqr_over_median": 0.08853534375815741,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.01167247403645888,
+        0.01145746500696987,
+        0.010855205007828772,
+        0.011413988948334008,
+        0.012591358972713351,
+        0.011935813003219664,
+        0.012096965045202523,
+        0.011237967992201447,
+        0.011081511969678104,
+        0.012573158950544894,
+        0.011765093950089067,
+        0.011183878988958895,
+        0.011167936027050018,
+        0.010697435995098203,
+        0.010634742968250066,
+        0.012029452016577125,
+        0.01080096501391381,
+        0.010816916998010129,
+        0.013580275001004338,
+        0.011162373004481196,
+        0.0112153590307571,
+        0.010958451020997018,
+        0.010810282023157924,
+        0.011643235047813505,
+        0.01250200200593099,
+        0.010835998982656747,
+        0.011047072999645025,
+        0.0115366869722493,
+        0.01100290403701365,
+        0.012346551986411214,
+        0.011712325969710946,
+        0.011678659997414798,
+        0.012517699971795082,
+        0.012044661038089544,
+        0.011104276985861361,
+        0.012353670026641339,
+        0.011535797966644168,
+        0.012131633004173636,
+        0.012792991008609533,
+        0.011377506016287953,
+        0.012322382943239063,
+        0.012390416988637298,
+        0.011697586975060403
+      ]
+    },
+    "workload_with_metadata_reset": {
+      "median_us": 409.84119521453977,
+      "iqr_us": 40.41207241243686,
+      "iqr_over_median": 0.09860422252400064,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.04081557004246861,
+        0.04139447497436777,
+        0.055814431980252266,
+        0.04421322897542268,
+        0.039068228972610086,
+        0.039789077010937035,
+        0.04038352199131623,
+        0.04046517098322511,
+        0.04495905700605363,
+        0.04511283105239272,
+        0.04028334899339825,
+        0.041152669000439346
+      ]
+    }
+  },
+  "prime_trace": [
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            0
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0
+              ]
+            ],
+            "lengths": [
+              4
+            ]
+          },
+          "max_logits_error": 7.658266265586633e-08,
+          "trace": {
+            "token_embedding": [
+              [
+                4
+              ]
+            ],
+            "position_embedding": [
+              [
+                0,
+                1,
+                2,
+                3
+              ]
+            ],
+            "q_proj": [
+              [
+                4,
+                8
+              ]
+            ],
+            "k_proj": [
+              [
+                4,
+                8
+              ]
+            ],
+            "v_proj": [
+              [
+                4,
+                8
+              ]
+            ]
+          }
+        }
+      ],
+      "samples": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "max_logits_error": 3.542580906401582e-08
+        }
+      ],
+      "result": [
+        {
+          "request_id": "seed",
+          "output_ids": [
+            0
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "metadata restore + submit/schedule/model/sample/hash/result/release for whole workload; excludes Engine initialization and warm-cache seed creation; K/V seed blocks stay unchanged, no pool copying in timer",
+  "notes": "Every iteration starts with identical cold/warm prefix metadata. CPU wall time, no GPU/TTFT/ITL claims. No eviction needed in timing workload."
+}

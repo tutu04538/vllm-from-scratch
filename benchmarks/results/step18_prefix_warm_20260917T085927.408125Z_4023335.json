@@ -1,0 +1,640 @@
+{
+  "mode": "warm",
+  "source_sha256": "3b64f063e7a1b8daf05d692d6159fb4360d1f1e486803d1bead7a10358a47a59",
+  "script_sha256": "1435fde18eaf7be55f486ad458b5de72228ddb2095cf7c827dd4dd2dc6e08e72",
+  "fixtures": {
+    "step18_prefix_contract_*.json": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_prefix_contract_20260917T085527.158624Z.json",
+    "step18_model_contract_*.json": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_model_contract_20260917T085529.544667Z.json",
+    "step18_disabled_engine_contract_*.json": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_disabled_engine_contract_20260917T085532.414103Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "capacity": 1,
+  "block_size": 4,
+  "num_kv_blocks": 16,
+  "token_budget": 4,
+  "target": {
+    "request_id": "target",
+    "prompt_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      0,
+      1,
+      2,
+      3,
+      4,
+      0,
+      1,
+      2,
+      3,
+      4,
+      0,
+      1,
+      2,
+      3,
+      4,
+      0,
+      1,
+      2,
+      3,
+      4,
+      0
+    ],
+    "max_new_tokens": 4
+  },
+  "validation": {
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "target"
+            ],
+            "inputs": [
+              [
+                4,
+                0
+              ]
+            ],
+            "counts": [
+              2
+            ],
+            "lengths_before": [
+              24
+            ],
+            "writes": {
+              "written_positions": 2,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7
+                ]
+              ],
+              "lengths": [
+                26
+              ]
+            },
+            "max_logits_error": 3.180576452210815e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "target"
+            ],
+            "max_logits_error": 2.6410258202602677e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "target"
+            ],
+            "inputs": [
+              [
+                0
+              ]
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              26
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7
+                ]
+              ],
+              "lengths": [
+                27
+              ]
+            },
+            "max_logits_error": 2.110659014231686e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "target"
+            ],
+            "max_logits_error": 2.110659014231686e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "target"
+            ],
+            "inputs": [
+              [
+                0
+              ]
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              27
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7
+                ]
+              ],
+              "lengths": [
+                28
+              ]
+            },
+            "max_logits_error": 1.8935493339977683e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "target"
+            ],
+            "max_logits_error": 1.8935493339977683e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "target"
+            ],
+            "inputs": [
+              [
+                0
+              ]
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              28
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7
+                ]
+              ],
+              "lengths": [
+                29
+              ]
+            },
+            "max_logits_error": 5.584704038108512e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "target"
+            ],
+            "max_logits_error": 5.584704038108512e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "target",
+            "output_ids": [
+              0,
+              0,
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "hit_tokens": 24,
+    "actual_input_tokens": 5,
+    "padded_positions": 5,
+    "model_calls": 4,
+    "steps": 4,
+    "new_tokens": 4,
+    "outputs": [
+      {
+        "request_id": "target",
+        "output_ids": [
+          0,
+          0,
+          0,
+          2
+        ]
+      }
+    ],
+    "initial_cached_blocks": 6,
+    "final_cached_blocks": 6,
+    "final_active_refs": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 110.21337006241083,
+      "iqr_us": 5.518740508705377,
+      "iqr_over_median": 0.050073239803666875,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011928114981856197,
+        0.010878769971895963,
+        0.01058523403480649,
+        0.012346497969701886,
+        0.01145232398994267,
+        0.011458139983005822,
+        0.011197137006092817,
+        0.010687867004889995,
+        0.011330289009492844,
+        0.011298046039883047,
+        0.010763441037852317,
+        0.010877116990741342,
+        0.011575592972803861,
+        0.011105117970146239,
+        0.010982934036292136,
+        0.010846188000869006,
+        0.010688050999306142,
+        0.010681940999347717,
+        0.011021337006241083,
+        0.011086809972766787,
+        0.01081505004549399,
+        0.011037566990125924,
+        0.011178860964719206,
+        0.011315034003928304,
+        0.011187243973836303,
+        0.010690337978303432,
+        0.01091747498139739,
+        0.011826031026430428,
+        0.011870943999383599,
+        0.011702255986165255,
+        0.011296706972643733,
+        0.010778414958622307,
+        0.010786211001686752,
+        0.011382200056686997,
+        0.010892737016547471,
+        0.01092569000320509,
+        0.010834724991582334,
+        0.010765257989987731,
+        0.010617321007885039,
+        0.010564113967120647,
+        0.010578578046988696,
+        0.010509026993531734,
+        0.012032674043439329,
+        0.011232012009713799,
+        0.01150468603009358
+      ]
+    },
+    "request_with_metadata_reset": {
+      "median_us": 615.4652999248356,
+      "iqr_us": 10.828469530679364,
+      "iqr_over_median": 0.017593956201920405,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.061546529992483556,
+        0.05863374302862212,
+        0.06177744205342606,
+        0.06102156202541664,
+        0.06210440897848457,
+        0.06071133498335257,
+        0.06428892101394013,
+        0.06470908201299608,
+        0.061330093012657017
+      ]
+    }
+  },
+  "prime_trace": [
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            0
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              4
+            ]
+          },
+          "max_logits_error": 7.658266265586633e-08
+        }
+      ],
+      "samples": [],
+      "result": []
+    },
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              4,
+              0,
+              1,
+              2
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            4
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              8
+            ]
+          },
+          "max_logits_error": 6.607101882272204e-08
+        }
+      ],
+      "samples": [],
+      "result": []
+    },
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              3,
+              4,
+              0,
+              1
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            8
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              12
+            ]
+          },
+          "max_logits_error": 4.1268678474537523e-08
+        }
+      ],
+      "samples": [],
+      "result": []
+    },
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              2,
+              3,
+              4,
+              0
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            12
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              16
+            ]
+          },
+          "max_logits_error": 3.075940888802586e-08
+        }
+      ],
+      "samples": [],
+      "result": []
+    },
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              1,
+              2,
+              3,
+              4
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            16
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              20
+            ]
+          },
+          "max_logits_error": 4.646746559755499e-08
+        }
+      ],
+      "samples": [],
+      "result": []
+    },
+    {
+      "calls": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "inputs": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ],
+          "counts": [
+            4
+          ],
+          "lengths_before": [
+            20
+          ],
+          "writes": {
+            "written_positions": 4,
+            "tables": [
+              [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            ],
+            "lengths": [
+              24
+            ]
+          },
+          "max_logits_error": 2.6883340775718523e-08
+        }
+      ],
+      "samples": [
+        {
+          "requests": [
+            "seed"
+          ],
+          "max_logits_error": 9.372809195440368e-09
+        }
+      ],
+      "result": [
+        {
+          "request_id": "seed",
+          "output_ids": [
+            2
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "request_with_metadata_reset includes dictionary/list state restoration + add/schedule/padding/hash/KV/model/sample/results/release; excludes model init and seed-cache population; seed K/V not copied in timer; warm/miss are reset to identical initial cache state each iteration",
+  "notes": "No eviction needed in these timing workloads. LRU correctness tested separately. Not GPU/TTFT/ITL or full cold-start service latency."
+}

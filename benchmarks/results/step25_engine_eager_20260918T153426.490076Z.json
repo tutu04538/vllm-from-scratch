@@ -1,0 +1,128 @@
+{
+  "source_sha256": "8ab7b18ea3dc53ca44654c8a719e154a7298f9c30e671f64058c138e9c120ffb",
+  "script_sha256": "ccbca4fc9cbba2a2cbaf3f832d959e5f06efc3520fb9874602b9e1611262e3e8",
+  "helper_sha256": "4f952c4c5e41f361016eb0012f5e3423089e4fea71f9759edb26ae4abdefe1a1",
+  "contract_report": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step25_contract_20260918T153409.616514Z.json",
+  "mode": "eager",
+  "status": "verified_engine_retired_legacy_entry",
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "triton": "3.7.1",
+  "dtype": "float32",
+  "tf32": false,
+  "threads": 1,
+  "model": {
+    "d_model": 32,
+    "num_q_heads": 4,
+    "num_kv_heads": 2,
+    "head_dim": 8
+  },
+  "weight_hash": "e269373f7fe52df153f925cfa42f07e4ff0d47666c9e5bf2177227bb683d2d56",
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        2
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 3
+    }
+  ],
+  "results": [
+    {
+      "request_id": "A",
+      "output_ids": [
+        3,
+        0,
+        4
+      ]
+    },
+    {
+      "request_id": "B",
+      "output_ids": [
+        3,
+        0
+      ]
+    },
+    {
+      "request_id": "C",
+      "output_ids": [
+        3,
+        3,
+        0
+      ]
+    }
+  ],
+  "steps": 5,
+  "graph_keys": [],
+  "kv_pool_shape": [
+    24,
+    4,
+    2,
+    8
+  ],
+  "kv_bytes": 12288,
+  "timing": {
+    "median_us": 4996.2486,
+    "iqr_us": 1980.3722000000007,
+    "iqr_over_median": 0.3963718298565049,
+    "high_variance": true,
+    "samples_us": [
+      4664.2068,
+      4462.855799999999,
+      4783.159799999999,
+      4727.5592,
+      8684.985,
+      6127.2528,
+      4778.4226,
+      4656.4052,
+      4121.2004,
+      3289.0482,
+      5880.8004,
+      5911.023,
+      7346.464599999999,
+      6109.272800000001,
+      6339.7016,
+      6285.305,
+      7184.7084,
+      8520.8622,
+      7828.492200000001,
+      5064.5964,
+      4996.2486,
+      4634.7394,
+      4552.6196,
+      4922.6208,
+      6856.077,
+      7370.933800000001,
+      4600.2948,
+      4442.2318,
+      4307.3634,
+      4420.7078,
+      9109.9632
+    ]
+  },
+  "scope": "Reused Engine, prefix caching disabled, same weights/requests. Submission + scheduling + packed forward + sampling + release + results + synchronization. 16 warmups, 31 groups of five complete workloads. Excludes model/Engine init, first JIT/library setup and graph capture. The obsolete model(input_ids) entry is explicitly unsupported; only the accepted packed Engine is measured."
+}

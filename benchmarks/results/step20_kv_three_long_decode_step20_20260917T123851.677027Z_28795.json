@@ -1,0 +1,138 @@
+{
+  "mode": "step20",
+  "workload": "three_long_decode",
+  "source_sha256": "9c6d204ba2e90efa2f55c77dddda121709f84a0ddc8270e116e7518a6075a248",
+  "script_sha256": "ff94a4516a77a56d28e85713ad164b20a04efa4786969ddb9578eba3d3df31f0",
+  "fixtures": {
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_model_contract_20260917T123504.191027Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_prefix_contract_20260917T123506.835838Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_disabled_engine_contract_20260917T123509.780735Z.json",
+    "slots": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_slots_contract_20260917T123611.476513Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "block_size": 4,
+  "d_model": 8,
+  "tables": [
+    [
+      7,
+      6,
+      5,
+      4,
+      3,
+      2,
+      1,
+      0
+    ],
+    [
+      15,
+      14,
+      13,
+      12,
+      11,
+      10,
+      9,
+      8
+    ],
+    [
+      23,
+      22,
+      21,
+      20,
+      19,
+      18,
+      17,
+      16
+    ]
+  ],
+  "lengths_before": [
+    24,
+    16,
+    8
+  ],
+  "counts": [
+    1,
+    1,
+    1
+  ],
+  "slots": [
+    4,
+    44,
+    84
+  ],
+  "validation": "Exact whole-pool and gathered K/V before and after timing; stable pointers",
+  "timing": {
+    "append_with_length_reset": {
+      "median_us": 28.961443022126332,
+      "iqr_us": 3.504042018903421,
+      "iqr_over_median": 0.12098989736893836,
+      "high_variance": true,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.03200803103391081,
+        0.025924390996806324,
+        0.029311619990039617,
+        0.02992510999320075,
+        0.025286798016168177,
+        0.028913207992445678,
+        0.02970797597663477,
+        0.025979426980484277,
+        0.02917809400241822,
+        0.029967191978357732,
+        0.025975266005843878,
+        0.029009678051806986,
+        0.025317193008959293,
+        0.029536591027863324,
+        0.029171430971473455,
+        0.025947221962269396,
+        0.02844551799353212,
+        0.028379040013533086
+      ]
+    },
+    "gather": {
+      "median_us": 34.15174299152568,
+      "iqr_us": 2.402270503807818,
+      "iqr_over_median": 0.07034108052417444,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.03571170102804899,
+        0.03415174299152568,
+        0.03200462198583409,
+        0.03484095900785178,
+        0.0336265709483996,
+        0.03300488699460402,
+        0.03203879698412493,
+        0.03443621302722022,
+        0.03482268896186724,
+        0.03603508701780811,
+        0.0314178160042502,
+        0.03480290499283001,
+        0.03490863094339147,
+        0.03113586496328935,
+        0.03282030997797847
+      ]
+    },
+    "append_and_gather_with_length_reset": {
+      "median_us": 61.064679990522556,
+      "iqr_us": 1.6397840227000362,
+      "iqr_over_median": 0.026853232064010423,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.06131202698452398,
+        0.06023641402134672,
+        0.06106467999052256,
+        0.06005176197504625,
+        0.06253544602077454,
+        0.0626247400068678,
+        0.06187619804404676,
+        0.059966354980133474,
+        0.060320944990962744
+      ]
+    }
+  },
+  "scope": "Pool initialization and tensor data construction excluded. Append includes length reset, address generation, writes and length increments; gather includes address generation and copies. Same input values overwrite the same new slots each iteration; history remains fixed. Both use inference_mode."
+}

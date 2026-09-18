@@ -1,0 +1,553 @@
+{
+  "mode": "step20",
+  "workload": "unequal_prefill",
+  "source_sha256": "9c6d204ba2e90efa2f55c77dddda121709f84a0ddc8270e116e7518a6075a248",
+  "script_sha256": "602c22b1d828f5360eee06d27ebf07acf8036a11aa4eab481b896acf5b0be40d",
+  "fixtures": {
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_prefix_contract_20260917T123506.835838Z.json",
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_model_contract_20260917T123504.191027Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_disabled_engine_contract_20260917T123509.780735Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "capacity": 3,
+  "block_size": 4,
+  "num_kv_blocks": 24,
+  "token_budget": 10,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "validation": {
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              0,
+              1,
+              2,
+              3,
+              0,
+              1,
+              2,
+              1,
+              2,
+              0
+            ],
+            "counts": [
+              7,
+              2,
+              1
+            ],
+            "lengths_before": [
+              0,
+              0,
+              0
+            ],
+            "writes": {
+              "written_positions": 10,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                7,
+                2,
+                1
+              ]
+            },
+            "max_logits_error": 7.658266265586633e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  10
+                ]
+              ],
+              "position_embedding": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  0,
+                  1,
+                  0
+                ]
+              ],
+              "q_proj": [
+                [
+                  10,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  10,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  10,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 7.658266265586633e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              2,
+              0,
+              2
+            ],
+            "counts": [
+              1,
+              1,
+              1
+            ],
+            "lengths_before": [
+              7,
+              2,
+              1
+            ],
+            "writes": {
+              "written_positions": 3,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                8,
+                3,
+                2
+              ]
+            },
+            "max_logits_error": 6.135552133024191e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  3
+                ]
+              ],
+              "position_embedding": [
+                [
+                  7,
+                  2,
+                  1
+                ]
+              ],
+              "q_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  3,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 6.135552133024191e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "inputs": [
+              2,
+              2
+            ],
+            "counts": [
+              1,
+              1
+            ],
+            "lengths_before": [
+              8,
+              2
+            ],
+            "writes": {
+              "written_positions": 2,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                9,
+                3
+              ]
+            },
+            "max_logits_error": 3.90154491630712e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  2
+                ]
+              ],
+              "position_embedding": [
+                [
+                  8,
+                  2
+                ]
+              ],
+              "q_proj": [
+                [
+                  2,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  2,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  2,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "max_logits_error": 3.90154491630712e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              2,
+              2,
+              2
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "C"
+            ],
+            "inputs": [
+              0
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              3
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                4
+              ]
+            },
+            "max_logits_error": 6.536690877467777e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  1
+                ]
+              ],
+              "position_embedding": [
+                [
+                  3
+                ]
+              ],
+              "q_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  1,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "C"
+            ],
+            "max_logits_error": 6.536690877467777e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "C",
+            "output_ids": [
+              2,
+              2,
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          0,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          2
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          2,
+          2,
+          0,
+          2
+        ]
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3
+      ],
+      "B": [
+        1,
+        2
+      ],
+      "C": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 4,
+    "true_tokens": 16,
+    "projected_positions": 16,
+    "hit_tokens": 0,
+    "new_tokens": 9,
+    "initial_cached_blocks": 0,
+    "final_cached_blocks": 1
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 119.14884991711004,
+      "iqr_us": 8.107797621050867,
+      "iqr_over_median": 0.06804763643703933,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011971441970672458,
+        0.011892962967976928,
+        0.011472976999357343,
+        0.011869865993503481,
+        0.013091698987409472,
+        0.015823587018530816,
+        0.014955306018237025,
+        0.012718364014290273,
+        0.012738557008560747,
+        0.012657707033213228,
+        0.011737822962459177,
+        0.012867536977864802,
+        0.012843332951888442,
+        0.01176410197513178,
+        0.01188372605247423,
+        0.011556518031284213,
+        0.01224523497512564,
+        0.012111274001654238,
+        0.011563724954612553,
+        0.01247024699114263,
+        0.011822797998320311,
+        0.011843016953207552,
+        0.012048953038174659,
+        0.011597078992053866,
+        0.011396616988349706,
+        0.012836387031711638,
+        0.011517462960910052,
+        0.011778423038776964,
+        0.012289501028135419,
+        0.011509587988257408,
+        0.01227051200112328,
+        0.011720018985215575,
+        0.011441616050433367,
+        0.01139303797390312,
+        0.01238233398180455,
+        0.011609978973865509,
+        0.012585320975631475,
+        0.011931316985283047,
+        0.0115551280323416,
+        0.011898452998138964,
+        0.01219770300667733,
+        0.011997930996585637
+      ]
+    },
+    "workload_with_metadata_reset": {
+      "median_us": 587.6553000416607,
+      "iqr_us": 9.331619949080038,
+      "iqr_over_median": 0.015879410852618007,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.05876553000416607,
+        0.05911111400928348,
+        0.059333114011678845,
+        0.06523409503279254,
+        0.06962320901220664,
+        0.05861034704139456,
+        0.0568095039925538,
+        0.05763087602099404,
+        0.05839995201677084
+      ]
+    }
+  },
+  "prime_trace": [],
+  "scope": "metadata restore + submit/schedule/model/sample/hash/result/release for whole workload; excludes Engine initialization and warm-cache seed creation; K/V seed blocks stay unchanged, no pool copying in timer",
+  "notes": "Every iteration starts with identical cold/warm prefix metadata. CPU wall time, no GPU/TTFT/ITL claims. No eviction needed in timing workload."
+}

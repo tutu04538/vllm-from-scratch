@@ -1,0 +1,60 @@
+{
+  "mode": "step20",
+  "workload": "chunk13",
+  "source_sha256": "9c6d204ba2e90efa2f55c77dddda121709f84a0ddc8270e116e7518a6075a248",
+  "script_sha256": "24da0d8a7f18809e2f48ed5d69248458ede5c687293c0417b75883c54cf53b62",
+  "fixtures": {
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_model_contract_20260917T123504.191027Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_prefix_contract_20260917T123506.835838Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_disabled_engine_contract_20260917T123509.780735Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "input_hash": "17281a35e262c7fac27faf35d8a83f0b472de04743e7409af0d8ca1e0a7a7eb6",
+  "length": 13,
+  "query_count": 5,
+  "d_model": 8,
+  "block_size": 4,
+  "timing": {
+    "attention": {
+      "median_us": 21.86638698913157,
+      "iqr_us": 0.9103394986595958,
+      "iqr_over_median": 0.041631911989487305,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.021481489995494485,
+        0.023170891974586993,
+        0.02217792102601379,
+        0.022620422998443246,
+        0.021424080012366176,
+        0.022422119975090027,
+        0.022409013006836176,
+        0.022306794999167323,
+        0.022314734989777207,
+        0.02186638698913157,
+        0.022190593008417636,
+        0.021645460976287723,
+        0.021224931988399476,
+        0.02142180799273774,
+        0.02287210599752143,
+        0.021735358983278275,
+        0.021793051972053945,
+        0.022155452985316515,
+        0.02109927701530978,
+        0.0209547319682315,
+        0.021478988986928016,
+        0.021245186973828822,
+        0.022537010023370385
+      ]
+    }
+  },
+  "validation": {
+    "max_abs_error": 1.105459690453614e-07,
+    "pool_unchanged": true
+  },
+  "scope": "Attention only: query/key position construction, gather or direct block access, score/mask/normalization/value accumulation. Excludes model/pool construction, QKV projection, KV append, lm_head. CPU FP32 inference_mode for both. step20 mathematical fragment copied from _forward_append; step21 uses its block_attention."
+}

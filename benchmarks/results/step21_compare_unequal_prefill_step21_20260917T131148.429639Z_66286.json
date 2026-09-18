@@ -1,0 +1,608 @@
+{
+  "mode": "step21",
+  "workload": "unequal_prefill",
+  "source_sha256": "c427cca1672c3d7ff9b72b7ec6e6ede068c5a4c9a2c5f1f78273b346ed59eb9b",
+  "script_sha256": "afa6fe885dce29437c5347075322658a5af0c20c5d1288c06ecd64e5e7496aca",
+  "fixtures": {
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step21_prefix_contract_20260917T130815.695001Z.json",
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step21_model_contract_20260917T130811.455474Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step21_disabled_engine_contract_20260917T130818.614779Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "capacity": 3,
+  "block_size": 4,
+  "num_kv_blocks": 24,
+  "token_budget": 10,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "validation": {
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              0,
+              1,
+              2,
+              3,
+              0,
+              1,
+              2,
+              1,
+              2,
+              0
+            ],
+            "counts": [
+              7,
+              2,
+              1
+            ],
+            "lengths_before": [
+              0,
+              0,
+              0
+            ],
+            "writes": {
+              "written_positions": 10,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                7,
+                2,
+                1
+              ]
+            },
+            "max_logits_error": 7.658266265586633e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  10
+                ]
+              ],
+              "position_embedding": [
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  0,
+                  1,
+                  0
+                ]
+              ],
+              "q_proj": [
+                [
+                  10,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  10,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  10,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 7.658266265586633e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              2,
+              0,
+              2
+            ],
+            "counts": [
+              1,
+              1,
+              1
+            ],
+            "lengths_before": [
+              7,
+              2,
+              1
+            ],
+            "writes": {
+              "written_positions": 3,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                8,
+                3,
+                2
+              ]
+            },
+            "max_logits_error": 8.151438235515229e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  3
+                ]
+              ],
+              "position_embedding": [
+                [
+                  7,
+                  2,
+                  1
+                ]
+              ],
+              "q_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  3,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  3,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 8.151438235515229e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "inputs": [
+              2,
+              2
+            ],
+            "counts": [
+              1,
+              1
+            ],
+            "lengths_before": [
+              8,
+              2
+            ],
+            "writes": {
+              "written_positions": 2,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                9,
+                3
+              ]
+            },
+            "max_logits_error": 7.799083334703028e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  2
+                ]
+              ],
+              "position_embedding": [
+                [
+                  8,
+                  2
+                ]
+              ],
+              "q_proj": [
+                [
+                  2,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  2,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  2,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "max_logits_error": 7.799083334703028e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              2,
+              2,
+              2
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "C"
+            ],
+            "inputs": [
+              0
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              3
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                4
+              ]
+            },
+            "max_logits_error": 3.5564586386982455e-08,
+            "trace": {
+              "token_embedding": [
+                [
+                  1
+                ]
+              ],
+              "position_embedding": [
+                [
+                  3
+                ]
+              ],
+              "q_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "k_proj": [
+                [
+                  1,
+                  8
+                ]
+              ],
+              "v_proj": [
+                [
+                  1,
+                  8
+                ]
+              ]
+            }
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "C"
+            ],
+            "max_logits_error": 3.5564586386982455e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "C",
+            "output_ids": [
+              2,
+              2,
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          0,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          2
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          2,
+          2,
+          0,
+          2
+        ]
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3
+      ],
+      "B": [
+        1,
+        2
+      ],
+      "C": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 4,
+    "true_tokens": 16,
+    "projected_positions": 16,
+    "hit_tokens": 0,
+    "new_tokens": 9,
+    "initial_cached_blocks": 0,
+    "final_cached_blocks": 1
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 116.67873011901975,
+      "iqr_us": 6.067020003683857,
+      "iqr_over_median": 0.05199765199274203,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011516116035636514,
+        0.011200191976968199,
+        0.011860078026074916,
+        0.011667873011901975,
+        0.0108304190216586,
+        0.011803795001469553,
+        0.010947611997835338,
+        0.010719739948399365,
+        0.012174463015981019,
+        0.011738542991224676,
+        0.011614163988269866,
+        0.012552782020065933,
+        0.01193313195835799,
+        0.012082172965165228,
+        0.012182060978375375,
+        0.011547847010660917,
+        0.012810250977054238,
+        0.012122597021516412,
+        0.011401468014810234,
+        0.011718834983184934,
+        0.01152508205268532,
+        0.011200551991350949,
+        0.011848469963297248,
+        0.012393156008329242,
+        0.0112981729907915,
+        0.01272593199973926,
+        0.011609262030106038,
+        0.011549054004717618,
+        0.01162378303706646,
+        0.011738225002773106,
+        0.01211003796197474,
+        0.012043497001286596,
+        0.012006965989712626,
+        0.011470933968666941,
+        0.012103507004212588,
+        0.011638142983429134,
+        0.011637280986178666,
+        0.011366723978426307,
+        0.011106878984719515,
+        0.012255472014658153,
+        0.011694747023284435,
+        0.011325808998662978,
+        0.01144133199704811
+      ]
+    },
+    "workload_with_metadata_reset": {
+      "median_us": 779.6595979016274,
+      "iqr_us": 57.63694935012609,
+      "iqr_over_median": 0.07392578697838124,
+      "high_variance": false,
+      "number_per_run": 10,
+      "raw_times": [
+        0.007738344022072852,
+        0.007695920008700341,
+        0.008206783968489617,
+        0.007929741987027228,
+        0.008023236005101353,
+        0.00761216098908335,
+        0.008504366036504507,
+        0.008080192026682198,
+        0.0076964800246059895,
+        0.007358214003033936,
+        0.007716919993981719,
+        0.007829418987967074,
+        0.007367858022917062,
+        0.007364029006566852,
+        0.007504287001211196,
+        0.007664531993214041,
+        0.007777746010106057,
+        0.008018280961550772,
+        0.007645218982361257,
+        0.007426837983075529,
+        0.007796595979016274,
+        0.0073101199814118445,
+        0.007090246013831347,
+        0.007227146008517593,
+        0.007187047973275185,
+        0.007738437969237566,
+        0.007405825017485768,
+        0.007960986054968089,
+        0.00794595800107345,
+        0.008305276045575738,
+        0.008432801987510175,
+        0.00774185499176383,
+        0.00832983897998929,
+        0.007836676959414035,
+        0.00907707802252844,
+        0.007615134003572166,
+        0.007771581003908068,
+        0.00719928799662739,
+        0.009167317009996623,
+        0.007587584026623517,
+        0.00874838896561414,
+        0.009541639999952167,
+        0.008137157012242824,
+        0.007989525969605893,
+        0.010729813016951084,
+        0.008417181961704046,
+        0.007287555024959147,
+        0.008043472014833242,
+        0.007268585031852126,
+        0.008170498011168092,
+        0.007567332009784877,
+        0.007660409959498793,
+        0.008884301991201937,
+        0.008082981978077441,
+        0.008041405992116779,
+        0.007471266959328204,
+        0.008479782030917704,
+        0.007791263982653618,
+        0.007807297981344163,
+        0.007067816040944308,
+        0.008749826985877007,
+        0.008008478966075927,
+        0.00871006998931989
+      ]
+    }
+  },
+  "prime_trace": [],
+  "scope": "metadata restore + submit/schedule/model/sample/hash/result/release for whole workload; excludes Engine initialization and warm-cache seed creation; K/V seed blocks stay unchanged, no pool copying in timer",
+  "notes": "Every iteration starts with identical cold/warm prefix metadata. CPU wall time, no GPU/TTFT/ITL claims. No eviction needed in timing workload."
+}

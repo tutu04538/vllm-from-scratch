@@ -1,0 +1,61 @@
+{
+  "mode": "step20",
+  "workload": "decode32",
+  "source_sha256": "9c6d204ba2e90efa2f55c77dddda121709f84a0ddc8270e116e7518a6075a248",
+  "script_sha256": "24da0d8a7f18809e2f48ed5d69248458ede5c687293c0417b75883c54cf53b62",
+  "fixtures": {
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_model_contract_20260917T123504.191027Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_prefix_contract_20260917T123506.835838Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step20_disabled_engine_contract_20260917T123509.780735Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "input_hash": "d4303519e68f5587ed80943d3349ffb61654308688438e8460a81fb41b118612",
+  "length": 32,
+  "query_count": 1,
+  "d_model": 8,
+  "block_size": 4,
+  "timing": {
+    "attention": {
+      "median_us": 20.808226487133652,
+      "iqr_us": 0.6219204806257046,
+      "iqr_over_median": 0.029888202197830584,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.021033575991168618,
+        0.021502669958863407,
+        0.021742951008491218,
+        0.02097604499431327,
+        0.021071986004244536,
+        0.020624798024073243,
+        0.02067640796303749,
+        0.025512510968837887,
+        0.025395978009328246,
+        0.020744877983815968,
+        0.02068295201752335,
+        0.02071435796096921,
+        0.020527691987808794,
+        0.02154211699962616,
+        0.020283948979340494,
+        0.021144890983123332,
+        0.02056932100094855,
+        0.019971033034380525,
+        0.02012197399744764,
+        0.02037927898345515,
+        0.020871574990451336,
+        0.021288663963787258,
+        0.02032216201769188,
+        0.021100288024172187
+      ]
+    }
+  },
+  "validation": {
+    "max_abs_error": 6.642595079542346e-08,
+    "pool_unchanged": true
+  },
+  "scope": "Attention only: query/key position construction, gather or direct block access, score/mask/normalization/value accumulation. Excludes model/pool construction, QKV projection, KV append, lm_head. CPU FP32 inference_mode for both. step20 mathematical fragment copied from _forward_append; step21 uses its block_attention."
+}

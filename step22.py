@@ -12,11 +12,90 @@ from torch import ceil, nn
 import hashlib
 import json
 
+import triton
+import triton.language as tl
+
 
 def _stable_hash(previous_hash: bytes, block: tuple[int, ...]) -> bytes:
     # token ID 不限于 0~255，先编码成文本，再交给 sha256
     data = json.dumps((previous_hash.hex(), block)).encode("utf-8")
     return hashlib.sha256(data).digest()
+
+
+@triton.jit
+def _paged_attention_kernel(
+    q_ptr, out_ptr, k_pool_ptr, v_pool_ptr,
+    block_tables_ptr, seq_lens_ptr, token_to_req_ptr, query_pos_ptr,
+    stride_qn, stride_qd,
+    stride_kb, stride_ks, stride_kd,
+    stride_vb, stride_vs, stride_vd,
+    stride_btn, stride_btb,
+    stride_on, stride_od,
+    SM_SCALE: tl.constexpr, S: tl.constexpr, S_POW2: tl.constexpr,
+    D: tl.constexpr, D_POW2: tl.constexpr,
+):
+    # 一个 program 负责一个 query：按逻辑块读 KV，online softmax 合并，写回 out[行]
+
+    row = tl.program_id(0)
+    req = tl.load(token_to_req_ptr + row)
+    qpos = tl.load(query_pos_ptr + row)
+    seq_len = tl.load(seq_lens_ptr + req)
+
+    offs_d = tl.arange(0, D_POW2)
+    mask_d = offs_d < D
+    offs_s = tl.arange(0, S_POW2)   # 计算范围可能比物理块大小宽，多出来的要屏蔽
+
+    q = tl.load(q_ptr + row * stride_qn + offs_d * stride_qd, mask=mask_d, other=0.0)
+
+    m_i = float("-inf")
+    z_i = 0.0
+    acc = tl.zeros([D_POW2], dtype=tl.float32)
+
+    # 只遍历有效历史覆盖的逻辑块；预留但未写入的块不参与
+    for blk in range(0, tl.cdiv(seq_len, S)):
+        phys = tl.load(block_tables_ptr + req * stride_btn + blk * stride_btb)
+        # offs_s < S：补宽出来的位置不属于本块
+        # offs_s < seq_len - blk * S：尾块只读有效部分
+        # blk * S + offs_s <= qpos：query 不能看到未来的 key
+        mask_kv = (offs_s < S) & (offs_s < seq_len - blk * S) & ((blk * S + offs_s) <= qpos)
+
+        kv_offsets = phys * stride_kb + offs_s[:, None] * stride_ks + offs_d[None, :] * stride_kd
+        k = tl.load(k_pool_ptr + kv_offsets, mask=mask_kv[:, None] & mask_d[None, :], other=0.0)
+        score = tl.sum(k * q[None, :], axis=1) * SM_SCALE
+        score = tl.where(mask_kv, score, float("-inf"))
+
+        m_new = tl.maximum(m_i, tl.max(score, axis=0))
+        scale = tl.exp(m_i - m_new)
+        p = tl.where(mask_kv, tl.exp(score - m_new), 0.0)
+
+        v_offsets = phys * stride_vb + offs_s[:, None] * stride_vs + offs_d[None, :] * stride_vd
+        v = tl.load(v_pool_ptr + v_offsets, mask=mask_kv[:, None] & mask_d[None, :], other=0.0)
+
+        z_i = scale * z_i + tl.sum(p, axis=0)
+        acc = scale * acc + tl.sum(p[:, None] * v, axis=0)
+        m_i = m_new
+
+    tl.store(out_ptr + row * stride_on + offs_d * stride_od, acc / z_i, mask=mask_d)
+
+
+def paged_attention(q, k_pool, v_pool, block_tables, seq_lens, token_to_req, query_pos):
+    # 整批请求一次启动；q[N,D] -> out[N,D]，行顺序与 q 相同
+    num_rows, d_model = q.shape
+    _, block_size, _ = k_pool.shape
+    out = torch.empty_like(q)
+
+    _paged_attention_kernel[(num_rows,)](
+        q, out, k_pool, v_pool,
+        block_tables, seq_lens, token_to_req, query_pos,
+        q.stride(0), q.stride(1),
+        k_pool.stride(0), k_pool.stride(1), k_pool.stride(2),
+        v_pool.stride(0), v_pool.stride(1), v_pool.stride(2),
+        block_tables.stride(0), block_tables.stride(1),
+        out.stride(0), out.stride(1),
+        SM_SCALE=1.0 / math.sqrt(d_model), S=block_size, D=d_model,
+        S_POW2=triton.next_power_of_2(block_size), D_POW2=triton.next_power_of_2(d_model),
+    )
+    return out
 
 
 @dataclass
@@ -49,6 +128,9 @@ class KVCachePool:
         self.device = device
         self.k_cache = torch.zeros(num_kv_blocks, block_size, d_model, device=device)
         self.v_cache = torch.zeros(num_kv_blocks, block_size, d_model, device=device)
+        # 前两维看成一排 token 槽位，与底层存储共享，不是副本
+        self.k_flat = self.k_cache.view(-1, d_model)
+        self.v_flat = self.v_cache.view(-1, d_model)
         self.block_usage = [0] * self.num_kv_blocks  # 引用该块的活动请求数
         self.enable_prefix_caching = enable_prefix_caching
         self.block_hash = {}  # 前缀 hash -> 该块物理块编号
@@ -133,32 +215,41 @@ class KVCachePool:
             self.block_to_hash[block_idx] = hash_value
             self._mark_used(block_idx)
 
-    def append(self, cache: CacheConfig, new_k, new_v):
-        # Append new_k and new_v to the KV cache based on the block_table in the CacheConfig
-        
-        for i in range(new_k.shape[0]):
-            position = cache.length + i
-            block_idx = position // self.block_size
-            block_offset = position % self.block_size
-            self.k_cache[cache.block_table[block_idx]][block_offset] = new_k[i]
-            self.v_cache[cache.block_table[block_idx]][block_offset] = new_v[i]
-        
-        cache.length += new_k.shape[0]
-        
+    def _slots_of_range(self, block_table, start, count):
+        # 请求内逻辑位置 [start, start+count) 对应的物理槽位：块编号 * block_size + 块内偏移
+        positions = torch.arange(start, start + count, device=self.device)
+        blocks = torch.tensor(block_table, device=self.device, dtype=torch.long)
+        return blocks[positions // self.block_size] * self.block_size + positions % self.block_size
+
+    def build_slot_mapping(self, caches, counts):
+        # 本轮打包输入中第 i 个 token 的 K/V 应写到哪个 slot；用写入前的 length 算地址
+        return torch.cat([self._slots_of_range(cache.block_table, cache.length, count)
+                          for cache, count in zip(caches, counts)])
+
+    def append_batch(self, caches, counts, new_k, new_v):
+        # 整批写入本轮真实 token，K/V 各一次批量索引写入；写完再各自增加 length
+        slot_mapping = self.build_slot_mapping(caches, counts)
+
+        self.k_flat.index_copy_(0, slot_mapping, new_k)
+        self.v_flat.index_copy_(0, slot_mapping, new_v)
+
+        for cache, count in zip(caches, counts):
+            cache.length += count
+
+    def block_view(self, cache: CacheConfig, logical_block, count):
+        # 直接给出池里这个物理块的有效切片；仍是池存储的视图，不复制整条历史
+        block_idx = cache.block_table[logical_block]
+        return self.k_cache[block_idx][:count], self.v_cache[block_idx][:count]
+
     def gather(self, cache: CacheConfig):
-        # Gather the k and v tensors from the KV cache based on the block_table in the CacheConfig
-        
+        # 按请求逻辑位置 0..length-1 一次选出 K 和 V，按逻辑顺序返回
+        # 保留作参考/调试；attention 路径不再调用它
+
         if cache.length == 0:
-            return torch.empty((0, self.d_model), device=self.device), torch.empty((0, self.d_model), device=self.device)
-        
-        k_list = []
-        v_list = []
-        for i in range(cache.length):
-            block_idx = i // self.block_size
-            block_offset = i % self.block_size
-            k_list.append(self.k_cache[cache.block_table[block_idx]][block_offset])
-            v_list.append(self.v_cache[cache.block_table[block_idx]][block_offset])
-        return torch.stack(k_list, dim=0), torch.stack(v_list, dim=0)
+            return self.k_cache.new_empty((0, self.d_model)), self.v_cache.new_empty((0, self.d_model))
+
+        slots = self._slots_of_range(cache.block_table, 0, cache.length)
+        return self.k_flat.index_select(0, slots), self.v_flat.index_select(0, slots)
 
 
     def find_matched_prefix_blocks(self, prompt_ids):
@@ -208,11 +299,13 @@ class DummyModel:
 
 class TinyCausalLM(nn.Module):
     
-    def __init__(self, vocab_size=5, d_model=8, max_seq_len=32):
+    def __init__(self, vocab_size=5, d_model=8, max_seq_len=32, device=None, attention_backend="torch"):
         super().__init__()
-        
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
+        self.device = torch.device(device) if device is not None else \
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.attention_backend = attention_backend
+
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_seq_len = max_seq_len
@@ -256,48 +349,103 @@ class TinyCausalLM(nn.Module):
         return logits, past_kv
     
     def _forward_append(self, input_ids: torch.Tensor, num_scheduled_tokens: list[int], past_kv: list[CacheConfig], kv_cache_pool: KVCachePool):
-        # input_ids: (B, T)
-        # past_kv: list of CacheConfig for each sequence in the batch
-        batch_size, seq_len = input_ids.shape
-        
-        token_embeds = self.token_embedding(input_ids)
-        position_ids = torch.clamp(torch.tensor([[_cache.length + i for i in range(seq_len)] for _cache in past_kv], device=input_ids.device), max=self.max_seq_len - 1)
-        position_embeds = self.position_embedding(position_ids)
-        
-        inputs_embeds = token_embeds + position_embeds
-        
+        # input_ids: (N,) 一维，只有真实 token，N = sum(num_scheduled_tokens)
+        # past_kv: 与 num_scheduled_tokens 同序的 CacheConfig
+        # 返回 logits (N, vocab_size)，行顺序与 input_ids 相同
+
+        # 每个请求在扁平输入里的片段边界；打包数组的下标不是模型的位置
+        offsets = [0]
+        for num_tokens in num_scheduled_tokens:
+            offsets.append(offsets[-1] + num_tokens)
+
+        position_ids = torch.cat([
+            torch.arange(_cache.length, _cache.length + num_tokens, device=input_ids.device)
+            for _cache, num_tokens in zip(past_kv, num_scheduled_tokens)
+        ])
+        position_ids = torch.clamp(position_ids, max=self.max_seq_len - 1)
+
+        inputs_embeds = self.token_embedding(input_ids) + self.position_embedding(position_ids)
+
+        # 整个 [N] 输入一次投影，没有补齐长度的假 token
         q = self.q_proj(inputs_embeds)
         k = self.k_proj(inputs_embeds)
         v = self.v_proj(inputs_embeds)
-        
-        kv_max_seq_len = position_ids.max().item() + 1  # The new max sequence length after adding the new token
-        
-        new_k = torch.zeros((batch_size, kv_max_seq_len, self.d_model), device=self.device)
-        new_v = torch.zeros((batch_size, kv_max_seq_len, self.d_model), device=self.device)
-        
-        for batch_idx, (_cache, _k, _v) in enumerate(zip(past_kv, k, v)):
-            past_k, past_v = kv_cache_pool.gather(_cache)
-            new_k[batch_idx, :, :] = torch.cat([past_k, _k[:num_scheduled_tokens[batch_idx]], torch.zeros([kv_max_seq_len - past_k.shape[0] - num_scheduled_tokens[batch_idx], self.d_model], device=self.device)], dim=0)
-            new_v[batch_idx, :, :] = torch.cat([past_v, _v[:num_scheduled_tokens[batch_idx]], torch.zeros([kv_max_seq_len - past_v.shape[0] - num_scheduled_tokens[batch_idx], self.d_model], device=self.device)], dim=0)
 
-        # Update the KV cache pool with the new k and v values for each sequence in the batch
-        for batch_idx, (_cache, _k, _v) in enumerate(zip(past_kv, k, v)):
-            kv_cache_pool.append(_cache, _k[:num_scheduled_tokens[batch_idx]], _v[:num_scheduled_tokens[batch_idx]])
-            
-        score = torch.matmul(q, new_k.transpose(-1, -2)) / (self.d_model ** 0.5)
-        
-        mask = torch.ones((batch_size, seq_len, kv_max_seq_len), device=input_ids.device)
-        for i in range(batch_size):
-            mask[i] = torch.triu(mask[i], diagonal=(position_ids[i, 0] + 1))
-    
-        score = score.masked_fill(mask == 1, float('-inf'))
-        weights = torch.softmax(score, dim=-1)
-        out = torch.matmul(weights, new_v)
-        
-        logits = self.lm_head(out)
-            
-        return logits
-    
+        # 整批写入本轮真实 token，长度增量等于各自的 count
+        kv_cache_pool.append_batch(past_kv, num_scheduled_tokens, k, v)
+
+        if self.attention_backend == "triton":
+            # 整批请求交给一次 kernel 调用，输出 [N,D]，再统一过 lm_head
+            return self.lm_head(self._triton_attention(q, past_kv, num_scheduled_tokens, kv_cache_pool))
+
+        # torch 路径：每个请求只看自己的历史 KV 和自己的本轮 token，历史按块读
+        logits_list = []
+        for _cache, start, end in zip(past_kv, offsets[:-1], offsets[1:]):
+            query_positions = torch.arange(_cache.length - (end - start), _cache.length, device=input_ids.device)
+            out = self.block_attention(q[start:end], _cache, kv_cache_pool, query_positions)
+            logits_list.append(self.lm_head(out))
+
+        return torch.cat(logits_list, dim=0)
+
+    def _triton_attention(self, q, past_kv, num_scheduled_tokens, kv_cache_pool):
+        # 整批元数据：每个打包行属于哪个请求、该 query 的绝对位置；块表补成矩形
+        token_to_req = []
+        query_pos = []
+        for req_idx, (_cache, num_tokens) in enumerate(zip(past_kv, num_scheduled_tokens)):
+            token_to_req.extend([req_idx] * num_tokens)
+            query_pos.extend(range(_cache.length - num_tokens, _cache.length))
+
+        max_blocks = max(len(_cache.block_table) for _cache in past_kv)
+        block_tables = torch.zeros((len(past_kv), max_blocks), device=self.device, dtype=torch.int32)
+        for req_idx, _cache in enumerate(past_kv):
+            # 只填实际块表；kernel 只读到 ceil(length / block_size)，未使用的列不会被读
+            block_tables[req_idx, :len(_cache.block_table)] = torch.tensor(
+                _cache.block_table, device=self.device, dtype=torch.int32)
+
+        return paged_attention(
+            q,
+            kv_cache_pool.k_cache,
+            kv_cache_pool.v_cache,
+            block_tables,
+            torch.tensor([_cache.length for _cache in past_kv], device=self.device, dtype=torch.int32),
+            torch.tensor(token_to_req, device=self.device, dtype=torch.int32),
+            torch.tensor(query_pos, device=self.device, dtype=torch.int32),
+        )
+
+    def block_attention(self, q, cache: CacheConfig, kv_cache_pool: KVCachePool, query_positions):
+        # 直接按逻辑块读 KV，用 online softmax 把各块结果合并成全局 attention
+        # q: (Q, D)，Q 是本请求本轮的 query 数；query_positions: (Q,)
+
+        device = q.device
+        block_size = kv_cache_pool.block_size
+        num_blocks = -(-cache.length // block_size)  # ceil
+
+        # 每个 query 的累计状态：已见最大分数、未归一化权重和、加权 value 和
+        m = torch.full((q.shape[0], 1), float('-inf'), device=device)
+        z = torch.zeros((q.shape[0], 1), device=device)
+        u = torch.zeros((q.shape[0], self.d_model), device=device)
+
+        for logical_block in range(num_blocks):
+            block_start = logical_block * block_size
+            count = min(block_size, cache.length - block_start)  # 尾块只读有效部分
+            k_block, v_block = kv_cache_pool.block_view(cache, logical_block, count)  # (count, D)
+
+            key_positions = torch.arange(block_start, block_start + count, device=device)
+            score = torch.matmul(q, k_block.transpose(-1, -2)) / (self.d_model ** 0.5)  # (Q, count)
+            score = score.masked_fill(key_positions.unsqueeze(0) > query_positions.unsqueeze(-1), float('-inf'))
+
+            # 全被 mask 的行：block_max 是 -inf，m_new 保持 m，scale=1、p 全 0，该块贡献零
+            block_max = score.max(dim=-1, keepdim=True).values
+            m_new = torch.maximum(m, block_max)
+            scale = torch.exp(m - m_new)   # 旧结果换到新基准
+            p = torch.exp(score - m_new)   # (Q, count)，未归一化
+
+            z = scale * z + p.sum(dim=-1, keepdim=True)
+            u = scale * u + torch.matmul(p, v_block)
+            m = m_new
+
+        return u / z
+
 
 class Scheduler:
     
@@ -312,8 +460,7 @@ class Scheduler:
         self.block_size = block_size
         self.on_finished = on_finished
         self.num_scheduled_tokens = []
-        self.prefill_scheduled_items = []
-        self.decode_scheduled_items = []
+        self.scheduled_items = []  # 本轮计划：prefill 与 decode 合成一份
         self.kv_cache_pool = kv_cache_pool
 
     def add_request(self, request):
@@ -325,8 +472,7 @@ class Scheduler:
     
     def schedule(self):
         # Fill running with waiting sequences if there's space
-        self.prefill_scheduled_items = []
-        self.decode_scheduled_items = []
+        self.scheduled_items = []
         self.step_done = []
         
         for seq in self.waiting:
@@ -351,38 +497,28 @@ class Scheduler:
         assert decode_token_budget <= self.max_num_batched_tokens, "Decode token budget exceeds max_num_batched_tokens"
         prefill_token_budget = self.max_num_batched_tokens - decode_token_budget
 
-        for i, seq in enumerate(self.running):
+        for seq in self.running:
             if seq.prefill_len > 0:
                 if prefill_token_budget == 0:
                     continue
-                
-                if prefill_token_budget >= seq.prefill_len:
-                    num_scheduled_tokens = seq.prefill_len
-                    self.prefill_scheduled_items.append({
-                        "request": seq,
-                        "input_ids": seq.prompt_ids[seq.cache.length:],
-                        "num_scheduled_tokens": num_scheduled_tokens,
-                        "can_sample": True
-                    })
-                    prefill_token_budget -= num_scheduled_tokens
-                else:
-                    num_scheduled_tokens = prefill_token_budget
-                    self.prefill_scheduled_items.append({
-                        "request": seq,
-                        "input_ids": seq.prompt_ids[seq.cache.length:seq.cache.length + prefill_token_budget],
-                        "num_scheduled_tokens": num_scheduled_tokens,
-                        "can_sample": False
-                    })
-                    prefill_token_budget = 0
+
+                num_scheduled_tokens = min(seq.prefill_len, prefill_token_budget)
+                prefill_token_budget -= num_scheduled_tokens
+                self.scheduled_items.append({
+                    "request": seq,
+                    "input_ids": seq.prompt_ids[seq.cache.length:seq.cache.length + num_scheduled_tokens],
+                    "num_scheduled_tokens": num_scheduled_tokens,
+                    "can_sample": num_scheduled_tokens == seq.prefill_len
+                })
             else:
-                self.decode_scheduled_items.append({
+                self.scheduled_items.append({
                     "request": seq,
                     "input_ids": [seq.output_ids[-1]],
                     "num_scheduled_tokens": 1,
                     "can_sample": True
                 })
-        
-        return self.prefill_scheduled_items, self.decode_scheduled_items
+
+        return self.scheduled_items
     
     def post_step(self):
 
@@ -405,10 +541,22 @@ class Scheduler:
 
 class Engine:
     
-    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4,block_size=4, num_kv_blocks=8, vocab_size=5, d_model=8, max_seq_len=32, on_finished=None, enable_prefix_caching=True):
-        self.model = TinyCausalLM(vocab_size=vocab_size, d_model=d_model, max_seq_len=max_seq_len)
+    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4,block_size=4, num_kv_blocks=8, vocab_size=5, d_model=8, max_seq_len=32, on_finished=None, enable_prefix_caching=True, device=None, attention_backend="torch"):
+        if attention_backend not in ("torch", "triton"):
+            raise ValueError(f"未知的 attention_backend: {attention_backend!r}，可选 'torch' 或 'triton'")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            device = torch.device(device)
+        if attention_backend == "triton" and device.type != "cuda":
+            raise ValueError(f"attention_backend='triton' 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 'torch'")
+
+        self.model = TinyCausalLM(vocab_size=vocab_size, d_model=d_model, max_seq_len=max_seq_len,
+                                  device=device, attention_backend=attention_backend)
         self.model.eval()
         self.sampler = Sampler()
+        self.device = self.model.device
+        self.attention_backend = attention_backend
         self.enable_prefix_caching = enable_prefix_caching
         self.kv_cache_pool = KVCachePool(block_size, num_kv_blocks, d_model, self.model.device, self.enable_prefix_caching)
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool)
@@ -419,49 +567,47 @@ class Engine:
     def has_unfinished_requests(self):
         return self.scheduler.has_unfinished_requests()
     
+    def _sample(self, logits, scheduled_items):
+        # 就绪请求取自己片段 [start:end) 的最后一行 logits，行与请求从同一份计划里对应
+
+        last_rows = []
+        offset = 0
+        for i, item in enumerate(scheduled_items):
+            offset += item["num_scheduled_tokens"]
+            if item["can_sample"]:
+                last_rows.append((i, offset - 1))
+
+        if not last_rows:
+            return None
+
+        rows = torch.tensor([row for _, row in last_rows], device=logits.device, dtype=torch.long)
+        output_ids = self.sampler.sample(logits[rows, :])
+        for (i, _), output_id in zip(last_rows, output_ids):
+            scheduled_items[i]["request"].output_ids.append(output_id.item())
+        return None
+
     def step(self):
-        
 
         with torch.inference_mode():
-            
+
             self.scheduler.schedule()
-            
+
             if not self.scheduler.has_unfinished_requests():
                 return self.scheduler.step_done
-            
-            def _forward(scheduled_items):
-                num_scheduled_tokens = [item["num_scheduled_tokens"] for item in scheduled_items]
-                max_scheduled_tokens = max(num_scheduled_tokens) if num_scheduled_tokens else 0
-                input_ids = [item["input_ids"] + [0] * (max_scheduled_tokens - len(item["input_ids"])) for item in scheduled_items]
-                past_kv = [item["request"].cache for item in scheduled_items]
-                
-                logits = self.model._forward_append(torch.tensor(input_ids, device=self.model.device), num_scheduled_tokens, past_kv, self.kv_cache_pool)
-                
-                return logits
 
-            def _sample(logits, scheduled_items):
-                ready_sample_idx = torch.tensor([i for i, item in enumerate(scheduled_items) if item["can_sample"]], device=self.model.device, dtype=torch.long)
-                
-                if ready_sample_idx.shape[0] == 0:
-                    return None
-                
-                ready_sample_items = [scheduled_items[i] for i in ready_sample_idx.tolist()]
-                last_token_positions = torch.tensor([item["num_scheduled_tokens"] - 1 for item in ready_sample_items], device=self.model.device, dtype=torch.long)
-                logits = logits[ready_sample_idx, last_token_positions, :]
-                output_ids = self.sampler.sample(logits)
-                for item, output_id in zip(ready_sample_items, output_ids):
-                    item["request"].output_ids.append(output_id.item())
-                return None
-            
-            if self.scheduler.prefill_scheduled_items:
-                logits_prefill = _forward(self.scheduler.prefill_scheduled_items)
-                _sample(logits_prefill, self.scheduler.prefill_scheduled_items)
-            if self.scheduler.decode_scheduled_items:
-                logits_decode = _forward(self.scheduler.decode_scheduled_items)
-                _sample(logits_decode, self.scheduler.decode_scheduled_items)
-            
+            scheduled_items = self.scheduler.scheduled_items
+
+            if scheduled_items:
+                # 本轮所有真实 token 拼成一维，prefill 与 decode 共用一次模型调用
+                input_ids = torch.tensor([token for item in scheduled_items for token in item["input_ids"]], device=self.model.device)
+                num_scheduled_tokens = [item["num_scheduled_tokens"] for item in scheduled_items]
+                past_kv = [item["request"].cache for item in scheduled_items]
+
+                logits = self.model._forward_append(input_ids, num_scheduled_tokens, past_kv, self.kv_cache_pool)
+                self._sample(logits, scheduled_items)
+
             self.scheduler.post_step()
-            
+
         return self.scheduler.step_done
 
 

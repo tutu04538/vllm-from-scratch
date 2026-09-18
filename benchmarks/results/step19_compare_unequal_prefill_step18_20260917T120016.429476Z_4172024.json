@@ -1,0 +1,454 @@
+{
+  "mode": "step18",
+  "workload": "unequal_prefill",
+  "source_sha256": "3b64f063e7a1b8daf05d692d6159fb4360d1f1e486803d1bead7a10358a47a59",
+  "script_sha256": "9a23f0ceb2406204afa6a04335d2044f44f59a91b56eaf83e84d3052b7bc5662",
+  "fixtures": {
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_prefix_contract_20260917T115724.209147Z.json",
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_model_contract_20260917T085529.544667Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step18_disabled_engine_contract_20260917T085532.414103Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "seed": 0,
+  "parameter_hash": "0f521e5990a19f9a5fbf4865358eacc2ea23afff9b3bfe11b55fb6bfae408ff7",
+  "capacity": 3,
+  "block_size": 4,
+  "num_kv_blocks": 24,
+  "token_budget": 10,
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 3
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        2
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        0
+      ],
+      "max_new_tokens": 4
+    }
+  ],
+  "validation": {
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              [
+                0,
+                1,
+                2,
+                3,
+                0,
+                1,
+                2
+              ],
+              [
+                1,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "counts": [
+              7,
+              2,
+              1
+            ],
+            "lengths_before": [
+              0,
+              0,
+              0
+            ],
+            "writes": {
+              "written_positions": 10,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                7,
+                2,
+                1
+              ]
+            },
+            "max_logits_error": 8.915551644173014e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 7.658266265586633e-08
+          }
+        ],
+        "result": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "inputs": [
+              [
+                2
+              ],
+              [
+                0
+              ],
+              [
+                2
+              ]
+            ],
+            "counts": [
+              1,
+              1,
+              1
+            ],
+            "lengths_before": [
+              7,
+              2,
+              1
+            ],
+            "writes": {
+              "written_positions": 3,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  3
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                8,
+                3,
+                2
+              ]
+            },
+            "max_logits_error": 5.645173439816631e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "max_logits_error": 5.645173439816631e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "inputs": [
+              [
+                2
+              ],
+              [
+                2
+              ]
+            ],
+            "counts": [
+              1,
+              1
+            ],
+            "lengths_before": [
+              8,
+              2
+            ],
+            "writes": {
+              "written_positions": 2,
+              "tables": [
+                [
+                  0,
+                  1,
+                  2
+                ],
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                9,
+                3
+              ]
+            },
+            "max_logits_error": 7.91320960980002e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "A",
+              "C"
+            ],
+            "max_logits_error": 7.91320960980002e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              2,
+              2,
+              2
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "C"
+            ],
+            "inputs": [
+              [
+                0
+              ]
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              3
+            ],
+            "writes": {
+              "written_positions": 1,
+              "tables": [
+                [
+                  4
+                ]
+              ],
+              "lengths": [
+                4
+              ]
+            },
+            "max_logits_error": 6.536690877467777e-08
+          }
+        ],
+        "samples": [
+          {
+            "requests": [
+              "C"
+            ],
+            "max_logits_error": 6.536690877467777e-08
+          }
+        ],
+        "result": [
+          {
+            "request_id": "C",
+            "output_ids": [
+              2,
+              2,
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          0,
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          2,
+          2,
+          2
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          2,
+          2,
+          0,
+          2
+        ]
+      }
+    ],
+    "output_steps": {
+      "A": [
+        1,
+        2,
+        3
+      ],
+      "B": [
+        1,
+        2
+      ],
+      "C": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "total_steps": 4,
+    "total_model_calls": 4,
+    "true_tokens": 16,
+    "projected_positions": 27,
+    "hit_tokens": 0,
+    "new_tokens": 9,
+    "initial_cached_blocks": 0,
+    "final_cached_blocks": 1
+  },
+  "timing": {
+    "initialize": {
+      "median_us": 109.50887022772804,
+      "iqr_us": 6.710023008054116,
+      "iqr_over_median": 0.0612737853481673,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011058489966671914,
+        0.011231686046812683,
+        0.010602091031614691,
+        0.010776776995044202,
+        0.011520105006638914,
+        0.010347194038331509,
+        0.010338608990423381,
+        0.011323952989187092,
+        0.01057027600472793,
+        0.01109970302786678,
+        0.01196937297936529,
+        0.010758894961327314,
+        0.011188648000825197,
+        0.01173682400258258,
+        0.010953008022625,
+        0.01114361803047359,
+        0.01188669796101749,
+        0.011824623972643167,
+        0.010798970004543662,
+        0.011322146048769355,
+        0.010493626003153622,
+        0.01068334502633661,
+        0.011329722998198122,
+        0.010524921002797782,
+        0.010860082984436303,
+        0.010614218015689403,
+        0.010556996974628419,
+        0.01144265296170488,
+        0.011786259012296796,
+        0.011100128991529346,
+        0.011136005050502717,
+        0.011668946011923254,
+        0.010666918999049813,
+        0.010824789002072066,
+        0.010615731996949762,
+        0.010455281008034945,
+        0.010537847003433853,
+        0.010916179977357388,
+        0.010523436008952558,
+        0.010760521050542593,
+        0.011171753983944654,
+        0.011053735972382128,
+        0.010989230999257416,
+        0.012339998036623001,
+        0.010796836984809488,
+        0.010948766022920609
+      ]
+    },
+    "workload_with_metadata_reset": {
+      "median_us": 623.2288799947128,
+      "iqr_us": 34.77376012597235,
+      "iqr_over_median": 0.0557961308312082,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.06342702603433281,
+        0.06679123296635225,
+        0.06261253001866862,
+        0.061666232999414206,
+        0.0598339699790813,
+        0.06232288799947128,
+        0.06331134599167854,
+        0.0580906190443784,
+        0.05957311001839116
+      ]
+    }
+  },
+  "prime_trace": [],
+  "scope": "metadata restore + submit/schedule/model/sample/hash/result/release for whole workload; excludes Engine initialization and warm-cache seed creation; K/V seed blocks stay unchanged, no pool copying in timer",
+  "notes": "Every iteration starts with identical cold/warm prefix metadata. CPU wall time, no GPU/TTFT/ITL claims. No eviction needed in timing workload."
+}

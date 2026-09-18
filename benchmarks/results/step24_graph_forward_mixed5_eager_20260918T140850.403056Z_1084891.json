@@ -1,0 +1,149 @@
+{
+  "kind": "forward",
+  "mode": "eager",
+  "workload": "mixed5",
+  "source_sha256": "f0129cb66b2b4ff067d60ccc1fc22b6b1da64084bd66652f43f36c48f490d74c",
+  "script_sha256": "d83943ae74901d4f06ed2ccb14540755a6bb65adfb8a462e05aaace12eb94679",
+  "helper_sha256": "5dc1c046e5f4a66732fab41c6c1ca0b1f290f1b5202e893184ebe45fd1577a11",
+  "fixtures": {
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_model_contract_20260918T140224.618472Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_prefix_contract_20260918T140226.355897Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_disabled_engine_contract_20260918T140228.455519Z.json",
+    "slots": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_slots_contract_20260918T140230.160441Z.json",
+    "attention": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_attention_contract_20260918T140231.998979Z.json",
+    "gpu": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_gpu_contract_20260918T140235.700305Z.json",
+    "metadata": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_metadata_contract_20260918T140238.236848Z.json",
+    "graph": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step24_graph_contract_20260918T140458.034964Z.json"
+  },
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "triton": "3.7.1",
+  "dtype": "float32",
+  "tf32": false,
+  "threads": 1,
+  "weight_hash": "86669c27d5c557d64331b790f5dbc6035a9e3558d53861e137be9bfb0a727ca0",
+  "histories": [
+    [
+      0,
+      1,
+      2
+    ],
+    [],
+    []
+  ],
+  "chunks": [
+    [
+      0
+    ],
+    [
+      1,
+      0,
+      3
+    ],
+    [
+      2
+    ]
+  ],
+  "counts": [
+    1,
+    3,
+    1
+  ],
+  "timing": {
+    "prepared_gpu_forward": {
+      "median_us": 227.8264,
+      "iqr_us": 156.1348,
+      "iqr_over_median": 0.6853235621508307,
+      "high_variance": true,
+      "samples_us": [
+        250.98739999999998,
+        113.763,
+        107.228,
+        262.82800000000003,
+        122.55760000000001,
+        118.70779999999999,
+        553.6072,
+        585.5842,
+        589.1569999999999,
+        525.1247999999999,
+        467.27160000000003,
+        559.519,
+        564.8874,
+        224.16979999999998,
+        107.7018,
+        109.0242,
+        143.4648,
+        113.8414,
+        112.171,
+        112.13140000000001,
+        104.6084,
+        103.2518,
+        108.0334,
+        275.37559999999996,
+        250.12759999999997,
+        250.1326,
+        249.42919999999998,
+        242.19520000000003,
+        255.40659999999997,
+        227.8264,
+        138.1472
+      ],
+      "calls_per_sample": 5,
+      "scope": "Synchronized CPU wall clock, 31 groups of 5 calls averaged per call, 16 warmups. No measurement-only graph; graph=on uses the actual student graph path."
+    },
+    "forward_with_prepare_and_length_reset": {
+      "median_us": 855.8459999999999,
+      "iqr_us": 371.94089999999994,
+      "iqr_over_median": 0.43458858252536087,
+      "high_variance": true,
+      "samples_us": [
+        647.6018,
+        637.7514,
+        748.3172,
+        613.8266,
+        479.53959999999995,
+        493.1,
+        580.8747999999999,
+        562.4856,
+        607.0032,
+        518.2612,
+        463.34040000000005,
+        951.0562,
+        864.3674000000001,
+        942.3693999999999,
+        855.0468000000001,
+        952.2974,
+        956.3724,
+        905.3752000000001,
+        855.8459999999999,
+        975.3874,
+        929.1484,
+        839.8516,
+        464.842,
+        487.683,
+        1572.884,
+        1659.2022000000002,
+        1878.8698,
+        1585.511,
+        1595.5364,
+        1035.5276,
+        1835.266
+      ],
+      "calls_per_sample": 5,
+      "scope": "Synchronized CPU wall clock, 31 groups of 5 calls averaged per call, 16 warmups. No measurement-only graph; graph=on uses the actual student graph path."
+    }
+  },
+  "cold_capture_and_first_replay_us": null,
+  "cold_scope": "One student _capture_graph (3 side-stream warmups + capture) and first replay, synchronized; pure GPU computation/Triton already prewarmed. Excludes preparation and first JIT/library setup. One sample/process, not latency quantiles.",
+  "validation": {
+    "max_abs_error": 7.027233683842837e-08,
+    "graph_keys": [],
+    "fixed_addresses": true,
+    "pool_unchanged": true
+  },
+  "scopes": {
+    "prepared_gpu_forward": "CPU submit through GPU completion for embedding/QKV/KV write/attention/lm_head. No metadata/input preparation. Actual Engine graph or eager function, NOT a separate measurement capture.",
+    "forward_with_prepare_and_length_reset": "CPU cache length reset + actual _forward_append including all preparation/upload + GPU forward + final synchronization. Excludes scheduler/sample/Engine initialization/capture."
+  }
+}

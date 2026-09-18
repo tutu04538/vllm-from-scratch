@@ -1,0 +1,288 @@
+{
+  "mode": "step23",
+  "measurement_revision": "batched_v2",
+  "kind": "engine",
+  "backend": "triton",
+  "workload": "mixed",
+  "source_sha256": "d609f8665972be594e88354d6eac6ba2c95fbf85a7cc27dc9857e7daaaf261ce",
+  "script_sha256": "53071ed320e025fd4985acfa85434e5c6ae5c5b591413ce92e03953c26794a08",
+  "helper_sha256": "ada3ff8d085a56ca147e8e88c361c563b4fd1b5298fc06232c5a3567847b545d",
+  "fixtures": {
+    "gpu": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_gpu_contract_20260918T133747.194285Z.json",
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_model_contract_20260918T133735.130167Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_prefix_contract_20260918T133737.165749Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_disabled_engine_contract_20260918T133739.539365Z.json",
+    "slots": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_slots_contract_20260918T133741.510806Z.json",
+    "attention": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_attention_contract_20260918T133743.659473Z.json",
+    "metadata": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step23_metadata_contract_20260918T134027.080496Z.json"
+  },
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "triton": "3.7.1",
+  "dtype": "float32",
+  "threads": 1,
+  "tf32": false,
+  "weight_hash": "86669c27d5c557d64331b790f5dbc6035a9e3558d53861e137be9bfb0a727ca0",
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        1,
+        0,
+        3
+      ],
+      "max_new_tokens": 1
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        2
+      ],
+      "max_new_tokens": 1
+    }
+  ],
+  "validation": {
+    "results": [
+      {
+        "request_id": "B",
+        "output_ids": [
+          3
+        ]
+      },
+      {
+        "request_id": "C",
+        "output_ids": [
+          0
+        ]
+      },
+      {
+        "request_id": "A",
+        "output_ids": [
+          0,
+          0,
+          2,
+          2
+        ]
+      }
+    ],
+    "steps": 4,
+    "true_tokens": 10,
+    "calls": 4,
+    "hit_tokens": 0,
+    "trace": [
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "counts": [
+              3
+            ],
+            "lengths_before": [
+              0
+            ],
+            "inputs": [
+              0,
+              1,
+              2
+            ],
+            "max_logits_error": 7.267393675736145e-08,
+            "grids": [
+              [
+                3
+              ]
+            ],
+            "lm_head_shapes": [
+              [
+                3,
+                8
+              ]
+            ]
+          }
+        ],
+        "results": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A",
+              "B",
+              "C"
+            ],
+            "counts": [
+              1,
+              3,
+              1
+            ],
+            "lengths_before": [
+              3,
+              0,
+              0
+            ],
+            "inputs": [
+              0,
+              1,
+              0,
+              3,
+              2
+            ],
+            "max_logits_error": 8.200129297808445e-08,
+            "grids": [
+              [
+                5
+              ]
+            ],
+            "lm_head_shapes": [
+              [
+                5,
+                8
+              ]
+            ]
+          }
+        ],
+        "results": [
+          {
+            "request_id": "B",
+            "output_ids": [
+              3
+            ]
+          },
+          {
+            "request_id": "C",
+            "output_ids": [
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              4
+            ],
+            "inputs": [
+              0
+            ],
+            "max_logits_error": 4.580037110679669e-08,
+            "grids": [
+              [
+                1
+              ]
+            ],
+            "lm_head_shapes": [
+              [
+                1,
+                8
+              ]
+            ]
+          }
+        ],
+        "results": []
+      },
+      {
+        "calls": [
+          {
+            "requests": [
+              "A"
+            ],
+            "counts": [
+              1
+            ],
+            "lengths_before": [
+              5
+            ],
+            "inputs": [
+              2
+            ],
+            "max_logits_error": 2.153978628793851e-08,
+            "grids": [
+              [
+                1
+              ]
+            ],
+            "lm_head_shapes": [
+              [
+                1,
+                8
+              ]
+            ]
+          }
+        ],
+        "results": [
+          {
+            "request_id": "A",
+            "output_ids": [
+              0,
+              0,
+              2,
+              2
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "timing": {
+    "engine_with_metadata_reset": {
+      "median_us": 3435.2466,
+      "iqr_us": 367.27819999999974,
+      "iqr_over_median": 0.10691465352152586,
+      "high_variance": true,
+      "samples_us": [
+        4429.6186,
+        2559.1786,
+        2854.9991999999997,
+        3393.4588000000003,
+        3467.0411999999997,
+        3371.7760000000003,
+        3459.0917999999997,
+        3435.2466,
+        3539.113,
+        2892.1378,
+        3354.4824,
+        3423.7796000000003,
+        5899.7718,
+        4265.069,
+        3386.4586000000004,
+        2414.9214,
+        3168.0414,
+        3452.3588000000004,
+        3257.5032,
+        4520.1026,
+        6461.5644,
+        3506.5413999999996,
+        3619.5260000000003,
+        3830.6728000000003,
+        3511.7892,
+        3641.72,
+        3244.5204000000003,
+        3217.371,
+        2804.8548,
+        3576.9218,
+        3084.9124
+      ],
+      "scope": "Synchronized CPU wall clock, 31 groups of 5 calls, per-call mean within each group; 16 warmups. Includes preparation inside fn, final synchronize amortized over 5 calls; not an individual-request latency distribution.",
+      "calls_per_sample": 5
+    }
+  },
+  "scope": "Reused Engine, prefix metadata reset + submission/scheduling/forward/sampling/hash/results/release + final CUDA synchronize. Engine/model initialization and warm seed excluded; no CUDA Graph."
+}

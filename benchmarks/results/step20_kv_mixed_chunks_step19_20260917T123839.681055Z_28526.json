@@ -1,0 +1,168 @@
+{
+  "mode": "step19",
+  "workload": "mixed_chunks",
+  "source_sha256": "2b09d7350eb03f8ca9e190aafda45115b6a563f997944cbb3d2abb76feb4b4e5",
+  "script_sha256": "ff94a4516a77a56d28e85713ad164b20a04efa4786969ddb9578eba3d3df31f0",
+  "fixtures": {
+    "model": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_model_contract_20260917T115608.228852Z.json",
+    "prefix": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_prefix_contract_20260917T115612.449434Z.json",
+    "disabled_engine": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step19_disabled_engine_contract_20260917T115721.850055Z.json"
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": 1,
+  "torch": "2.13.0+cu130",
+  "block_size": 4,
+  "d_model": 8,
+  "tables": [
+    [
+      7,
+      6,
+      5,
+      4,
+      3,
+      2,
+      1,
+      0
+    ],
+    [
+      15,
+      14,
+      13,
+      12,
+      11,
+      10,
+      9,
+      8
+    ],
+    [
+      23,
+      22,
+      21,
+      20,
+      19,
+      18,
+      17,
+      16
+    ]
+  ],
+  "lengths_before": [
+    17,
+    3,
+    0
+  ],
+  "counts": [
+    1,
+    5,
+    7
+  ],
+  "slots": [
+    13,
+    63,
+    56,
+    57,
+    58,
+    59,
+    92,
+    93,
+    94,
+    95,
+    88,
+    89,
+    90
+  ],
+  "validation": "Exact whole-pool and gathered K/V before and after timing; stable pointers",
+  "timing": {
+    "append_with_length_reset": {
+      "median_us": 46.36293102521449,
+      "iqr_us": 0.5462884728331229,
+      "iqr_over_median": 0.011782871806271775,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.046144858992192894,
+        0.046236435999162495,
+        0.04588562296703458,
+        0.04645873903064057,
+        0.04686183901503682,
+        0.045885205967351794,
+        0.046087167982477695,
+        0.04774521599756554,
+        0.04666592396097258,
+        0.046658679959364235,
+        0.04636293102521449
+      ]
+    },
+    "gather": {
+      "median_us": 66.01772748399526,
+      "iqr_us": 0.9111455146921794,
+      "iqr_over_median": 0.013801528004929725,
+      "high_variance": false,
+      "number_per_run": 1000,
+      "raw_times": [
+        0.0657161669805646,
+        0.0670161199523136,
+        0.06573236599797383,
+        0.07281404396053404,
+        0.0660427319817245,
+        0.0665139090269804,
+        0.06520383199676871,
+        0.06599272298626602
+      ]
+    },
+    "append_and_gather_with_length_reset": {
+      "median_us": 115.70204020245001,
+      "iqr_us": 4.072517476743094,
+      "iqr_over_median": 0.03519832035474218,
+      "high_variance": false,
+      "number_per_run": 100,
+      "raw_times": [
+        0.011227402021177113,
+        0.011362820980139077,
+        0.011660143034532666,
+        0.011454431980382651,
+        0.0115690270322375,
+        0.011615348979830742,
+        0.011172170983627439,
+        0.011352066998369992,
+        0.011277246987447143,
+        0.01113232399802655,
+        0.012203555030282587,
+        0.011478144966531545,
+        0.011146046977955848,
+        0.011925435974262655,
+        0.011970647959969938,
+        0.011294723022729158,
+        0.01175416901241988,
+        0.011397334979847074,
+        0.011084299010690302,
+        0.011571381008252501,
+        0.011587308021262288,
+        0.011366922000888735,
+        0.01165564195252955,
+        0.011708052014000714,
+        0.011488333984743804,
+        0.011768873955588788,
+        0.01130487403133884,
+        0.011460216017439961,
+        0.011581539991311729,
+        0.011346173007041216,
+        0.011669535015244037,
+        0.011775895021855831,
+        0.011224515968933702,
+        0.01169069396564737,
+        0.013023533974774182,
+        0.011045873980037868,
+        0.011932991037610918,
+        0.011930077045690268,
+        0.011677914997562766,
+        0.012121217034291476,
+        0.011453958984930068,
+        0.012245193007402122,
+        0.011915371986106038,
+        0.011443185969255865
+      ]
+    }
+  },
+  "scope": "Pool initialization and tensor data construction excluded. Append includes length reset, address generation, writes and length increments; gather includes address generation and copies. Same input values overwrite the same new slots each iteration; history remains fixed. Both use inference_mode."
+}
