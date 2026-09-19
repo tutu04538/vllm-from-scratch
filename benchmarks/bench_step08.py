@@ -17,7 +17,7 @@ from torch.utils.benchmark import Timer
 
 PROJECT = Path(__file__).resolve().parents[1]
 REFERENCE = Path("/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/tools")
-sys.path.insert(0, str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 sys.path.insert(0, str(REFERENCE))
 import step08
 from verify_step08_contract import reference
@@ -51,7 +51,7 @@ def main():
     args = parser.parse_args()
     torch.set_num_threads(1)
     torch.manual_seed(0)
-    source = PROJECT / "step08.py"
+    source = PROJECT / "step08" / f"step08.py"
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     model = step08.TinyCausalLM(vocab_size=5, d_model=8, max_seq_len=32).eval()
     input_ids = torch.arange(args.batch_size * args.seq_len, dtype=torch.long).reshape(

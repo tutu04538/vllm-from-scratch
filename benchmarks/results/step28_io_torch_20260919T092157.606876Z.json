@@ -1,0 +1,173 @@
+{
+  "source_sha256": "0f7d2292f19adfbf615214b2fbd6a40d8da855e92191e9f69f2d11e1b774a15b",
+  "script_sha256": "e0aa5d20578ec87c33270ec2ba360630ac9b0f958f06740cfe64dfbcbc233882",
+  "core_report": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step28_contract_20260919T091423.529823Z.json",
+  "status": "valid_directory_diagnostic_not_full_stage_acceptance",
+  "mode": "torch",
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "triton": "3.7.1",
+  "dtype": "float32",
+  "tf32": false,
+  "threads": 1,
+  "model": {
+    "vocab_size": 5,
+    "d_model": 32,
+    "max_seq_len": 32,
+    "num_q_heads": 4,
+    "num_kv_heads": 2,
+    "num_layers": 2,
+    "intermediate_size": 64,
+    "rms_norm_eps": 1e-06,
+    "rope_theta": 10000.0
+  },
+  "options": {
+    "device": "cuda",
+    "attention_backend": "torch",
+    "use_cuda_graph": false,
+    "max_num_seqs": 3,
+    "max_num_batched_tokens": 5,
+    "num_kv_blocks": 24,
+    "block_size": 4,
+    "enable_prefix_caching": false
+  },
+  "requests": [
+    {
+      "request_id": "A",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "max_new_tokens": 4
+    },
+    {
+      "request_id": "B",
+      "prompt_ids": [
+        0,
+        1,
+        2,
+        3,
+        2
+      ],
+      "max_new_tokens": 2
+    },
+    {
+      "request_id": "C",
+      "prompt_ids": [
+        1
+      ],
+      "max_new_tokens": 3
+    }
+  ],
+  "results": [
+    {
+      "request_id": "B",
+      "output_ids": [
+        1,
+        2
+      ]
+    },
+    {
+      "request_id": "A",
+      "output_ids": [
+        1,
+        2,
+        1,
+        2
+      ]
+    },
+    {
+      "request_id": "C",
+      "output_ids": [
+        3,
+        0,
+        4
+      ]
+    }
+  ],
+  "steps": 5,
+  "graph_keys": [],
+  "bytes_on_disk": 77711,
+  "first_load_us": 16612.796,
+  "first_workload_us": 688497.674,
+  "save": {
+    "median_us": 2060.549,
+    "iqr_over_median": 0.2330213938130081,
+    "high_variance": true,
+    "samples_us": [
+      2455.075,
+      2209.006,
+      1799.111,
+      1933.588,
+      2063.319,
+      2785.757,
+      1847.964,
+      3393.559,
+      2060.549,
+      1697.949,
+      1855.813
+    ]
+  },
+  "load": {
+    "median_us": 3349.375,
+    "iqr_over_median": 0.41493398022019057,
+    "high_variance": true,
+    "samples_us": [
+      7090.381,
+      4339.051,
+      2924.953,
+      2929.695,
+      3349.375,
+      4152.126,
+      2712.984,
+      4295.136,
+      7004.965,
+      2965.228,
+      2658.616
+    ]
+  },
+  "steady": {
+    "median_us": 34721.7458,
+    "iqr_over_median": 0.19808063625648686,
+    "high_variance": true,
+    "samples_us": [
+      31991.646999999997,
+      31651.289399999998,
+      31588.857,
+      39523.2684,
+      31390.398800000003,
+      32204.915399999998,
+      31927.6458,
+      32449.4208,
+      43950.212199999994,
+      35547.3304,
+      34721.7458,
+      38745.6602,
+      32061.0838,
+      31866.2198,
+      31643.743199999997,
+      32374.800799999997,
+      32333.918800000003,
+      31947.845,
+      34913.621399999996,
+      42267.951400000005,
+      33593.4764,
+      32341.3636,
+      35627.5392,
+      38266.115600000005,
+      42494.6308,
+      44273.939399999996,
+      40377.7836,
+      36500.673599999995,
+      36545.451799999995,
+      41556.721399999995,
+      39062.4816
+    ]
+  },
+  "scope": "CUDA context initialized before timings. Fresh temporary local directory and OS page cache left warm; no fsync, no forced cache eviction. First workload includes first forward/library setup and per-N graph capture; existing on-disk Triton cache retained. Save includes GPU to CPU copy plus JSON/safetensors writes. Load includes config read/model init/weights/Engine+KV buffers, excludes graph capture. Save/load: 11 individual samples, deletion+gc excluded. Steady: prefix off, reused loaded Engine, 16 warmups then 31 groups of 5 complete workloads; submission, scheduling, forward, sampling, release and synchronization included. Same weights/model/requests as stage27; request deepcopy inside generation is benchmark overhead. Invalid config validation is NOT certified by these timings."
+}

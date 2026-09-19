@@ -17,7 +17,7 @@ import torch
 from torch.utils.benchmark import Timer
 
 PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 import step09
 import step10
 
@@ -51,7 +51,7 @@ def main():
     prefixes = [all_ids[:, :p+i+1].clone() for i in range(d)]
     report = {
         "started_at_utc": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(),
-        "sources": {name: {"path": str(PROJECT/f"{name}.py"), "sha256": digest} for name,digest in sources.items()},
+        "sources": {name: {"path": str(PROJECT/f"{name}/{name}.py"), "sha256": digest} for name,digest in sources.items()},
         "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "python": sys.version, "python_executable": sys.executable, "torch": torch.__version__,
         "platform": platform.platform(), "device": "cpu", "dtype": "float32", "num_threads": 1,
@@ -138,7 +138,7 @@ def main():
         assert param_hash(cached) == param_hash(full) == weight_hash
         report.update(status="measured", measurements=measurements)
     for name,digest in sources.items():
-        assert hashlib.sha256((PROJECT/f"{name}.py").read_bytes()).hexdigest()==digest, "测量期间源码变化"
+        assert hashlib.sha256((PROJECT/f"{name}/{name}.py").read_bytes()).hexdigest()==digest, "测量期间源码变化"
     directory = PROJECT / "benchmarks/results"
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")

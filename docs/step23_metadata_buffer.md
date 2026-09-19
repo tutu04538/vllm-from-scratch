@@ -1,8 +1,8 @@
 # step23：复用 attention 元数据缓冲区，一次上传
 
-- 对应代码：`step23.py`（新增，未提交）
+- 对应代码：`step23/step23.py`（新增，未提交）
 - 源码 SHA256：`d609f8665972be594e88354d6eac6ba2c95fbf85a7cc27dc9857e7daaaf261ce`
-- 基线：`step22.py`（SHA256 `4f196fee…`）原样保留、未修改
+- 基线：`step22/step22.py`（SHA256 `4f196fee…`）原样保留、未修改
 
 ## 0. 需求大概
 

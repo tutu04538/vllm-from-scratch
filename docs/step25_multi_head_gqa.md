@@ -1,8 +1,8 @@
 # step25：多头 attention 与 GQA
 
-- 对应代码：`step25.py`（新增，未提交）
+- 对应代码：`step25/step25.py`（新增，未提交）
 - 源码 SHA256：`937ae3866d083b353dcd324c5f8d18ffa98a97b9f49dc56de64376555659d927`
-- 基线：`step24.py`（SHA256 `f0129cb6…`）原样保留、未修改
+- 基线：`step24/step24.py`（SHA256 `f0129cb6…`）原样保留、未修改
 
 ## 0. 需求大概
 

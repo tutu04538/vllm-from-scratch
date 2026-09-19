@@ -1,8 +1,8 @@
 # step20：slot mapping 与批量 KV 读写
 
-- 对应代码：`step20.py`（新增，未提交）
+- 对应代码：`step20/step20.py`（新增，未提交）
 - 源码 SHA256：`9c6d204ba2e90efa2f55c77dddda121709f84a0ddc8270e116e7518a6075a248`
-- 基线：`step19.py`（SHA256 `2b09d735…`）原样保留、未修改
+- 基线：`step19/step19.py`（SHA256 `2b09d735…`）原样保留、未修改
 
 ## 0. 需求大概
 

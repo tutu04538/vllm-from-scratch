@@ -1,0 +1,120 @@
+"""第 31 关入口：从一句话走到一句话。
+
+    tokenizer 编码 → 自己的 Engine → tokenizer 解码
+
+实现按模块拆在同一个包里，本文件只做两件事：转发公开 API、跑文本演示。
+
+    python step31/step31.py                                  # 默认模型 + 默认问题
+    python step31/step31.py --max-new-tokens 64 "问题一" "问题二"
+    python step31/step31.py --model-dir /path/to/other --backend torch
+"""
+
+import argparse
+import pathlib
+import sys
+import time
+
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+# 这个文件既可能被 `python step31/step31.py` 直接跑，也可能在 sys.path 指向
+# step31/ 目录时被 `import step31` 命中。后一种情况下它挡住了同名包，让位给包。
+_self = sys.modules.get("step31")
+if _self is not None and not hasattr(_self, "__path__"):
+    del sys.modules["step31"]
+    import step31 as _package
+    globals().update({k: v for k, v in vars(_package).items() if not k.startswith("__")})
+
+DEFAULT_MODEL_DIR = "/home/user/proj/KuiperLLama/Qwen/Qwen3-0.6B"
+DEFAULT_QUESTIONS = ["用一句话解释什么是 KV cache。", "用一个类比说明分页和连续内存的区别。"]
+
+
+def encode(tokenizer, question):
+    # 走官方 chat template：角色标签和特殊 token 由模板加，不手工拼
+    text = tokenizer.apply_chat_template(
+        [{"role": "user", "content": question}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    return tokenizer(text, add_special_tokens=False)["input_ids"]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="用自己的 Engine 生成真实文本")
+    parser.add_argument("questions", nargs="*", default=None, help="要问的问题，可以给多条")
+    parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR, help="模型目录（含 tokenizer）")
+    parser.add_argument("--max-new-tokens", type=int, default=32)
+    parser.add_argument("--max-num-seqs", type=int, default=3)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=64)
+    parser.add_argument("--block-size", type=int, default=16)
+    parser.add_argument("--num-kv-blocks", type=int, default=128)
+    parser.add_argument("--backend", choices=("torch", "triton"), default="triton")
+    parser.add_argument("--graph", action="store_true", help="打开 CUDA Graph（需要 CUDA + Triton）")
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--no-prefix-caching", action="store_true")
+    args = parser.parse_args(argv)
+    questions = args.questions or DEFAULT_QUESTIONS
+
+    from transformers import AutoTokenizer
+
+    from step31 import Engine
+
+    model_dir = pathlib.Path(args.model_dir)
+    if not model_dir.is_dir():
+        parser.error(f"模型目录不存在: {model_dir}")
+
+    started = time.perf_counter()
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
+    prompts = [encode(tokenizer, question) for question in questions]
+
+    engine = Engine.from_model_dir(
+        model_dir,
+        device=args.device,
+        attention_backend=args.backend,
+        use_cuda_graph=args.graph,
+        max_num_seqs=args.max_num_seqs,
+        max_num_batched_tokens=args.max_num_batched_tokens,
+        block_size=args.block_size,
+        num_kv_blocks=args.num_kv_blocks,
+        enable_prefix_caching=not args.no_prefix_caching,
+    )
+    load_seconds = time.perf_counter() - started
+
+    model = engine.model
+    print(f"模型: {model_dir}")
+    print(f"  {model.num_layers} 层, d_model={model.d_model}, Q/KV heads={model.num_q_heads}/{model.num_kv_heads}, "
+          f"head_dim={model.head_dim}, use_qk_norm={model.use_qk_norm}")
+    print(f"  词表 {model.vocab_size}, 停止 token {sorted(model.eos_token_ids)}, "
+          f"加载 {load_seconds:.2f}s（含 tokenizer）")
+
+    results = {}
+    engine.scheduler.on_finished = lambda r: results.__setitem__(r["request_id"], list(r["output_ids"]))
+    for i, prompt_ids in enumerate(prompts):
+        engine.add_request({"request_id": f"q{i}", "prompt_ids": prompt_ids,
+                            "max_new_tokens": args.max_new_tokens})
+
+    start = time.perf_counter()
+    steps = 0
+    while engine.has_unfinished_requests():
+        engine.step()
+        steps += 1
+    seconds = time.perf_counter() - start
+
+    for i, question in enumerate(questions):
+        output_ids = results[f"q{i}"]
+        # 只 decode 新生成的部分，不把 prompt 也解出来
+        answer = tokenizer.decode(output_ids, skip_special_tokens=True)
+        print()
+        print(f"问: {question}")
+        print(f"答: {answer}")
+        print(f"    {len(prompts[i])} prompt + {len(output_ids)} 生成 token，{steps} 步，{seconds:.2f}s")
+    print()
+    print(f"合计 {sum(len(v) for v in results.values())} 个 token / {seconds:.2f}s "
+          f"= {sum(len(v) for v in results.values()) / seconds:.1f} tok/s"
+          f"（含每步调度与采样，未单独计时）")
+
+
+if __name__ == "__main__":
+    main()

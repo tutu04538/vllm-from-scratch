@@ -17,7 +17,7 @@ import torch
 from torch.utils.benchmark import Timer
 
 PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 RECORDS = Path("/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录")
 FIXTURES = {"step13": RECORDS / "step13_contract_20260915T090330.639923Z.json",
             "step14": RECORDS / "step14_engine_contract_20260915T111003.407774Z.json"}

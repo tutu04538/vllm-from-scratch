@@ -7,7 +7,7 @@ from datetime import datetime,timezone
 import torch,triton
 ROOT=Path(__file__).resolve().parents[1]
 RECORDS=Path('/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录')
-sys.path[:0]=[str(ROOT),str(RECORDS/'tools')]
+sys.path[:0]=[str(p) for p in ROOT.glob('step[0-9][0-9]') if p.is_dir()]+[str(ROOT),str(RECORDS/'tools')]
 from step25_test_helpers import m,engine_for,state_for,reference
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()

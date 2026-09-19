@@ -11,7 +11,7 @@ from datetime import datetime,timezone
 import torch
 from torch.utils.benchmark import Timer
 PROJECT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 import step14
 import step15
 FIXTURE=Path('/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step15_model_contract_20260915T132208.587713Z.json')
@@ -31,7 +31,7 @@ def main():
     parser.add_argument('--batch-size',type=int,choices=[1,2,3],default=2)
     parser.add_argument('--order',choices=['old-first','new-first'],default='old-first')
     args=parser.parse_args();torch.set_num_threads(1);torch.manual_seed(0)
-    sources={n:{'path':str(PROJECT/f'{n}.py'),'sha256':sha(PROJECT/f'{n}.py')} for n in ('step14','step15')}
+    sources={n:{'path':str(PROJECT/f"{n}/{n}.py"),'sha256':sha(PROJECT/f"{n}/{n}.py")} for n in ('step14','step15')}
     fixture=json.loads(FIXTURE.read_text());assert fixture['status']=='passed' and fixture['source_sha256']==sources['step15']['sha256']
     old=step14.TinyCausalLM().eval();new=step15.TinyCausalLM().eval();new.load_state_dict(old.state_dict(),strict=True)
     wh=weight_hash(old);assert weight_hash(new)==wh

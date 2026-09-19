@@ -1,8 +1,8 @@
 # step22：整批请求，一次 Triton kernel 调用
 
-- 对应代码：`step22.py`（新增，未提交）
+- 对应代码：`step22/step22.py`（新增，未提交）
 - 源码 SHA256：`4f196fee5ad21e05cdec381c5fcb3a27de32fd8c0cb1c0fc41f08caf805768ac`
-- 基线：`step21.py`（SHA256 `c427cca1…`）原样保留、未修改
+- 基线：`step21/step21.py`（SHA256 `c427cca1…`）原样保留、未修改
 
 ## 0. 需求大概
 

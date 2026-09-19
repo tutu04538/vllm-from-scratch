@@ -1,8 +1,8 @@
 # step19：无 padding 打包与 prefill/decode 混合 forward
 
-- 对应代码：`step19.py`（新增，未提交）
+- 对应代码：`step19/step19.py`（新增，未提交）
 - 源码 SHA256：`2b09d7350eb03f8ca9e190aafda45115b6a563f997944cbb3d2abb76feb4b4e5`
-- 基线：`step18.py` 原样保留、未修改
+- 基线：`step18/step18.py` 原样保留、未修改
 
 ## 0. 需求大概
 

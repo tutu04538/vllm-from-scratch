@@ -1,6 +1,8 @@
 # docs —— 改动记录
 
-每次改动一个文件：`docs/stepNN_<主题>.md`，与 `stepNN.py` 同名对应。
+每次改动一个文件：`docs/stepNN_<主题>.md`，与代码同名对应。
+
+代码放在各自的子目录下：`stepNN/stepNN.py`（第 17 关的重构版是 `step17/step17_refactor.py`）。
 
 每篇记录固定写这几节：
 
@@ -22,3 +24,10 @@
 | [step23_metadata_buffer.md](step23_metadata_buffer.md) | `step23.py` | attention 元数据固定缓冲、一次 H2D 上传 |
 | [step24_cuda_graph.md](step24_cuda_graph.md) | `step24.py` | GPU forward 接入 CUDA Graph（按 N 缓存、replay） |
 | [step25_multi_head_gqa.md](step25_multi_head_gqa.md) | `step25.py` | 多头 attention、GQA/MQA、KV 池按 KV head 存 |
+| [step26_multi_layer_decoder.md](step26_multi_layer_decoder.md) | `step26.py` | 多层 decoder：RMSNorm、SwiGLU、逐层 KV |
+| [step27_rope.md](step27_rope.md) | `step27.py` | RoPE 旋转 Q/K、缓存位置一致性 |
+| [step28_model_dir.md](step28_model_dir.md) | `step28/step28.py` | 模型目录（config.json + safetensors）与 Engine 加载 |
+| [step29_head_dim_qk_norm.md](step29_head_dim_qk_norm.md) | `step29/step29.py` | 独立 head_dim、Q/K Norm，对齐 Qwen3 结构 |
+| [step30_external_qwen3_dir.md](step30_external_qwen3_dir.md) | `step30/`（包） | 外部 Qwen3 目录的配置/权重适配；代码按模块拆分 |
+| [step31_real_qwen3_text.md](step31_real_qwen3_text.md) | `step31/`（包） | 接入真实 Qwen3-0.6B：BF16→FP32、tied 权重、可配置 EOS、文本入口 |
+| [step32_bfloat16_inference.md](step32_bfloat16_inference.md) | `step32/`（包） | BF16 运行精度：精度边界、半显存、误差来源分析 |

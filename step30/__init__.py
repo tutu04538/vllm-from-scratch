@@ -1,0 +1,37 @@
+"""第 30 关：直接读取外部 Qwen3 模型目录。
+
+代码按模块拆开，依赖方向是单向的：
+
+    formats/  外部目录 -> 内部配置与权重名（只认 json 和 safetensors）
+    cache     分块 KV 池、前缀缓存、LRU
+    attention 分页 attention 的 Triton 算子与元数据缓冲
+    model     RoPE / RMSNorm / DecoderLayer / TinyCausalLM
+    sampler   采样
+    scheduler 本轮跑谁、跑几个 token
+    engine    Engine：把上面这些装起来，并提供目录加载入口
+
+上层只依赖下层，model 不认请求、scheduler 不认模型。
+"""
+
+from .attention import AttentionMetadata, _paged_attention_kernel, paged_attention
+from .cache import CacheConfig, KVCachePool, SequenceConfig, _stable_hash
+from .engine import (COMPATIBLE_FORMAT_VERSIONS, FORMAT_VERSION,
+                     MODEL_CONFIG_NAME, MODEL_DTYPE, MODEL_TYPE, MODEL_WEIGHTS_NAME,
+                     Engine, build_model_from_config, load_model_config,
+                     load_model_weights)
+from .formats import native as native_format
+from .formats import qwen3 as qwen3_format
+from .formats.native import save_model
+from .model import (DecoderLayer, DummyModel, RMSNorm, RotaryEmbedding, TinyCausalLM,
+                    _rotate_half)
+from .sampler import Sampler
+from .scheduler import Scheduler
+
+__all__ = [
+    "Engine", "TinyCausalLM", "DecoderLayer", "RMSNorm", "RotaryEmbedding", "DummyModel",
+    "AttentionMetadata", "paged_attention", "KVCachePool", "CacheConfig", "SequenceConfig",
+    "Sampler", "Scheduler", "save_model", "load_model_config", "load_model_weights",
+    "build_model_from_config", "native_format", "qwen3_format",
+    "FORMAT_VERSION", "COMPATIBLE_FORMAT_VERSIONS", "MODEL_TYPE", "MODEL_DTYPE",
+    "MODEL_CONFIG_NAME", "MODEL_WEIGHTS_NAME",
+]

@@ -16,7 +16,7 @@ import torch
 from torch.utils.benchmark import Timer
 
 PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 import step05
 
 REQUESTS = [
@@ -73,7 +73,7 @@ def check_workload():
 def main():
     torch.set_num_threads(1)
     torch.manual_seed(0)
-    source = PROJECT / "step05.py"
+    source = PROJECT / "step05" / f"step05.py"
     report = {
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "source": str(source), "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),

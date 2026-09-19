@@ -40,4 +40,8 @@ htmlcov/
 *.nsys-rep
 *.ncu-rep
 
+# Model directories written by save_model(): regenerable, not source
+step*/my_*_model/
+step*/*.safetensors
+
 # Keep benchmarks/results/*.json tracked as reproducible experiment records.

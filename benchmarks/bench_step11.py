@@ -16,7 +16,7 @@ import torch
 from torch.utils.benchmark import Timer
 
 PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 import step11
 
 FIXTURE = Path("/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step11_contract_20260914T133029.365676Z.json")
@@ -112,7 +112,7 @@ def main():
     torch.set_num_threads(1)
     torch.manual_seed(0)
     RNG_STATE = torch.get_rng_state().clone()
-    source = PROJECT / "step11.py"
+    source = PROJECT / "step11" / f"step11.py"
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     canonical_weight_hash = parameter_hash(step11.TinyCausalLM(vocab_size=5, d_model=8, max_seq_len=32))
     accepted = json.loads(FIXTURE.read_text())

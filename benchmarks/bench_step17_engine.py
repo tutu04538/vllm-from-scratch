@@ -16,7 +16,7 @@ import torch
 from torch.utils.benchmark import Timer
 PROJECT=Path(__file__).resolve().parents[1]
 RECORDS=Path('/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录')
-sys.path[:0]=[str(PROJECT),str(RECORDS/'tools')]
+sys.path[:0]=[str(p) for p in PROJECT.glob('step[0-9][0-9]') if p.is_dir()]+[str(PROJECT),str(RECORDS/'tools')]
 from verify_step08_contract import reference
 FIXTURES={'step16':'step16_engine_contract_20260916T071055.671479Z.json',
           'step17':'step17_engine_contract_20260916T070904.705990Z.json'}

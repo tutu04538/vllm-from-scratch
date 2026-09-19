@@ -1,0 +1,1021 @@
+{
+  "measurement_revision": 2,
+  "reference_outputs_deleted": true,
+  "status": "measured",
+  "mode": "graph",
+  "source_sha256": "1aee986cb6d1aae07966c7c0aef092f675fb35e97a0b4a0b7adcb737acccaaa5",
+  "source_files": {
+    "__init__.py": "adf65c63271561272cbf04d10247995b15b0160f069a94aee3db50324d744ee7",
+    "attention.py": "35b43986d7d43308e4a2500d80ed97a86a253fac6bb11d5db79451a79d9de8e3",
+    "cache.py": "0fa03491dce263184e0d100f72acb2b152b2abb2e3444ef8f4e71bb1a15f9fb0",
+    "engine.py": "eaeae3f05e1f4dc5534a7e3fdf2d580e65781f836cfa2efae1186f8c70763396",
+    "formats/__init__.py": "801ae0c0f90b2965e3306d13a8492db308bfec6f800a00714bc44897178e4dda",
+    "formats/native.py": "bfa6c9da62200390ff9d115620ddef52131283ff64cb2d2efbc2e528a234bbb5",
+    "formats/qwen3.py": "d0612bc8ac0d09d02abc2dbffe42b2f1f5e6e09e89c1215721bae566538e831d",
+    "model.py": "b67fb5bb2903e966cefb0d87ab4465015f5dfb92ad29415315f2b3ad58eb8dac",
+    "sampler.py": "5a524f8be8301d8cf2b399e138ffcd49be3e107a038aebb2c6a62d45216a14b1",
+    "scheduler.py": "aeacfa785d7b15dd937e9e712da044bfa4536bb7915d3ed43a4443b5cdecb4d7",
+    "step32.py": "cf46954e87c254f82d16300c598ec6e1625ab0a874af947db0edf307aff23b1d"
+  },
+  "torch": "2.13.0+cu130",
+  "transformers": "5.14.1",
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "dtype": "bfloat16",
+  "memory": {
+    "parameter_bytes": 1503264768,
+    "kv_bytes": 117440512,
+    "loaded_allocated": 1641723904,
+    "loaded_reserved": 1667235840,
+    "first_peak_allocated": 1855213056,
+    "first_peak_reserved": 1920991232,
+    "steady_base_allocated": 1924448256,
+    "steady_peak_allocated": 1928371200,
+    "steady_peak_reserved": 2011168768
+  },
+  "hf_results": {
+    "r0": [
+      82707,
+      6500,
+      54851,
+      101053,
+      100751,
+      99982,
+      24360,
+      60949
+    ],
+    "r1": [
+      16,
+      488,
+      220,
+      16,
+      284,
+      220,
+      17,
+      151645
+    ],
+    "r2": [
+      46358,
+      54851,
+      101053,
+      104210,
+      35926,
+      108260,
+      100674,
+      9370
+    ]
+  },
+  "hf_comparisons": [
+    {
+      "request": "r0",
+      "history": 19,
+      "candidate_token": 82707,
+      "hf_token": 82707,
+      "candidate_gap": 3.75,
+      "hf_gap": 3.875,
+      "precision_token": 82707
+    },
+    {
+      "request": "r1",
+      "history": 22,
+      "candidate_token": 16,
+      "hf_token": 16,
+      "candidate_gap": 7.875,
+      "hf_gap": 8.0,
+      "precision_token": 16
+    },
+    {
+      "request": "r2",
+      "history": 18,
+      "candidate_token": 46358,
+      "hf_token": 46358,
+      "candidate_gap": 5.625,
+      "hf_gap": 5.375,
+      "precision_token": 46358
+    },
+    {
+      "request": "r0",
+      "history": 20,
+      "candidate_token": 6500,
+      "hf_token": 6500,
+      "candidate_gap": 1.0,
+      "hf_gap": 1.25,
+      "precision_token": 6500
+    },
+    {
+      "request": "r1",
+      "history": 23,
+      "candidate_token": 488,
+      "hf_token": 488,
+      "candidate_gap": 0.25,
+      "hf_gap": 0.25,
+      "precision_token": 488
+    },
+    {
+      "request": "r2",
+      "history": 19,
+      "candidate_token": 54851,
+      "hf_token": 54851,
+      "candidate_gap": 0.875,
+      "hf_gap": 0.75,
+      "precision_token": 54851
+    },
+    {
+      "request": "r0",
+      "history": 21,
+      "candidate_token": 54851,
+      "hf_token": 54851,
+      "candidate_gap": 1.625,
+      "hf_gap": 1.875,
+      "precision_token": 54851
+    },
+    {
+      "request": "r1",
+      "history": 24,
+      "candidate_token": 220,
+      "hf_token": 220,
+      "candidate_gap": 17.6875,
+      "hf_gap": 17.75,
+      "precision_token": 220
+    },
+    {
+      "request": "r2",
+      "history": 20,
+      "candidate_token": 101053,
+      "hf_token": 101053,
+      "candidate_gap": 6.25,
+      "hf_gap": 6.25,
+      "precision_token": 101053
+    },
+    {
+      "request": "r0",
+      "history": 22,
+      "candidate_token": 101053,
+      "hf_token": 101053,
+      "candidate_gap": 1.125,
+      "hf_gap": 0.875,
+      "precision_token": 101053
+    },
+    {
+      "request": "r1",
+      "history": 25,
+      "candidate_token": 16,
+      "hf_token": 16,
+      "candidate_gap": 14.375,
+      "hf_gap": 14.625,
+      "precision_token": 16
+    },
+    {
+      "request": "r2",
+      "history": 21,
+      "candidate_token": 104210,
+      "hf_token": 104210,
+      "candidate_gap": 0.625,
+      "hf_gap": 0.625,
+      "precision_token": 104210
+    },
+    {
+      "request": "r0",
+      "history": 23,
+      "candidate_token": 100751,
+      "hf_token": 100751,
+      "candidate_gap": 0.875,
+      "hf_gap": 1.125,
+      "precision_token": 100751
+    },
+    {
+      "request": "r1",
+      "history": 26,
+      "candidate_token": 284,
+      "hf_token": 284,
+      "candidate_gap": 3.0,
+      "hf_gap": 3.125,
+      "precision_token": 284
+    },
+    {
+      "request": "r2",
+      "history": 22,
+      "candidate_token": 35926,
+      "hf_token": 35926,
+      "candidate_gap": 2.5,
+      "hf_gap": 2.625,
+      "precision_token": 35926
+    },
+    {
+      "request": "r0",
+      "history": 24,
+      "candidate_token": 99982,
+      "hf_token": 99982,
+      "candidate_gap": 0.5,
+      "hf_gap": 0.5,
+      "precision_token": 99982
+    },
+    {
+      "request": "r1",
+      "history": 27,
+      "candidate_token": 220,
+      "hf_token": 220,
+      "candidate_gap": 7.75,
+      "hf_gap": 7.875,
+      "precision_token": 220
+    },
+    {
+      "request": "r2",
+      "history": 23,
+      "candidate_token": 108260,
+      "hf_token": 108260,
+      "candidate_gap": 4.625,
+      "hf_gap": 4.875,
+      "precision_token": 108260
+    },
+    {
+      "request": "r0",
+      "history": 25,
+      "candidate_token": 24360,
+      "hf_token": 24360,
+      "candidate_gap": 9.25,
+      "hf_gap": 8.875,
+      "precision_token": 24360
+    },
+    {
+      "request": "r1",
+      "history": 28,
+      "candidate_token": 17,
+      "hf_token": 17,
+      "candidate_gap": 9.25,
+      "hf_gap": 9.25,
+      "precision_token": 17
+    },
+    {
+      "request": "r2",
+      "history": 24,
+      "candidate_token": 100674,
+      "hf_token": 100674,
+      "candidate_gap": 3.5,
+      "hf_gap": 3.125,
+      "precision_token": 100674
+    },
+    {
+      "request": "r0",
+      "history": 26,
+      "candidate_token": 60949,
+      "hf_token": 60949,
+      "candidate_gap": 3.125,
+      "hf_gap": 3.1875,
+      "precision_token": 60949
+    },
+    {
+      "request": "r1",
+      "history": 29,
+      "candidate_token": 151645,
+      "hf_token": 151645,
+      "candidate_gap": 3.125,
+      "hf_gap": 2.875,
+      "precision_token": 151645
+    },
+    {
+      "request": "r2",
+      "history": 25,
+      "candidate_token": 9370,
+      "hf_token": 9370,
+      "candidate_gap": 3.875,
+      "hf_gap": 4.125,
+      "precision_token": 9370
+    }
+  ],
+  "precision_logits_max_abs_error": 0.6875,
+  "precision_kv_max_abs_error": 3.375,
+  "tf32": false,
+  "threads": 1,
+  "model_dir": "/home/user/proj/KuiperLLama/Qwen/Qwen3-0.6B",
+  "options": {
+    "device": "cuda",
+    "attention_backend": "triton",
+    "use_cuda_graph": true,
+    "max_num_seqs": 3,
+    "max_num_batched_tokens": 16,
+    "num_kv_blocks": 64,
+    "block_size": 16,
+    "enable_prefix_caching": true
+  },
+  "questions": [
+    "用一句话解释什么是 KV cache。",
+    "请只回答：1+1等于几？",
+    "用一句话解释什么是 Transformer。"
+  ],
+  "prompt_ids": [
+    [
+      151644,
+      872,
+      198,
+      11622,
+      105321,
+      104136,
+      106582,
+      84648,
+      6500,
+      1773,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ],
+    [
+      151644,
+      872,
+      198,
+      14880,
+      91680,
+      102104,
+      5122,
+      16,
+      10,
+      16,
+      107106,
+      99195,
+      11319,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ],
+    [
+      151644,
+      872,
+      198,
+      11622,
+      105321,
+      104136,
+      106582,
+      62379,
+      1773,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ]
+  ],
+  "results": {
+    "r0": [
+      82707,
+      6500,
+      54851,
+      101053,
+      100751,
+      99982,
+      24360,
+      60949
+    ],
+    "r1": [
+      16,
+      488,
+      220,
+      16,
+      284,
+      220,
+      17,
+      151645
+    ],
+    "r2": [
+      46358,
+      54851,
+      101053,
+      104210,
+      35926,
+      108260,
+      100674,
+      9370
+    ]
+  },
+  "texts": {
+    "r0": "KV cache 是一种用于缓存键",
+    "r1": "1 + 1 = 2",
+    "r2": "Transformer 是一种基于自注意力机制的"
+  },
+  "tokenizer_load_ms": 388.5601930087432,
+  "encoding_three_prompts": {
+    "median_ms": 0.2162440214306116,
+    "iqr_over_median": 0.22344203729484766,
+    "samples_ms": [
+      0.2162440214306116,
+      0.20597397815436125,
+      0.2027710434049368,
+      0.19762199372053146,
+      0.5797339836135507,
+      0.23471901658922434,
+      0.6304420530796051,
+      0.2706620143726468,
+      0.2255559666082263,
+      0.2094820374622941,
+      0.19384699407964945
+    ]
+  },
+  "model_load_ms": 3076.875795959495,
+  "first_workload": {
+    "results": {
+      "r0": [
+        82707,
+        6500,
+        54851,
+        101053,
+        100751,
+        99982,
+        24360,
+        60949
+      ],
+      "r1": [
+        16,
+        488,
+        220,
+        16,
+        284,
+        220,
+        17,
+        151645
+      ],
+      "r2": [
+        46358,
+        54851,
+        101053,
+        104210,
+        35926,
+        108260,
+        100674,
+        9370
+      ]
+    },
+    "elapsed_ms": 990.6605700962245,
+    "steps": 11,
+    "times_ms": {
+      "r0": [
+        488.73397801071405,
+        495.9402260137722,
+        590.4675000347197,
+        713.2851399946958,
+        718.8871600665152,
+        724.6132410364226,
+        730.40616302751,
+        736.2383690197021
+      ],
+      "r1": [
+        495.9402260137722,
+        590.4675000347197,
+        713.2851399946958,
+        718.8871600665152,
+        724.6132410364226,
+        730.40616302751,
+        736.2383690197021,
+        857.216497999616
+      ],
+      "r2": [
+        590.4675000347197,
+        713.2851399946958,
+        718.8871600665152,
+        724.6132410364226,
+        730.40616302751,
+        736.2383690197021,
+        857.216497999616,
+        990.6542580574751
+      ]
+    }
+  },
+  "logits_max_abs_error": 1.625,
+  "kv_max_abs_error": 7.375,
+  "verified_calls": [
+    {
+      "request_id": "r0",
+      "history": 16,
+      "count": 3,
+      "total": 19
+    },
+    {
+      "request_id": "r1",
+      "history": 16,
+      "count": 6,
+      "total": 22
+    },
+    {
+      "request_id": "r2",
+      "history": 16,
+      "count": 2,
+      "total": 18
+    },
+    {
+      "request_id": "r0",
+      "history": 19,
+      "count": 1,
+      "total": 20
+    },
+    {
+      "request_id": "r1",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r2",
+      "history": 18,
+      "count": 1,
+      "total": 19
+    },
+    {
+      "request_id": "r0",
+      "history": 20,
+      "count": 1,
+      "total": 21
+    },
+    {
+      "request_id": "r1",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r2",
+      "history": 19,
+      "count": 1,
+      "total": 20
+    },
+    {
+      "request_id": "r0",
+      "history": 21,
+      "count": 1,
+      "total": 22
+    },
+    {
+      "request_id": "r1",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    },
+    {
+      "request_id": "r2",
+      "history": 20,
+      "count": 1,
+      "total": 21
+    },
+    {
+      "request_id": "r0",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r1",
+      "history": 25,
+      "count": 1,
+      "total": 26
+    },
+    {
+      "request_id": "r2",
+      "history": 21,
+      "count": 1,
+      "total": 22
+    },
+    {
+      "request_id": "r0",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r1",
+      "history": 26,
+      "count": 1,
+      "total": 27
+    },
+    {
+      "request_id": "r2",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r0",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    },
+    {
+      "request_id": "r1",
+      "history": 27,
+      "count": 1,
+      "total": 28
+    },
+    {
+      "request_id": "r2",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r0",
+      "history": 25,
+      "count": 1,
+      "total": 26
+    },
+    {
+      "request_id": "r1",
+      "history": 28,
+      "count": 1,
+      "total": 29
+    },
+    {
+      "request_id": "r2",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    }
+  ],
+  "long_eos_result": null,
+  "steady": {
+    "median_ms": 70.66637789830565,
+    "iqr_over_median": 0.0696896352421353,
+    "samples_ms": [
+      72.48522306326777,
+      73.069465928711,
+      67.56050896365196,
+      66.82795193046331,
+      70.66637789830565
+    ]
+  },
+  "ttft_request_mean": {
+    "median_ms": 18.8843523307393,
+    "iqr_over_median": 0.04131013050400698,
+    "samples_ms": [
+      19.455049691411357,
+      20.62792528886348,
+      18.8843523307393,
+      18.67493463214487,
+      17.99309195484966
+    ]
+  },
+  "itl_request_mean": {
+    "median_ms": 6.632998807444459,
+    "iqr_over_median": 0.07242957483956458,
+    "samples_ms": [
+      6.677251381223046,
+      6.632998807444459,
+      6.1790503317578915,
+      6.106996043984379,
+      6.659475615292433
+    ]
+  },
+  "samples": [
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 72.48522306326777,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          12.633610982447863,
+          19.330532057210803,
+          26.401006034575403,
+          33.331620041280985,
+          39.80242705438286,
+          46.32010404020548,
+          53.18109004292637,
+          59.737909003160894
+        ],
+        "r1": [
+          19.330532057210803,
+          26.401006034575403,
+          33.331620041280985,
+          39.80242705438286,
+          46.32010404020548,
+          53.18109004292637,
+          59.737909003160894,
+          66.36904005426913
+        ],
+        "r2": [
+          26.401006034575403,
+          33.331620041280985,
+          39.80242705438286,
+          46.32010404020548,
+          53.18109004292637,
+          59.737909003160894,
+          66.36904005426913,
+          72.480479022488
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 73.069465928711,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          13.532329932786524,
+          20.37362998817116,
+          27.977815945632756,
+          35.44794803019613,
+          42.539672926068306,
+          49.48812595102936,
+          55.323848966509104,
+          61.08402193058282
+        ],
+        "r1": [
+          20.37362998817116,
+          27.977815945632756,
+          35.44794803019613,
+          42.539672926068306,
+          49.48812595102936,
+          55.323848966509104,
+          61.08402193058282,
+          67.0257379533723
+        ],
+        "r2": [
+          27.977815945632756,
+          35.44794803019613,
+          42.539672926068306,
+          49.48812595102936,
+          55.323848966509104,
+          61.08402193058282,
+          67.0257379533723,
+          73.06699093896896
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 67.56050896365196,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          12.251339969225228,
+          18.68828700389713,
+          25.71343001909554,
+          31.887948978692293,
+          37.77035197708756,
+          43.95224794279784,
+          50.16343796160072,
+          56.499516940675676
+        ],
+        "r1": [
+          18.68828700389713,
+          25.71343001909554,
+          31.887948978692293,
+          37.77035197708756,
+          43.95224794279784,
+          50.16343796160072,
+          56.499516940675676,
+          62.35521601047367
+        ],
+        "r2": [
+          25.71343001909554,
+          31.887948978692293,
+          37.77035197708756,
+          43.95224794279784,
+          50.16343796160072,
+          56.499516940675676,
+          62.35521601047367,
+          67.55838100798428
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 66.82795193046331,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          12.033737963065505,
+          18.77769094426185,
+          25.21337498910725,
+          31.45128395408392,
+          37.61875897180289,
+          43.77518792171031,
+          49.87525392789394,
+          55.82615395542234
+        ],
+        "r1": [
+          18.77769094426185,
+          25.21337498910725,
+          31.45128395408392,
+          37.61875897180289,
+          43.77518792171031,
+          49.87525392789394,
+          55.82615395542234,
+          61.6202779347077
+        ],
+        "r2": [
+          25.21337498910725,
+          31.45128395408392,
+          37.61875897180289,
+          43.77518792171031,
+          49.87525392789394,
+          55.82615395542234,
+          61.6202779347077,
+          66.82528892997652
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 70.66637789830565,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          11.658214963972569,
+          17.95472193043679,
+          24.366338970139623,
+          30.629769898951054,
+          36.85904899612069,
+          43.68649097159505,
+          51.10817798413336,
+          58.23988898191601
+        ],
+        "r1": [
+          17.95472193043679,
+          24.366338970139623,
+          30.629769898951054,
+          36.85904899612069,
+          43.68649097159505,
+          51.10817798413336,
+          58.23988898191601,
+          64.92441589944065
+        ],
+        "r2": [
+          24.366338970139623,
+          30.629769898951054,
+          36.85904899612069,
+          43.68649097159505,
+          51.10817798413336,
+          58.23988898191601,
+          64.92441589944065,
+          70.66395890433341
+        ]
+      }
+    }
+  ],
+  "scope": "One fresh process per backend. Load excludes tokenizer and pre-initialized CUDA context. First full workload includes first GPU library work/JIT/graph capture; on-disk caches retained. BF16 official comparisons are diagnostic (different rounding policy); BF16 precision-aware dense oracle metrics are recorded for review, not silently accepted with FP32 tolerance. Memory is PyTorch allocated/reserved, not nvidia-smi, reference excluded from first/steady peaks. Reference and full parameter/KV checks are outside timing. Warm benchmark has prefix caching OFF,2 warmups,5 complete workloads by default,3 requests max8 output tokens each. TTFT is request submission to first sampled token (not text streaming), reported mean over requests per run. ITL includes scheduling and other requests/prefill, not pure kernel time. Encoding measured separately; timing not a claim of stable cross-backend speedup. Source files never edited."
+}

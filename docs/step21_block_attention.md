@@ -1,8 +1,8 @@
 # step21：不拼完整历史，按块计算 attention
 
-- 对应代码：`step21.py`（新增，未提交）
+- 对应代码：`step21/step21.py`（新增，未提交）
 - 源码 SHA256：`c427cca1672c3d7ff9b72b7ec6e6ede068c5a4c9a2c5f1f78273b346ed59eb9b`
-- 基线：`step20.py`（SHA256 `9c6d204b…`）原样保留、未修改
+- 基线：`step20/step20.py`（SHA256 `9c6d204b…`）原样保留、未修改
 
 ## 0. 需求大概
 

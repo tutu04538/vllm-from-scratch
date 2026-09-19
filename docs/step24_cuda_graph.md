@@ -1,8 +1,8 @@
 # step24：把 GPU forward 接入 CUDA Graph
 
-- 对应代码：`step24.py`（新增，未提交）
+- 对应代码：`step24/step24.py`（新增，未提交）
 - 源码 SHA256：`f0129cb66b2b4ff067d60ccc1fc22b6b1da64084bd66652f43f36c48f490d74c`
-- 基线：`step23.py`（SHA256 `d609f866…`）原样保留、未修改
+- 基线：`step23/step23.py`（SHA256 `d609f866…`）原样保留、未修改
 
 ## 0. 需求大概
 

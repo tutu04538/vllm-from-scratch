@@ -12,7 +12,7 @@ import torch
 from torch.utils.benchmark import Timer
 
 PROJECT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(PROJECT))
+sys.path[:0]=[str(p) for p in PROJECT.glob("step[0-9][0-9]") if p.is_dir()]+[str(PROJECT)]
 import step13
 import step14
 FIXTURE=Path('/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step14_model_contract_20260915T111116.735757Z.json')
@@ -33,7 +33,7 @@ def main():
     parser.add_argument('--batch-size',type=int,choices=[1,2,3],default=2)
     parser.add_argument('--order',choices=['serial-first','batch-first'],default='serial-first')
     args=parser.parse_args()
-    sources={n:{'path':str(PROJECT/f'{n}.py'),'sha256':sha(PROJECT/f'{n}.py')} for n in ('step13','step14')}
+    sources={n:{'path':str(PROJECT/f"{n}/{n}.py"),'sha256':sha(PROJECT/f"{n}/{n}.py")} for n in ('step13','step14')}
     fixture=json.loads(FIXTURE.read_text())
     assert fixture['status']=='passed' and fixture['source_sha256']==sources['step14']['sha256']
     torch.set_num_threads(1);torch.manual_seed(0)
