@@ -1,6 +1,6 @@
 # vllm-from-scratch
 
-从零逐步实现一个 vLLM 式推理引擎：请求调度、分页 KV 缓存、前缀缓存、打包输入、Triton attention、CUDA Graph、多头 / GQA。
+从零逐步实现一个 vLLM 式推理引擎：continuous batching、paged KV cache、prefix caching、sequence packing、Triton attention、CUDA Graph、multi-head / GQA。
 
 每一关一个自包含的目录 `stepNN/`，只依赖 PyTorch（第 22 关起可选 Triton）。每关都在上一关的基础上改动，旧目录保留不动，方便对照。第 30 关起实现按模块拆分，不再是一个大文件。
 
