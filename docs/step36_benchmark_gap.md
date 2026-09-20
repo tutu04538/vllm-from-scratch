@@ -1,9 +1,15 @@
 # step36：单卡基准与瓶颈定位（与 vLLM 同条件对照）
 
-- 对应代码：**没有新增 `step36/` 包**，`step35/` 原样未改（包摘要见下），只新增 `benchmarks/` 下的基准与剖析工具
+- 对应代码：**没有新增 `step36/` 包**，本关跑基准时 `step35/` 原样未改，只新增 `benchmarks/` 下的基准与剖析工具
 - 被对照的基线：`step35/`
 - 包摘要 SHA256：`3f260b0caed96d4e7936ad1b3ec201a9db278d26b67671a4491890965201d3b0`
   （`sha256("\n".join(sorted("路径 sha256(文件)")) + "\n")`，只算 `step35/**/*.py`，共 15 个文件）
+
+> **后续变更说明**：本关中所有数字都是在上面这个指纹的 `step35/` 上跑出来的。
+> 此后 `step35/` 删除了 beam 与 Triton sampler（13 个 .py 文件，指纹随之失效），
+> 但那次删除**不触碰** attention / 模型 / 调度 / KV / 采样策略，因此本关的测点、
+> 归因与下一项建议**仍然有效**，无需重跑。详见
+> [step36_remove_beam_triton_sampler.md](step36_remove_beam_triton_sampler.md)。
 
 ## 0. 需求大概
 

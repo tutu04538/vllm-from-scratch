@@ -1,11 +1,10 @@
 """采样：把模型输出的一行 logits 变成一个 token id。
 
 模型只负责算 logits；这里负责按**这个请求自己的**参数把它变成一个 token。
-三条路径：
+两条路径：
 
     greedy：只施加惩罚，然后 argmax（不算 softmax、不缩放温度、不筛选）
     random：惩罚 → 除以 temperature → top-k → softmax → top-p → 抽样
-    beam  ：走独立的 beam.py，用惩罚后 logits 的完整 log_softmax 评分，不用这里的单 token 抽样
 
 执行顺序是固定的（见 docs），顺序本身会影响结果，不能各写各的。
 """

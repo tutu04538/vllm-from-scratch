@@ -33,5 +33,6 @@
 | [step32_bfloat16_inference.md](step32_bfloat16_inference.md) | `step32/`（包） | BF16 运行精度：精度边界、半显存、误差来源分析 |
 | [step33_fused_rmsnorm.md](step33_fused_rmsnorm.md) | `step33/`（包） | 融合 RMSNorm：一个 Triton kernel、与非融合路径的 A/B |
 | [step34_sample_rows_only.md](step34_sample_rows_only.md) | `step34/`（包） | 只为需要采样的行算 logits，M=0 与 Graph 按 (N,M) 分键 |
-| [step35_sampling_beam_triton.md](step35_sampling_beam_triton.md) | `step35/`（包） | 采样策略与惩罚、beam search 与 KV 分叉、Triton 采样 kernel |
+| [step35_sampling_beam_triton.md](step35_sampling_beam_triton.md) | `step35/`（包） | 采样策略与惩罚、beam search 与 KV 分叉、Triton 采样 kernel（**后两者已移除**，文档保留原文） |
 | [step36_benchmark_gap.md](step36_benchmark_gap.md) | `benchmarks/`（无新增包） | 与 vLLM 同条件基准、六测点差距、profiler 归因与下一项改动 |
+| [step36_remove_beam_triton_sampler.md](step36_remove_beam_triton_sampler.md) | `step35/`（就地删除） | 移除 beam search 与 Triton 采样 kernel：牵连面、验收影响、残留引用 |

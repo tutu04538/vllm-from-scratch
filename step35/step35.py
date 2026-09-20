@@ -41,11 +41,6 @@ def encode(tokenizer, question):
     return tokenizer(text, add_special_tokens=False)["input_ids"]
 
 
-def _or_default(value, default):
-    """只在「没传」（None）时用默认值；传了非法值就该原样交给校验去报错。"""
-    return default if value is None else value
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="用自己的 Engine 生成真实文本")
     parser.add_argument("questions", nargs="*", default=None, help="要问的问题，可以给多条")
@@ -61,9 +56,7 @@ def main(argv=None):
     parser.add_argument("--norm-backend", choices=("torch", "triton"), default="torch",
                         help="RMSNorm 后端；默认 torch，triton 是融合 kernel（需要 CUDA）")
     parser.add_argument("--graph", action="store_true", help="打开 CUDA Graph（需要 CUDA + Triton）")
-    parser.add_argument("--sampler-backend", choices=("torch", "triton"), default="torch",
-                        help="采样后端；triton 的最终选 token 在 Triton kernel 里做（需要 CUDA）")
-    parser.add_argument("--mode", choices=("greedy", "random", "beam"), default="greedy")
+    parser.add_argument("--mode", choices=("greedy", "random"), default="greedy")
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--top-p", type=float, default=None)
@@ -71,8 +64,6 @@ def main(argv=None):
     parser.add_argument("--presence-penalty", type=float, default=None)
     parser.add_argument("--frequency-penalty", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--beam-width", type=int, default=3)
-    parser.add_argument("--length-penalty", type=float, default=0.0)
     parser.add_argument("--device", default=None)
     parser.add_argument("--no-prefix-caching", action="store_true")
     args = parser.parse_args(argv)
@@ -102,11 +93,9 @@ def main(argv=None):
         max_num_batched_tokens=args.max_num_batched_tokens,
         block_size=args.block_size,
         num_kv_blocks=args.num_kv_blocks,
-        # beam 首版要求 Engine 空闲且关闭 prefix cache；普通模式保持原样
-        enable_prefix_caching=(not args.no_prefix_caching) and args.mode != "beam",
+        enable_prefix_caching=not args.no_prefix_caching,
         dtype=runtime_dtype,
         norm_backend=args.norm_backend,
-        sampler_backend=args.sampler_backend,
     )
     load_seconds = time.perf_counter() - started
 
@@ -125,34 +114,7 @@ def main(argv=None):
     print(f"  权重 {sum(p.numel() * p.element_size() for p in model.parameters()) / 1e9:.2f} GB, "
           f"KV 池 {engine.kv_cache_pool.k_cache.numel() * engine.kv_cache_pool.k_cache.element_size() * 2 / 1e6:.0f} MB")
 
-    if args.mode == "beam":
-        conflict = [n for n, v in (("--temperature", args.temperature), ("--top-k", args.top_k),
-                                   ("--top-p", args.top_p), ("--seed", args.seed))
-                    if v is not None]
-        if conflict:
-            parser.error(f"beam 用惩罚后 logits 的完整 log_softmax 评分，不接受抽样参数：{conflict}")
-        print(f"  采样后端：beam 的候选排序仍在 Torch（Triton 只做单 token 抽样）")
-        for question, prompt_ids in zip(questions, prompts):
-            cands = engine.beam_search(prompt_ids=prompt_ids, max_new_tokens=args.max_new_tokens,
-                                       beam_width=args.beam_width,
-                                       length_penalty=args.length_penalty,
-                                       # 用 None 判断「没传」。写成 `x or 1.0` 的话
-                                       # 用户传的非法 0 会被悄悄换成默认值 1.0，
-                                       # 于是错误配置跑出了默认行为
-                                       repetition_penalty=_or_default(args.repetition_penalty, 1.0),
-                                       presence_penalty=_or_default(args.presence_penalty, 0.0),
-                                       frequency_penalty=_or_default(args.frequency_penalty, 0.0))
-            print()
-            print(f"问: {question}")
-            for rank, c in enumerate(cands):
-                tag = "最佳" if rank == 0 else f"第 {rank}"
-                print(f"  {tag}: {tokenizer.decode(c['output_ids'], skip_special_tokens=True)}")
-                print(f"        sum_logprob={c['sum_logprob']:.4f}  score={c['score']:.4f}  "
-                      f"{len(c['output_ids'])} token")
-        return
-
-    print(f"  采样后端：{engine.sampler_backend}（实际 sampler = {engine.sampler.name}），"
-          f"模式 = {args.mode}")
+    print(f"  采样后端：{engine.sampler.name}，模式 = {args.mode}")
     results = {}
     engine.scheduler.on_finished = lambda r: results.__setitem__(r["request_id"], list(r["output_ids"]))
     for i, prompt_ids in enumerate(prompts):

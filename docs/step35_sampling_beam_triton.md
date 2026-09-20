@@ -1,5 +1,14 @@
 # step35：生成策略与采样加速（A 采样策略 / B beam search / C Triton 采样 kernel）
 
+> **后续变更说明（2026-09-20）**：B 部分（`beam.py`）与 C 部分（`triton_sampling.py`）
+> 已**从 `step35/` 中移除**，这两项目前不列入研究主线（见
+> [step36_remove_beam_triton_sampler.md](step36_remove_beam_triton_sampler.md)）。
+> 本文保留原文不加改写，作为当时实现与验证过程的记录——其中的设计与验证结论
+> 在被删除时都是成立的。A 部分（采样策略、惩罚、请求随机状态）保持原样。
+>
+> 因此本文下方描述的包摘要 `3f260b0c…` 对应的是**删除前**的版本；
+> 基于该版本跑出的基准与验收结果同样属于删除前，两者不要混用。
+
 - 对应代码：`step35/`（新增，未提交）
 - 包摘要 SHA256：`3f260b0caed96d4e7936ad1b3ec201a9db278d26b67671a4491890965201d3b0`
   （`sha256("\n".join(sorted("路径 sha256(文件)")) + "\n")`，只算 `step35/**/*.py`）

@@ -24,14 +24,6 @@ MODEL_TYPE = native.MODEL_TYPE
 MODEL_DTYPE = native.MODEL_DTYPE
 
 
-def make_sampler(sampler_backend):
-    # 后端的真实名字在这里定，Engine 会把它打印/暴露出去，不会静默回退却标成 triton
-    if sampler_backend == "torch":
-        return TorchSampler()
-    from .triton_sampling import TritonSampler
-    return TritonSampler()
-
-
 def _resolve_device(device):
     return torch.device(device) if device is not None else \
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -99,7 +91,7 @@ class Engine:
     def __init__(self, max_num_seqs=1, max_num_batched_tokens=4,block_size=4, num_kv_blocks=8, vocab_size=5, d_model=8, max_seq_len=32, on_finished=None, enable_prefix_caching=True, device=None, attention_backend="torch", use_cuda_graph=False, num_q_heads=1, num_kv_heads=1,
                  num_layers=2, intermediate_size=64, rms_norm_eps=1e-6, rope_theta=10000.0,
                  head_dim=None, use_qk_norm=False, eos_token_ids=None, dtype=torch.float32,
-                 norm_backend="torch", sampler_backend="torch", model=None):
+                 norm_backend="torch", model=None):
         # model 给定时用它，不再按上面的维度参数随机初始化（加载路径走这里）
         # 后端与 Graph 开关也以模型上的为准，避免两边不一致
         if model is None:
@@ -116,10 +108,10 @@ class Engine:
                                  eos_token_ids=eos_token_ids, dtype=dtype, norm_backend=norm_backend)
 
         self._init_runtime(model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
-                           on_finished, enable_prefix_caching, sampler_backend)
+                           on_finished, enable_prefix_caching)
 
     def _init_runtime(self, model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
-                      on_finished, enable_prefix_caching, sampler_backend="torch"):
+                      on_finished, enable_prefix_caching):
         # 模型已经就位（随机初始化或从目录加载），这里只装运行时：元数据、KV 池、调度器
         device = model.device
         _check_runtime(device, model.attention_backend, model.use_cuda_graph, model.dtype,
@@ -127,13 +119,8 @@ class Engine:
 
         self.model = model
         self.model.eval()
-        # 采样后端与 attention / norm 后端都是独立的：一个负责算，一个负责挑
-        if sampler_backend not in ("torch", "triton"):
-            raise ValueError(f"未知的 sampler_backend: {sampler_backend!r}，可选 'torch' 或 'triton'")
-        if sampler_backend == "triton" and device.type != "cuda":
-            raise ValueError(f"sampler_backend='triton' 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 'torch'")
-        self.sampler_backend = sampler_backend
-        self.sampler = make_sampler(sampler_backend)
+        # 采样只保留 Torch 一条路径；Triton 采样 kernel 与 beam 已移出主线
+        self.sampler = TorchSampler()
         self.device = device
         self.attention_backend = model.attention_backend
         self.enable_prefix_caching = enable_prefix_caching
@@ -157,7 +144,7 @@ class Engine:
     def from_model_dir(cls, model_dir, device=None, attention_backend="torch", use_cuda_graph=False,
                        max_num_seqs=1, max_num_batched_tokens=4, block_size=4, num_kv_blocks=8,
                        on_finished=None, enable_prefix_caching=True, dtype=torch.float32,
-                       norm_backend="torch", sampler_backend="torch"):
+                       norm_backend="torch"):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
         # 外部配置只读一次：适配器选出来之后，配置和权重都交给它翻译。
         adapter, raw, generation = read_raw_config(model_dir)
@@ -172,26 +159,13 @@ class Engine:
         return cls(model=model, max_num_seqs=max_num_seqs,
                    max_num_batched_tokens=max_num_batched_tokens, block_size=block_size,
                    num_kv_blocks=num_kv_blocks, on_finished=on_finished,
-                   enable_prefix_caching=enable_prefix_caching, sampler_backend=sampler_backend)
+                   enable_prefix_caching=enable_prefix_caching)
 
     def add_request(self, request):
         self.scheduler.add_request(request)
 
     def has_unfinished_requests(self):
         return self.scheduler.has_unfinished_requests()
-
-    def beam_search(self, prompt_ids, max_new_tokens, beam_width=1, length_penalty=0.0,
-                    repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0):
-        """保留若干条候选续写，返回按最终分数降序的候选列表（第 0 条是最佳）。
-
-        这是独立接口：不接 temperature / top-k / top-p / seed——beam 用惩罚后 logits
-        的完整 log_softmax 评分，和单 token 抽样不是一回事。
-        """
-        from .beam import BeamSearch
-        return BeamSearch(self).search(
-            prompt_ids=prompt_ids, max_new_tokens=max_new_tokens, beam_width=beam_width,
-            length_penalty=length_penalty, repetition_penalty=repetition_penalty,
-            presence_penalty=presence_penalty, frequency_penalty=frequency_penalty)
 
     @staticmethod
     def _sample_plan(scheduled_items):
