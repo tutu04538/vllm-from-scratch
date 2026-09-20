@@ -45,3 +45,7 @@ step*/my_*_model/
 step*/*.safetensors
 
 # Keep benchmarks/results/*.json tracked as reproducible experiment records.
+
+# Profiler traces are large and regenerable via benchmarks/profile_step36.py;
+# the curated representative traces live in step36/traces/.
+benchmarks/results/step36_traces/

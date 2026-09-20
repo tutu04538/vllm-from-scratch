@@ -1,0 +1,35 @@
+{
+  "engine": "mine",
+  "case": "short_c8",
+  "spec": {
+    "prompt": 64,
+    "gen": 32,
+    "conc": 8
+  },
+  "graph": true,
+  "runtime": {
+    "attention_backend": "triton",
+    "norm_backend": "triton",
+    "sampler": "torch",
+    "max_seq_len": 40960,
+    "kv_blocks": 512,
+    "block_size": 16,
+    "use_cuda_graph": true
+  },
+  "load_s": 2.94,
+  "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+  "gpu_used_before_load_gib": 1.312,
+  "output_tokens": 256,
+  "samples_s": [
+    0.2061,
+    0.2195,
+    0.2053,
+    0.2165,
+    0.2042
+  ],
+  "median_s": 0.2061,
+  "iqr_over_median": 0.0546,
+  "throughput_tok_s": 1242.1,
+  "gpu_used_after_gib": 3.853,
+  "output_lengths_ok": true
+}

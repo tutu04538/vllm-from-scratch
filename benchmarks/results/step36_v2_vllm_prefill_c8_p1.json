@@ -1,0 +1,35 @@
+{
+  "engine": "vllm",
+  "case": "prefill_c8",
+  "spec": {
+    "prompt": 512,
+    "gen": 1,
+    "conc": 8
+  },
+  "graph": null,
+  "runtime": {
+    "attention_backend": "flash_attn (vLLM 内部)",
+    "norm_backend": "native + inductor 融合",
+    "max_model_len": 1024,
+    "kv_blocks": 512,
+    "block_size": 16,
+    "cudagraph_mode": "FULL_AND_PIECEWISE",
+    "compilation": "3"
+  },
+  "load_s": 13.71,
+  "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+  "gpu_used_before_load_gib": 1.312,
+  "output_tokens": 8,
+  "samples_s": [
+    0.077,
+    0.0764,
+    0.0802,
+    0.076,
+    0.0764
+  ],
+  "median_s": 0.0764,
+  "iqr_over_median": 0.008,
+  "throughput_tok_s": 104.7,
+  "gpu_used_after_gib": 1.312,
+  "output_lengths_ok": true
+}

@@ -79,12 +79,16 @@ def load_inputs(case):
 
 # ---------------- 我们的引擎 ----------------
 
-def build_mine(graph=True):
+def build_mine(graph=True, norm_backend="triton"):
+    # norm_backend 必须显式传：Engine 的默认值是 "torch"。attention 后端和 norm 后端
+    # 是两个独立开关，只传 attention_backend="triton" 得到的是 Torch RMSNorm，
+    # 第三十三关的融合 kernel 不会被启用。首版矩阵漏了这一项，见复核 §3.1。
     import torch
     sys.path.insert(0, str(PROJECT))
     import step35 as m
     engine = m.Engine.from_model_dir(
         MODEL_DIR, device="cuda", dtype=torch.bfloat16, attention_backend="triton",
+        norm_backend=norm_backend,
         use_cuda_graph=graph, max_num_seqs=MAX_NUM_SEQS,
         max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS, block_size=BLOCK_SIZE,
         num_kv_blocks=KV_BLOCKS, enable_prefix_caching=False)
@@ -146,6 +150,8 @@ def main():
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--no-graph", action="store_true", help="我们的引擎不开 CUDA Graph")
+    ap.add_argument("--norm-backend", choices=("torch", "triton"), default="triton",
+                    help="我们的引擎的 RMSNorm 后端；默认 triton（融合 kernel）")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -167,15 +173,50 @@ def main():
     _free, _total = _t.cuda.mem_get_info()
     used_before = (_total - _free) / 2 ** 30
     t_load0 = time.perf_counter()
+    # 记录运行时对象的**真实**值。不要从「我传了什么参数」推断配置：
+    # 首版矩阵就是因为只按入参写报告，把没传 norm_backend 的 Torch 路径写成了融合 kernel。
     if args.engine == "mine":
-        engine = build_mine(graph=not args.no_graph)
+        engine = build_mine(graph=not args.no_graph, norm_backend=args.norm_backend)
         run = lambda tag: run_mine(engine, prompts, spec["gen"], tag)
+        cc = None
         kv_note = f"num_kv_blocks={KV_BLOCKS} (= {KV_BLOCKS * BLOCK_SIZE} token 槽位)"
+        runtime = {
+            "attention_backend": engine.model.attention_backend,
+            "norm_backend": engine.model.norm_backend,
+            "sampler": engine.sampler.name,
+            # max_seq_len 来自模型目录的 max_position_embeddings，没有公共覆盖接口，
+            # 因此与 vLLM 的 max_model_len **不一致**，报告必须照实写
+            "max_seq_len": engine.model.max_seq_len,
+            "kv_blocks": KV_BLOCKS,
+            "block_size": BLOCK_SIZE,
+            "use_cuda_graph": not args.no_graph,
+        }
     else:
         engine = build_vllm()
         run = lambda tag: (lambda dt, got: (dt, got, None))(*run_vllm(engine, prompts, spec["gen"]))
-        cc = engine.llm_engine.vllm_config.cache_config
+        vc = engine.llm_engine.vllm_config
+        cc = vc.cache_config
         kv_note = f"num_gpu_blocks={cc.num_gpu_blocks} (= {cc.num_gpu_blocks * cc.block_size} token 槽位)"
+        runtime = {
+            "attention_backend": "flash_attn (vLLM 内部)",
+            "norm_backend": "native + inductor 融合",
+            "max_model_len": vc.model_config.max_model_len,
+            "kv_blocks": cc.num_gpu_blocks,
+            "block_size": cc.block_size,
+            "cudagraph_mode": str(vc.compilation_config.cudagraph_mode),
+            "compilation": str(vc.compilation_config.mode),
+        }
+    # 构建后立刻核对「运行时对象的真实值」等于「请求的值」。
+    # 首版矩阵缺了这层检查，只按入参写报告，把 Torch RMSNorm 记成了融合 Triton kernel
+    # （复核 §3.1）。配置类字段一律以对象上的实际值为准，不从入参推断。
+    if args.engine == "mine":
+        if engine.model.norm_backend != args.norm_backend:
+            raise RuntimeError(f"norm_backend 实际是 {engine.model.norm_backend!r}，"
+                               f"请求的是 {args.norm_backend!r}")
+        if engine.model.attention_backend != "triton":
+            raise RuntimeError(f"attention_backend 实际是 {engine.model.attention_backend!r}")
+        if engine.model.use_cuda_graph != (not args.no_graph):
+            raise RuntimeError(f"use_cuda_graph 实际是 {engine.model.use_cuda_graph}")
     load_s = time.perf_counter() - t_load0
 
     # 预热（含首次编译 / 图捕获）
@@ -204,6 +245,7 @@ def main():
     report = dict(
         engine=args.engine, case=args.case, spec=spec,
         graph=(None if args.engine == "vllm" else (not args.no_graph)),
+        runtime=runtime,
         load_s=round(load_s, 2), kv=kv_note,
         gpu_used_before_load_gib=round(used_before, 3),
         output_tokens=tokens, samples_s=[round(s, 4) for s in samples],

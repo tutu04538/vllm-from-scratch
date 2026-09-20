@@ -41,8 +41,14 @@ def summarize_mine(case, graph=True):
     run_mine(engine, prompts, spec["gen"], "warm")
     torch.cuda.synchronize()
 
+    trace_dir = PROJECT / "benchmarks" / "results" / "step36_traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         dt, got, steps = run_mine(engine, prompts, spec["gen"], "prof")
+    # 导出原始时间轴：只给聚合数字的话，别人无法独立复核，也无法判断是执行次数
+    # 还是执行时长的问题。复核 §2 明确要求能独立复核。
+    trace_path = trace_dir / f"mine_{case}.pt.trace.json.gz"
+    prof.export_chrome_trace(str(trace_path))
     ev = [e for e in prof.events() if str(getattr(e, "device_type", "")) == "DeviceType.CUDA"]
     kernels = Counter(e.name for e in ev)
     by_name = {}
@@ -57,6 +63,7 @@ def summarize_mine(case, graph=True):
         prev[0] += t
         prev[1] += c
     return dict(case=case, wall_s=round(dt, 4), steps=steps, gpu_kernels=len(ev),
+                trace=str(trace_path),
                 distinct_kernels=len(kernels), gpu_busy_us=round(gpu_busy, 1),
                 gpu_busy_over_wall=round(gpu_busy / 1e6 / dt, 3),
                 categories={k: dict(us=round(v[0], 1), calls=v[1],

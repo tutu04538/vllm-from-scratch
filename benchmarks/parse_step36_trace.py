@@ -24,23 +24,50 @@ def _read_json(path):
     return json.loads(path.read_text())
 
 
+def merge_union(intervals):
+    """区间并集长度。多流并行时 kernel 会重叠，直接累加时长会高估 GPU 忙碌时间；
+    正确做法是把时间区间求并。复核 §5 第 3 条要求这一点。"""
+    if not intervals:
+        return 0.0
+    intervals = sorted(intervals)
+    total = 0.0
+    cur_lo, cur_hi = intervals[0]
+    for lo, hi in intervals[1:]:
+        if lo > cur_hi:          # 与当前区间不相交，收尾并起新的一段
+            total += cur_hi - cur_lo
+            cur_lo, cur_hi = lo, hi
+        else:                    # 相交或相接，合并
+            cur_hi = max(cur_hi, hi)
+    return total + (cur_hi - cur_lo)
+
+
 def from_chrome_trace(path, wall=None):
     data = _read_json(path)
     events = data["traceEvents"] if isinstance(data, dict) else data
     kernels = [e for e in events if e.get("ph") == "X" and e.get("cat") == "kernel"]
     by_name = Counter()
+    calls = Counter()
     total = 0.0
+    intervals = []
     for e in kernels:
         dur = e.get("dur", 0)
         total += dur
-        by_name[e.get("name", "?")] += dur
-    span = max((e["ts"] + e.get("dur", 0) for e in kernels), default=0) - \
-           min((e["ts"] for e in kernels), default=0)
+        name = e.get("name", "?")
+        by_name[name] += dur
+        calls[name] += 1
+        ts = e.get("ts")
+        if ts is not None:
+            intervals.append((ts, ts + dur))
+    union = merge_union(intervals)
+    span = (max((hi for _, hi in intervals), default=0)
+            - min((lo for lo, _ in intervals), default=0))
     return dict(source=str(path), gpu_kernels=len(kernels), distinct=len(by_name),
-                gpu_busy_us=round(total, 1), gpu_span_us=round(span, 1),
-                wall_s=wall, busy_over_wall=(round(total / 1e6 / wall, 3) if wall else None),
-                top=[dict(name=n[:64], us=round(t, 1), calls=Counter(
-                    e["name"] for e in kernels if e["name"] == n)[n])
+                sum_kernel_us=round(total, 1),
+                gpu_busy_union_us=round(union, 1),
+                overlap_ratio=round(total / union, 4) if union else None,
+                gpu_span_us=round(span, 1),
+                wall_s=wall, busy_over_wall=(round(union / 1e6 / wall, 3) if wall else None),
+                top=[dict(name=n[:64], us=round(t, 1), calls=calls[n])
                      for n, t in by_name.most_common(12)])
 
 
@@ -52,9 +79,12 @@ def main():
     r = from_chrome_trace(args.trace, args.wall)
     print(json.dumps(r, ensure_ascii=False, indent=2))
     if r["wall_s"]:
-        print(f"\n  GPU 忙 {r['gpu_busy_us']/1e3:.2f} ms / 墙钟 {r['wall_s']*1e3:.2f} ms "
-              f"= {r['busy_over_wall']*100:.1f}%")
-    print(f"  kernel 发射 {r['gpu_kernels']} 次，{r['distinct']} 种")
+        print(f"\n  GPU 忙（区间并集）{r['gpu_busy_union_us']/1e3:.2f} ms / 墙钟 "
+              f"{r['wall_s']*1e3:.2f} ms = {r['busy_over_wall']*100:.1f}%")
+    print(f"  kernel 执行 {r['gpu_kernels']} 次，{r['distinct']} 种；"
+          f"时长累加/区间并集 = {r['overlap_ratio']}")
+    print("  注意：kernel 执行次数 ≠ Python 发射次数（一次 Graph replay 会跑很多 kernel）；"
+          "这是 GPU 侧执行记录，不是 CPU 侧提交记录。")
 
 
 if __name__ == "__main__":
