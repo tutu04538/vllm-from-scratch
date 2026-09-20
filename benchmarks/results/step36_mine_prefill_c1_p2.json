@@ -1,0 +1,26 @@
+{
+  "engine": "mine",
+  "case": "prefill_c1",
+  "spec": {
+    "prompt": 512,
+    "gen": 1,
+    "conc": 1
+  },
+  "graph": true,
+  "load_s": 3.02,
+  "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+  "gpu_used_before_load_gib": 1.312,
+  "output_tokens": 1,
+  "samples_s": [
+    0.0644,
+    0.0646,
+    0.0645,
+    0.065,
+    0.0746
+  ],
+  "median_s": 0.0646,
+  "iqr_over_median": 0.0075,
+  "throughput_tok_s": 15.5,
+  "gpu_used_after_gib": 3.796,
+  "output_lengths_ok": true
+}

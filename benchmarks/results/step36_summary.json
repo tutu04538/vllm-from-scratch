@@ -1,0 +1,122 @@
+{
+  "short_c1": {
+    "mine": {
+      "median_s": 0.1761,
+      "throughput": 181.7,
+      "runs": 3,
+      "tokens": 32,
+      "spread": 0.01987507098239638,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 3.34
+    },
+    "vllm": {
+      "median_s": 0.0945,
+      "throughput": 338.8,
+      "runs": 3,
+      "tokens": 32,
+      "spread": 0.015873015873015886,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 14.91
+    }
+  },
+  "short_c8": {
+    "mine": {
+      "median_s": 0.268,
+      "throughput": 955.3,
+      "runs": 3,
+      "tokens": 256,
+      "spread": 0.0097014925373134,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 3.15
+    },
+    "vllm": {
+      "median_s": 0.1226,
+      "throughput": 2088.0,
+      "runs": 3,
+      "tokens": 256,
+      "spread": 0.09951060358890704,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 14.97
+    }
+  },
+  "prefill_c1": {
+    "mine": {
+      "median_s": 0.0704,
+      "throughput": 14.2,
+      "runs": 3,
+      "tokens": 1,
+      "spread": 0.09943181818181807,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 3.57
+    },
+    "vllm": {
+      "median_s": 0.0181,
+      "throughput": 55.3,
+      "runs": 3,
+      "tokens": 1,
+      "spread": 0.37016574585635353,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 15.42
+    }
+  },
+  "prefill_c8": {
+    "mine": {
+      "median_s": 0.5207,
+      "throughput": 15.4,
+      "runs": 3,
+      "tokens": 8,
+      "spread": 0.04205876704436341,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 2.95
+    },
+    "vllm": {
+      "median_s": 0.0755,
+      "throughput": 105.9,
+      "runs": 3,
+      "tokens": 8,
+      "spread": 0.10993377483443693,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 14.67
+    }
+  },
+  "decode_c1": {
+    "mine": {
+      "median_s": 0.6675,
+      "throughput": 191.8,
+      "runs": 3,
+      "tokens": 128,
+      "spread": 0.06052434456928838,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 3.07
+    },
+    "vllm": {
+      "median_s": 0.3657,
+      "throughput": 350.0,
+      "runs": 3,
+      "tokens": 128,
+      "spread": 0.11785616625649431,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 14.2
+    }
+  },
+  "decode_c8": {
+    "mine": {
+      "median_s": 0.9868,
+      "throughput": 1037.6,
+      "runs": 3,
+      "tokens": 1024,
+      "spread": 0.0674908796108635,
+      "kv": "num_kv_blocks=512 (= 8192 token 槽位)",
+      "load_s": 3.17
+    },
+    "vllm": {
+      "median_s": 0.4701,
+      "throughput": 2178.4,
+      "runs": 3,
+      "tokens": 1024,
+      "spread": 0.06509253350350992,
+      "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+      "load_s": 14.67
+    }
+  }
+}

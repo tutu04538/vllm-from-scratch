@@ -1,0 +1,26 @@
+{
+  "engine": "vllm",
+  "case": "prefill_c1",
+  "spec": {
+    "prompt": 512,
+    "gen": 1,
+    "conc": 1
+  },
+  "graph": null,
+  "load_s": 14.67,
+  "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+  "gpu_used_before_load_gib": 1.312,
+  "output_tokens": 1,
+  "samples_s": [
+    0.0105,
+    0.0114,
+    0.0117,
+    0.0117,
+    0.0126
+  ],
+  "median_s": 0.0117,
+  "iqr_over_median": 0.0286,
+  "throughput_tok_s": 85.4,
+  "gpu_used_after_gib": 1.312,
+  "output_lengths_ok": true
+}

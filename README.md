@@ -60,6 +60,9 @@ docs/            每次改动的记录：需求、改动、设计要点、验证
 | 30 | `step30/`（包，入口 `step30/step30.py`） | 读取外部 Qwen3 模型目录；代码按模块拆分 |
 | 31 | `step31/`（包，入口 `step31/step31.py`） | 接入真实 Qwen3-0.6B：BF16 加载、tied 权重、EOS 配置、文本入口 |
 | 32 | `step32/`（包，入口 `step32/step32.py`） | BF16 运行精度：显式 FP32 累计边界、半显存 |
+| 33 | `step33/`（包，入口 `step33/step33.py`） | 融合 RMSNorm：一个 Triton kernel 顶掉一串小算子 |
+| 34 | `step34/`（包，入口 `step34/step34.py`） | 只为需要采样的行算 logits：lm_head 只处理 M 行 |
+| 35 | `step35/`（包，入口 `step35/step35.py`） | 采样策略（top-p / 三种惩罚）、beam search 与 KV 分叉、Triton 采样 kernel |
 
 大致的推进脉络：
 
@@ -73,6 +76,9 @@ docs/            每次改动的记录：需求、改动、设计要点、验证
 - **26–30 关**：真实模型结构——多层 decoder、RoPE、模型目录的存取、独立 head_dim 与 Q/K Norm，最后能直接吃下别人导出的 Qwen3 目录。
 - **31 关**：接上真实 Qwen3-0.6B 与 tokenizer，从一句话生成到一句话。
 - **32 关**：同一模型可选 FP32 / BF16 运行，量化统计与 attention 累计留在 FP32。
+- **33 关**：算子融合——RMSNorm 从 6/9 个 kernel 收成 1 个，norm 后端与 attention 后端独立可选。
+- **34 关**：按需算 logits——先挑出要采样的行，再对这几行做最终 norm 与 lm_head。
+- **35 关**：生成策略——按请求配置 greedy / random、beam search 的多候选与 KV 分支、最终选 token 的 Triton kernel。
 
 `step17/step17_refactor.py` 是第 17 关的一次重构版本，保留用于性能对照。
 
@@ -87,4 +93,4 @@ python benchmarks/bench_step25_engine.py    # 跑性能脚本
 
 `docs/` 下每次改动一篇记录（命名 `stepNN_<主题>.md`），固定五节：需求大概、改动内容、设计要点、验证、接口变化与遗留。索引见 [docs/README.md](docs/README.md)。
 
-已记录：第 18–32 关。
+已记录：第 18–35 关。

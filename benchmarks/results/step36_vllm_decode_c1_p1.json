@@ -1,0 +1,26 @@
+{
+  "engine": "vllm",
+  "case": "decode_c1",
+  "spec": {
+    "prompt": 64,
+    "gen": 128,
+    "conc": 1
+  },
+  "graph": null,
+  "load_s": 13.74,
+  "kv": "num_gpu_blocks=512 (= 8192 token 槽位)",
+  "gpu_used_before_load_gib": 1.312,
+  "output_tokens": 128,
+  "samples_s": [
+    0.453,
+    0.3389,
+    0.3523,
+    0.4036,
+    0.3469
+  ],
+  "median_s": 0.3523,
+  "iqr_over_median": 0.1609,
+  "throughput_tok_s": 363.3,
+  "gpu_used_after_gib": 1.312,
+  "output_lengths_ok": true
+}

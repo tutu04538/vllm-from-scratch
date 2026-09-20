@@ -1,0 +1,4448 @@
+{
+  "norm_backend": "triton",
+  "norm_calls": [
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        16,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        8,
+        128
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    },
+    {
+      "backend": "triton",
+      "shape": [
+        11,
+        1024
+      ]
+    }
+  ],
+  "lm_head_calls": [
+    {
+      "input_rows": 11,
+      "output_shape": [
+        11,
+        151936
+      ],
+      "can_sample": 3
+    },
+    {
+      "input_rows": 11,
+      "output_shape": [
+        11,
+        151936
+      ],
+      "can_sample": 3
+    },
+    {
+      "input_rows": 11,
+      "output_shape": [
+        11,
+        151936
+      ],
+      "can_sample": 3
+    },
+    {
+      "input_rows": 11,
+      "output_shape": [
+        11,
+        151936
+      ],
+      "can_sample": 3
+    }
+  ],
+  "measurement_revision": 3,
+  "reference_outputs_deleted": true,
+  "status": "measured",
+  "mode": "graph",
+  "source_sha256": "8da7fc9c6738db6cc90bec351428e144d22317e69a7257c3164bf21af27c3896",
+  "source_files": {
+    "__init__.py": "9dbd5afdb0060f7762b7fdbc827395c36f8ec17fbb2e6e3174c5cfcfd63ba2c9",
+    "attention.py": "35b43986d7d43308e4a2500d80ed97a86a253fac6bb11d5db79451a79d9de8e3",
+    "cache.py": "0fa03491dce263184e0d100f72acb2b152b2abb2e3444ef8f4e71bb1a15f9fb0",
+    "engine.py": "2417d543fe11b56d16b0b5d7ed2678fe5cf1ecb7aae279d99ed43bc2b2c92999",
+    "formats/__init__.py": "801ae0c0f90b2965e3306d13a8492db308bfec6f800a00714bc44897178e4dda",
+    "formats/native.py": "bfa6c9da62200390ff9d115620ddef52131283ff64cb2d2efbc2e528a234bbb5",
+    "formats/qwen3.py": "d0612bc8ac0d09d02abc2dbffe42b2f1f5e6e09e89c1215721bae566538e831d",
+    "model.py": "86a6a43ec7cd2c68a6884a20e516b231b7ea5c9ad05b32b0f1f119e2374beebb",
+    "norm.py": "a2c0cfbc9d56d208e9890b3b01cfed264d65e1529d221aba8b4eb7b9958cc0f5",
+    "sampler.py": "5a524f8be8301d8cf2b399e138ffcd49be3e107a038aebb2c6a62d45216a14b1",
+    "scheduler.py": "aeacfa785d7b15dd937e9e712da044bfa4536bb7915d3ed43a4443b5cdecb4d7",
+    "step33.py": "af751c288d4d99398907d527cc5d9eef0739ccebd453f2995158fca51f123f0a"
+  },
+  "torch": "2.13.0+cu130",
+  "transformers": "5.14.1",
+  "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "dtype": "bfloat16",
+  "memory": {
+    "parameter_bytes": 1503264768,
+    "kv_bytes": 117440512,
+    "loaded_allocated": 1641723904,
+    "loaded_reserved": 1667235840,
+    "first_peak_allocated": 1855213056,
+    "first_peak_reserved": 1920991232,
+    "steady_base_allocated": 1924448256,
+    "steady_peak_allocated": 1928371200,
+    "steady_peak_reserved": 2011168768
+  },
+  "hf_results": {
+    "r0": [
+      82707,
+      6500,
+      54851,
+      101053,
+      100751,
+      99982,
+      24360,
+      60949
+    ],
+    "r1": [
+      16,
+      488,
+      220,
+      16,
+      284,
+      220,
+      17,
+      151645
+    ],
+    "r2": [
+      46358,
+      54851,
+      101053,
+      104210,
+      35926,
+      108260,
+      100674,
+      9370
+    ]
+  },
+  "hf_comparisons": [
+    {
+      "request": "r0",
+      "history": 19,
+      "candidate_token": 82707,
+      "hf_token": 82707,
+      "candidate_gap": 3.875,
+      "hf_gap": 3.875,
+      "precision_token": 82707
+    },
+    {
+      "request": "r1",
+      "history": 22,
+      "candidate_token": 16,
+      "hf_token": 16,
+      "candidate_gap": 8.0,
+      "hf_gap": 8.0,
+      "precision_token": 16
+    },
+    {
+      "request": "r2",
+      "history": 18,
+      "candidate_token": 46358,
+      "hf_token": 46358,
+      "candidate_gap": 5.625,
+      "hf_gap": 5.375,
+      "precision_token": 46358
+    },
+    {
+      "request": "r0",
+      "history": 20,
+      "candidate_token": 6500,
+      "hf_token": 6500,
+      "candidate_gap": 0.875,
+      "hf_gap": 1.25,
+      "precision_token": 6500
+    },
+    {
+      "request": "r1",
+      "history": 23,
+      "candidate_token": 488,
+      "hf_token": 488,
+      "candidate_gap": 0.25,
+      "hf_gap": 0.25,
+      "precision_token": 488
+    },
+    {
+      "request": "r2",
+      "history": 19,
+      "candidate_token": 54851,
+      "hf_token": 54851,
+      "candidate_gap": 0.75,
+      "hf_gap": 0.75,
+      "precision_token": 54851
+    },
+    {
+      "request": "r0",
+      "history": 21,
+      "candidate_token": 54851,
+      "hf_token": 54851,
+      "candidate_gap": 1.75,
+      "hf_gap": 1.875,
+      "precision_token": 54851
+    },
+    {
+      "request": "r1",
+      "history": 24,
+      "candidate_token": 220,
+      "hf_token": 220,
+      "candidate_gap": 17.375,
+      "hf_gap": 17.75,
+      "precision_token": 220
+    },
+    {
+      "request": "r2",
+      "history": 20,
+      "candidate_token": 101053,
+      "hf_token": 101053,
+      "candidate_gap": 6.25,
+      "hf_gap": 6.25,
+      "precision_token": 101053
+    },
+    {
+      "request": "r0",
+      "history": 22,
+      "candidate_token": 101053,
+      "hf_token": 101053,
+      "candidate_gap": 1.125,
+      "hf_gap": 0.875,
+      "precision_token": 101053
+    },
+    {
+      "request": "r1",
+      "history": 25,
+      "candidate_token": 16,
+      "hf_token": 16,
+      "candidate_gap": 14.5,
+      "hf_gap": 14.625,
+      "precision_token": 16
+    },
+    {
+      "request": "r2",
+      "history": 21,
+      "candidate_token": 104210,
+      "hf_token": 104210,
+      "candidate_gap": 0.625,
+      "hf_gap": 0.625,
+      "precision_token": 104210
+    },
+    {
+      "request": "r0",
+      "history": 23,
+      "candidate_token": 100751,
+      "hf_token": 100751,
+      "candidate_gap": 0.625,
+      "hf_gap": 1.125,
+      "precision_token": 100751
+    },
+    {
+      "request": "r1",
+      "history": 26,
+      "candidate_token": 284,
+      "hf_token": 284,
+      "candidate_gap": 2.875,
+      "hf_gap": 3.125,
+      "precision_token": 284
+    },
+    {
+      "request": "r2",
+      "history": 22,
+      "candidate_token": 35926,
+      "hf_token": 35926,
+      "candidate_gap": 2.5,
+      "hf_gap": 2.625,
+      "precision_token": 35926
+    },
+    {
+      "request": "r0",
+      "history": 24,
+      "candidate_token": 99982,
+      "hf_token": 99982,
+      "candidate_gap": 0.625,
+      "hf_gap": 0.5,
+      "precision_token": 99982
+    },
+    {
+      "request": "r1",
+      "history": 27,
+      "candidate_token": 220,
+      "hf_token": 220,
+      "candidate_gap": 7.75,
+      "hf_gap": 7.875,
+      "precision_token": 220
+    },
+    {
+      "request": "r2",
+      "history": 23,
+      "candidate_token": 108260,
+      "hf_token": 108260,
+      "candidate_gap": 4.875,
+      "hf_gap": 4.875,
+      "precision_token": 108260
+    },
+    {
+      "request": "r0",
+      "history": 25,
+      "candidate_token": 24360,
+      "hf_token": 24360,
+      "candidate_gap": 9.125,
+      "hf_gap": 8.875,
+      "precision_token": 24360
+    },
+    {
+      "request": "r1",
+      "history": 28,
+      "candidate_token": 17,
+      "hf_token": 17,
+      "candidate_gap": 9.25,
+      "hf_gap": 9.25,
+      "precision_token": 17
+    },
+    {
+      "request": "r2",
+      "history": 24,
+      "candidate_token": 100674,
+      "hf_token": 100674,
+      "candidate_gap": 3.25,
+      "hf_gap": 3.125,
+      "precision_token": 100674
+    },
+    {
+      "request": "r0",
+      "history": 26,
+      "candidate_token": 60949,
+      "hf_token": 60949,
+      "candidate_gap": 3.1875,
+      "hf_gap": 3.1875,
+      "precision_token": 60949
+    },
+    {
+      "request": "r1",
+      "history": 29,
+      "candidate_token": 151645,
+      "hf_token": 151645,
+      "candidate_gap": 3.25,
+      "hf_gap": 2.875,
+      "precision_token": 151645
+    },
+    {
+      "request": "r2",
+      "history": 25,
+      "candidate_token": 9370,
+      "hf_token": 9370,
+      "candidate_gap": 4.125,
+      "hf_gap": 4.125,
+      "precision_token": 9370
+    }
+  ],
+  "precision_logits_max_abs_error": 0.875,
+  "precision_kv_max_abs_error": 5.15625,
+  "tf32": false,
+  "threads": 1,
+  "model_dir": "/home/user/proj/KuiperLLama/Qwen/Qwen3-0.6B",
+  "options": {
+    "norm_backend": "triton",
+    "device": "cuda",
+    "attention_backend": "triton",
+    "use_cuda_graph": true,
+    "max_num_seqs": 3,
+    "max_num_batched_tokens": 16,
+    "num_kv_blocks": 64,
+    "block_size": 16,
+    "enable_prefix_caching": true
+  },
+  "questions": [
+    "用一句话解释什么是 KV cache。",
+    "请只回答：1+1等于几？",
+    "用一句话解释什么是 Transformer。"
+  ],
+  "prompt_ids": [
+    [
+      151644,
+      872,
+      198,
+      11622,
+      105321,
+      104136,
+      106582,
+      84648,
+      6500,
+      1773,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ],
+    [
+      151644,
+      872,
+      198,
+      14880,
+      91680,
+      102104,
+      5122,
+      16,
+      10,
+      16,
+      107106,
+      99195,
+      11319,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ],
+    [
+      151644,
+      872,
+      198,
+      11622,
+      105321,
+      104136,
+      106582,
+      62379,
+      1773,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      151667,
+      271,
+      151668,
+      271
+    ]
+  ],
+  "results": {
+    "r0": [
+      82707,
+      6500,
+      54851,
+      101053,
+      100751,
+      99982,
+      24360,
+      60949
+    ],
+    "r1": [
+      16,
+      488,
+      220,
+      16,
+      284,
+      220,
+      17,
+      151645
+    ],
+    "r2": [
+      46358,
+      54851,
+      101053,
+      104210,
+      35926,
+      108260,
+      100674,
+      9370
+    ]
+  },
+  "texts": {
+    "r0": "KV cache 是一种用于缓存键",
+    "r1": "1 + 1 = 2",
+    "r2": "Transformer 是一种基于自注意力机制的"
+  },
+  "tokenizer_load_ms": 334.1795749729499,
+  "encoding_three_prompts": {
+    "median_ms": 0.19797903951257467,
+    "iqr_over_median": 0.1071354859119607,
+    "samples_ms": [
+      0.20902103278785944,
+      0.1945659751072526,
+      0.18726196140050888,
+      0.17755595035851002,
+      0.32801495399326086,
+      0.23135903757065535,
+      0.21522806491702795,
+      0.19496306777000427,
+      0.20279304590076208,
+      0.19797903951257467,
+      0.17606199253350496
+    ]
+  },
+  "model_load_ms": 3078.9805479580536,
+  "first_workload": {
+    "results": {
+      "r0": [
+        82707,
+        6500,
+        54851,
+        101053,
+        100751,
+        99982,
+        24360,
+        60949
+      ],
+      "r1": [
+        16,
+        488,
+        220,
+        16,
+        284,
+        220,
+        17,
+        151645
+      ],
+      "r2": [
+        46358,
+        54851,
+        101053,
+        104210,
+        35926,
+        108260,
+        100674,
+        9370
+      ]
+    },
+    "elapsed_ms": 1451.2205519713461,
+    "steps": 11,
+    "times_ms": {
+      "r0": [
+        527.6956399902701,
+        533.2311999518424,
+        730.5911749135703,
+        937.8990079276264,
+        943.2331169955432,
+        948.4633560059592,
+        954.5756129082292,
+        961.0287609975785
+      ],
+      "r1": [
+        533.2311999518424,
+        730.5911749135703,
+        937.8990079276264,
+        943.2331169955432,
+        948.4633560059592,
+        954.5756129082292,
+        961.0287609975785,
+        1170.8307169610634
+      ],
+      "r2": [
+        730.5911749135703,
+        937.8990079276264,
+        943.2331169955432,
+        948.4633560059592,
+        954.5756129082292,
+        961.0287609975785,
+        1170.8307169610634,
+        1451.2147119967267
+      ]
+    }
+  },
+  "logits_max_abs_error": 1.6875,
+  "kv_max_abs_error": 5.4375,
+  "verified_calls": [
+    {
+      "request_id": "r0",
+      "history": 16,
+      "count": 3,
+      "total": 19
+    },
+    {
+      "request_id": "r1",
+      "history": 16,
+      "count": 6,
+      "total": 22
+    },
+    {
+      "request_id": "r2",
+      "history": 16,
+      "count": 2,
+      "total": 18
+    },
+    {
+      "request_id": "r0",
+      "history": 19,
+      "count": 1,
+      "total": 20
+    },
+    {
+      "request_id": "r1",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r2",
+      "history": 18,
+      "count": 1,
+      "total": 19
+    },
+    {
+      "request_id": "r0",
+      "history": 20,
+      "count": 1,
+      "total": 21
+    },
+    {
+      "request_id": "r1",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r2",
+      "history": 19,
+      "count": 1,
+      "total": 20
+    },
+    {
+      "request_id": "r0",
+      "history": 21,
+      "count": 1,
+      "total": 22
+    },
+    {
+      "request_id": "r1",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    },
+    {
+      "request_id": "r2",
+      "history": 20,
+      "count": 1,
+      "total": 21
+    },
+    {
+      "request_id": "r0",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r1",
+      "history": 25,
+      "count": 1,
+      "total": 26
+    },
+    {
+      "request_id": "r2",
+      "history": 21,
+      "count": 1,
+      "total": 22
+    },
+    {
+      "request_id": "r0",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r1",
+      "history": 26,
+      "count": 1,
+      "total": 27
+    },
+    {
+      "request_id": "r2",
+      "history": 22,
+      "count": 1,
+      "total": 23
+    },
+    {
+      "request_id": "r0",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    },
+    {
+      "request_id": "r1",
+      "history": 27,
+      "count": 1,
+      "total": 28
+    },
+    {
+      "request_id": "r2",
+      "history": 23,
+      "count": 1,
+      "total": 24
+    },
+    {
+      "request_id": "r0",
+      "history": 25,
+      "count": 1,
+      "total": 26
+    },
+    {
+      "request_id": "r1",
+      "history": 28,
+      "count": 1,
+      "total": 29
+    },
+    {
+      "request_id": "r2",
+      "history": 24,
+      "count": 1,
+      "total": 25
+    }
+  ],
+  "long_eos_result": null,
+  "steady": {
+    "median_ms": 52.572874003089964,
+    "iqr_over_median": 0.05064189575572741,
+    "samples_ms": [
+      61.686023022048175,
+      54.7823979286477,
+      52.12000792380422,
+      52.572874003089964,
+      51.74778099171817
+    ]
+  },
+  "ttft_request_mean": {
+    "median_ms": 14.343033661134541,
+    "iqr_over_median": 0.08955232417061763,
+    "samples_ms": [
+      16.956076064767938,
+      15.57771764540424,
+      14.293265645392239,
+      14.343033661134541,
+      14.215743402019143
+    ]
+  },
+  "itl_request_mean": {
+    "median_ms": 4.851919332785266,
+    "iqr_over_median": 0.03848010815118874,
+    "samples_ms": [
+      5.711786471129883,
+      4.982604046485254,
+      4.795901665818834,
+      4.851919332785266,
+      4.754225945188885
+    ]
+  },
+  "samples": [
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 61.686023022048175,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          10.945131070911884,
+          16.92307204939425,
+          23.000025073997676,
+          29.031730024144053,
+          34.9499509902671,
+          40.777484071440995,
+          46.34322796482593,
+          51.80631403345615
+        ],
+        "r1": [
+          16.92307204939425,
+          23.000025073997676,
+          29.031730024144053,
+          34.9499509902671,
+          40.777484071440995,
+          46.34322796482593,
+          51.80631403345615,
+          57.32586502563208
+        ],
+        "r2": [
+          23.000025073997676,
+          29.031730024144053,
+          34.9499509902671,
+          40.777484071440995,
+          46.34322796482593,
+          51.80631403345615,
+          57.32586502563208,
+          61.68356502894312
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 54.7823979286477,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          10.332982987165451,
+          15.5995839741081,
+          20.800585974939167,
+          25.915851932950318,
+          30.853401985950768,
+          35.90051899664104,
+          40.875567006878555,
+          45.9165700012818
+        ],
+        "r1": [
+          15.5995839741081,
+          20.800585974939167,
+          25.915851932950318,
+          30.853401985950768,
+          35.90051899664104,
+          40.875567006878555,
+          45.9165700012818,
+          50.670907949097455
+        ],
+        "r2": [
+          20.800585974939167,
+          25.915851932950318,
+          30.853401985950768,
+          35.90051899664104,
+          40.875567006878555,
+          45.9165700012818,
+          50.670907949097455,
+          54.780359962023795
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 52.12000792380422,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          9.313056012615561,
+          14.288447913713753,
+          19.278293009847403,
+          24.179282947443426,
+          28.967450954951346,
+          33.92195398919284,
+          38.569041993469,
+          43.44090598169714
+        ],
+        "r1": [
+          14.288447913713753,
+          19.278293009847403,
+          24.179282947443426,
+          28.967450954951346,
+          33.92195398919284,
+          38.569041993469,
+          43.44090598169714,
+          48.03510301280767
+        ],
+        "r2": [
+          19.278293009847403,
+          24.179282947443426,
+          28.967450954951346,
+          33.92195398919284,
+          38.569041993469,
+          43.44090598169714,
+          48.03510301280767,
+          52.117722923867404
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 52.572874003089964,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          9.267618996091187,
+          14.36898997053504,
+          19.392492016777396,
+          24.162260931916535,
+          29.32861994486302,
+          34.15940992999822,
+          38.99481298867613,
+          43.86589699424803
+        ],
+        "r1": [
+          14.36898997053504,
+          19.392492016777396,
+          24.162260931916535,
+          29.32861994486302,
+          34.15940992999822,
+          38.99481298867613,
+          43.86589699424803,
+          48.48354496061802
+        ],
+        "r2": [
+          19.392492016777396,
+          24.162260931916535,
+          29.32861994486302,
+          34.15940992999822,
+          38.99481298867613,
+          43.86589699424803,
+          48.48354496061802,
+          52.56996501702815
+        ]
+      }
+    },
+    {
+      "results": {
+        "r0": [
+          82707,
+          6500,
+          54851,
+          101053,
+          100751,
+          99982,
+          24360,
+          60949
+        ],
+        "r1": [
+          16,
+          488,
+          220,
+          16,
+          284,
+          220,
+          17,
+          151645
+        ],
+        "r2": [
+          46358,
+          54851,
+          101053,
+          104210,
+          35926,
+          108260,
+          100674,
+          9370
+        ]
+      },
+      "elapsed_ms": 51.74778099171817,
+      "steps": 11,
+      "times_ms": {
+        "r0": [
+          9.22212505247444,
+          14.184385072439909,
+          19.24072008114308,
+          24.10561207216233,
+          28.809001087211072,
+          33.591612009331584,
+          38.28901506494731,
+          43.057461036369205
+        ],
+        "r1": [
+          14.184385072439909,
+          19.24072008114308,
+          24.10561207216233,
+          28.809001087211072,
+          33.591612009331584,
+          38.28901506494731,
+          43.057461036369205,
+          47.682747012004256
+        ],
+        "r2": [
+          19.24072008114308,
+          24.10561207216233,
+          28.809001087211072,
+          33.591612009331584,
+          38.28901506494731,
+          43.057461036369205,
+          47.682747012004256,
+          51.74576700665057
+        ]
+      }
+    }
+  ],
+  "scope": "One fresh process per backend. Load excludes tokenizer and pre-initialized CUDA context. First full workload includes first GPU library work/JIT/graph capture; on-disk caches retained. BF16 official comparisons are diagnostic (different rounding policy); BF16 precision-aware dense oracle metrics are recorded for review, not silently accepted with FP32 tolerance. Memory is PyTorch allocated/reserved, not nvidia-smi, reference excluded from first/steady peaks. Reference and full parameter/KV checks are outside timing. Warm benchmark has prefix caching OFF,2 warmups,5 complete workloads by default,3 requests max8 output tokens each. TTFT is request submission to first sampled token (not text streaming), reported mean over requests per run. ITL includes scheduling and other requests/prefill, not pure kernel time. Encoding measured separately; timing not a claim of stable cross-backend speedup. Source files never edited."
+}
