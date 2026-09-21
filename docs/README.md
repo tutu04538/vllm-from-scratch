@@ -36,3 +36,6 @@
 | [step35_sampling_beam_triton.md](step35_sampling_beam_triton.md) | `step35/`（包） | 采样策略与惩罚、beam search 与 KV 分叉、Triton 采样 kernel（**后两者已移除**，文档保留原文） |
 | [step36_benchmark_gap.md](step36_benchmark_gap.md) | `benchmarks/`（无新增包） | 与 vLLM 同条件基准、六测点差距、profiler 归因与下一项改动 |
 | [step36_remove_beam_triton_sampler.md](step36_remove_beam_triton_sampler.md) | `step35/`（就地删除） | 移除 beam search 与 Triton 采样 kernel：牵连面、验收影响、残留引用 |
+| [step37_query_tiled_prefill_attention.md](step37_query_tiled_prefill_attention.md) | `step37/`（包） | query 分块的 prefill attention：`tl.dot`、tile 归属、图缓存键与路径回退 |
+| [step38_fused_rope.md](step38_fused_rope.md) | `step38/`（包，新增 `rope.py`） | 融合 RoPE：一次 forward 一个 kernel、`fp_fusion` 的取舍与量化 |
+| [step39_merged_proj.md](step39_merged_proj.md) | `step39/`（包） | 合并 QKV 与 gate/up 投影：一块存储 + 多个视图、每层 7 → 4 次 launch |

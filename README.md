@@ -66,6 +66,9 @@ step36/          例外：这一关是诊断关，没有代码包，也不放实
 | 34 | `step34/`（包，入口 `step34/step34.py`） | 只为需要采样的行算 logits：lm_head 只处理 M 行 |
 | 35 | `step35/`（包，入口 `step35/step35.py`） | 采样策略（top-p / 三种惩罚）；beam search 与 Triton 采样 kernel 已移出主线 |
 | 36 | `step36/`（只有 README） | 诊断关：与 vLLM 的单卡同条件基准、六测点差距与 profiler 定位 |
+| 37 | `step37/`（包，入口 `step37/step37.py`） | query 分块的 prefill attention：一个 program 处理多行 query，QK/PV 走 `tl.dot` |
+| 38 | `step38/`（包，入口 `step38/step38.py`） | 融合 RoPE：一次 forward 一个 kernel，每次调用 12 → 1 个 GPU kernel |
+| 39 | `step39/`（包，入口 `step39/step39.py`） | 合并 QKV 与 gate/up 投影：每层投影 7 → 4 次，零额外显存 |
 
 大致的推进脉络：
 
