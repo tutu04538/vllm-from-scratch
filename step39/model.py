@@ -115,9 +115,14 @@ class DecoderLayer(nn.Module):
         self.norm1 = RMSNorm(d_model, eps, norm_backend)
         self.norm2 = RMSNorm(d_model, eps, norm_backend)
 
-        self.q_proj = nn.Linear(d_model, num_q_heads * head_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, num_kv_heads * head_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, num_kv_heads * head_dim, bias=False)
+        # 原来一层 7 次投影：q/k/v 三次读同一份 hidden，gate/up 又两次读同一份。
+        # 合并后 4 次：qkv 一次、gate_up 一次，o_proj 与 down_proj 各一次。
+        #
+        # 融合的代价是内部参数名变成 qkv_proj / gate_up_proj，与 HF 的
+        # q_proj / k_proj / v_proj 不再一一对应；转换在装载权重时做，见
+        # `_load_from_state_dict`（它同时接受旧的三个键与新的融合键）。
+        self.qkv_proj = nn.Linear(d_model, (num_q_heads + 2 * num_kv_heads) * head_dim,
+                                  bias=False)
         # o_proj 的输入是「拼接后的 attention 输出」，宽度是 Q heads × head_dim，不是 d_model
         self.o_proj = nn.Linear(num_q_heads * head_dim, d_model, bias=False)
         # o_proj 与 down_proj 各只有一次，不合并
@@ -127,67 +132,42 @@ class DecoderLayer(nn.Module):
             self.q_norm = RMSNorm(head_dim, eps, norm_backend)
             self.k_norm = RMSNorm(head_dim, eps, norm_backend)
 
-        # SwiGLU：down_proj(silu(gate_proj(z)) * up_proj(z))
-        self.gate_proj = nn.Linear(d_model, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(d_model, intermediate_size, bias=False)
+        # SwiGLU：down_proj(silu(gate) * up)
+        self.gate_up_proj = nn.Linear(d_model, 2 * intermediate_size, bias=False)
         self.down_proj = nn.Linear(intermediate_size, d_model, bias=False)
 
-        # 建完立刻把 q/k/v 与 gate/up 的权重并到两块连续存储上（见 _fuse_projections）
-        self._fuse_projections()
-
-    # ---- 投影合并 ----
-    #
-    # 原来一层 7 次投影：q/k/v 三次读同一份 hidden，gate/up 又两次读同一份。
-    # 合并后 4 次：qkv 一次、gate_up 一次，o_proj 与 down_proj 各一次。
-    #
-    # **注意这不是「再存一份合并副本」**：三个 Parameter 变成同一块存储的视图，
-    # 原来的存储随即释放，稳态显存不变（见 _fuse_projections 的说明）。
-
-    def _fuse_projections(self):
-        # q/k/v 拼成一块、gate/up 拼成一块；拼接只在构造时做一次，**不在 forward 里做**
-        self._qkv_splits = (self.q_proj.weight.shape[0], self.k_proj.weight.shape[0],
-                            self.v_proj.weight.shape[0])
-        self.register_buffer(
-            "_qkv_storage",
-            torch.cat([self.q_proj.weight.detach(), self.k_proj.weight.detach(),
-                       self.v_proj.weight.detach()], dim=0).contiguous(),
-            persistent=False)
-        self._gate_up_splits = (self.gate_proj.weight.shape[0], self.up_proj.weight.shape[0])
-        self.register_buffer(
-            "_gate_up_storage",
-            torch.cat([self.gate_proj.weight.detach(), self.up_proj.weight.detach()],
-                      dim=0).contiguous(),
-            persistent=False)
-        self._rebind_split_views()
-
-    def _rebind_split_views(self):
-        # 把 q/k/v、gate/up 重新指回存储的对应片段。
-        # 视图与存储是同一块内存，所以下面这些行为全部不变：
-        #   layer.q_proj.weight.add_(x)     原地改，写穿到存储
-        #   load_state_dict({...q_proj...}) 逐参数 copy_，写穿到存储
-        #   state_dict()["...q_proj.weight"] 取到的是视图，值正确、键名不变
-        if not hasattr(self, "_qkv_splits"):
-            return
-        nq, nk, nv = self._qkv_splits
-        self.q_proj.weight = nn.Parameter(self._qkv_storage[:nq])
-        self.k_proj.weight = nn.Parameter(self._qkv_storage[nq:nq + nk])
-        self.v_proj.weight = nn.Parameter(self._qkv_storage[nq + nk:nq + nk + nv])
-        ng, nu = self._gate_up_splits
-        self.gate_proj.weight = nn.Parameter(self._gate_up_storage[:ng])
-        self.up_proj.weight = nn.Parameter(self._gate_up_storage[ng:ng + nu])
-
-    def _apply(self, fn, *args, **kwargs):
-        # .to(device/dtype) 会把每个 Parameter 各自搬走，视图的共享关系会断。
-        # 存储本身带着同一份数据一起被搬走，所以搬完把视图重新指过去就恢复了。
-        super()._apply(fn, *args, **kwargs)
-        self._rebind_split_views()
-        return self
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # 兼容旧的三键/两键写法：HF 目录、旧版 save_model 目录、以及既有夹具都还是
+        # q_proj/k_proj/v_proj 与 gate_proj/up_proj，装进来之前先沿输出维合成融合键。
+        # 已经是融合键的（新版 save_model 写出来的）原样放行。
+        #
+        # **必须原地改这个 dict**，加和删两个动作都是：
+        #
+        # 加：融合键要由 `qkv_proj` 这个子模块取，而它拿到的是从**这一个** dict 按前缀
+        #     过滤出来的子字典（torch 的 load() 用的是传进来的对象，不是局部副本）。
+        #     改副本子模块看不到，结果是「Missing key: qkv_proj.weight」。
+        # 删：基类末尾会遍历本前缀下的键，把不属于任何子模块的报成 Unexpected key。
+        #     `q_proj` 已经不再是子模块了，所以旧键必须 pop 掉，否则每次装 HF 目录
+        #     都会抛「Unexpected key(s): layers.0.q_proj.weight ...」。
+        #
+        # 调用方那份不会被改到——torch 在 load_state_dict 入口已经复制过一次了。
+        for fused, parts in (("qkv_proj.weight", ("q_proj.weight", "k_proj.weight", "v_proj.weight")),
+                             ("gate_up_proj.weight", ("gate_proj.weight", "up_proj.weight"))):
+            if (prefix + fused) in state_dict:
+                continue
+            keys = [prefix + p for p in parts]
+            if not all(k in state_dict for k in keys):
+                continue
+            state_dict[prefix + fused] = torch.cat([state_dict.pop(k) for k in keys], dim=0)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
 
     def forward(self, hidden):
         # MLP 部分与 attention 路径共用：入参是残差前的 h
         z = self.norm2(hidden)
         # 一次 GEMM 同时算出 gate 与 up，再沿最后一维切成两半（切片是视图，不拷贝）
-        gate_up = F.linear(z, self._gate_up_storage)
+        gate_up = self.gate_up_proj(z)
         gate, up = gate_up.chunk(2, dim=-1)
         return hidden + self.down_proj(F.silu(gate) * up)
 
@@ -429,7 +409,7 @@ class TinyCausalLM(nn.Module):
         # 所以这里**不需要 .contiguous()**——那会白搭一次拷贝。
         nq = self.num_q_heads * self.head_dim
         nk = self.num_kv_heads * self.head_dim
-        qkv = F.linear(hidden, layer._qkv_storage)
+        qkv = layer.qkv_proj(hidden)
         # 注意顺序：先拆出 q/k，再各自 norm，再 RoPE。
         # Q/K norm 是逐 head 的，对合并后的整块做会跨 head，语义就错了。
         q = qkv[:, :nq].view(num_tokens, self.num_q_heads, self.head_dim)

@@ -131,38 +131,60 @@ def main():
             lb, kb = run_capture(b, real_prompts, 6)
         compare(f"真实模型 rope={rope}", la, ka, lb, kb, 2 ** -9)
 
-    print("\n=== 4. 既有语义没有改变 ===")
+    print("\n=== 4. 参数名、兼容装载与往返 ===")
     e = build("step39", FIX)
     with torch.inference_mode():
-        layer = e.model.layers[0]
-        n_store = layer._qkv_storage.numel()
-        n_views = layer.q_proj.weight.numel() + layer.k_proj.weight.numel() + layer.v_proj.weight.numel()
-        check("合并后显存不变（存储元素数 == 三个视图之和）", n_store == n_views,
-              f"{n_store} vs {n_views}")
-        check("q/k/v 的 Parameter 仍然是存储的视图",
-              layer.q_proj.weight.data_ptr() == layer._qkv_storage.data_ptr())
-
-        # 原地改权重：写穿到存储
-        layer.q_proj.weight.add_(0.123)
-        check("原地改 q_proj.weight 写穿到合并存储",
-              torch.equal(layer._qkv_storage[:layer.q_proj.weight.shape[0]], layer.q_proj.weight))
-
-        # load_state_dict 逐参数写穿
-        before = e.model.state_dict()
-        e.model.load_state_dict(before)
-        check("load_state_dict 往返后存储仍然正确",
-              torch.equal(layer._qkv_storage[:layer.q_proj.weight.shape[0]], layer.q_proj.weight))
-
-        # state_dict 键名与取值
         keys = set(e.model.state_dict())
-        check("state_dict 键名未变（仍是 q_proj/k_proj/v_proj/gate_proj/up_proj）",
-              {"layers.0.q_proj.weight", "layers.0.k_proj.weight", "layers.0.v_proj.weight",
-               "layers.0.gate_proj.weight", "layers.0.up_proj.weight"} <= keys)
+        check("state_dict 用融合键（qkv_proj / gate_up_proj）",
+              {"layers.0.qkv_proj.weight", "layers.0.gate_up_proj.weight"} <= keys,
+              f"layers.0 的投影键: {sorted(k for k in keys if k.startswith('layers.0.') and 'proj' in k)}")
+        check("旧的三键/两键不再出现",
+              not ({"layers.0.q_proj.weight", "layers.0.k_proj.weight", "layers.0.v_proj.weight",
+                    "layers.0.gate_proj.weight", "layers.0.up_proj.weight"} & keys))
 
-        # .to() 之后共享关系要恢复
-        e.model.to("cuda")
-        check("再次 .to(cuda) 后视图仍指向存储",
-              e.model.layers[0].q_proj.weight.data_ptr() == e.model.layers[0]._qkv_storage.data_ptr())
+        layer = e.model.layers[0]
+        n_qkv = layer.qkv_proj.weight.numel()
+        expect = (e.model.num_q_heads + 2 * e.model.num_kv_heads) * e.model.head_dim * e.model.d_model
+        check("融合权重的元素数 == Q/K/V 三者之和", n_qkv == expect, f"{n_qkv} vs {expect}")
+
+        # 旧写法（三键）必须仍能装进来，且与融合键装出来的结果逐位相同
+        fused = {k: v.detach().clone() for k, v in e.model.state_dict().items()}
+        legacy = {}
+        for k, v in fused.items():
+            if k.endswith("qkv_proj.weight"):
+                nq = e.model.num_q_heads * e.model.head_dim
+                nk = e.model.num_kv_heads * e.model.head_dim
+                p = k[: -len("qkv_proj.weight")]
+                legacy[p + "q_proj.weight"] = v[:nq]
+                legacy[p + "k_proj.weight"] = v[nq:nq + nk]
+                legacy[p + "v_proj.weight"] = v[nq + nk:]
+            elif k.endswith("gate_up_proj.weight"):
+                p = k[: -len("gate_up_proj.weight")]
+                half = v.shape[0] // 2
+                legacy[p + "gate_proj.weight"] = v[:half]
+                legacy[p + "up_proj.weight"] = v[half:]
+            else:
+                legacy[k] = v
+        check("旧三键字典里确实没有融合键",
+              not any(k.endswith("qkv_proj.weight") for k in legacy))
+
+        e_legacy = build("step39", FIX)
+        e_legacy.model.load_state_dict(legacy, strict=True)
+        same = all(torch.equal(a, b) for a, b in
+                   zip(e.model.state_dict().values(), e_legacy.model.state_dict().values()))
+        check("用旧三键装载后权重与融合键装载逐位相同", same)
+
+        # 真权重上跑一遍，确认两条装载路径的 logits 也一致
+        la, _ = run_capture(build("step39", FIX), prompts, 3)
+        lb, _ = run_capture(e_legacy, prompts, 3)
+        d = max((x - y).abs().max().item() for x, y in zip(la, lb))
+        check("两条装载路径的前向输出一致", d == 0.0, f"最大差={d:.3e}")
+
+        # 原地改融合参数
+        before = layer.qkv_proj.weight.detach().clone()
+        layer.qkv_proj.weight.add_(0.123)
+        check("原地改融合权重生效",
+              not torch.equal(layer.qkv_proj.weight, before))
 
     print("\n=== 5. 图捕获次数没有变多 ===")
     e38 = build("step38", FIX, graph=True)

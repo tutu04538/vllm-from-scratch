@@ -16,8 +16,11 @@ MODEL_TYPE = "tiny_rope_decoder"
 MODEL_DTYPE = "float32"
 # v1/v2：没有 eos_token_ids，那时的停止规则就是写死的 4
 # v3：写明 eos_token_ids，停止规则随模型一起保存
-FORMAT_VERSION = 3
-COMPATIBLE_FORMAT_VERSIONS = (1, 2, 3)
+# v4：QKV 与 gate/up 合并成 qkv_proj / gate_up_proj，参数名不再与 HF 一一对应
+#     旧版本目录里的 q_proj/k_proj/v_proj 与 gate_proj/up_proj 仍能装进来，
+#     合成发生在 DecoderLayer._load_from_state_dict（这里只负责认版本号）
+FORMAT_VERSION = 4
+COMPATIBLE_FORMAT_VERSIONS = (1, 2, 3, 4)
 # 自己写出来的目录永远是 FP32
 WEIGHT_DTYPES = (torch.float32,)
 
