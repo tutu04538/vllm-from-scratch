@@ -8,32 +8,28 @@ profiler 定位 → 提出一处改动」。所以这里放的是那一关跑出
 > 验收方在 [第三十七关需求](../../vllm-omni/learning_notes/14_vllm_from_scratch/138_第三十七关_query分块的分页prefill_attention.md)
 > §5 里写过「第三十六关没有实现包……不需要补一个空的 step36」。
 > 本目录**不是**那种空的实现包，也不参与版本谱系（`step37/` 应从 `step35/` 复制，
-> 不从 `step36/` 复制）。它只是把该关的测量结果就地归档。
+> 不从 `step36/` 复制）。它只是该关的入口说明。
 
-## 1. 这里有什么
+## 1. 数据在哪里
 
-```text
-step36/
-  README.md            本文件：结论摘要与数据索引
-  results/             修正后（v2）的原始测量数据
-    step36_v2_<engine>_<case>_p<n>.json    36 份单次运行结果
-    step36_v2_matrix_raw.json              36 条汇总
-    step36_v2_summary.json                 按测点聚合的对照表
-    step36_v2_trace_summary.json           四份 trace 的区间并集口径汇总
-    step36_inputs.json                     六个测点的固定输入 token IDs（种子 20260920）
-  traces/
-    mine_prefill_c8.pt.trace.json.gz       代表性负载，我们的引擎
-    vllm_prefill_c8.pt.trace.json.gz       同一负载，vLLM
-```
+本目录只有这份 README；实测数据都在 `benchmarks/` 下（与其他关一致）：
 
-`decode_c1` 的 trace 有 8 MB（15 万次 kernel 执行），不便入库，未收录。
-一条命令可重新生成：
+| 内容 | 位置 |
+|---|---|
+| 36 份单次运行结果 | `benchmarks/results/step36_v2_<engine>_<case>_p<n>.json` |
+| 36 条汇总 / 按测点聚合表 | `benchmarks/results/step36_v2_matrix_raw.json`、`step36_v2_summary.json` |
+| 四份 trace 的区间并集口径汇总 | `benchmarks/results/step36_v2_trace_summary.json` |
+| 六个测点的固定输入（种子 20260920） | `benchmarks/results/step36_inputs.json` |
+| **代表性 trace（已入库）** | `benchmarks/results/step36_traces/mine_prefill_c8.pt.trace.json.gz`、`vllm_prefill_c8.pt.trace.json.gz` |
+| 基准工具 | `benchmarks/bench_step36_vllm_compare.py` 等（见下） |
+| 完整分析 | [`docs/step36_benchmark_gap.md`](../docs/step36_benchmark_gap.md) |
+
+只保留 `prefill_c8` 这组代表性 trace 入库。`decode_c1` 的两份合计约 14 MB（15 万次
+kernel 执行），已在 `.gitignore` 中排除，一条命令可重新生成：
 
 ```bash
 python benchmarks/profile_step36.py --engine mine --case decode_c1
 ```
-
-基准工具本身在 `benchmarks/`，完整分析写在 [`docs/step36_benchmark_gap.md`](../docs/step36_benchmark_gap.md)。
 
 ## 2. 结论摘要
 
@@ -59,7 +55,7 @@ python benchmarks/profile_step36.py --engine mine --case decode_c1
 | 版本 | 文件前缀 | 配置 | 状态 |
 |---|---|---|---|
 | v1 | `benchmarks/results/step36_<engine>_…`（无 tag） | `norm_backend` **漏传**（实际跑 Torch RMSNorm） | **已作废**，保留供对照 |
-| v2 | `results/step36_v2_<engine>_…` | `norm_backend=triton`，且有运行时断言核对 | 现行数据 |
+| v2 | `benchmarks/results/step36_v2_<engine>_…` | `norm_backend=triton`，且有运行时断言核对 | 现行数据 |
 
 v1 的两处配置错误由验收方复核发现：
 

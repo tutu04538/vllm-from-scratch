@@ -207,9 +207,10 @@ KV = 512 块 × 16 slot × 28 层 × 2 × 8 kv_heads × 128 dim × 2 B = 0.875 G
 
 对两个代表性负载跑 profiler（`prefill_c8` 差距最大，`decode_c1` 生成最长）。**profiler 数字不是正式成绩**，只用来说明时间去向。本次已导出原始 chrome trace，可独立复核：
 
-- `benchmarks/results/step36_traces/mine_prefill_c8.pt.trace.json.gz`
-- `benchmarks/results/step36_traces/mine_decode_c1.pt.trace.json.gz`
-- vLLM 两份同目录下 `rank0.*.pt.trace.json.gz`
+- `benchmarks/results/step36_traces/mine_prefill_c8.pt.trace.json.gz`（**已入库**）
+- `benchmarks/results/step36_traces/vllm_prefill_c8.pt.trace.json.gz`（**已入库**）
+- `mine_decode_c1` / `vllm_decode_c1` 两份同目录下，各约 8 MB 与 6 MB，
+  已在 `.gitignore` 中排除，可用 `profile_step36.py` 重新生成
 
 ### 4.1 prefill_c8
 

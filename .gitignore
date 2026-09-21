@@ -46,6 +46,8 @@ step*/*.safetensors
 
 # Keep benchmarks/results/*.json tracked as reproducible experiment records.
 
-# Profiler traces are large and regenerable via benchmarks/profile_step36.py;
-# the curated representative traces live in step36/traces/.
-benchmarks/results/step36_traces/
+# Profiler traces: large (up to 8 MB) and regenerable via profile_step36.py.
+# Keep only the two curated representative traces for step36; the rest stay local.
+benchmarks/results/step36_traces/*
+!benchmarks/results/step36_traces/mine_prefill_c8.pt.trace.json.gz
+!benchmarks/results/step36_traces/vllm_prefill_c8.pt.trace.json.gz

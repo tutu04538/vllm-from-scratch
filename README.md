@@ -22,8 +22,8 @@ fixtures/        验收用的外部模型目录（第 30 关：随机初始化�
                  第 31 关用本机真实 Qwen3-0.6B，目录不在本仓库内，只读使用
 benchmarks/      每关的性能脚本；results/ 下是实测记录（JSON，按时间戳命名）
 docs/            每次改动的记录：需求、改动、设计要点、验证、遗留
-step36/          例外：这一关是诊断关，没有代码包。这里归档的是与 vLLM 的同条件
-                 基准结果与代表性 trace，不含实现
+step36/          例外：这一关是诊断关，没有代码包，也不放实现；只有一份 README
+                 说明该关结论与数据位置（实测数据仍在 benchmarks/results/ 下）
 ```
 
 ## 关卡
@@ -65,7 +65,7 @@ step36/          例外：这一关是诊断关，没有代码包。这里归档
 | 33 | `step33/`（包，入口 `step33/step33.py`） | 融合 RMSNorm：一个 Triton kernel 顶掉一串小算子 |
 | 34 | `step34/`（包，入口 `step34/step34.py`） | 只为需要采样的行算 logits：lm_head 只处理 M 行 |
 | 35 | `step35/`（包，入口 `step35/step35.py`） | 采样策略（top-p / 三种惩罚）；beam search 与 Triton 采样 kernel 已移出主线 |
-| 36 | `step36/`（无代码包） | 诊断关：与 vLLM 的单卡同条件基准、六测点差距与 profiler 定位 |
+| 36 | `step36/`（只有 README） | 诊断关：与 vLLM 的单卡同条件基准、六测点差距与 profiler 定位 |
 
 大致的推进脉络：
 
