@@ -38,4 +38,6 @@
 | [step36_remove_beam_triton_sampler.md](step36_remove_beam_triton_sampler.md) | `step35/`（就地删除） | 移除 beam search 与 Triton 采样 kernel：牵连面、验收影响、残留引用 |
 | [step37_query_tiled_prefill_attention.md](step37_query_tiled_prefill_attention.md) | `step37/`（包） | query 分块的 prefill attention：`tl.dot`、tile 归属、图缓存键与路径回退 |
 | [step38_fused_rope.md](step38_fused_rope.md) | `step38/`（包，新增 `rope.py`） | 融合 RoPE：一次 forward 一个 kernel、`fp_fusion` 的取舍与量化 |
-| [step39_merged_proj.md](step39_merged_proj.md) | `step39/`（包） | 合并 QKV 与 gate/up 投影：一块存储 + 多个视图、每层 7 → 4 次 launch |
+| [step39_merged_proj.md](step39_merged_proj.md) | `step39/`（包） | 合并 QKV 与 gate/up 投影：融合参数、每层 7 → 4 次 launch、装载时兼容旧三键 |
+| [step40_kv_on_demand.md](step40_kv_on_demand.md) | `step40/`（包） | KV 按需分配：准入承诺额度 + 生长时补块、不可能完成时明确拒绝 |
+| [step41_short_critical_path.md](step41_short_critical_path.md) | `step41/`（包） | 缩短 decode 一步的关键路径：slot mapping 改 CPU 侧算，步墙钟 −18% |

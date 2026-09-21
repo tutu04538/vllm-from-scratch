@@ -68,7 +68,9 @@ step36/          例外：这一关是诊断关，没有代码包，也不放实
 | 36 | `step36/`（只有 README） | 诊断关：与 vLLM 的单卡同条件基准、六测点差距与 profiler 定位 |
 | 37 | `step37/`（包，入口 `step37/step37.py`） | query 分块的 prefill attention：一个 program 处理多行 query，QK/PV 走 `tl.dot` |
 | 38 | `step38/`（包，入口 `step38/step38.py`） | 融合 RoPE：一次 forward 一个 kernel，每次调用 12 → 1 个 GPU kernel |
-| 39 | `step39/`（包，入口 `step39/step39.py`） | 合并 QKV 与 gate/up 投影：每层投影 7 → 4 次，零额外显存 |
+| 39 | `step39/`（包，入口 `step39/step39.py`） | 合并 QKV 与 gate/up 投影：每层投影 7 → 4 次 |
+| 40 | `step40/`（包，入口 `step40/step40.py`） | KV 按需分配：块随进度增长，容量不可能满足时明确拒绝而非空转 |
+| 41 | `step41/`（包，入口 `step41/step41.py`） | 缩短 decode 关键路径：slot mapping 在 CPU 侧按块区间展开，不再每请求每步 H2D |
 
 大致的推进脉络：
 

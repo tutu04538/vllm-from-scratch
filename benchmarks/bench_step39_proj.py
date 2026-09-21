@@ -78,7 +78,7 @@ def kernel_count(step):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--step", choices=("step38", "step39"))
+    ap.add_argument("--step", choices=("step38", "step39", "step40"))
     ap.add_argument("--case", choices=tuple(CASES))
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--reps", type=int, default=5)
@@ -103,13 +103,13 @@ def main():
         # 顺序差会被误当成版本差；配对之后每轮只比较相邻的两次，把漂移消掉。
         spec_c = CASES[args.case]
         prompts_c = load_inputs(args.case)
-        engines = {s: build(s) for s in ("step38", "step39")}
+        engines = {s: build(s) for s in ("step39", "step40")}
         for s in engines:
             run(engines[s], prompts_c, spec_c["gen"], f"warm_{s}")
             run(engines[s], prompts_c, spec_c["gen"], f"warm2_{s}")
         pair = []
         for r in range(args.reps):
-            order = ("step38", "step39") if r % 2 == 0 else ("step39", "step38")
+            order = ("step39", "step40") if r % 2 == 0 else ("step40", "step39")
             row = {}
             for s in order:
                 dt, got = run(engines[s], prompts_c, spec_c["gen"], f"{s}_{r}")
@@ -117,15 +117,15 @@ def main():
                     raise RuntimeError(f"{s} 输出长度不对: {got}")
                 row[s] = dt
             pair.append(row)
-            print(f"  轮 {r}: step38={row['step38'] * 1000:.2f} ms  "
-                  f"step39={row['step39'] * 1000:.2f} ms  "
-                  f"差={(row['step39'] - row['step38']) / row['step38'] * 100:+.1f}%")
-        a = [p["step38"] for p in pair]
-        b = [p["step39"] for p in pair]
+            print(f"  轮 {r}: step39={row['step39'] * 1000:.2f} ms  "
+                  f"step40={row['step40'] * 1000:.2f} ms  "
+                  f"差={(row['step40'] - row['step39']) / row['step39'] * 100:+.1f}%")
+        a = [p["step39"] for p in pair]
+        b = [p["step40"] for p in pair]
         diffs = [(y - x) / x for x, y in zip(a, b)]
         print(json.dumps(dict(
             case=args.case, paired=True, reps=len(pair),
-            median_38=round(statistics.median(a), 4), median_39=round(statistics.median(b), 4),
+            median_39=round(statistics.median(a), 4), median_40=round(statistics.median(b), 4),
             paired_median_pct=round(statistics.median(diffs) * 100, 2),
             same_direction=sum(1 for d in diffs if d < 0),
         ), ensure_ascii=False))
