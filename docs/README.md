@@ -41,3 +41,6 @@
 | [step39_merged_proj.md](step39_merged_proj.md) | `step39/`（包） | 合并 QKV 与 gate/up 投影：融合参数、每层 7 → 4 次 launch、装载时兼容旧三键 |
 | [step40_kv_on_demand.md](step40_kv_on_demand.md) | `step40/`（包） | KV 按需分配：准入承诺额度 + 生长时补块、不可能完成时明确拒绝 |
 | [step41_short_critical_path.md](step41_short_critical_path.md) | `step41/`（包） | 缩短 decode 一步的关键路径：slot mapping 改 CPU 侧算，步墙钟 −18% |
+| [step42_bandwidth_account.md](step42_bandwidth_account.md) | **无新增代码**（归因关） | decode 一步的带宽账：840 MiB 四种投影的有效带宽，结论按证据强度收窄 |
+| [step43_incremental_output.md](step43_incremental_output.md) | `step43/`（包） | 增量输出观察点 `on_token`：每产生一个 token 通知一次，旧接口不变 |
+| [step44_recompute_preemption.md](step44_recompute_preemption.md) | `step44/`（包） | 重计算式抢占：容量超卖、从 running 尾部选犧牲者、历史按 `all_token_ids` 重放 |
