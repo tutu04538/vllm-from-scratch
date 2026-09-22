@@ -1,8 +1,22 @@
 # step44：重计算式抢占与恢复（第一阶段）
 
-- 对应代码：`step44/`（从 `step43/` 复制，入口改名 `step44.py`）
-- 基线 `step43/` 原样保留未改
-- 改动文件：`cache.py`、`scheduler.py`、`engine.py`、`__init__.py`
+- 对应代码：`step44/`（新增，从 `step43/` 复制，入口改名 `step44.py`）
+- 包摘要 SHA256：`3b50b24595f7c038…`（14 个 .py / 2879 行，验收方 `source_digest()` 口径）
+- 基线：`step43/`，指纹 `febd8c3663a061f6…`（14 个 .py / 2729 行），原样保留未改
+- **改动文件只有 4 个 + 入口改名**，逐个列出：
+
+| 文件 | 改动 |
+|---|---|
+| `cache.py`（+51 / −5） | ① `SequenceConfig` 新增 `all_token_ids`、`num_uncomputed_tokens`，`prefill_len` 改为它的别名（旧公式的 `max(..., 0)` 去掉）；② 新增 `is_ready_for_next_token`；③ 新增 `num_preemptions` / `recomputed_tokens` / `high_water` 三个计数；④ `KVCachePool.__init__` 新增 `over_subscribe=False`；⑤ `allocate_block()` 超卖时跳过可用量检查、不写承诺额度；⑥ `ensure_blocks()` 超卖时容量不足改为**无副作用**返回 `False`（承诺式仍 `raise RuntimeError`） |
+| `scheduler.py`（+104 / −25） | ① `__init__` 新增 `preemption_mode`、`num_preemptions`、`_preempted_this_step`、`_allocated_this_step`；② `schedule()` 的预留判定改用 `is_ready_for_next_token`，decode / prefill 两条分支合成「从 `all_token_ids[cache.length]` 续算」，补块阶段加抢占循环；③ 新增 `_make_room()`（尾部选犠牲者）；④ 新增 `_preempt()`；⑤ `post_step()` 判停守卫改为 `not seq.output_ids`，并在开头记重算量 |
+| `engine.py`（+31 / −6） | ① 新增 `PREEMPTION_MODES` 与 `_check_preemption_mode()`；② `Engine.__init__` / `Engine.from_model_dir` 尾部新增 keyword-only `preemption_mode=None`，两个入口都在构造阶段校验；③ `_init_runtime` 透传该值给 `KVCachePool(over_subscribe=...)` 与 `Scheduler(...)` |
+| `__init__.py`（+1 / −1） | 包 docstring 与模块说明改成第 44 关，无逻辑改动 |
+| `step44.py` | 由 `step43/step43.py` 改名而来，只有包名引用变化 |
+
+**未改的 9 个文件**：`attention.py`、`model.py`、`norm.py`、`rope.py`、`sampler.py`、`sampling.py`、
+`formats/__init__.py`、`formats/native.py`、`formats/qwen3.py`
+—— 模型 forward、attention / norm / rope kernel、采样算法、Graph key、外部格式适配
+和数值路径一个字节没动（需求 §10：「不改 attention、RoPE、norm、Linear、Graph 的数值路径」）。
 
 ## 0. 需求大概
 
