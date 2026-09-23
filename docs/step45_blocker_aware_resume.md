@@ -1,14 +1,14 @@
 # step45：阻塞者感知的恢复准入
 
 - 对应代码：`step45/`（新增，从 `step44/` 复制，入口改名 `step45.py`）
-- 包摘要 SHA256：`432640177ea303f0…`（14 个 .py / 2918 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`8e9bb0ccfb0cc798…`（14 个 .py / 2929 行，验收方 `source_digest()` 口径）
 - 基线：`step44/`，指纹 `9626e95dcba34f8f…`（14 个 .py / 2886 行），原样保留未改
 - **改动文件只有 3 个 + 入口改名**：
 
 | 文件 | 改动 |
 |---|---|
 | `cache.py`（+4 / −0） | `SequenceConfig` 新增 `resume_blocker = None`：是谁迫使本请求让出 KV。保存**请求对象引用**，不是 `request_id` 字符串 |
-| `scheduler.py`（+30 / −2） | ① `__init__` 新增 `num_blocked_admissions`；② 准入循环里对被阻塞的队首跳过并 `break`；③ 准入成功时清掉 `resume_blocker`；④ 新增 `_resume_blocked()`（判断 + 失效清理）；⑤ `_preempt()` 加 `blocker` 参数并记录；⑥ `_make_room()` 把「当前要块的请求」传下去 |
+| `scheduler.py`（+41 / −2） | ① `__init__` 新增 `num_blocked_admissions`；② 准入循环里对被阻塞的队首跳过并 `break`；③ 准入成功时清掉 `resume_blocker`；④ 新增 `_resume_blocked()`（判断 + 失效清理）；⑤ `_preempt()` 加 `blocker` 参数并记录；⑥ `_make_room()` 把「当前要块的请求」传下去 |
 | `__init__.py`（+1 / −1） | 包 docstring 改成第 45 关 |
 | `step45.py` | 由 `step44/step44.py` 改名而来，只有包名引用变化 |
 
@@ -86,7 +86,26 @@ return False
 需求明确要求：**不要只比较外部 `request_id` 字符串**，因为当前引擎没有建立「ID 唯一」的强约束。
 所以 `resume_blocker` 保存 `SequenceConfig` 对象，判活也是对象成员判断（`in`，默认按身份比较）。
 
-### 2.4 为什么不会死锁
+### 2.4 `waiting` 那一半为什么保留
+
+判活写的是 `blocker in self.running or blocker in self.waiting`，而不是只看 `running`。
+需求的条件是「**A 仍未完成**」——被抢占的 A 依然未完成（历史还在、还会回来）。
+
+实测 73 组负载、654 次「继续等」的判定，**全部由 `running` 那半触发，「只在 waiting」0 次**：
+阻塞者抢占时插的是 waiting 队首，必然排在它所阻塞的请求前面，而被阻塞的请求又只可能是队首，
+两者不可能同时成立。
+
+仍然保留，因为这一半兜的是一条**全局顺序不变量**，而且失效方式更响：
+
+| | 不变量被破坏时 |
+|---|---|
+| 保留 `waiting` 那一半 | 被阻塞的队首不让任何人准入，running 排空后**零进展守卫明确报错**（守卫刻意不把 `num_blocked_admissions` 算作进展） |
+| 删掉它 | B 在阻塞者未完成时就恢复——正是本关要消灭的现象，而且**悄无声息** |
+
+对比第四十四关删掉的那个 `exclude`：那处由 `block_usage > 0` 这个**局部**不变量保证，
+删掉严格安全；这里靠的是全局调度顺序，代价不对等。
+
+### 2.5 为什么不会死锁
 
 阻塞者只可能处于两种状态：
 
@@ -98,7 +117,7 @@ return False
 因此链条一定终止于一条正在推进的 `running` 请求，不会出现「running 空、队首却被挡住」。
 真出现这种状态，第四十四关的零进展守卫会明确报错，而不是静默旋转。
 
-### 2.5 关系失效
+### 2.6 关系失效
 
 阻塞者完成（从 `running` 移除）或被明确拒绝（`_fail` 先从 `waiting` 弹出再结束），
 `_resume_blocked()` 下次一看就不在队列里，立刻把 `resume_blocker` 置 `None`。

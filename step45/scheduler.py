@@ -197,6 +197,13 @@ class Scheduler:
         blocker = seq.resume_blocker
         if blocker is None:
             return False
+        # 「仍未完成」= 还在队列里，不限于正在 running：被抢占的阻塞者依然未完成，
+        # 历史还在、还会回来。实测 73 组负载 654 次「继续等」全部由 running 那半触发，
+        # 「只在 waiting」当前走不到——阻塞者抢占时插的是 waiting 队首，必然排在它所
+        # 阻塞的请求前面，而被阻塞的请求又只可能是队首。这一半仍然保留，且是有意的：
+        # 它兜的是那条**全局顺序不变量**，而且失效方式更响——真被走到且队列推不动时，
+        # 零进展守卫会报错（守卫不把 num_blocked_admissions 算作进展）。删掉它则相反：
+        # B 会在阻塞者未完成时恢复，正是本关要消灭的现象，且悄无声息。
         if blocker in self.running or blocker in self.waiting:
             return True
         seq.resume_blocker = None
