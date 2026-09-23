@@ -17,19 +17,21 @@ class Scheduler:
 
     def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, preemption_mode=None):
 
+        if max_num_batched_tokens <= 0:
+            # 一步都排不出 token 的配置没有意义，构造时就明确拒绝，
+            # 不要留到运行时变成「第一次 step 静默返回、第二次才报零进展」
+            raise ValueError(f"max_num_batched_tokens 必须为正，收到 {max_num_batched_tokens}")
         self.max_num_seqs = max_num_seqs
         self.max_num_batched_tokens = max_num_batched_tokens
         self.running : list[SequenceConfig] = []
         self.waiting : list[SequenceConfig] = []
         self.step_done = []
-        # 本轮有没有接纳 / 明确结束过请求，给零进展守卫用
-        self._admitted_this_step = 0
+        # 本轮有没有明确结束/拒绝过请求，给零进展守卫用
         self._failed_this_step = 0
         self.enable_prefix_caching = enable_prefix_caching
         # None = 承诺式（第四十三关行为）；"recompute" = 允许超卖 + 尾部犠牲者抢占
         self.preemption_mode = preemption_mode
         self.num_preemptions = 0          # 全局抢占总次数
-        self._preempted_this_step = 0     # 本轮已抢占几条，给 waiting 定位用
         self._allocated_this_step = set()  # 本轮已经补过块的请求：不可再被抢占
         self.block_size = block_size
         self.on_finished = on_finished
@@ -61,9 +63,7 @@ class Scheduler:
         # Fill running with waiting sequences if there's space
         self.scheduled_items = []
         self.step_done = []
-        self._admitted_this_step = 0
         self._failed_this_step = 0
-        self._preempted_this_step = 0
         self._allocated_this_step = set()
 
         for seq in self.waiting:
@@ -88,7 +88,6 @@ class Scheduler:
             if admitted:
                 self.waiting.pop(0)
                 self.running.append(next_seq)
-                self._admitted_this_step += 1
             else:
                 break  # 暂时不够，等 running 里的请求让出来
 
@@ -145,13 +144,14 @@ class Scheduler:
                 # 让已经安排在它前面的工作照常跑完。
                 self.scheduled_items.remove(item)
 
-        # 不变量：还有未完成的请求时，这一步必须至少做成一件事——
-        # 排出 token、接纳新请求、或明确结束一条。三件都没有就是死锁，宁可报出来也不要静默空转。
+        # 不变量：还有未完成的请求时，这一步必须至少真正算一个 token、
+        # 或明确结束/拒绝一条。**接纳本身不算进展**——只把请求从 waiting 挪到
+        # running、一个 token 也没算，那是空转，不是前进。
         if (self.has_unfinished_requests() and not self.scheduled_items
-                and not self._admitted_this_step and not self._failed_this_step):
+                and not self._failed_this_step):
             raise RuntimeError(
                 f"调度没有任何进展：running={len(self.running)} waiting={len(self.waiting)}，"
-                f"本轮没有排出任何 token、没有接纳、也没有结束任何请求。"
+                f"本轮没有排出任何 token，也没有明确结束或拒绝任何请求。"
                 f"Pool: {len(self.kv_cache_pool._free_block_indices())} 空闲 / "
                 f"{self.kv_cache_pool.promised_blocks} 已承诺 / "
                 f"{self.kv_cache_pool.num_kv_blocks} 总块")
@@ -190,11 +190,12 @@ class Scheduler:
         seq.cache = CacheConfig()
         seq.num_preemptions += 1
         self.num_preemptions += 1
-        # 被抢占者按原有的 FCFS 先后回到 waiting：本轮先从尾部抢最后一条，
-        # 所以每条新的都插在本轮已抢的前面。同一次 schedule() 不会再准入它们
-        # ——准入在选犠牲者之前就已经做完了。
-        self.waiting.insert(len(self.waiting) - self._preempted_this_step, seq)
-        self._preempted_this_step += 1
+        # 被抢占者按**全局 FCFS** 回到 waiting。本轮从 running 尾部依次取 C、B，
+        # 每条都插到队首，合起来正好是 [B, C] + 原有的 waiting：
+        #   取 C -> [C, D, E]，取 B -> [B, C, D, E]
+        # 这些请求比 D/E 更早到达，就不能排到它们后面。
+        # 同一次 schedule() 不会再准入它们——准入在选犠牲者之前就做完了。
+        self.waiting.insert(0, seq)
 
     def _fail(self, seq, message):
         # 明确结束一条不可能完成的请求，并把它的 KV 还回池子

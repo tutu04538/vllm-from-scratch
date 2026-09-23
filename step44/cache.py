@@ -231,8 +231,12 @@ class KVCachePool:
             self.block_usage[block_idx] = 1
             self._mark_used(block_idx)
         seq.cache.block_table.extend(new_blocks)
-        seq.promised_blocks -= extra
-        self.promised_blocks -= extra
+        if not self.over_subscribe:
+            # 承诺式：「已承诺额度」在这里换成真实块，两个计数同步递减。
+            # 超卖模式准入时根本没承诺过，这里减 extra 会把账本减成负数——
+            # 结束时减去负数恰好回到 0，所以只有逐步检查才发现得了。
+            seq.promised_blocks -= extra
+            self.promised_blocks -= extra
         return True
 
     def deallocate_block(self, seq: SequenceConfig):
@@ -241,7 +245,7 @@ class KVCachePool:
 
         for block_idx in seq.cache.block_table:
             self.block_usage[block_idx] -= 1
-        # 超卖模式下 seq.promised_blocks 恒为 0，这两行是空操作
+        # 还没用掉的承诺额度一并还回去。超卖模式下它恒为 0，这里是空操作。
         self.promised_blocks -= seq.promised_blocks
         seq.promised_blocks = 0
 

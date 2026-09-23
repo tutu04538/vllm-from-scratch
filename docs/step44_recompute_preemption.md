@@ -1,14 +1,14 @@
 # step44：重计算式抢占与恢复（第一阶段）
 
 - 对应代码：`step44/`（新增，从 `step43/` 复制，入口改名 `step44.py`）
-- 包摘要 SHA256：`3b50b24595f7c038…`（14 个 .py / 2879 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`665cd2d19dd3141f…`（14 个 .py / 2884 行，验收方 `source_digest()` 口径；§8 三个修正后的最终值）
 - 基线：`step43/`，指纹 `febd8c3663a061f6…`（14 个 .py / 2729 行），原样保留未改
 - **改动文件只有 4 个 + 入口改名**，逐个列出：
 
 | 文件 | 改动 |
 |---|---|
-| `cache.py`（+51 / −5） | ① `SequenceConfig` 新增 `all_token_ids`、`num_uncomputed_tokens`，`prefill_len` 改为它的别名（旧公式的 `max(..., 0)` 去掉）；② 新增 `is_ready_for_next_token`；③ 新增 `num_preemptions` / `recomputed_tokens` / `high_water` 三个计数；④ `KVCachePool.__init__` 新增 `over_subscribe=False`；⑤ `allocate_block()` 超卖时跳过可用量检查、不写承诺额度；⑥ `ensure_blocks()` 超卖时容量不足改为**无副作用**返回 `False`（承诺式仍 `raise RuntimeError`） |
-| `scheduler.py`（+104 / −25） | ① `__init__` 新增 `preemption_mode`、`num_preemptions`、`_preempted_this_step`、`_allocated_this_step`；② `schedule()` 的预留判定改用 `is_ready_for_next_token`，decode / prefill 两条分支合成「从 `all_token_ids[cache.length]` 续算」，补块阶段加抢占循环；③ 新增 `_make_room()`（尾部选犠牲者）；④ 新增 `_preempt()`；⑤ `post_step()` 判停守卫改为 `not seq.output_ids`，并在开头记重算量 |
+| `cache.py`（+57 / −7） | ① `SequenceConfig` 新增 `all_token_ids`、`num_uncomputed_tokens`，`prefill_len` 改为它的别名（旧公式的 `max(..., 0)` 去掉）；② 新增 `is_ready_for_next_token`；③ 新增 `num_preemptions` / `recomputed_tokens` / `high_water` 三个计数；④ `KVCachePool.__init__` 新增 `over_subscribe=False`；⑤ `allocate_block()` 超卖时跳过可用量检查、不写承诺额度；⑥ `ensure_blocks()` 超卖时容量不足改为**无副作用**返回 `False`（承诺式仍 `raise RuntimeError`），且「消耗承诺」只在承诺式路径发生 |
+| `scheduler.py`（+113 / −33） | ① `__init__` 新增 `preemption_mode`、`num_preemptions`、`_allocated_this_step`，并拒绝 `max_num_batched_tokens <= 0`；② `schedule()` 的预留判定改用 `is_ready_for_next_token`，decode / prefill 两条分支合成「从 `all_token_ids[cache.length]` 续算」，补块阶段加抢占循环；③ 新增 `_make_room()`（尾部选犠牲者）；④ 新增 `_preempt()`；⑤ `post_step()` 判停守卫改为 `not seq.output_ids`，并在开头记重算量；⑥ 零进展守卫去掉 admission 一项（`_admitted_this_step` 随之删除）；⑦ `_preempt()` 改为插 waiting 队首以保全局 FCFS |
 | `engine.py`（+31 / −6） | ① 新增 `PREEMPTION_MODES` 与 `_check_preemption_mode()`；② `Engine.__init__` / `Engine.from_model_dir` 尾部新增 keyword-only `preemption_mode=None`，两个入口都在构造阶段校验；③ `_init_runtime` 透传该值给 `KVCachePool(over_subscribe=...)` 与 `Scheduler(...)` |
 | `__init__.py`（+1 / −1） | 包 docstring 与模块说明改成第 44 关，无逻辑改动 |
 | `step44.py` | 由 `step43/step43.py` 改名而来，只有包名引用变化 |
@@ -100,6 +100,9 @@ def num_uncomputed_tokens(self):    # len(prompt_ids) + len(output_ids) - cache.
 - `ensure_blocks()` 容量不足时返回 `False`，**且没有副作用**：不部分追加 block table、不改引用计数、
   不改 `cache.length`。（承诺式模式下仍然保留 `RuntimeError`——那时它是记账被破坏的信号，
   而且承诺保证了这个分支不可达。）
+- **补块成功时的「消耗承诺」只发生在承诺式路径**：`seq.promised_blocks -= extra` /
+  `self.promised_blocks -= extra` 都放在 `if not self.over_subscribe` 里。超卖模式准入时根本没加过承诺，
+  从 0 减 `extra` 会把账本减成负数——详见 §8.1。
 - **具体抢占谁由 Scheduler 决定**，`KVCachePool` 不认识请求优先级。
 
 ## 4. 抢占策略：FCFS + 从 running 尾部选犠牲者
@@ -127,8 +130,17 @@ for victim in reversed(running):
 **不允许抢占已补块的请求**：本轮的 token 预算、`scheduled_items`、刚分配的块都已记账，
 回滚它们要同时回滚计划和预算——不是永远不做，而是第一阶段先让计划保持单调。
 
-被抢占者回到 `waiting`：本轮从尾部往前抢，所以每条新的都插在本轮已抢的前面，**保留原有的 FCFS 先后顺序**。
-同一次 `schedule()` 不会再准入它们——准入在选犠牲者之前就已经做完了。
+被抢占者回到 `waiting`：从 running 尾部依次取 C、B，**每条都插到队首**，合起来正好是
+`[B, C] + 原有的 waiting`：
+
+```text
+waiting = [D, E]
+取 C -> [C, D, E]
+取 B -> [B, C, D, E]
+```
+
+这些请求比 D/E 更早到达，就不能排到它们后面。同一次 `schedule()` 不会再准入它们
+——准入在选犠牲者之前就已经做完了。
 
 ## 5. `_preempt()` 做了什么
 
@@ -138,7 +150,7 @@ self.running.remove(seq)
 self.kv_cache_pool.deallocate_block(seq)
 seq.cache = CacheConfig()        # 物理 KV 进度归零
 seq.num_preemptions += 1;  self.num_preemptions += 1
-self.waiting.insert(len(self.waiting) - self._preempted_this_step, seq)
+self.waiting.insert(0, seq)      # 全局 FCFS，见 §4
 ```
 
 抢占不是完成、也不是失败，所以：**不调用** `on_finished` / `on_token`，**不清空** `output_ids`，
@@ -183,16 +195,31 @@ seq.high_water = max(seq.high_water, end)
 | 检查 | 结果 |
 |---|---|
 | 容量充足：0 次抢占，输出与承诺式基线逐 token 相同 | PASS |
-| 4 块池子跑两条各 8 输出的请求：确实发生抢占 | PASS 1 次 |
+| 4 块池子跑两条各 8 输出的请求：确实发生抢占 | PASS 1 次（B 重算 7 token） |
 | 每条请求最终输出与**它独占引擎运行**完全一致（CPU/FP32 精确参考） | PASS A/B 各 8 个 token 逐位相同 |
-| 实际重算 token 数 > 0 | PASS 两条 7 / 四条 25 |
+| 实际重算 token 数 > 0 | PASS 两条 7 / 四条 16 |
 | 固定 seed 随机采样：被抢占 + 重算后仍与独占运行一致 | PASS |
 | 惩罚计数（repetition/presence/frequency）不被重置 | PASS |
 | `on_token` 拼接 == 最终 `output_ids`，`output_index` 连续；旧 token 不重复通知 | PASS |
 | 单独不可行的请求仍明确失败（不靠抢占无限重试），同批可行请求照常完成 | PASS |
-| 4 条请求在 5 块池子里全部完成，连续释放多个尾部犠牲者 | PASS 3 次抢占 |
+| 4 条请求在 5 块池子里全部完成，连续释放多个尾部犠牲者 | PASS 2 次抢占 / 重算 16 token |
 | 完成后 `running`/`waiting` 均空、块活动引用全 0、承诺额度归零 | PASS |
 | 零输出预算请求：无 token 通知、立即完成、池子干净 | PASS |
+| **逐步**账本：每一步池级/每请求承诺额度都是 0、块引用不为负（两条 / 四条 / FCFS 场景） | PASS 9 项 |
+| 全局 FCFS：A–E 一起到达，首次抢占后 `waiting == [B, C, D, E]` | PASS |
+| 全局 FCFS：完成顺序 `A, B, C, D, E` | PASS |
+
+### 验收方的不变量专项（首次验收 0 / 3 → 现在 3 / 3）
+
+`verify_step44_invariants.py`：
+
+| 用例 | 首次验收 | 现在 |
+|---|---|---|
+| `recompute_promise_counters_stay_zero` | FAIL | PASS |
+| `preempted_requests_keep_global_fcfs_order` | FAIL | PASS |
+| `admission_is_not_zero_progress` | FAIL | PASS |
+
+另有 `fuzz_step44_cpu.py`：120 组随机 CPU 负载全部有界完成、每请求输出与独占引擎一致。
 
 ### 回归
 
@@ -212,7 +239,59 @@ seq.high_water = max(seq.high_water, end)
 
 rope 唯一失败项是 `越界位置被拒绝 没有报错`，与 step39/41/43 完全相同（见 §8.6），本关未动 rope。
 
-## 8. 遗留
+## 8. 首次验收后的修正：三个状态不变量
+
+首次验收（`156_第四十四关首次验收_先修三个状态不变量`）判定 **暂不通过**，三个运行时不变量没守住。
+抢占、历史重放和三条 GPU 路径本身是对的，只修这三处。
+
+### 8.1 recompute 的承诺账本变成了负数
+
+实测前四步池级账本：`-1 → -3 → -4 → -4`。
+
+`ensure_blocks()` 末尾无条件执行了：
+
+```python
+seq.promised_blocks -= extra
+self.promised_blocks -= extra
+```
+
+承诺式模式里这是「已承诺额度换成真实块」；但 recompute 模式准入时**根本没有增加承诺**，
+从 0 减 `extra` 当然变负。现有测试没发现，是因为请求释放时又「减去负数」，最后恰好回到 0
+——**结束值正确，不代表运行中账本正确**。
+
+修法：把这两行放进 `if not self.over_subscribe`，让「消耗承诺」只在承诺式路径发生。
+没有用 `max(value, 0)` 把错账夹成 0——那只是把症状藏起来。
+
+### 8.2 被抢占的旧请求排到了新请求后面
+
+原始 FCFS 次序 `A, B, C, D, E`，首次压力下 B/C 被抢占，正确队列应是
+`waiting = [B, C, D, E]`，实际却是 `[D, E, B, C]`，完成顺序也变成 `A, D, C, B, E`。
+
+原因是我写的 `insert(len(waiting) - n, seq)` 只保住了**同一轮几个犠牲者之间**的相对顺序，
+却让它们整体落在原有 waiting 的队尾。修法是 `insert(0, seq)`：从 running 尾部依次取 C、B，
+每条插队首，组合起来自然就是全局 FCFS（见 §4）。没有另写排序器。
+
+### 8.3 准入被误当成了「计算进展」
+
+零进展规则是「本轮至少真正算一个 token，或明确完成/拒绝一条」。守卫里的
+`and not self._admitted_this_step` 让「只从 waiting 移到 running、一个 token 也没算」的空轮次混了过去，
+例如 `max_num_batched_tokens=0` 时第一次 `step()` 静默返回、第二次才报错。
+
+修法两条：
+1. 守卫去掉 `_admitted_this_step`（该计数器随之删除，已无人读）；
+2. `Scheduler.__init__` 直接拒绝 `max_num_batched_tokens <= 0`。
+
+需求给了「构造时拒绝」和「第一个空轮次就报错」两个选项，两个都做了——语义上前者更早暴露配置错误，
+后者是守卫本身该有的强度。
+
+### 8.4 自查脚本也补上了逐步检查
+
+`benchmarks/check_step44_preemption.py` 现在每一步都采一次账本快照
+（池级承诺、每请求承诺、块引用是否为负），而不只看结束状态——**正是「结束值正确」骗过了我自己**。
+另外加了与验收方同参数的 FCFS 用例：A–E 一起到达、`max_num_seqs=3`、4 块池子，
+断言首次抢占后 `waiting == [B, C, D, E]`，且完成顺序为 `A, B, C, D, E`。
+
+## 9. 遗留
 
 1. **只做了重算式抢占**，没有 swap/CPU offload、优先级抢占、取消。
 2. **prefix-aware recovery 没做**：`"recompute"` 强制关闭 prefix cache，恢复时从 0 重算，

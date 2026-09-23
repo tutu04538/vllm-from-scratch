@@ -38,20 +38,39 @@ def run(engine, requests, limit=400):
     engine.on_token = lambda ev: events.append((ev["request_id"], ev["token_id"], ev["output_index"]))
     for r in requests:
         engine.add_request(r)
-    final, steps, stats = {}, 0, {}
+    final, steps, stats, ledger = {}, 0, {}, []
     while engine.has_unfinished_requests():
         engine.step()
         steps += 1
         if steps > limit:
             raise RuntimeError(f"超过 {limit} 步仍未排空")
         # 完成的请求会被移出 running，所以每步都采一次计数
-        for seq in engine.scheduler.running + engine.scheduler.waiting:
+        seqs = engine.scheduler.running + engine.scheduler.waiting
+        for seq in seqs:
             prev = stats.get(seq.request_id, (0, 0))
             stats[seq.request_id] = (max(prev[0], seq.num_preemptions),
                                      max(prev[1], seq.recomputed_tokens))
+        # 逐步检查账本：**结束值正确不代表运行中正确**。承诺式路径结束时会
+        # 「减去负数」恰好回到 0，只有每一步都查才发现得了中间变负。
+        ledger.append({"step": steps,
+                       "pool": engine.kv_cache_pool.promised_blocks,
+                       "seqs": {q.request_id: q.promised_blocks for q in seqs},
+                       "usage_negative": [u for u in engine.kv_cache_pool.block_usage if u < 0]})
         for rec in engine.scheduler.step_done:
             final[rec["request_id"]] = rec
-    return final, events, steps, stats
+    return final, events, steps, stats, ledger
+
+
+def check_ledger(prefix, ledger):
+    bad_pool = [r for r in ledger if r["pool"] != 0]
+    bad_seq = [r for r in ledger if any(v != 0 for v in r["seqs"].values())]
+    bad_use = [r for r in ledger if r["usage_negative"]]
+    check(f"{prefix}：每一步池级承诺额度都是 0", not bad_pool,
+          "" if not bad_pool else str(bad_pool[:3]))
+    check(f"{prefix}：每一步每请求承诺额度都是 0", not bad_seq,
+          "" if not bad_seq else str(bad_seq[:3]))
+    check(f"{prefix}：每一步块引用计数都不为负", not bad_use,
+          "" if not bad_use else str(bad_use[:3]))
 
 
 A = {"request_id": "A", "prompt_ids": [1, 2, 3, 4, 5, 6], "max_new_tokens": 8}
@@ -68,8 +87,8 @@ def broad(**kw):
 reqs = [{"request_id": n, "prompt_ids": p, "max_new_tokens": m} for n, p, m in
         [("a", [1, 2, 3], 4), ("b", [4, 5, 6, 7], 3), ("c", [8], 5)]]
 
-legacy, _, _, _ = run(make(mode=None, **broad()), reqs)
-recomp, _, _, _ = run(make(mode="recompute", **broad()), reqs)
+legacy, _, _, _, _ = run(make(mode=None, **broad()), reqs)
+recomp, _, _, _, _ = run(make(mode="recompute", **broad()), reqs)
 out_l = {k: v["output_ids"] for k, v in legacy.items()}
 out_r = {k: v["output_ids"] for k, v in recomp.items()}
 check("容量充足：输出与承诺式基线逐 token 相同", out_l == out_r,
@@ -84,11 +103,11 @@ check("容量充足：没有块还带着活动引用", all(u == 0 for u in e.kv_
 
 # ------------------------------------------------ 2. 真正抢占：4 块池子跑两条 8 输出
 
-refA, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [A])
-refB, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [B])
+refA, _, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [A])
+refB, _, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [B])
 
 eng = make(mode="recompute")
-final, events, steps, stats = run(eng, [dict(A), dict(B)])
+final, events, steps, stats, ledger = run(eng, [dict(A), dict(B)])
 check("两条请求都正常完成", set(final) == {"A", "B"}, str(sorted(final)))
 check("没有请求被记为错误", all("error" not in r for r in final.values()))
 
@@ -108,6 +127,7 @@ check("完成后 running / waiting 都空",
 check("完成后没有块带着活动引用", all(u == 0 for u in eng.kv_cache_pool.block_usage),
       str(eng.kv_cache_pool.block_usage))
 check("完成后承诺额度归零", eng.kv_cache_pool.promised_blocks == 0)
+check_ledger("两条抢占场景", ledger)
 
 # ---------------------------------------------------- 3. on_token 不重放旧 token
 
@@ -129,8 +149,8 @@ check("每请求只完成一次", all(1 for _ in final) and len(final) == 2)
 SAMP = dict(temperature=1.0, top_k=0, top_p=1.0, seed=20240922)
 reqs_r = [dict(request_id="A", prompt_ids=A["prompt_ids"], max_new_tokens=8, **SAMP),
           dict(request_id="B", prompt_ids=B["prompt_ids"], max_new_tokens=8, **SAMP)]
-sol, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [reqs_r[0]])
-both, _, _, _ = run(make(mode="recompute"), [dict(r) for r in reqs_r])
+sol, _, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [reqs_r[0]])
+both, _, _, _, _ = run(make(mode="recompute"), [dict(r) for r in reqs_r])
 check("随机采样：被抢占 + 重算后输出仍与独占运行一致",
       both["A"]["output_ids"] == sol["A"]["output_ids"],
       f"{both['A']['output_ids']} vs {sol['A']['output_ids']}")
@@ -140,8 +160,8 @@ check("随机采样：被抢占 + 重算后输出仍与独占运行一致",
 PEN = dict(repetition_penalty=1.3, presence_penalty=0.5, frequency_penalty=0.3)
 rq = [dict(request_id="A", prompt_ids=A["prompt_ids"], max_new_tokens=8, **PEN),
       dict(request_id="B", prompt_ids=B["prompt_ids"], max_new_tokens=8, **PEN)]
-p_solo, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [rq[0]])
-p_both, _, _, _ = run(make(mode="recompute"), [dict(r) for r in rq])
+p_solo, _, _, _, _ = run(make(mode="recompute", **broad(max_num_seqs=1, num_kv_blocks=4)), [rq[0]])
+p_both, _, _, _, _ = run(make(mode="recompute"), [dict(r) for r in rq])
 check("惩罚计数：被抢占后仍与独占运行一致",
       p_both["A"]["output_ids"] == p_solo["A"]["output_ids"],
       f"{p_both['A']['output_ids']} vs {p_solo['A']['output_ids']}")
@@ -149,7 +169,7 @@ check("惩罚计数：被抢占后仍与独占运行一致",
 # ------------------------------------------------- 6. 不可能完成的请求仍明确失败
 
 bad = {"request_id": "X", "prompt_ids": [1, 2, 3, 4, 5], "max_new_tokens": 40}
-f, _, _, _ = run(make(mode="recompute"), [bad, dict(A)])
+f, _, _, _, _ = run(make(mode="recompute"), [bad, dict(A)])
 check("单独不可行的请求明确失败，不靠抢占无限重试",
       "error" in f["X"] and "永远无法完成" in f["X"]["error"], f.get("X", {}).get("error", "")[:60])
 check("同一批里可行的请求照常完成", f["A"]["output_ids"] == refA["A"]["output_ids"])
@@ -167,7 +187,7 @@ check("零预算请求立即完成且池子干净",
 many = [{"request_id": f"r{i}", "prompt_ids": [(i * 3 + j) % 60 for j in range(6)],
          "max_new_tokens": 8} for i in range(4)]
 e4 = make(mode="recompute", **broad(max_num_seqs=2, num_kv_blocks=5, max_num_batched_tokens=8))
-final4, events4, steps4, stats4 = run(e4, many)
+final4, events4, steps4, stats4, ledger4 = run(e4, many)
 check("4 条请求在 5 块池子里全部完成", set(final4) == {f"r{i}" for i in range(4)},
       str(sorted(final4)))
 check("发生了多次抢占（连续释放尾部犠牲者）", e4.scheduler.num_preemptions >= 2,
@@ -175,7 +195,7 @@ check("发生了多次抢占（连续释放尾部犠牲者）", e4.scheduler.num
 check("多请求场景下每请求输出仍与独占运行一致", True)
 solo = {}
 for r in many:
-    s, _, _, _ = run(make(mode="recompute", max_num_seqs=1, num_kv_blocks=64,
+    s, _, _, _, _ = run(make(mode="recompute", max_num_seqs=1, num_kv_blocks=64,
                        max_num_batched_tokens=32, block_size=4), [dict(r)])
     solo[r["request_id"]] = s[r["request_id"]]["output_ids"]
 ok = all(final4[r["request_id"]]["output_ids"] == solo[r["request_id"]] for r in many)
@@ -185,6 +205,38 @@ check("4 条请求逐条与独占运行相同", ok,
 check("4 条请求结束后池子干净",
       all(u == 0 for u in e4.kv_cache_pool.block_usage) and not e4.scheduler.running
       and not e4.scheduler.waiting)
+check_ledger("四条抢占场景", ledger4)
+
+# ------------------------------------------- 9. 全局 FCFS：抢占者不排到更晚的请求后面
+
+# A..E 一起到达，max_num_seqs=3 -> 先接纳 A/B/C，D/E 一直在 waiting。
+# 压力来临时 B/C 被抢占，它们比 D/E 更早到达，必须排在 D/E 前面。
+fcfs = make(mode="recompute", **broad(max_num_seqs=3, num_kv_blocks=5, max_num_batched_tokens=8))
+seen = []
+fcfs.scheduler.on_finished = lambda rec: seen.append(rec["request_id"])
+rq5 = [{"request_id": n, "prompt_ids": list(range(1 + i, 7 + i)), "max_new_tokens": 8}
+       for i, n in enumerate("ABCDE")]
+f5, _, _, _, ledger5 = run(fcfs, rq5)
+check("FCFS：5 条请求全部完成且按到达顺序结束", seen == list("ABCDE"), str(seen))
+check("FCFS：确实发生了抢占", fcfs.scheduler.num_preemptions > 0, str(fcfs.scheduler.num_preemptions))
+check_ledger("FCFS 场景", ledger5)
+
+# 再单独看首次压力那一刻的队列快照（4 块，与验收方同一组参数）
+fcfs2 = make(mode="recompute", **broad(max_num_seqs=3, num_kv_blocks=4, max_num_batched_tokens=8))
+for r in rq5:
+    fcfs2.add_request(dict(r))
+snap = None
+for _ in range(100):
+    before = fcfs2.scheduler.num_preemptions
+    fcfs2.step()
+    if snap is None and fcfs2.scheduler.num_preemptions > before:
+        snap = {"running": [q.request_id for q in fcfs2.scheduler.running],
+                "waiting": [q.request_id for q in fcfs2.scheduler.waiting]}
+    if not fcfs2.has_unfinished_requests():
+        break
+check("FCFS：首次抢占后 waiting 仍是 [B, C, D, E]",
+      snap is not None and snap["waiting"] == ["B", "C", "D", "E"],
+      str(snap))
 
 print()
 print(f"抢占次数：两条 {eng.scheduler.num_preemptions} / 四条 {e4.scheduler.num_preemptions}")
