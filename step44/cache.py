@@ -209,8 +209,10 @@ class KVCachePool:
         free_blocks = self._free_block_indices()
         evict_blocks = []
         if len(free_blocks) < extra:
-            # 只能淘汰闲置缓存，且不能淘汰本请求正在用的块
-            idle = self._evictable_block_indices(exclude=set(seq.cache.block_table))
+            # 只能淘汰闲置缓存。不需要排掉本请求正在用的块：它们 block_usage >= 1，
+            # 而 _evictable_block_indices 的第一项就是 block_usage == 0，本来就选不中。
+            # （准入那边不同：命中的前缀块此时引用计数还是 0，必须显式排掉。）
+            idle = self._evictable_block_indices()
             if len(free_blocks) + len(idle) < extra:
                 if self.over_subscribe:
                     # 本次就是分不到。一个字节都不改：不追加 block table、不动引用计数、

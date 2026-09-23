@@ -1,14 +1,14 @@
 # step44：重计算式抢占与恢复（第一阶段）
 
 - 对应代码：`step44/`（新增，从 `step43/` 复制，入口改名 `step44.py`）
-- 包摘要 SHA256：`665cd2d19dd3141f…`（14 个 .py / 2884 行，验收方 `source_digest()` 口径；§8 三个修正后的最终值）
+- 包摘要 SHA256：`9626e95dcba34f8f…`（14 个 .py / 2886 行，验收方 `source_digest()` 口径；§8 修正后的最终值）
 - 基线：`step43/`，指纹 `febd8c3663a061f6…`（14 个 .py / 2729 行），原样保留未改
 - **改动文件只有 4 个 + 入口改名**，逐个列出：
 
 | 文件 | 改动 |
 |---|---|
-| `cache.py`（+57 / −7） | ① `SequenceConfig` 新增 `all_token_ids`、`num_uncomputed_tokens`，`prefill_len` 改为它的别名（旧公式的 `max(..., 0)` 去掉）；② 新增 `is_ready_for_next_token`；③ 新增 `num_preemptions` / `recomputed_tokens` / `high_water` 三个计数；④ `KVCachePool.__init__` 新增 `over_subscribe=False`；⑤ `allocate_block()` 超卖时跳过可用量检查、不写承诺额度；⑥ `ensure_blocks()` 超卖时容量不足改为**无副作用**返回 `False`（承诺式仍 `raise RuntimeError`），且「消耗承诺」只在承诺式路径发生 |
-| `scheduler.py`（+113 / −33） | ① `__init__` 新增 `preemption_mode`、`num_preemptions`、`_allocated_this_step`，并拒绝 `max_num_batched_tokens <= 0`；② `schedule()` 的预留判定改用 `is_ready_for_next_token`，decode / prefill 两条分支合成「从 `all_token_ids[cache.length]` 续算」，补块阶段加抢占循环；③ 新增 `_make_room()`（尾部选犠牲者）；④ 新增 `_preempt()`；⑤ `post_step()` 判停守卫改为 `not seq.output_ids`，并在开头记重算量；⑥ 零进展守卫去掉 admission 一项（`_admitted_this_step` 随之删除）；⑦ `_preempt()` 改为插 waiting 队首以保全局 FCFS |
+| `cache.py`（+61 / −9） | ① `SequenceConfig` 新增 `all_token_ids`、`num_uncomputed_tokens`，`prefill_len` 改为它的别名（旧公式的 `max(..., 0)` 去掉）；② 新增 `is_ready_for_next_token`；③ 新增 `num_preemptions` / `recomputed_tokens` / `high_water` 三个计数；④ `KVCachePool.__init__` 新增 `over_subscribe=False`；⑤ `allocate_block()` 超卖时跳过可用量检查、不写承诺额度；⑥ `ensure_blocks()` 超卖时容量不足改为**无副作用**返回 `False`（承诺式仍 `raise RuntimeError`），且「消耗承诺」只在承诺式路径发生、淘汰闲置块时不再传多余的 `exclude`（见 §8.5） |
+| `scheduler.py`（+114 / −34） | ① `__init__` 新增 `preemption_mode`、`num_preemptions`、`_allocated_this_step`，并拒绝 `max_num_batched_tokens <= 0`；② `schedule()` 的预留判定改用 `is_ready_for_next_token`，decode / prefill 两条分支合成「从 `all_token_ids[cache.length]` 续算」，补块阶段加抢占循环；③ 新增 `_make_room()`（尾部选犠牲者）；④ 新增 `_preempt()`；⑤ `post_step()` 判停守卫改为 `not seq.output_ids`，并在开头记重算量；⑥ 零进展守卫去掉 admission 一项（`_admitted_this_step` 随之删除）；⑦ `_preempt()` 改为插 waiting 队首以保全局 FCFS |
 | `engine.py`（+31 / −6） | ① 新增 `PREEMPTION_MODES` 与 `_check_preemption_mode()`；② `Engine.__init__` / `Engine.from_model_dir` 尾部新增 keyword-only `preemption_mode=None`，两个入口都在构造阶段校验；③ `_init_runtime` 透传该值给 `KVCachePool(over_subscribe=...)` 与 `Scheduler(...)` |
 | `__init__.py`（+1 / −1） | 包 docstring 与模块说明改成第 44 关，无逻辑改动 |
 | `step44.py` | 由 `step43/step43.py` 改名而来，只有包名引用变化 |
@@ -290,6 +290,28 @@ self.promised_blocks -= extra
 （池级承诺、每请求承诺、块引用是否为负），而不只看结束状态——**正是「结束值正确」骗过了我自己**。
 另外加了与验收方同参数的 FCFS 用例：A–E 一起到达、`max_num_seqs=3`、4 块池子，
 断言首次抢占后 `waiting == [B, C, D, E]`，且完成顺序为 `A, B, C, D, E`。
+
+### 8.5 顺带删掉一个永不生效的参数
+
+`ensure_blocks()` 淘汰闲置缓存时写的是 `_evictable_block_indices(exclude=set(seq.cache.block_table))`。
+这个 `exclude` 是多余的：`seq.cache.block_table` 里的块 `block_usage >= 1`，
+而 `_evictable_block_indices` 的第一项筛选就是 `block_usage[i] == 0`，本来就选不中它们。
+
+同一个参数在**准入**那边是必需的，两处不能一起删：
+
+```python
+# allocate_block：命中的前缀块此刻 block_usage 还是 0、又挂在 block_to_hash 里，
+# 看起来就是「可淘汰的闲置缓存」，但它们马上要被这条请求借走。
+# 不排掉，_available_blocks() 会多算 len(matched_blocks) 个可用块（need 那边已经抵扣过），
+# 准入因此偏松——这是第 40 关修的那个 bug。
+if not self.over_subscribe and need > self._available_blocks(exclude=set(matched_blocks)):
+```
+
+实测两个调用点：48 组负载里 `ensure_blocks` 侧非空 exclude 调用 68 次、**真正排除过块的 0 次**；
+`allocate_block` 侧在前缀命中场景下 4 次调用里 1 次真的排除了（`exclude=[0,1]`，
+带 exclude 得 `[]`、不带得 `[0,1]`）——少了它就会把马上就要借的块算成可用。
+
+删掉后自查、不变量 3/3、CPU 压测 120、GPU 三路径全部不变。**无行为改动。**
 
 ## 9. 遗留
 
