@@ -44,3 +44,4 @@
 | [step42_bandwidth_account.md](step42_bandwidth_account.md) | **无新增代码**（归因关） | decode 一步的带宽账：840 MiB 四种投影的有效带宽，结论按证据强度收窄 |
 | [step43_incremental_output.md](step43_incremental_output.md) | `step43/`（包） | 增量输出观察点 `on_token`：每产生一个 token 通知一次，旧接口不变 |
 | [step44_recompute_preemption.md](step44_recompute_preemption.md) | `step44/`（包） | 重计算式抢占：容量超卖、从 running 尾部选犧牲者、历史按 `all_token_ids` 重放 |
+| [step45_blocker_aware_resume.md](step45_blocker_aware_resume.md) | `step45/`（包） | 阻塞者感知的恢复准入：记住是谁迫使让路，它结束前不急着恢复 |
