@@ -1,14 +1,14 @@
 # step47：优先级调度与抢占
 
 - 对应代码：`step47/`（新增，从 `step46/` 复制，入口改名 `step47.py`）
-- 包摘要 SHA256：`5e8e60610aed1b66…`（14 个 .py / 3127 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`3884f4f43a7de238…`（14 个 .py / 3130 行，验收方 `source_digest()` 口径）
 - 基线：`step46/`，指纹 `1cfbcb68c5de4869…`（14 个 .py / 2987 行），原样保留未改
 - **改动文件只有 4 个 + 入口改名**：
 
 | 文件 | 改动 |
 |---|---|
 | `cache.py`（+10 / −1） | `SequenceConfig` 新增 `priority`、`arrival_order` 与 `sort_key = (priority, arrival_order)` |
-| `scheduler.py`（+158 / −45） | ① `__init__` 新增 `scheduling_policy`、`_arrival_counter`、`num_priority_preemptions`；② `add_request` 校验 `priority` 并写排序键；③ 新增 `_ordered_insert()` / `_enqueue()`；④ 准入循环加名额抢占；⑤ 新增 `_budget_groups()` 与分层 token budget；⑥ `_preempt()` 加 `priority_preemption` 与按策略回队 |
+| `scheduler.py`（+168 / −52） | ① `__init__` 新增 `scheduling_policy`、`_arrival_counter`、`num_priority_preemptions`；② `add_request` 校验 `priority` 并写排序键；③ 新增 `_ordered_insert()` / `_enqueue()`；④ 准入循环加名额抢占；⑤ 新增 `_budget_groups()` 与分层 token budget；⑥ `_preempt()` 加 `priority_preemption` 与按策略回队；⑦ 删掉第四十四关留下的 `_allocated_this_step` 与那处永不触发的候选检查（见 §2.2） |
 | `engine.py`（+23 / −5） | 两个入口新增 keyword-only `scheduling_policy="fcfs"`；新增 `_check_scheduling_policy()` |
 | `__init__.py`（+1 / −1） | 包 docstring 改成第 47 关 |
 | `step47.py` | 由 `step46/step46.py` 改名而来，只有包名引用变化 |
@@ -74,6 +74,29 @@ later.sort(key=lambda v: v.sort_key, reverse=True)
 
 **同级但到达更晚的请求必须能让位**——否则两条同级请求把池子占满时会谁也动不了。
 更靠前的排序键一律不碰。
+
+#### 顺带删掉一个永不生效的分支
+
+第四十四关在 `_make_room()` 里还有一道防线：
+
+```python
+if id(victim) in self._allocated_this_step:
+    return False        # 排在它前面的都补过块了，再往前找就会回滚已记账的计划
+```
+
+本关确认它**永不触发**，于是连同 `_allocated_this_step` 一起删掉。理由是顺序不变量：
+
+- 补块循环按 `scheduled_items` 的顺序依次调用 `_make_room()`，而 `scheduled_items`
+  是按 `running` 的顺序排出来的（priority 下 `_budget_groups()` 按排序键升序）；
+- `_victims_after()` 只返回排序键**严格更靠后**的请求；
+- 两者方向刚好相反，所以候选犠牲者的 item 一定还没被补块循环处理过。
+
+实测 180 组负载（两种 policy × prefix 开/关 × 池子 4~12 块 × 并发 2~4 × 3 个 seed）：
+`_make_room` 调用 984 次、候选犠牲者 572 个，该分支命中 **0 次**。
+
+删掉它还更安全：万一不变量被破坏，`_make_room` 会照常尝试抢占，而被抢占者的计划项由补块循环
+开头那句 `if seq not in self.running` 丢弃——代价只是那一轮少算一条，而不是像 `return False`
+那样让当前请求直接放弃本轮。
 
 ### 2.3 本轮 token budget
 

@@ -38,7 +38,6 @@ class Scheduler:
         self.num_preemptions = 0          # 全局抢占总次数
         self.num_blocked_admissions = 0   # 因阻塞者未结束而跳过准入的次数
         self.num_priority_preemptions = 0  # 其中「名额被高优先级顶掉」的次数
-        self._allocated_this_step = set()  # 本轮已经补过块的请求：不可再被抢占
         self.block_size = block_size
         self.on_finished = on_finished
         self.num_scheduled_tokens = []
@@ -96,7 +95,6 @@ class Scheduler:
         self.scheduled_items = []
         self.step_done = []
         self._failed_this_step = 0
-        self._allocated_this_step = set()
 
         for seq in self.waiting:
             if seq.max_new_tokens == 0:
@@ -199,7 +197,6 @@ class Scheduler:
                 self.scheduled_items.remove(item)
                 continue
             if self.kv_cache_pool.ensure_blocks(seq, item["num_scheduled_tokens"]):
-                self._allocated_this_step.add(id(seq))
                 continue
             if not self._make_room(seq, item["num_scheduled_tokens"], running):
                 # 当前请求自己就是最后可选犠牲者：本轮先不排它，
@@ -262,6 +259,11 @@ class Scheduler:
         但到达更晚**；后者必不可少，否则两条同级请求把池子占满时谁也不动不了。
         更靠前的排序键一律不碰。
         fcfs 模式就是 running 尾部的未安排请求（第四十四关语义，逐字节一致）。
+
+        顺序不变量：补块循环按 `scheduled_items` 的顺序依次调用本函数，而
+        `scheduled_items` 是按 `running` 的顺序排出来的（priority 下 `_budget_groups()`
+        按排序键升序）。本函数只返回排序键严格更靠后的请求，也就是**还没轮到**的那些，
+        所以候选一定都是「本轮尚未补过块」的，不会回滚已记账的计划。
         """
         if self.scheduling_policy != "priority":
             out = []
@@ -275,16 +277,17 @@ class Scheduler:
         return later
 
     def _make_room(self, seq, num_tokens, running):
-        """从 running 尾部释放尚未安排的请求，直到当前请求能补到块。
+        """释放排序键更靠后的、本轮尚未安排的请求，直到当前请求能补到块。
 
         返回 False 表示已经走到当前请求自己——按 FCFS 不再往后找犠牲者。
+
+        候选里不会出现「本轮已经补过块」的请求：补块循环按 `scheduled_items` 的顺序
+        走，而那个顺序就是 `running` 的顺序，`_victims_after()` 又只返回排序键严格
+        更靠后的——两者方向刚好相反。详见 `_victims_after()` 的说明。
         """
         for victim in self._victims_after(seq, running):
             if victim not in self.running:
                 continue        # 本轮已经被抢占过了
-            if id(victim) in self._allocated_this_step:
-                # 排在它前面的都补过块了，再往前找就会回滚已记账的计划
-                return False
             self._preempt(victim, blocker=seq)
             if self.kv_cache_pool.ensure_blocks(seq, num_tokens):
                 return True
