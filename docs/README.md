@@ -46,3 +46,4 @@
 | [step44_recompute_preemption.md](step44_recompute_preemption.md) | `step44/`（包） | 重计算式抢占：容量超卖、从 running 尾部选犧牲者、历史按 `all_token_ids` 重放 |
 | [step45_blocker_aware_resume.md](step45_blocker_aware_resume.md) | `step45/`（包） | 阻塞者感知的恢复准入：记住是谁迫使让路，它结束前不急着恢复 |
 | [step46_resume_prefix_cache.md](step46_resume_prefix_cache.md) | `step46/`（包） | 抢占恢复与前缀缓存整合：恢复时复用仍在缓存里的完整块，只重算剩下的历史 |
+| [step47_priority_scheduling.md](step47_priority_scheduling.md) | `step47/`（包） | 优先级调度与抢占：名额/容量/token budget 三种资源都按 `(priority, arrival_order)` |
