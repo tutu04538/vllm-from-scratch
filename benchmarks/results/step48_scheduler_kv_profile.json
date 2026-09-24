@@ -1,0 +1,245 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "cpu": "x86_64",
+    "revision": "6f2bc03eea5b8e028429d0a3eb9b96180e0a3a0c",
+    "gpu": "NVIDIA GeForce RTX 5090 Laptop GPU",
+    "device_note": "synthetic: CPU bookkeeping only; GPU: synchronized Torch eager"
+  },
+  "history_copy_micro": [
+    {
+      "running": 1,
+      "output_len": 1,
+      "plan_tokens_us": 0.58,
+      "full_history_last_us": 0.08,
+      "output_last_us": 0.04
+    },
+    {
+      "running": 1,
+      "output_len": 128,
+      "plan_tokens_us": 0.68,
+      "full_history_last_us": 0.17,
+      "output_last_us": 0.04
+    },
+    {
+      "running": 1,
+      "output_len": 2048,
+      "plan_tokens_us": 1.78,
+      "full_history_last_us": 0.93,
+      "output_last_us": 0.05
+    },
+    {
+      "running": 1,
+      "output_len": 8192,
+      "plan_tokens_us": 5.58,
+      "full_history_last_us": 4.43,
+      "output_last_us": 0.07
+    },
+    {
+      "running": 16,
+      "output_len": 1,
+      "plan_tokens_us": 6.06,
+      "full_history_last_us": 0.08,
+      "output_last_us": 0.04
+    },
+    {
+      "running": 16,
+      "output_len": 128,
+      "plan_tokens_us": 7.72,
+      "full_history_last_us": 0.17,
+      "output_last_us": 0.04
+    },
+    {
+      "running": 16,
+      "output_len": 2048,
+      "plan_tokens_us": 24.58,
+      "full_history_last_us": 0.91,
+      "output_last_us": 0.05
+    },
+    {
+      "running": 16,
+      "output_len": 8192,
+      "plan_tokens_us": 83.63,
+      "full_history_last_us": 4.18,
+      "output_last_us": 0.07
+    }
+  ],
+  "allocator_micro": [
+    {
+      "pool_blocks": 256,
+      "occupancy": "free",
+      "plan_one_block_us": 5.32
+    },
+    {
+      "pool_blocks": 256,
+      "occupancy": "idle_cached",
+      "plan_one_block_us": 16.16
+    },
+    {
+      "pool_blocks": 4096,
+      "occupancy": "free",
+      "plan_one_block_us": 106.93
+    },
+    {
+      "pool_blocks": 4096,
+      "occupancy": "idle_cached",
+      "plan_one_block_us": 361.63
+    },
+    {
+      "pool_blocks": 16384,
+      "occupancy": "free",
+      "plan_one_block_us": 454.8
+    },
+    {
+      "pool_blocks": 16384,
+      "occupancy": "idle_cached",
+      "plan_one_block_us": 1480.09
+    }
+  ],
+  "synthetic_workloads": [
+    {
+      "requests": 8,
+      "pool_blocks": 1024,
+      "prefix": false,
+      "steps": 138,
+      "preemptions": 0,
+      "schedule_p50_us": 4.92,
+      "schedule_p95_us": 47.96,
+      "schedule_total_ms": 1.87,
+      "post_total_ms": 0.18,
+      "phase_total_ms": {
+        "admit": 0.02,
+        "plan": 0.38,
+        "reserve": 1.37
+      },
+      "recomputed_tokens": 0,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 32,
+      "pool_blocks": 1024,
+      "prefix": false,
+      "steps": 141,
+      "preemptions": 0,
+      "schedule_p50_us": 42.56,
+      "schedule_p95_us": 99.76,
+      "schedule_total_ms": 6.5,
+      "post_total_ms": 0.63,
+      "phase_total_ms": {
+        "admit": 0.04,
+        "plan": 1.16,
+        "reserve": 5.16
+      },
+      "recomputed_tokens": 0,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 64,
+      "pool_blocks": 1024,
+      "prefix": false,
+      "steps": 142,
+      "preemptions": 0,
+      "schedule_p50_us": 97.88,
+      "schedule_p95_us": 160.94,
+      "schedule_total_ms": 12.3,
+      "post_total_ms": 1.11,
+      "phase_total_ms": {
+        "admit": 0.05,
+        "plan": 2.18,
+        "reserve": 9.84
+      },
+      "recomputed_tokens": 0,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 32,
+      "pool_blocks": 8192,
+      "prefix": false,
+      "steps": 141,
+      "preemptions": 0,
+      "schedule_p50_us": 241.35,
+      "schedule_p95_us": 703.39,
+      "schedule_total_ms": 42.78,
+      "post_total_ms": 0.77,
+      "phase_total_ms": {
+        "admit": 0.05,
+        "plan": 1.33,
+        "reserve": 41.16
+      },
+      "recomputed_tokens": 0,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 32,
+      "pool_blocks": 8192,
+      "prefix": true,
+      "steps": 141,
+      "preemptions": 0,
+      "schedule_p50_us": 255.59,
+      "schedule_p95_us": 731.24,
+      "schedule_total_ms": 45.09,
+      "post_total_ms": 1.89,
+      "phase_total_ms": {
+        "admit": 0.18,
+        "plan": 1.35,
+        "reserve": 43.35
+      },
+      "recomputed_tokens": 0,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 16,
+      "pool_blocks": 32,
+      "prefix": false,
+      "steps": 263,
+      "preemptions": 12,
+      "schedule_p50_us": 4.3,
+      "schedule_p95_us": 9.35,
+      "schedule_total_ms": 1.25,
+      "post_total_ms": 0.37,
+      "phase_total_ms": {
+        "admit": 0.06,
+        "plan": 0.62,
+        "reserve": 0.34
+      },
+      "recomputed_tokens": 303,
+      "reused_tokens": 0
+    },
+    {
+      "requests": 16,
+      "pool_blocks": 32,
+      "prefix": true,
+      "steps": 263,
+      "preemptions": 12,
+      "schedule_p50_us": 4.87,
+      "schedule_p95_us": 12.72,
+      "schedule_total_ms": 1.72,
+      "post_total_ms": 1.13,
+      "phase_total_ms": {
+        "admit": 0.17,
+        "plan": 0.69,
+        "reserve": 0.52
+      },
+      "recomputed_tokens": 303,
+      "reused_tokens": 0
+    }
+  ],
+  "cprofile": "         86080 function calls in 0.061 seconds\n\n   Ordered by: cumulative time\n   List reduced from 79 to 24 due to restriction <24>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.001    0.001    0.061    0.061 /home/user/proj/vllm-from-scratch/benchmarks/profile_step48_scheduler_kv.py:94(synthetic_once)\n      141    0.000    0.000    0.053    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:93(schedule)\n      423    0.000    0.000    0.053    0.000 /home/user/proj/vllm-from-scratch/benchmarks/profile_step48_scheduler_kv.py:113(timed)\n      141    0.001    0.000    0.047    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:208(_reserve_blocks)\n     2123    0.004    0.000    0.046    0.000 /home/user/proj/vllm-from-scratch/step48/cache.py:194(ensure_blocks)\n      183    0.002    0.000    0.041    0.000 /home/user/proj/vllm-from-scratch/step48/cache.py:209(_plan_block_growth)\n      183    0.039    0.000    0.039    0.000 /home/user/proj/vllm-from-scratch/step48/cache.py:84(_free_block_indices)\n      141    0.002    0.000    0.006    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:157(_plan_tokens)\n      141    0.000    0.000    0.005    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:392(post_step)\n      141    0.000    0.000    0.004    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:398(_publish_computed_blocks)\n     2990    0.001    0.000    0.003    0.000 /home/user/proj/vllm-from-scratch/step48/cache.py:260(publish_computed_blocks)\n     6023    0.001    0.000    0.002    0.000 /home/user/proj/vllm-from-scratch/step48/request.py:64(num_uncomputed_tokens)\n     2958    0.000    0.000    0.002    0.000 /home/user/proj/vllm-from-scratch/step48/request.py:73(is_ready_for_next_token)\n    28432    0.001    0.000    0.001    0.000 {built-in method builtins.len}\n      192    0.000    0.000    0.001    0.000 /home/user/proj/vllm-from-scratch/step48/cache.py:43(_stable_hash)\n      141    0.001    0.000    0.001    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:412(_update_recompute_metrics)\n       32    0.000    0.000    0.001    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:50(add_request)\n      141    0.001    0.000    0.001    0.000 /home/user/proj/vllm-from-scratch/step48/scheduler.py:426(_finish_completed_requests)\n    10301    0.001    0.000    0.001    0.000 {built-in method builtins.max}\n      192    0.000    0.000    0.001    0.000 /home/user/anaconda3/envs/vllm-omni-dev/lib/python3.12/json/__init__.py:183(dumps)\n        1    0.000    0.000    0.001    0.001 /home/user/proj/vllm-from-scratch/benchmarks/profile_step48_scheduler_kv.py:33(pool)\n     6864    0.001    0.000    0.001    0.000 {method 'append' of 'list' objects}\n        1    0.000    0.000    0.001    0.001 /home/user/proj/vllm-from-scratch/step48/cache.py:51(__init__)\n      192    0.000    0.000    0.001    0.000 /home/user/anaconda3/envs/vllm-omni-dev/lib/python3.12/json/encoder.py:183(encode)\n\n\n",
+  "gpu_engine": [
+    {
+      "pool_blocks": 128,
+      "steps": 42,
+      "total_ms": 3229.45,
+      "schedule_total_ms": 1.5,
+      "schedule_fraction": 0.0005
+    },
+    {
+      "pool_blocks": 8192,
+      "steps": 42,
+      "total_ms": 2938.05,
+      "schedule_total_ms": 13.5,
+      "schedule_fraction": 0.0046
+    }
+  ]
+}

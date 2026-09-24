@@ -48,3 +48,4 @@
 | [step46_resume_prefix_cache.md](step46_resume_prefix_cache.md) | `step46/`（包） | 抢占恢复与前缀缓存整合：恢复时复用仍在缓存里的完整块，只重算剩下的历史 |
 | [step47_priority_scheduling.md](step47_priority_scheduling.md) | `step47/`（包） | 优先级调度与抢占：名额/容量/token budget 三种资源都按 `(priority, arrival_order)` |
 | [step48_refactor_kv_scheduler.md](step48_refactor_kv_scheduler.md) | `step48/`（包） | 行为不变重构：请求状态拆到 `request.py`，KV 准入/补块改「先计划后提交」，调度拆成阶段 |
+| [step49_free_block_heap.md](step49_free_block_heap.md) | `step49/`（包） | 空闲 KV 块改小根堆增量维护：真正空闲路径不再随池子线性扫描 |

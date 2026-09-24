@@ -1,0 +1,171 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "cpu_count": 24,
+    "note": "CPU 合成负载，不跑模型；只量调度与 KV 元数据"
+  },
+  "allocator": {
+    "step48": [
+      {
+        "pool_blocks": 256,
+        "occupancy": "free",
+        "plan_one_block_us": 5.15
+      },
+      {
+        "pool_blocks": 256,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 16.09
+      },
+      {
+        "pool_blocks": 4096,
+        "occupancy": "free",
+        "plan_one_block_us": 105.12
+      },
+      {
+        "pool_blocks": 4096,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 351.3
+      },
+      {
+        "pool_blocks": 16384,
+        "occupancy": "free",
+        "plan_one_block_us": 430.6
+      },
+      {
+        "pool_blocks": 16384,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 1431.94
+      }
+    ],
+    "step49": [
+      {
+        "pool_blocks": 256,
+        "occupancy": "free",
+        "plan_one_block_us": 0.22
+      },
+      {
+        "pool_blocks": 256,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 12.02
+      },
+      {
+        "pool_blocks": 4096,
+        "occupancy": "free",
+        "plan_one_block_us": 0.21
+      },
+      {
+        "pool_blocks": 4096,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 247.27
+      },
+      {
+        "pool_blocks": 16384,
+        "occupancy": "free",
+        "plan_one_block_us": 0.31
+      },
+      {
+        "pool_blocks": 16384,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 1006.57
+      }
+    ]
+  },
+  "synthetic": {
+    "step48": {
+      "32_8192_False": {
+        "requests": 32,
+        "pool_blocks": 8192,
+        "prefix": false,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 42.431,
+        "schedule_p50_us": 237.66,
+        "phase_total_ms": {
+          "admit": 0.127,
+          "plan": 1.374,
+          "reserve": 40.669
+        },
+        "reused_tokens": 0
+      },
+      "32_1024_False": {
+        "requests": 32,
+        "pool_blocks": 1024,
+        "prefix": false,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 6.297,
+        "schedule_p50_us": 41.61,
+        "phase_total_ms": {
+          "admit": 0.034,
+          "plan": 1.14,
+          "reserve": 4.991
+        },
+        "reused_tokens": 0
+      },
+      "32_8192_True": {
+        "requests": 32,
+        "pool_blocks": 8192,
+        "prefix": true,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 44.656,
+        "schedule_p50_us": 246.8,
+        "phase_total_ms": {
+          "admit": 0.282,
+          "plan": 1.305,
+          "reserve": 42.855
+        },
+        "reused_tokens": 0
+      }
+    },
+    "step49": {
+      "32_8192_False": {
+        "requests": 32,
+        "pool_blocks": 8192,
+        "prefix": false,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 2.159,
+        "schedule_p50_us": 13.71,
+        "phase_total_ms": {
+          "admit": 0.049,
+          "plan": 1.175,
+          "reserve": 0.51
+        },
+        "reused_tokens": 0
+      },
+      "32_1024_False": {
+        "requests": 32,
+        "pool_blocks": 1024,
+        "prefix": false,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 1.913,
+        "schedule_p50_us": 13.13,
+        "phase_total_ms": {
+          "admit": 0.032,
+          "plan": 1.196,
+          "reserve": 0.544
+        },
+        "reused_tokens": 0
+      },
+      "32_8192_True": {
+        "requests": 32,
+        "pool_blocks": 8192,
+        "prefix": true,
+        "steps": 141,
+        "preemptions": 0,
+        "schedule_total_ms": 2.625,
+        "schedule_p50_us": 19.15,
+        "phase_total_ms": {
+          "admit": 0.236,
+          "plan": 1.543,
+          "reserve": 0.649
+        },
+        "reused_tokens": 0
+      }
+    }
+  }
+}
