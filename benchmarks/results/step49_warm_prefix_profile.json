@@ -1,0 +1,86 @@
+[
+  {
+    "package": "step48",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 82.8,
+    "ensure_p95_us": 92.37
+  },
+  {
+    "package": "step49",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 58.13,
+    "ensure_p95_us": 68.4
+  },
+  {
+    "package": "step48",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 714.25,
+    "ensure_p95_us": 746.49
+  },
+  {
+    "package": "step49",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 495.11,
+    "ensure_p95_us": 541.83
+  },
+  {
+    "package": "step48",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 83.92,
+    "ensure_p95_us": 94.71
+  },
+  {
+    "package": "step49",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 58.41,
+    "ensure_p95_us": 67.22
+  },
+  {
+    "package": "step48",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 722.52,
+    "ensure_p95_us": 782.68
+  },
+  {
+    "package": "step49",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 496.31,
+    "ensure_p95_us": 532.96
+  },
+  {
+    "package": "step48",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 83.93,
+    "ensure_p95_us": 93.29
+  },
+  {
+    "package": "step49",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 58.8,
+    "ensure_p95_us": 66.04
+  },
+  {
+    "package": "step48",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 720.96,
+    "ensure_p95_us": 757.1
+  },
+  {
+    "package": "step49",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 503.06,
+    "ensure_p95_us": 569.3
+  }
+]
