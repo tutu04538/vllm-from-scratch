@@ -37,6 +37,8 @@ Engine/Model：执行 forward、采样并提交真实输出   engine.py
 | `engine.py`、`model.py` 等 11 个文件 | **未改** |
 | `step48.py` | 由 `step47/step47.py` 改名而来 |
 
+另外把 `KVCachePool.block_hash` **更名为 `hash_to_block`**（见 §2.4）。
+
 依赖方向 `request → cache → scheduler → engine`，无环。`request.py` 不 import 包内任何东西。
 
 **`from step48.cache import SequenceConfig, CacheConfig` 仍然可用**（重导出，实测是同一个类对象）；
@@ -111,6 +113,24 @@ def post_step(self):
 进度，而采样 append 发生在它之前，所以刚采样、还没进模型的 token 绝不会被登记。
 重算量仍只按实际执行的 `scheduled_items` 统计，草稿计划和被撤销的 item 不算。
 
+### 2.4 顺带改名：`block_hash` → `hash_to_block`
+
+原来的 `block_hash` / `block_to_hash` 是一对**互逆**索引，但两个名字长得几乎一样、
+看不出方向。改成 `hash_to_block` / `block_to_hash` 后方向一目了然。
+
+需求 §6 提醒过「跨模块使用的字段先不改名」，实测代价是明确的：验收方的固定回归脚本里
+有三处直接读这个字段，改名后 `verify_step48_contract.py` 的 `prefix_disabled` 用例会
+`AttributeError: 'KVCachePool' object has no attribute 'block_hash'`（contract 96 → 95）。
+**所以这次改名需要验收方同步更新这三个文件**（与第 39 关融合投影参数同类）：
+
+```text
+verify_step48_contract.py      else: assert not hits and not e.kv_cache_pool.block_hash
+step48_io_helpers.py           assert not any(p.block_usage) and not p.block_hash and not p.block_to_hash
+step48_process_roundtrip.py    （同上，逐关复制前推的文件）
+```
+
+`block_to_hash` 名字没变，只改 `block_hash` 一侧。
+
 ## 3. 验证：证明只是重构
 
 ### 3.1 逐步对照（`benchmarks/diff_step47_step48.py`，72 项全通过）
@@ -163,7 +183,7 @@ prefix 开/关、`budget=1`、`max_num_seqs=1`、高优先级后到。
 | `seq.cache.block_table` | 请求 | 逻辑块编号 → 物理块编号 | 准入提交、补块提交、抢占/完成重置 |
 | `seq.block_hashes` | 请求 | 从块 0 起连续的 hash 链 | 命中准入、发布完整块、抢占清空 |
 | `pool.block_usage[b]` | KV 池 | 物理块 `b` 的**活动请求引用数**，不是 LRU 热度 | 准入提交、补块提交、释放 |
-| `pool.block_hash[h]` / `block_to_hash[b]` | KV 池 | 已登记完整块的双向索引 | 发布、淘汰（**同一次操作增删**） |
+| `pool.hash_to_block[h]` / `block_to_hash[b]` | KV 池 | 已登记完整块的双向索引 | 发布、淘汰（**同一次操作增删**） |
 | `pool.promised_blocks` / `seq.promised_blocks` | 池 / 请求 | 未兑现的承诺数 | 承诺式准入提交、补块提交、释放 |
 | `seq.high_water` | 请求 | 曾经真正计算到的最高位置 | forward 之后、抢占前 |
 | `seq.recomputed_tokens` | 请求 | 再次进入模型的旧历史 token 数 | **真的 forward 之后**，不按计划计 |

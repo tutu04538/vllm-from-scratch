@@ -34,7 +34,7 @@ def snap(pool):
     """池与请求状态的可比快照。"""
     return {
         "usage": list(pool.block_usage),
-        "block_hash": dict(pool.block_hash),
+        "hash_to_block": dict(pool.hash_to_block),
         "block_to_hash": dict(pool.block_to_hash),
         "promised_pool": pool.promised_blocks,
         "lru": list(pool.block_last_used),
@@ -110,7 +110,7 @@ pool.ensure_blocks(pub, 4)                 # 正常流程：先补块，模型�
 pub.cache.length = 4
 pool.publish_computed_blocks(pub)          # 第 0 块进缓存
 pool.deallocate_block(pub)                 # 变成闲置缓存
-cached_before = dict(pool.block_hash)
+cached_before = dict(pool.hash_to_block)
 check("发布/释放：闲置缓存还在（不是泄漏，是可复用块）", bool(cached_before))
 
 grower = req("grow", [90, 91, 92, 93], 8)
@@ -125,8 +125,8 @@ check("计划阶段：一个块都还没被淘汰（LRU/hash 未动）", snap(po
 pool._commit_block_growth(grower, plan)
 check("提交阶段：淘汰的 hash 双向索引同步消失",
       all(b not in pool.block_to_hash for b in plan.evict_block_ids)
-      and all(h not in pool.block_hash for h in cached_before),
-      str(pool.block_hash))
+      and all(h not in pool.hash_to_block for h in cached_before),
+      str(pool.hash_to_block))
 check("提交阶段：新块引用为 1 且进了块表",
       all(pool.block_usage[b] == 1 for b in plan.new_block_ids)
       and grower.cache.block_table[-len(plan.new_block_ids):] == plan.new_block_ids)

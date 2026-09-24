@@ -42,6 +42,13 @@ post_step(): _publish_computed_blocks → _update_recompute_metrics → _finish_
 
 两个关键顺序都保留：**先计划、再补块**；**先 forward、再发布**。
 
+## 顺带改名
+
+`KVCachePool.block_hash` → **`hash_to_block`**。原来它和 `block_to_hash` 是一对互逆索引，
+名字却看不出方向。**这一处需要验收方同步更新三个固定脚本**
+（`verify_step*_contract.py`、`step*_io_helpers.py`、`step*_process_roundtrip.py`
+里读 `block_hash` 的那一行）；`block_to_hash` 没改名。
+
 ## 怎么证明只是重构
 
 | 检查 | 结果 |

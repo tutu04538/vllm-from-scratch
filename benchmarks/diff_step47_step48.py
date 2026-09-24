@@ -85,15 +85,21 @@ def run_pair(seed, arrival_plan, limit=800, **kw):
     return engines, traces, counters
 
 
+def _hash_map(pool):
+    """step48 把 block_hash 更名为 hash_to_block；两个版本都能取。"""
+    return pool.hash_to_block if hasattr(pool, "hash_to_block") else pool.block_hash
+
+
 def summarize(e):
     s = e.scheduler
     # 完成顺序从逐步快照里拿不到（step_done 每轮清空），改用 on_finished 的顺序
     return {
         "promised_pool": s.kv_cache_pool.promised_blocks,
         "usage_zero": all(u == 0 for u in s.kv_cache_pool.block_usage),
+        # step48 把 block_hash 更名为 hash_to_block，两边名字不同，按存在与否取
         "hash_consistent": all(s.kv_cache_pool.block_to_hash.get(b) == h
-                               for h, b in s.kv_cache_pool.block_hash.items())
-        and len(s.kv_cache_pool.block_to_hash) == len(s.kv_cache_pool.block_hash),
+                               for h, b in _hash_map(s.kv_cache_pool).items())
+        and len(s.kv_cache_pool.block_to_hash) == len(_hash_map(s.kv_cache_pool)),
         "running_empty": not s.running and not s.waiting,
         "num_preemptions": s.num_preemptions,
         "num_priority_preemptions": s.num_priority_preemptions,

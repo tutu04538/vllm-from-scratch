@@ -73,7 +73,7 @@ class KVCachePool:
         self.v_flat = self.v_cache.view(num_layers, -1, num_kv_heads, head_dim)
         self.block_usage = [0] * self.num_kv_blocks  # 引用该块的活动请求数
         self.enable_prefix_caching = enable_prefix_caching
-        self.block_hash = {}  # 前缀 hash -> 该块物理块编号
+        self.hash_to_block = {}  # 前缀 hash -> 该块物理块编号
         self.block_to_hash = {}  # 物理块编号 -> 仍保留它的缓存条目 hash
         self.block_last_used = [0] * self.num_kv_blocks  # LRU 序号
         self.lru_seq = 0
@@ -92,7 +92,7 @@ class KVCachePool:
 
     def _evict_block(self, block_idx):
         # 先删除 key 与物理块的关联，之后这个块才能被重新分配
-        del self.block_hash[self.block_to_hash.pop(block_idx)]
+        del self.hash_to_block[self.block_to_hash.pop(block_idx)]
 
     # ---- 按需分配 ----
     #
@@ -286,11 +286,11 @@ class KVCachePool:
             hash_value = _stable_hash(previous_hash, block)
             seq.block_hashes.append(hash_value)
 
-            if hash_value in self.block_hash:
+            if hash_value in self.hash_to_block:
                 continue
 
             block_idx = seq.cache.block_table[i]
-            self.block_hash[hash_value] = block_idx
+            self.hash_to_block[hash_value] = block_idx
             self.block_to_hash[block_idx] = hash_value
             self._mark_used(block_idx)
 
@@ -360,9 +360,9 @@ class KVCachePool:
         for i in range(0, block_num):
             block = tuple(token_ids[i * self.block_size:(i + 1) * self.block_size])
             current_hash = _stable_hash(current_hash, block)
-            if current_hash not in self.block_hash:
+            if current_hash not in self.hash_to_block:
                 break
-            matched_blocks.append(self.block_hash[current_hash])
+            matched_blocks.append(self.hash_to_block[current_hash])
             matched_hashes.append(current_hash)
 
         return matched_blocks, matched_hashes
