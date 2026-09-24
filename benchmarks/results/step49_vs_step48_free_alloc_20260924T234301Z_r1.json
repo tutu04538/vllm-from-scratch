@@ -11,64 +11,64 @@
       {
         "pool_blocks": 256,
         "occupancy": "free",
-        "plan_one_block_us": 5.25
+        "plan_one_block_us": 5.36
       },
       {
         "pool_blocks": 256,
         "occupancy": "idle_cached",
-        "plan_one_block_us": 15.97
+        "plan_one_block_us": 16.16
       },
       {
         "pool_blocks": 4096,
         "occupancy": "free",
-        "plan_one_block_us": 107.69
+        "plan_one_block_us": 106.93
       },
       {
         "pool_blocks": 4096,
         "occupancy": "idle_cached",
-        "plan_one_block_us": 356.35
+        "plan_one_block_us": 353.88
       },
       {
         "pool_blocks": 16384,
         "occupancy": "free",
-        "plan_one_block_us": 437.14
+        "plan_one_block_us": 431.09
       },
       {
         "pool_blocks": 16384,
         "occupancy": "idle_cached",
-        "plan_one_block_us": 1410.43
+        "plan_one_block_us": 1443.25
       }
     ],
     "step49": [
       {
         "pool_blocks": 256,
         "occupancy": "free",
-        "plan_one_block_us": 0.22
+        "plan_one_block_us": 0.29
       },
       {
         "pool_blocks": 256,
         "occupancy": "idle_cached",
-        "plan_one_block_us": 11.34
+        "plan_one_block_us": 12.21
       },
       {
         "pool_blocks": 4096,
-        "occupancy": "free",
-        "plan_one_block_us": 0.21
-      },
-      {
-        "pool_blocks": 4096,
-        "occupancy": "idle_cached",
-        "plan_one_block_us": 237.52
-      },
-      {
-        "pool_blocks": 16384,
         "occupancy": "free",
         "plan_one_block_us": 0.29
       },
       {
+        "pool_blocks": 4096,
+        "occupancy": "idle_cached",
+        "plan_one_block_us": 250.45
+      },
+      {
+        "pool_blocks": 16384,
+        "occupancy": "free",
+        "plan_one_block_us": 0.44
+      },
+      {
         "pool_blocks": 16384,
         "occupancy": "idle_cached",
-        "plan_one_block_us": 971.88
+        "plan_one_block_us": 1013.51
       }
     ]
   },
@@ -80,12 +80,12 @@
         "prefix": false,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 42.172,
-        "schedule_p50_us": 236.73,
+        "schedule_total_ms": 42.126,
+        "schedule_p50_us": 236.87,
         "phase_total_ms": {
-          "admit": 0.086,
-          "plan": 1.379,
-          "reserve": 40.483
+          "admit": 0.066,
+          "plan": 1.275,
+          "reserve": 40.594
         },
         "reused_tokens": 0
       },
@@ -95,12 +95,12 @@
         "prefix": false,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 6.171,
-        "schedule_p50_us": 40.57,
+        "schedule_total_ms": 6.335,
+        "schedule_p50_us": 43.8,
         "phase_total_ms": {
-          "admit": 0.033,
-          "plan": 1.13,
-          "reserve": 4.874
+          "admit": 0.032,
+          "plan": 1.145,
+          "reserve": 5.024
         },
         "reused_tokens": 0
       },
@@ -110,12 +110,12 @@
         "prefix": true,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 42.695,
-        "schedule_p50_us": 239.43,
+        "schedule_total_ms": 44.625,
+        "schedule_p50_us": 251.55,
         "phase_total_ms": {
-          "admit": 0.158,
-          "plan": 1.204,
-          "reserve": 41.149
+          "admit": 0.159,
+          "plan": 1.274,
+          "reserve": 43.0
         },
         "reused_tokens": 0
       }
@@ -127,11 +127,11 @@
         "prefix": false,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 1.809,
-        "schedule_p50_us": 13.5,
+        "schedule_total_ms": 1.841,
+        "schedule_p50_us": 13.32,
         "phase_total_ms": {
-          "admit": 0.045,
-          "plan": 1.145,
+          "admit": 0.049,
+          "plan": 1.176,
           "reserve": 0.48
         },
         "reused_tokens": 0
@@ -142,12 +142,12 @@
         "prefix": false,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 1.69,
-        "schedule_p50_us": 12.36,
+        "schedule_total_ms": 1.854,
+        "schedule_p50_us": 12.57,
         "phase_total_ms": {
-          "admit": 0.03,
-          "plan": 1.079,
-          "reserve": 0.456
+          "admit": 0.031,
+          "plan": 1.189,
+          "reserve": 0.503
         },
         "reused_tokens": 0
       },
@@ -157,12 +157,12 @@
         "prefix": true,
         "steps": 141,
         "preemptions": 0,
-        "schedule_total_ms": 2.21,
-        "schedule_p50_us": 14.07,
+        "schedule_total_ms": 2.528,
+        "schedule_p50_us": 16.71,
         "phase_total_ms": {
-          "admit": 0.154,
-          "plan": 1.254,
-          "reserve": 0.637
+          "admit": 0.185,
+          "plan": 1.473,
+          "reserve": 0.666
         },
         "reused_tokens": 0
       }

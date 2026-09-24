@@ -1,10 +1,10 @@
-"""第 49 关：空闲堆的增量维护与「计划失败无副作用」（需求 §不变量 / §验收 1、2）。
+"""第 49 关：空闲队列的增量维护与「计划失败无副作用」（需求 §不变量 / §验收 1、2）。
 
 两件事：
-  1. 每一次**状态转换之后**都校验 set(free_heap) 等于独立扫描出来的真正空闲集合，
+  1. 每一次**状态转换之后**都校验 set(free_queue) 等于独立扫描出来的真正空闲集合，
      且堆内无重复；
   2. 从 step48 移植「准入失败 / 补块失败 / 计划阶段不淘汰」的无副作用测试，
-     并把 free_heap 加进快照。
+     并把 free_queue 加进快照。
 """
 
 import sys
@@ -33,11 +33,11 @@ VIOLATIONS = []
 
 def assert_invariant(pool, where):
     truth = set(pool._free_block_indices())          # 独立全池扫描，不用堆自己校验自己
-    heap_set = set(pool.free_heap)
+    heap_set = set(pool.free_queue)
     if heap_set != truth:
         VIOLATIONS.append({"where": where, "heap": sorted(heap_set), "truth": sorted(truth)})
-    if len(pool.free_heap) != len(heap_set):
-        VIOLATIONS.append({"where": where, "why": "堆内重复", "heap": list(pool.free_heap)})
+    if len(pool.free_queue) != len(heap_set):
+        VIOLATIONS.append({"where": where, "why": "堆内重复", "heap": list(pool.free_queue)})
 
 
 IN_COMMIT = {"depth": 0}
@@ -117,21 +117,21 @@ b = req("b", [5, 6, 7, 8], 1)
 pool.allocate_block(b)
 pool.ensure_blocks(b, 4)                 # b 用掉第 1 块
 cached = set(pool.hash_to_block.values())
-check("小例子：带 hash 的块没有进空闲堆", not (cached & set(pool.free_heap)),
-      f"cached={sorted(cached)} heap={sorted(pool.free_heap)}")
+check("小例子：带 hash 的块没有进空闲堆", not (cached & set(pool.free_queue)),
+      f"cached={sorted(cached)} heap={sorted(pool.free_queue)}")
 
 nxt = req("n", [9, 10, 11, 12], 1)
 pool.allocate_block(nxt)
 plan = pool._plan_block_growth(nxt, 1)
 check("小例子：下一次应拿编号最小的真正空闲块 2",
       plan.new_block_ids == [2], str(plan.new_block_ids))
-check("小例子：计划阶段没动堆", 2 in pool.free_heap, str(sorted(pool.free_heap)))
+check("小例子：计划阶段没动堆", 2 in pool.free_queue, str(sorted(pool.free_queue)))
 pool._commit_block_growth(nxt, plan)
-check("小例子：提交后 2 离开了空闲堆", 2 not in pool.free_heap, str(sorted(pool.free_heap)))
+check("小例子：提交后 2 离开了空闲堆", 2 not in pool.free_queue, str(sorted(pool.free_queue)))
 
 # 0 释放后若无 hash，下一次应先拿 0
 pool.deallocate_block(b)                 # b 用的第 1 块回到空闲堆
-check("小例子：释放后第 1 块回到空闲堆", 1 in pool.free_heap, str(sorted(pool.free_heap)))
+check("小例子：释放后第 1 块回到空闲堆", 1 in pool.free_queue, str(sorted(pool.free_queue)))
 
 # ------------------------------------- 2. 从 step48 移植：计划失败无副作用
 
@@ -142,7 +142,7 @@ def snap(pool):
         "hash_to_block": dict(pool.hash_to_block),
         "block_to_hash": dict(pool.block_to_hash),
         "promised_pool": pool.promised_blocks,
-        "free_heap": list(pool.free_heap),
+        "free_queue": list(pool.free_queue),
     }
 
 
@@ -202,7 +202,7 @@ pool.allocate_block(grower)
 before = snap(pool)
 plan = pool._plan_block_growth(grower, 4)
 check("计划阶段：选了可淘汰块，但堆与 hash 都没动", snap(pool) == before,
-      f"heap={pool.free_heap}")
+      f"heap={pool.free_queue}")
 pool._commit_block_growth(grower, plan)
 check("提交阶段：淘汰的 hash 双向索引同步消失",
       all(b not in pool.block_to_hash for b in plan.evict_block_ids))

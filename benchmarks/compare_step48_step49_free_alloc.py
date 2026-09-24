@@ -63,10 +63,10 @@ def allocator_micro(mods, blocks_list=(256, 4096, 16384)) -> list[dict]:
                     p.hash_to_block[key] = b
                     p.block_to_hash[b] = key
                     p.block_last_used[b] = b
-                if hasattr(p, "free_heap"):
+                if hasattr(p, "free_queue"):
                     # 全部带 hash -> 一个「真正空闲」块都没有。必须同步清空空闲堆，
                     # 否则 step49 会从脏堆里拿到块、绕过淘汰路径，测出来的不是真东西。
-                    p.free_heap.clear()
+                    p.free_queue.clear()
             seq = request.SequenceConfig("probe", [1], 2, 16)
             iterations = 500 if blocks <= 4096 else 120
             measured = median_call_us(lambda: p._plan_block_growth(seq, 1), iterations)

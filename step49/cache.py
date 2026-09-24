@@ -4,9 +4,10 @@
 """
 
 import hashlib
-import heapq
+import itertools
 import json
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import torch
@@ -31,8 +32,8 @@ class AdmissionPlan:
 class BlockGrowthPlan:
     """本轮补块的只读结论：淘汰哪些闲置块、新占哪些物理块。
 
-    `num_free_blocks` 是 `new_block_ids` 里**来自空闲堆**的前几个（按编号升序）。
-    提交时按这个数量从堆里弹出——不能在计划阶段弹，否则计划失败会留下副作用。
+    `num_free_blocks` 是 `new_block_ids` 里**来自空闲队列**的前几个。
+    提交时按这个数量从队首取出——不能在计划阶段取，否则计划失败会留下副作用。
     """
     evict_block_ids: list
     new_block_ids: list
@@ -79,11 +80,12 @@ class KVCachePool:
         self.v_flat = self.v_cache.view(num_layers, -1, num_kv_heads, head_dim)
         self.block_usage = [0] * self.num_kv_blocks  # 引用该块的活动请求数
         # 「真正空闲」= block_usage[b] == 0 且 b 不在 block_to_hash 里。
-        # 增量维护成小根堆，补块时不用再扫全池；编号最小的先被选中，
-        # 与旧的「从 0 扫到池尾」顺序一致，方便逐步对照。
+        # 增量维护成一个队列（deque），补块时不用再扫全池。
+        # 初始按块编号升序；被释放的块追加到队尾——与本机 vLLM 的
+        # FreeKVCacheBlockQueue 顺序一致（它不用 deque 只是因为在队列中间
+        # 删除要 O(1)，本实现不需要那个能力）。
         # 不变量见 _free_block_indices() 的说明。
-        self.free_heap = list(range(self.num_kv_blocks))
-        heapq.heapify(self.free_heap)
+        self.free_queue = deque(range(self.num_kv_blocks))
         self.enable_prefix_caching = enable_prefix_caching
         self.hash_to_block = {}  # 前缀 hash -> 该块物理块编号
         self.block_to_hash = {}  # 物理块编号 -> 仍保留它的缓存条目 hash
@@ -93,59 +95,53 @@ class KVCachePool:
         # 准入要扣掉它，否则多条请求会各自按「当前空闲」判断，合起来超额承诺。
         self.promised_blocks = 0
 
-    # ---- 空闲块索引 ----
+    # ---- 空闲块队列 ----
     #
-    # `free_heap` 是「真正空闲」块（block_usage == 0 且不在 block_to_hash 里）的小根堆，
+    # `free_queue` 里放的是「真正空闲」块（block_usage == 0 且不在 block_to_hash 里），
     # 在**状态转换点**增量维护，不在热路径重建：
     #
     #   初始化          装入 0..num_kv_blocks-1
-    #   _commit_block_growth  弹出这次真正用掉的块
-    #   deallocate_block      引用数降到 0、且不带 prefix hash 时才放回
-    #   _evict_block          淘汰的闲置缓存块被本次补块直接复用，不回堆
+    #   _commit_block_growth  从队首取走这次真正用掉的块
+    #   deallocate_block      引用数降到 0、且不带 prefix hash 时才放回队尾
+    #   _evict_block          淘汰的闲置缓存块被本次补块直接复用，不入队
     #
     # 不变量：
-    #   set(free_heap) == {b | block_usage[b] == 0 and b not in block_to_hash}
-    #   堆内无重复
+    #   set(free_queue) == {b | block_usage[b] == 0 and b not in block_to_hash}
+    #   队列内无重复
+    # 顺序：初始按块编号升序，释放的块追加到队尾（先进先出）。
+    # 注：这里**不保证**每次挑编号最小的空闲块，因此物理块编号与 step48 不同；
+    # 这是刻意的——选择顺序不影响正确性，只影响用哪一块。
+    #
     # prefix 缓存块即使没有活动引用也是「闲置缓存」，**不是**「真正空闲」，
-    # 不能进堆；被命中借用的缓存块也不从堆里取。
+    # 不能入队；被命中借用的缓存块也不从队列里取。
 
-    def _peek_smallest_free(self, k):
-        """只读地取编号最小的 k 个空闲块，**不修改堆**。
+    def _peek_free_blocks(self, k):
+        """只读地取队列最前面的 k 个空闲块，**不修改队列**。
 
-        k == 1 直接读堆顶；k > 1 用一个 O(k) 的候选堆沿孩子往下走——
-        既不整堆排序，也不扫全池。
+        计划阶段不能真的取走——`_plan_block_growth()` 失败时池状态必须原样不动。
+        `islice` 只读前 k 个，代价 O(k)。
         """
-        if not self.free_heap or k <= 0:
+        if k <= 0:
             return []
-        if k == 1:
-            return [self.free_heap[0]]
-        heap = self.free_heap
-        picked = []
-        frontier = [(heap[0], 0)]
-        while frontier and len(picked) < k:
-            value, idx = heapq.heappop(frontier)
-            picked.append(value)
-            for child in (2 * idx + 1, 2 * idx + 2):
-                if child < len(heap):
-                    heapq.heappush(frontier, (heap[child], child))
-        return picked
+        return list(itertools.islice(self.free_queue, k))
 
     def _pop_free_blocks(self, k):
-        """提交阶段：把计划选中的 k 个空闲块真正弹出。"""
-        return [heapq.heappop(self.free_heap) for _ in range(k)]
+        """提交阶段：把计划选中的 k 个空闲块真正取走。"""
+        queue = self.free_queue
+        return [queue.popleft() for _ in range(k)]
 
     def _push_free_block(self, block_idx):
-        """引用数降到 0 且不带 prefix hash 时放回空闲堆。"""
-        heapq.heappush(self.free_heap, block_idx)
+        """引用数降到 0 且不带 prefix hash 时放回队尾。"""
+        self.free_queue.append(block_idx)
 
     def _free_block_indices(self):
-        """**扫全池**算出「真正空闲」，与 `free_heap` 互相独立。
+        """**扫全池**算出「真正空闲」，与 `free_queue` 互相独立。
 
         两个用途，都**不在正常补块路径上**：
         - 出错信息里报池子现状；
-        - 校验 `free_heap` 的不变量（测试用它当基准，不能拿堆自己校验自己）。
+        - 校验 `free_queue` 的不变量（测试用它当基准，不能拿队列自己校验自己）。
 
-        正常补块走 `_peek_smallest_free()` / `_pop_free_blocks()`——池子大了，
+        正常补块走 `_peek_free_blocks()` / `_pop_free_blocks()`——池子大了，
         这份 O(num_kv_blocks) 的扫描就是本关要消掉的瓶颈。
         """
         return [i for i in range(self.num_kv_blocks)
@@ -183,7 +179,7 @@ class KVCachePool:
         # exclude 是本条请求「本次就要借用的命中前缀块」——它们的引用计数要等检查通过
         # 才加上去，此刻看起来还是「活动引用为 0 的闲置缓存」，不排掉就会把
         # 马上要用的块算成可用，准入因此偏松。
-        return (len(self.free_heap)      # 真正空闲数直接从堆取，不扫池子
+        return (len(self.free_queue)     # 真正空闲数直接从队列取，不扫池子
                 + len(self._evictable_block_indices(exclude=exclude))
                 - self.promised_blocks)
 
@@ -278,7 +274,7 @@ class KVCachePool:
         仍然报记账错误（承诺保证这个分支不可达）；超卖模式返回 None。
         """
         # 只要编号最小的那几个，不扫全池——这就是本关要消掉的瓶颈
-        free_blocks = self._peek_smallest_free(num_missing_blocks)
+        free_blocks = self._peek_free_blocks(num_missing_blocks)
         evict_block_ids = []
         if len(free_blocks) < num_missing_blocks:
             # 只能淘汰闲置缓存。不需要排掉本请求正在用的块：它们 block_usage >= 1，
@@ -295,13 +291,13 @@ class KVCachePool:
                     f"全局已承诺 {self.promised_blocks} 块——准入记账出错了")
             evict_block_ids = idle[:num_missing_blocks - len(free_blocks)]
 
-        # 空闲块在前、淘汰块在后；前 len(free_blocks) 个正好就是提交时要弹出的那些
+        # 空闲块在前、淘汰块在后；前 len(free_blocks) 个正好就是提交时要取走的那些
         new_block_ids = (free_blocks + evict_block_ids)[:num_missing_blocks]
         return BlockGrowthPlan(evict_block_ids, new_block_ids, len(free_blocks))
 
     def _commit_block_growth(self, seq: SequenceConfig, plan: BlockGrowthPlan):
-        # 空闲堆按编号升序弹出，与 _peek_smallest_free() 的顺序一致；
-        # 被淘汰的闲置缓存块本来就不在堆里（它有 hash），不用弹也不用还。
+        # 从队首取走，与 _peek_free_blocks() 看到的顺序一致；
+        # 被淘汰的闲置缓存块本来就不在队列里（它有 hash），不用取也不用还。
         self._pop_free_blocks(plan.num_free_blocks)
         for block_idx in plan.evict_block_ids:
             self._evict_block(block_idx)
@@ -325,7 +321,7 @@ class KVCachePool:
             self.block_usage[block_idx] -= 1
             if self.block_usage[block_idx] == 0 and block_idx not in self.block_to_hash:
                 # 引用数从 1 变成 0，而且它不是 prefix 缓存块 -> 重新是「真正空闲」。
-                # 带 hash 的块是「闲置缓存」，不进空闲堆（下次可能需要淘汰它）。
+                # 带 hash 的块是「闲置缓存」，不入队（下次可能需要淘汰它）。
                 self._push_free_block(block_idx)
         # 还没用掉的承诺额度一并还回去。超卖模式下它恒为 0，这里是空操作。
         self.promised_blocks -= seq.promised_blocks

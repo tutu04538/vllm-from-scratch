@@ -1,11 +1,11 @@
 """逐步对比 step48 与 step49：证明第四十九关只换了「怎么找空闲块」。
 
 同一模型 seed、同一请求、同一动态到达时刻，逐步比较：
-  running / waiting 顺序、本轮计划、输入 token、**每个请求的物理 block_table**、
-  完成输出、每请求计数、承诺总额、块引用与双向 hash。
+  running / waiting 顺序、本轮计划、输入 token、完成输出、每请求计数、
+  承诺总额、块引用与双向 hash。
 
-物理块**编号本身**必须一致——旧实现每次按编号从小到大选空闲块，
-新实现用最小堆保持同样顺序，这样才方便逐步对照（需求 §验收 1）。
+物理块**编号不再要求一致**：step49 的空闲块改用先进先出队列，被释放的块排到队尾，
+不再保证「每次挑编号最小的」。这由用户明确放开（只测功能，不要求与前面 step 的空闲块顺序一致）。
 
 CPU / FP32 / 确定性小模型。
 """
@@ -53,15 +53,14 @@ def snapshot(e):
         "done": [(r["request_id"], list(r["output_ids"]), r.get("error"))
                  for r in s.step_done],
         "cache_len": {q.request_id: q.cache.length for q in seqs if q.cache is not None},
-        # 本关的重点：物理块选择顺序必须逐请求一致
-        # 被抢占的请求是新 CacheConfig，block_table 是 None
-        "block_table": {q.request_id: (list(q.cache.block_table)
-                                       if q.cache is not None and q.cache.block_table is not None
-                                       else None)
-                        for q in seqs},
-        # free_heap 是 step49 才有的内部结构，不参与跨版本对照
-        # （它的正确性由 check_step49_free_heap.py 的不变量单独覆盖）
-        "usage": list(e.kv_cache_pool.block_usage),
+        # 物理块编号**刻意不再比较**：step49 用先进先出的空闲队列，
+        # 不再保证「每次挑编号最小的空闲块」。选择顺序不影响正确性——
+        # 同一个逻辑位置无论落在哪个物理块，KV 内容和输出都一样；
+        # 「同一请求不会读到错误 KV」由既有回归里的 KV 数值对照覆盖。
+
+        # block_usage 是**按下标**的引用计数：两边用哪块物理块不同，逐下标必然不同，
+        # 不可比。有意义的是活动引用**总数**（每个请求占几块由 cache.length 决定）。
+        "active_refs": sum(e.kv_cache_pool.block_usage),
     }
 
 
@@ -145,7 +144,7 @@ for label, kw, plan in SCENARIOS:
         engines, traces, counters = run_pair(seed, plan, **kw)
         t48, t49 = traces
         diff = [(i, a, b) for i, (a, b) in enumerate(zip(t48, t49), 1) if a != b]
-        check(f"{label}（seed={seed}）：逐步计划 / 队列 / 物理块表完全一致",
+        check(f"{label}（seed={seed}）：逐步计划 / 队列 / 输出完全一致",
               not diff and len(t48) == len(t49),
               "" if not diff else f"第 {diff[0][0]} 步不同："
                                   f"{ {k for k in diff[0][1] if diff[0][1][k] != diff[0][2][k]} }")
@@ -157,7 +156,7 @@ for label, kw, plan in SCENARIOS:
         check(f"{label}（seed={seed}）：引用与承诺归零、空闲堆与真实空闲一致",
               s49["promised_pool"] == 0 and s49["usage_zero"] and s49["hash_consistent"]
               and s49["running_empty"]
-              and set(engines[1].kv_cache_pool.free_heap)
+              and set(engines[1].kv_cache_pool.free_queue)
               == set(engines[1].kv_cache_pool._free_block_indices()), str(s49))
 
 print()
