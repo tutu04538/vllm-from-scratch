@@ -104,8 +104,6 @@ class KVCachePool:
         self.enable_prefix_caching = enable_prefix_caching
         self.hash_to_block = {}  # 前缀 hash -> 该块物理块编号
         self.block_to_hash = {}  # 物理块编号 -> 仍保留它的缓存条目 hash
-        self.block_last_used = [0] * self.num_kv_blocks  # LRU 序号
-        self.lru_seq = 0
         # 所有活动请求已承诺、但还没真正分配出去的块数之和。
         # 准入要扣掉它，否则多条请求会各自按「当前空闲」判断，合起来超额承诺。
         self.promised_blocks = 0
@@ -192,10 +190,6 @@ class KVCachePool:
         """扫全池算出「闲置缓存」——只给错误信息与校验用。"""
         return [i for i in range(self.num_kv_blocks)
                 if self.block_usage[i] == 0 and i in self.block_to_hash and i not in exclude]
-
-    def _mark_used(self, block_idx):
-        self.lru_seq += 1
-        self.block_last_used[block_idx] = self.lru_seq
 
     def _evict_block(self, block_idx):
         # 删除 key 与物理块的关联，之后这个块才能被重新分配。
@@ -293,7 +287,6 @@ class KVCachePool:
                 # 命中已被其他请求持有的块时它不在链上，这里自然跳过。
                 self._list_remove(block_idx)
             self.block_usage[block_idx] += 1
-            self._mark_used(block_idx)
         seq.cache.block_table = list(plan.matched_block_ids)
         seq.cache.length = len(plan.matched_block_ids) * self.block_size
         seq.block_hashes = list(plan.matched_hashes)
@@ -350,7 +343,6 @@ class KVCachePool:
             # 取到带 hash 的块就地清掉缓存条目（它马上要被覆写）
             self._evict_hash_if_cached(block_idx)
             self.block_usage[block_idx] = 1
-            self._mark_used(block_idx)
         seq.cache.block_table.extend(plan.new_block_ids)
         if not self.over_subscribe:
             # 承诺式：「已承诺额度」在这里换成真实块，两个计数同步递减。
@@ -408,7 +400,6 @@ class KVCachePool:
             block_idx = seq.cache.block_table[i]
             self.hash_to_block[hash_value] = block_idx
             self.block_to_hash[block_idx] = hash_value
-            self._mark_used(block_idx)
 
     def _slots_of_range(self, block_table, start, count):
         # 请求内逻辑位置 [start, start+count) 对应的物理槽位：块编号 * block_size + 块内偏移。

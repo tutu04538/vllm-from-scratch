@@ -1,7 +1,7 @@
 # step50：闲置 prefix 缓存的 LRU 索引
 
 - 对应代码：`step50/`（新增，从 `step49/` 复制，入口改名 `step50.py`）
-- 包摘要 SHA256：`a89b86a4698464f6…`（15 个 .py / 3344 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`a896e0f9e56620f5…`（15 个 .py / 3335 行，验收方 `source_digest()` 口径）
 - 基线：`step49/`，指纹 `f1cb800c11789e8b…`（15 个 .py / 3298 行），原样保留未改
 - **改动只有 `cache.py` 一个文件**（+145 / −86）+ 入口改名；`scheduler.py` 一行未动
 
@@ -130,7 +130,19 @@ for block_idx in plan.new_block_ids: ...
 没有任何东西改链表），按数量重新走一遍是重复劳动，还多了一层「数量必须与队首一致」
 的隐式耦合。改成逐个按块自己的前后指针摘掉，O(1)，`_pop_allocatable` 随之删除。
 
-### 4.5 自查脚本的两处修正
+### 4.5 `block_last_used` 成了死状态，一并删除
+
+删掉重复的 `_evictable_block_indices()`（排序版）之后，`block_last_used` / `lru_seq` /
+`_mark_used()` 就**只剩写、没有读**了——原来的 LRU 时钟唯一的读取点就是那个排序。
+实测确认后删除（三处调用点只是推进时钟，没有别的副作用）。
+
+这不只是清理，也是**让代码说真话**：留着一个没人读的「最后使用时间」会让人以为淘汰
+是按 LRU 排序的，而 step50 的淘汰顺序其实是**释放先后**（见 §5.2 遗留 1）。
+删掉之后，「顺序从哪儿来」这件事只有链表位置一个答案。
+
+**移除**：`block_last_used`、`lru_seq`、`_mark_used()`。
+
+### 4.6 自查脚本的两处修正
 
 - `profile_step50_warm_prefix.py` 里对 step50 的断言原本被 `hasattr(pool, "free_queue")`
   挡掉（step50 没有这个结构），等于没跑。改成按 `block_next` 判断，并写清两关的差别：
@@ -140,7 +152,7 @@ for block_idx in plan.new_block_ids: ...
   一个是新写的未排序版，一个是 step49 留下的按 `block_last_used` 排序版。Python 用后者，
   所以行为侥幸没变，但那是隐患。删掉重复的那个，只留报错信息需要的那份。
 
-### 4.6 其余
+### 4.7 其余
 
 | 项 | 结果 |
 |---|---|
