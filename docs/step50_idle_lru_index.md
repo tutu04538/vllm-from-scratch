@@ -1,7 +1,7 @@
 # step50：闲置 prefix 缓存的 LRU 索引
 
 - 对应代码：`step50/`（新增，从 `step49/` 复制，入口改名 `step50.py`）
-- 包摘要 SHA256：`ff406fba57b59f7d…`（15 个 .py / 3350 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`a89b86a4698464f6…`（15 个 .py / 3344 行，验收方 `source_digest()` 口径）
 - 基线：`step49/`，指纹 `f1cb800c11789e8b…`（15 个 .py / 3298 行），原样保留未改
 - **改动只有 `cache.py` 一个文件**（+145 / −86）+ 入口改名；`scheduler.py` 一行未动
 
@@ -117,7 +117,20 @@ set(链上的块) == {b | block_usage[b] == 0}
 - 四条失败路径（不可行 / 暂时不够 / 补块失败 / 计划阶段不动链表）**一个字节都不改**，
   快照里含链表与计数。
 
-### 4.4 自查脚本的两处修正
+### 4.4 提交阶段不需要按数量重走链表
+
+`_commit_block_growth()` 原本写的是：
+
+```python
+self._pop_allocatable(len(plan.new_block_ids))     # 按数量从队首再走一遍
+for block_idx in plan.new_block_ids: ...
+```
+
+但 `plan.new_block_ids` **就是**队首前 k 个（计划就是从队首 peek 的，计划与提交之间
+没有任何东西改链表），按数量重新走一遍是重复劳动，还多了一层「数量必须与队首一致」
+的隐式耦合。改成逐个按块自己的前后指针摘掉，O(1)，`_pop_allocatable` 随之删除。
+
+### 4.5 自查脚本的两处修正
 
 - `profile_step50_warm_prefix.py` 里对 step50 的断言原本被 `hasattr(pool, "free_queue")`
   挡掉（step50 没有这个结构），等于没跑。改成按 `block_next` 判断，并写清两关的差别：
@@ -127,7 +140,7 @@ set(链上的块) == {b | block_usage[b] == 0}
   一个是新写的未排序版，一个是 step49 留下的按 `block_last_used` 排序版。Python 用后者，
   所以行为侥幸没变，但那是隐患。删掉重复的那个，只留报错信息需要的那份。
 
-### 4.5 其余
+### 4.6 其余
 
 | 项 | 结果 |
 |---|---|
@@ -143,10 +156,11 @@ set(链上的块) == {b | block_usage[b] == 0}
 
 **新增**：`KVCachePool.block_next` / `block_prev` / `num_allocatable` / `_SENTINEL_HEAD` /
 `_SENTINEL_TAIL`；`_list_prepend` / `_list_append` / `_list_remove` / `_in_alloc_list` /
-`_peek_allocatable` / `_pop_allocatable` / `_release_block` / `_allocatable_block_indices` /
+`_peek_allocatable` / `_release_block` / `_allocatable_block_indices` /
 `_evict_hash_if_cached`。
 
 **移除**：`free_queue`（deque）、`_peek_free_blocks` / `_pop_free_blocks` / `_push_free_block`；
+`_pop_allocatable`（见下：提交时按块自己的指针摘掉，不需要按数量从队首重走一遍）；
 `BlockGrowthPlan` 只剩 `new_block_ids` 一个字段（原来的 `evict_block_ids` / `num_free_blocks`
 在单一链表里没有意义了）。
 

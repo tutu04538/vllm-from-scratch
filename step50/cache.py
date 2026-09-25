@@ -164,13 +164,6 @@ class KVCachePool:
             cur = self.block_next[cur]
         return picked
 
-    def _pop_allocatable(self, k):
-        """提交阶段：把队首前 k 个块真正摘走。"""
-        picked = self._peek_allocatable(k)
-        for block_idx in picked:
-            self._list_remove(block_idx)
-        return picked
-
     def _release_block(self, block_idx):
         """引用数降到 0：无 hash 的放队首（优先复用），带 hash 的放队尾（后淘汰）。"""
         if block_idx in self.block_to_hash:
@@ -185,7 +178,7 @@ class KVCachePool:
         - 出错信息里报池子现状；
         - 校验链表的不变量（测试用它当基准，不能拿链表自己校验自己）。
 
-        正常分配走 `_peek_allocatable()` / `_pop_allocatable()`——池子大了，
+        正常分配走 `_peek_allocatable()`（提交时按块自己的指针摘掉）——池子大了，
         这份 O(num_kv_blocks) 的扫描就是这两关要消掉的瓶颈。
         """
         return [i for i in range(self.num_kv_blocks) if self.block_usage[i] == 0]
@@ -350,9 +343,10 @@ class KVCachePool:
         return BlockGrowthPlan(block_ids)
 
     def _commit_block_growth(self, seq: SequenceConfig, plan: BlockGrowthPlan):
-        # 从队首取走，与 _peek_allocatable() 看到的顺序一致
-        self._pop_allocatable(len(plan.new_block_ids))
         for block_idx in plan.new_block_ids:
+            # 计划里选的这些块此刻仍在链上——计划与提交之间没有任何东西改链表，
+            # 所以直接按块自己的前后指针摘掉即可，O(1)，不必再从队首走一遍。
+            self._list_remove(block_idx)
             # 取到带 hash 的块就地清掉缓存条目（它马上要被覆写）
             self._evict_hash_if_cached(block_idx)
             self.block_usage[block_idx] = 1
