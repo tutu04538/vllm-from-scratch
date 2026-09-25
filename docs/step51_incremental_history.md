@@ -1,7 +1,7 @@
 # step51：像 vLLM 一样增量维护完整 token 历史
 
 - 对应代码：`step51/`（新增，从 `step50/` 复制，入口改名 `step51.py`）
-- 包摘要 SHA256：`PLACEHOLDER`，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`335eca5e27da9518…`（15 个 .py / 3419 行，验收方 `source_digest()` 口径）
 - 基线：`step50/`，指纹 `a896e0f9e56620f5…`（15 个 .py / 3335 行），原样保留未改
 - **改动 4 个文件**：
 
