@@ -43,14 +43,21 @@ def case(package: str, blocks: int, new_requests: int = 300) -> dict:
         complete_one(i, timed=False)
     assert len(pool.hash_to_block) == blocks
     assert not any(pool.block_usage)
-    # step49 的空闲块结构；step48 没有（那里是每次扫全池算出来的）
+    # 两关的结构不同，但场景要求一致：池子全被闲置缓存占满、没有一个「真正空闲」块。
+    #   step49：free_queue 只装真正空闲 -> 应当是空的
+    #   step50：一条链装**全部**引用为 0 的块 -> 链长应为整池，而「真正空闲」为 0
     if hasattr(pool, "free_queue"):
         assert not pool.free_queue
+    if hasattr(pool, "block_next"):
+        assert pool.num_allocatable == blocks
+        assert not pool._free_block_indices()
 
     gc.collect()
     measured = [complete_one(blocks + i, timed=True) for i in range(new_requests)]
-    if hasattr(pool, "free_queue"):
-        assert set(pool.free_queue) == set(pool._free_block_indices())
+    if hasattr(pool, "block_next"):
+        # 跑完之后池子仍然全被闲置缓存占满（发出去的请求把取走的块又变成缓存）
+        assert pool.num_allocatable == blocks
+        assert not pool._free_block_indices()
     assert len(pool.hash_to_block) == blocks and not any(pool.block_usage)
     return {"package": package, "blocks": blocks, "new_requests": new_requests,
             "ensure_p50_us": round(statistics.median(measured) / 1000, 2),

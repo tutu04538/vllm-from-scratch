@@ -227,13 +227,6 @@ class KVCachePool:
     # 池子 4 块、两条各需 3 块的请求会各自拿 1 块起步，然后同时卡在长第 3 块上——
     # 零进展且无错误。现在这套「承诺额度」把总量卡住，任何已接纳的请求都能长到它承诺的量。
 
-    def _evictable_block_indices(self, exclude=()):
-        # 活动引用为 0、但仍被前缀缓存保留的块；这些可以淘汰回收
-        idx = [i for i in range(self.num_kv_blocks)
-               if self.block_usage[i] == 0 and i in self.block_to_hash and i not in exclude]
-        idx.sort(key=lambda i: self.block_last_used[i])
-        return idx
-
     def _available_blocks(self, exclude=()):
         # 现在能拿到的块数：直接空闲 + 可淘汰的闲置缓存，再扣掉别人已承诺还没用的。
         # exclude 是本条请求「本次就要借用的命中前缀块」——它们的引用计数要等检查通过

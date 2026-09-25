@@ -3,84 +3,84 @@
     "package": "step49",
     "blocks": 1024,
     "new_requests": 300,
-    "ensure_p50_us": 57.56,
-    "ensure_p95_us": 69.17
-  },
-  {
-    "package": "step50",
-    "blocks": 1024,
-    "new_requests": 300,
-    "ensure_p50_us": 0.68,
-    "ensure_p95_us": 0.91
-  },
-  {
-    "package": "step49",
-    "blocks": 8192,
-    "new_requests": 300,
-    "ensure_p50_us": 491.12,
-    "ensure_p95_us": 544.91
-  },
-  {
-    "package": "step50",
-    "blocks": 8192,
-    "new_requests": 300,
-    "ensure_p50_us": 0.66,
-    "ensure_p95_us": 0.88
-  },
-  {
-    "package": "step49",
-    "blocks": 1024,
-    "new_requests": 300,
-    "ensure_p50_us": 57.82,
-    "ensure_p95_us": 67.36
+    "ensure_p50_us": 58.63,
+    "ensure_p95_us": 67.92
   },
   {
     "package": "step50",
     "blocks": 1024,
     "new_requests": 300,
     "ensure_p50_us": 0.67,
+    "ensure_p95_us": 0.9
+  },
+  {
+    "package": "step49",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 498.31,
+    "ensure_p95_us": 536.79
+  },
+  {
+    "package": "step50",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 0.69,
+    "ensure_p95_us": 1.08
+  },
+  {
+    "package": "step49",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 59.06,
+    "ensure_p95_us": 70.31
+  },
+  {
+    "package": "step50",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 0.69,
+    "ensure_p95_us": 0.88
+  },
+  {
+    "package": "step49",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 498.94,
+    "ensure_p95_us": 537.77
+  },
+  {
+    "package": "step50",
+    "blocks": 8192,
+    "new_requests": 300,
+    "ensure_p50_us": 0.68,
+    "ensure_p95_us": 0.94
+  },
+  {
+    "package": "step49",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 59.18,
+    "ensure_p95_us": 68.94
+  },
+  {
+    "package": "step50",
+    "blocks": 1024,
+    "new_requests": 300,
+    "ensure_p50_us": 0.69,
     "ensure_p95_us": 0.89
   },
   {
     "package": "step49",
     "blocks": 8192,
     "new_requests": 300,
-    "ensure_p50_us": 492.29,
-    "ensure_p95_us": 536.56
+    "ensure_p50_us": 499.87,
+    "ensure_p95_us": 547.96
   },
   {
     "package": "step50",
     "blocks": 8192,
     "new_requests": 300,
     "ensure_p50_us": 0.66,
-    "ensure_p95_us": 0.86
-  },
-  {
-    "package": "step49",
-    "blocks": 1024,
-    "new_requests": 300,
-    "ensure_p50_us": 58.0,
-    "ensure_p95_us": 64.92
-  },
-  {
-    "package": "step50",
-    "blocks": 1024,
-    "new_requests": 300,
-    "ensure_p50_us": 0.64,
-    "ensure_p95_us": 0.81
-  },
-  {
-    "package": "step49",
-    "blocks": 8192,
-    "new_requests": 300,
-    "ensure_p50_us": 490.82,
-    "ensure_p95_us": 527.08
-  },
-  {
-    "package": "step50",
-    "blocks": 8192,
-    "new_requests": 300,
-    "ensure_p50_us": 0.64,
-    "ensure_p95_us": 1.03
+    "ensure_p95_us": 0.91
   }
 ]
