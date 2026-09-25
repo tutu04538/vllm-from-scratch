@@ -1,7 +1,7 @@
 # step51：像 vLLM 一样增量维护完整 token 历史
 
 - 对应代码：`step51/`（新增，从 `step50/` 复制，入口改名 `step51.py`）
-- 包摘要 SHA256：`335eca5e27da9518…`（15 个 .py / 3419 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`1976084f4f51b33a…`（15 个 .py / 3423 行，验收方 `source_digest()` 口径）
 - 基线：`step50/`，指纹 `a896e0f9e56620f5…`（15 个 .py / 3335 行），原样保留未改
 - **改动 4 个文件**：
 
@@ -73,10 +73,15 @@ def append_output_ids(self, token_ids):      # int 或 list[int]
 ### 1.3 发布时早返回
 
 ```python
-full_blocks = min(len(all_ids), seq.cache.length) // self.block_size
+full_blocks = seq.cache.length // self.block_size
 if full_blocks <= len(seq.block_hashes):
     return          # 本轮没有新算满的完整块
 ```
+
+`full_blocks` 不需要 `min(len(all_ids), cache.length)`：`cache.length` 恒**严格小于**
+`len(all_token_ids)`——刚采样的那个 token 已经在历史里、但还没进模型（不缓存 logits，
+至少留一个历史 token 走模型），所以永远差至少 1 个。实测 54 组负载 747 次调用，
+差值最小为 1、相等 0 次。
 
 **要说清楚它买到了什么**：下面的 `for i in range(len(block_hashes), full_blocks)` 在这时
 **本来就是空的**，所以这一句**不是正确性需要的**——hash 链不动、token 不切，是循环空转本身
