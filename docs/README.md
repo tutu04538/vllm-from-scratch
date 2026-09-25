@@ -49,3 +49,4 @@
 | [step47_priority_scheduling.md](step47_priority_scheduling.md) | `step47/`（包） | 优先级调度与抢占：名额/容量/token budget 三种资源都按 `(priority, arrival_order)` |
 | [step48_refactor_kv_scheduler.md](step48_refactor_kv_scheduler.md) | `step48/`（包） | 行为不变重构：请求状态拆到 `request.py`，KV 准入/补块改「先计划后提交」，调度拆成阶段 |
 | [step49_free_block_queue.md](step49_free_block_queue.md) | `step49/`（包） | 空闲 KV 块改队列增量维护：真正空闲路径不再随池子线性扫描 |
+| [step50_idle_lru_index.md](step50_idle_lru_index.md) | `step50/`（包） | 闲置缓存改 vLLM 式单链表 LRU 索引：淘汰不再扫全池，8192 块从 491 μs 降到 0.66 μs |

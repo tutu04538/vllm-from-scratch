@@ -79,6 +79,7 @@ step42/          说明该关结论与数据位置（实测数据仍在 benchmar
 | 47 | `step47/`（包，入口 `step47/step47.py`） | 优先级调度与抢占：名额、KV 块、token budget 三种资源都体现优先级 |
 | 48 | `step48/`（包，入口 `step48/step48.py`） | 行为不变重构：`request.py` 分离、KV 计划/提交、调度分阶段（为投机解码铺路） |
 | 49 | `step49/`（包，入口 `step49/step49.py`） | 空闲 KV 块改队列增量维护：补块不再扫全池，`_plan_block_growth` 与池子大小无关 |
+| 50 | `step50/`（包，入口 `step50/step50.py`） | 闲置缓存改 vLLM 式单链表 LRU 索引：淘汰不再扫全池，8192 块 491 μs → 0.66 μs |
 
 大致的推进脉络：
 
