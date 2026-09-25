@@ -53,29 +53,21 @@ def snapshot(e):
         "done": [(r["request_id"], list(r["output_ids"]), r.get("error"))
                  for r in s.step_done],
         "cache_len": {q.request_id: q.cache.length for q in seqs if q.cache is not None},
-        # 物理块编号**刻意不再比较**：step49 用先进先出的空闲队列，
-        # 不再保证「每次挑编号最小的空闲块」。选择顺序不影响正确性——
-        # 同一个逻辑位置无论落在哪个物理块，KV 内容和输出都一样；
-        # 「同一请求不会读到错误 KV」由既有回归里的 KV 数值对照覆盖。
-
-        # block_usage 是**按下标**的引用计数：两边用哪块物理块不同，逐下标必然不同，
-        # 不可比。有意义的是活动引用**总数**（每个请求占几块由 cache.length 决定）。
-        "active_refs": sum(e.kv_cache_pool.block_usage),
-        # 本关不改 KV 分配，所以物理块编号应当逐请求一致（比上一关更强的检查）
+        # 本关不改 KV 分配，因此连每块引用和物理块编号都应该一致。
+        "block_usage": list(e.kv_cache_pool.block_usage),
         "block_table": {q.request_id: (list(q.cache.block_table)
                                        if q.cache is not None and q.cache.block_table is not None
                                        else None)
                         for q in seqs},
         # 每个请求的 hash 链：历史改成增量维护后，链必须完全一样
-        "block_hashes": {q.request_id: [h.hex()[:8] for h in q.block_hashes] for q in seqs},
-        # 已提交历史的长度与内容（只读视图）
-        "all_ids": {q.request_id: [len(q.all_token_ids), len(q.output_ids),
-                                   list(q.all_token_ids[-3:])] for q in seqs},
+        "block_hashes": {q.request_id: list(q.block_hashes) for q in seqs},
+        "all_ids": {q.request_id: list(q.all_token_ids) for q in seqs},
+        "output_ids": {q.request_id: list(q.output_ids) for q in seqs},
     }
 
 
 def run_pair(seed, arrival_plan, limit=800, **kw):
-    engines = [build(Engine50, seed, **kw), build(Engine50, seed, **kw)]
+    engines = [build(Engine50, seed, **kw), build(Engine51, seed, **kw)]
     for e in engines:
         e.on_token = lambda ev: None
     traces = [[], []]
@@ -170,7 +162,7 @@ for label, kw, plan in SCENARIOS:
               "" if not diff else f"第 {diff[0][0]} 步不同："
                                   f"{ {k for k in diff[0][1] if diff[0][1][k] != diff[0][2][k]} }")
         check(f"{label}（seed={seed}）：每请求计数一致", counters[0] == counters[1],
-              "" if counters[0] == counters[1] else f"\n  48={counters[0]}\n  49={counters[1]}")
+              "" if counters[0] == counters[1] else f"\n  50={counters[0]}\n  51={counters[1]}")
         s50, s51 = summarize(engines[0]), summarize(engines[1])
         # 本关不改 KV 分配与淘汰，所以 cached_blocks_kept 也应当一致
         check(f"{label}（seed={seed}）：结束时状态一致", s50 == s51,

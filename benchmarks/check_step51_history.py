@@ -15,6 +15,7 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 from step50 import Engine as Engine50
 from step51 import Engine as Engine51
+from step51.cache import KVCachePool, _stable_hash
 from step51.request import SequenceConfig
 
 FAIL = []
@@ -36,12 +37,14 @@ def invariants(seq):
 
 # ------------------------------------------------ 1. 初始化与追加
 
-s = SequenceConfig("A", [1, 2, 3, 4, 5], 8, 4)
+source_prompt = [1, 2, 3, 4, 5]
+s = SequenceConfig("A", source_prompt, 8, 4)
+source_prompt.append(99)
 check("初始化：all == prompt，output 为空",
       list(s.all_token_ids) == [1, 2, 3, 4, 5] and list(s.output_ids) == []
       and invariants(s))
 check("初始化：prompt_ids 是独立副本（外部改原列表不影响请求）",
-      SequenceConfig("B", [9], 2, 4).prompt_ids == [9])
+      s.prompt_ids == [1, 2, 3, 4, 5] and list(s.all_token_ids) == [1, 2, 3, 4, 5])
 
 s.append_output_ids(7)
 check("追加单个 int：两份列表同步", list(s.output_ids) == [7]
@@ -88,6 +91,25 @@ for _ in range(2000):
 dt = (time.perf_counter_ns() - t0) / 2000 / 1000
 check("8192 长度的历史切最后 1 个：耗时与历史长度无关（< 5 μs）", dt < 5, f"{dt:.2f} μs")
 check("大历史下不变量仍成立", invariants(big))
+
+# prompt 的最后 1 个 token 和刚生成的第 1 个 token 合成一个完整块。
+pool = KVCachePool(4, 4, 1, 1, torch.device("cpu"),
+                   enable_prefix_caching=True, num_layers=1, over_subscribe=True)
+cross = SequenceConfig("cross", [1, 2, 3], 2, 4)
+assert pool.allocate_block(cross) and pool.ensure_blocks(cross, 3)
+cross.cache.length = 3
+pool.publish_computed_blocks(cross)
+check("跨 prompt/output 的块未写满时不发布", not cross.block_hashes)
+cross.append_output_ids(9)
+pool.publish_computed_blocks(cross)  # 9 尚未进入模型
+check("刚采样的 token 尚未写 KV，不提前发布", not cross.block_hashes)
+assert pool.ensure_blocks(cross, 1)
+cross.cache.length = 4
+pool.publish_computed_blocks(cross)
+expected_hash = _stable_hash(b"", (1, 2, 3, 9))
+check("跨 prompt/output 的完整块按真实历史发布",
+      cross.block_hashes == [expected_hash]
+      and pool.hash_to_block[expected_hash] == cross.cache.block_table[0])
 
 # ------------------------------------------------ 4. 端到端行为与 step50 一致
 
