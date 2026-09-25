@@ -1,16 +1,16 @@
 # step51：像 vLLM 一样增量维护完整 token 历史
 
 - 对应代码：`step51/`（新增，从 `step50/` 复制，入口改名 `step51.py`）
-- 包摘要 SHA256：`1976084f4f51b33a…`（15 个 .py / 3423 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`7115f26936cf9472…`（15 个 .py / 3425 行，验收方 `source_digest()` 口径）
 - 基线：`step50/`，指纹 `a896e0f9e56620f5…`（15 个 .py / 3335 行），原样保留未改
 - **改动 4 个文件**：
 
 | 文件 | 改动 |
 |---|---|
 | `request.py`（+83 / −7） | 新增 `ReadOnlyTokenList`（只读视图）；`SequenceConfig` 增量维护 `_all_token_ids` / `_output_ids`，`append_output_ids()` 是唯一写入点 |
-| `cache.py`（+4 / −0） | `publish_computed_blocks()` 没有新完整块时**早返回** |
+| `cache.py`（+11 / −1） | `publish_computed_blocks()` 没有新完整块时**早返回**；去掉 `min(len(all_ids), cache.length)` 里用不上的 `min` |
 | `engine.py`（+1 / −1） | 采样提交改走 `seq.append_output_ids(output_id)` |
-| `scheduler.py`（+4 / −2） | 完成记录显式 `list(seq.output_ids)`，不把只读视图泄漏给外部 |
+| `scheduler.py` | 完成记录显式 `list(seq.output_ids)`，不把只读视图泄漏给外部；**把「什么时候更新 prefix cache」和 `preemption_mode` 解耦**（见 §3.5） |
 | `__init__.py`、`step51.py` | 包说明与入口改名 |
 
 `attention.py`、`model.py`、`norm.py`、`rope.py`、`sampler.py`、`sampling.py`、`formats/` 未改。
@@ -149,7 +149,50 @@ all_token_ids[len(prompt_ids):] == output_ids
 - **每个请求的 hash 链**（历史改成增量维护后必须完全一样）；
 - **已提交历史的长度与末尾内容**（`len(all_token_ids)`、`len(output_ids)`、最后 3 个）。
 
-### 3.4 其余
+### 3.5 顺带解耦：更新 prefix cache 不再看 `preemption_mode`
+
+`_publish_computed_blocks()` 原本的守卫是：
+
+```python
+if self.preemption_mode != "recompute" or not self.kv_cache_pool.enable_prefix_caching:
+    return
+```
+
+**这两件事本来就不相干**：「什么时候把算完的完整块登记进 prefix cache」与「准入时要不要按最坏
+情况承诺未来块」是两套机制。第四十六关把它限制在 recompute 下，理由是「旧模式行为不变」
+——那是一条**范围约束**，不是正确性约束。本关按用户的要求解耦，两种模式都每步发布。
+
+顺带去掉 `_finish_completed_requests()` 里那次**因此变成冗余**的单独登记：`post_step()` 开头的
+`_publish_computed_blocks()` 已经覆盖了本轮所有 running 请求（含此刻即将完成的这条），
+而 `publish` 本身是幂等的（循环从 `len(block_hashes)` 开始）。
+
+**实测影响面**（step50 vs step51，768 组 legacy 负载扫描）：
+
+| 模式 | 完成顺序不同 | 输出不同 | 结束时引用/承诺异常 |
+|---|---:|---:|---:|
+| prefix **关** | 0 | 0 | 0 |
+| prefix **开** | **108** | **0** | **0** |
+
+也就是说：**只影响「谁先跑完」，不影响输出，也不影响资源守恒**。机制是——每步发布之后，
+后到的请求可能命中**正在运行**的请求尚未释放的块，于是 `need` 少算 m 而可用量不变，
+更容易够格准入。这是**更准确**的记账（那 m 块确实已经共享到手），不是占便宜。
+
+最小的一例（池子 5 块、`max_num_seqs=2`，A 先到、B 后到且共享 A 的第 0 块）：
+
+```text
+step50  -> 完成序 ['A', 'B']
+step51  -> 完成序 ['B', 'A']
+```
+
+**这不是违反 FCFS。** FCFS 在这套引擎里是三条*排序*规则（waiting 按到达序、容量犠牲者从
+running 尾部取、被抢占者回队首），它们都没变；变的是 B **够不够格**准入（资源记账），
+不是「轮到谁」。而且 FCFS 对先到者的保护仍在：A 之后若缺块，犠牲者从尾部取 → B 让路。
+
+因此这是对第四十六关 §4.8「旧三种配置与 step45 行为一致」的一次**有意偏离**，
+用户明确要求在本关完成并会通知验收方。逐块对照脚本里那条场景已显式标注放宽
+（只比对计划、队列、输出，不比 hash 链与物理块编号）。
+
+### 3.6 其余
 
 | 项 | 结果 |
 |---|---|
@@ -157,7 +200,15 @@ all_token_ids[len(prompt_ids):] == output_ids
 | step44 的三个不变量（指向 step51） | 3 / 3 |
 | CPU 随机压测 120 组 | PASS |
 | GPU：CUDA/Torch、Triton eager、Triton Graph | 各 14 步有界完成，引用归零 |
-| 既有 18 个回归脚本 | 全过（副本里同步了 `block_hash` → `hash_to_block` 改名） |
+| 验收方 17 个回归脚本（解耦改动之后跑） | 15 个全过；**2 处既有失败**，都与本关无关，见下 |
+
+两处既有失败在解耦改动**之前**的对照跑里就是同样的数字，不是本关引入的：
+
+- `selection 31 / 32`：验收方的 `plan_mapping_and_zero_sampling` 用 `SimpleNamespace(output_ids=[], …)`
+  伪造请求，然后期望 `_sample()` 直接 `append`。本关按需求把写入收窄到 `append_output_ids()`，
+  这个用例因此失效。**这是接口变化本身，不是缺陷**；已在 §4.1 声明，需验收方更新用例。
+- `rope 33 / 34`：唯一失败项是「越界位置被拒绝 / 没有报错」。`rope.py` 本关未改，
+  step50 及更早同样是 33 / 34。
 
 ## 4. 接口变化与遗留
 
@@ -169,6 +220,10 @@ all_token_ids[len(prompt_ids):] == output_ids
 **语义变化**：`SequenceConfig.all_token_ids` / `.output_ids` 从普通 list / 属性变成
 **只读视图属性**——支持读取与切片，**不支持 append / extend / 赋值**。
 `step()→step_done` 与 `on_finished` 给出的 `output_ids` 仍是**普通 list**（显式转换）✓
+
+**行为变化**（有意，需验收方知悉）：`preemption_mode=None` + `enable_prefix_caching=True` 时，
+prefix cache 的登记时机从「请求结束时」改为「每步 forward 之后」。输出不变、资源守恒不变，
+但完成顺序会变（768 组扫描里 108 组不同）。详见 §3.5。
 
 **未改**：`Engine` / `from_model_dir` 参数、调度与优先级、KV 分配与淘汰、prefix hash 算法与
 命中规则、采样结果、模型。

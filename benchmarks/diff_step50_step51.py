@@ -129,35 +129,49 @@ REQS = [
 ]
 HIGH = {"request_id": "H", "prompt_ids": [21, 22, 23, 24], "max_new_tokens": 6, "priority": -1}
 
+# 每个场景：(说明, 引擎参数, 到达计划, 需要放宽比对的字段)
+# 只有「承诺式 + prefix 开」需要放宽——见上面那条注释。
 SCENARIOS = [
-    ("fcfs / prefix 关", dict(scheduling_policy="fcfs", num_kv_blocks=8), {0: REQS}),
-    ("priority / prefix 关", dict(scheduling_policy="priority", num_kv_blocks=8), {0: REQS}),
+    ("fcfs / prefix 关", dict(scheduling_policy="fcfs", num_kv_blocks=8), {0: REQS}, set()),
+    ("priority / prefix 关", dict(scheduling_policy="priority", num_kv_blocks=8), {0: REQS}, set()),
     ("priority / 高优先级后到", dict(scheduling_policy="priority", num_kv_blocks=8),
-     {0: REQS, 3: [HIGH]}),
-    ("fcfs / 容量压力（4 块）", dict(scheduling_policy="fcfs", num_kv_blocks=4), {0: REQS}),
-    ("priority / 容量压力（4 块）", dict(scheduling_policy="priority", num_kv_blocks=4), {0: REQS}),
+     {0: REQS, 3: [HIGH]}, set()),
+    ("fcfs / 容量压力（4 块）", dict(scheduling_policy="fcfs", num_kv_blocks=4), {0: REQS}, set()),
+    ("priority / 容量压力（4 块）", dict(scheduling_policy="priority", num_kv_blocks=4),
+     {0: REQS}, set()),
     ("priority / prefix 开 + 容量压力", dict(scheduling_policy="priority", num_kv_blocks=5,
-                                            enable_prefix_caching=True), {0: REQS}),
+                                            enable_prefix_caching=True), {0: REQS}, set()),
     ("fcfs / prefix 开 + 动态到达", dict(scheduling_policy="fcfs", num_kv_blocks=6,
-                                        enable_prefix_caching=True), {0: REQS[:2], 4: [REQS[2]]}),
+                                        enable_prefix_caching=True), {0: REQS[:2], 4: [REQS[2]]}, set()),
     ("priority / prefix 开 + 共享前缀", dict(scheduling_policy="priority", num_kv_blocks=6,
                                             enable_prefix_caching=True),
      {0: [{"request_id": "P", "prompt_ids": [1, 2, 3, 4, 5, 6, 7, 8], "max_new_tokens": 4},
-          {"request_id": "Q", "prompt_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9], "max_new_tokens": 4}]}),
+          {"request_id": "Q", "prompt_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9], "max_new_tokens": 4}]}, set()),
     ("priority / budget=1", dict(scheduling_policy="priority", max_num_batched_tokens=1,
-                                 num_kv_blocks=16), {0: REQS, 2: [HIGH]}),
+                                 num_kv_blocks=16), {0: REQS, 2: [HIGH]}, set()),
     ("priority / max_num_seqs=1", dict(scheduling_policy="priority", max_num_seqs=1,
-                                       num_kv_blocks=8), {0: REQS, 3: [HIGH]}),
+                                       num_kv_blocks=8), {0: REQS, 3: [HIGH]}, set()),
+    # 本关唯一**有意**的行为差异：把「什么时候更新 prefix cache」和 preemption_mode
+    # 解耦了，承诺式也每步发布（第四十六关曾限制在 recompute 下）。所以 hash 链、
+    # 物理块编号、乃至完成顺序会和 step50 不同——但**输出必须一致**。
+    # 实测 768 组 legacy 负载：prefix 关 0 组不同；prefix 开 108 组完成顺序不同、
+    # 输出 0 组不同、结束时引用与承诺 0 组异常。
     ("fcfs / 承诺式 + prefix 开", dict(preemption_mode=None, num_kv_blocks=8,
-                                      enable_prefix_caching=True), {0: REQS}),
+                                      enable_prefix_caching=True), {0: REQS},
+     {"block_hashes", "block_table"}),
 ]
 
-for label, kw, plan in SCENARIOS:
+for label, kw, plan, relaxed in SCENARIOS:
     for seed in (29, 7):
         engines, traces, counters = run_pair(seed, plan, **kw)
         t50, t51 = traces
+        if relaxed:                      # 只比对本关承诺不变的那些字段
+            t50 = [{k: v for k, v in snap.items() if k not in relaxed} for snap in t50]
+            t51 = [{k: v for k, v in snap.items() if k not in relaxed} for snap in t51]
         diff = [(i, a, b) for i, (a, b) in enumerate(zip(t50, t51), 1) if a != b]
-        check(f"{label}（seed={seed}）：逐步计划 / 队列 / 输出完全一致",
+        check(f"{label}（seed={seed}）：逐步"
+              + ("计划 / 队列 / 输出一致（发布时机差异已按预期放宽，见场景注释）"
+                 if relaxed else "计划 / 队列 / 输出完全一致"),
               not diff and len(t50) == len(t51),
               "" if not diff else f"第 {diff[0][0]} 步不同："
                                   f"{ {k for k in diff[0][1] if diff[0][1][k] != diff[0][2][k]} }")

@@ -402,9 +402,12 @@ class Scheduler:
         写进 KV 的进度，而采样 append 发生在这之前，所以刚采样、还没进模型的 token
         绝不会被登记。每步都做（而不是只在抢占/完成前），被抢占时它的进度才早就在
         缓存里，恢复时才有东西可复用。
-        承诺式（legacy）仍只在请求结束时登记，行为与第四十五关一致。
+        **和 preemption_mode 无关**：什么时候更新 prefix cache、和「准入时要不要按最坏
+        情况承诺未来块」是两件不相干的事。两种模式都在这里每步登记。
+        （第四十六关曾把它限制在 recompute 下，理由是「旧模式行为不变」——那是一条
+        范围约束，不是正确性约束；第五十一关按这个解耦改掉，行为差异见文档。）
         """
-        if self.preemption_mode != "recompute" or not self.kv_cache_pool.enable_prefix_caching:
+        if not self.kv_cache_pool.enable_prefix_caching:
             return
         for seq in self.running:
             self.kv_cache_pool.publish_computed_blocks(seq)
@@ -430,10 +433,9 @@ class Scheduler:
                 continue  # 还没产生过输出（prompt 还在算，或重算还没追上）——没有可判停的 token
 
             if seq.output_ids[-1] in self.eos_token_ids or len(seq.output_ids) >= seq.max_new_tokens:
-                if self.enable_prefix_caching:
-                    # 先登记可复用的完整块，再释放本请求的活动引用
-                    # （recompute 模式下每步已经登记过，这里是空操作）
-                    self.kv_cache_pool.publish_computed_blocks(seq)
+                # 这里不再单独登记完整块：post_step 开头的 _publish_computed_blocks()
+                # 已经覆盖了本轮所有 running 请求（含此刻即将完成的这条），
+                # 而且 publish 本身是幂等的。少一次调用、少一处重复判断。
                 # 对外接口仍然是普通 list：显式转一次，不让只读视图泄漏出去
                 output_ids = list(seq.output_ids)
                 if self.on_finished:
