@@ -1,14 +1,14 @@
 # step52：单请求贪心 n-gram 投机解码
 
 - 对应代码：`step52/`（新增，从 `step51/` 复制，入口改名 `step52.py`）
-- 包摘要 SHA256：`3673bfcf660aae0f…`（16 个 .py / 3723 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`f9a035a32f7a651e…`（16 个 .py / 3731 行，验收方 `source_digest()` 口径）
 - 基线：`step51/`，指纹 `7115f26936cf9472…`（15 个 .py / 3425 行），原样保留未改
 - **改动 5 个文件 + 新增 1 个**：
 
 | 文件 | 改动 |
 |---|---|
 | `speculative.py`（新增，130 行） | 两个纯函数：`propose_ngram()` 提议、`verify_drafts()` 验证 + `DraftVerification` |
-| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**（§1.8）；**删掉 `preemption_mode` 参数与 `num_uncomputed == 0` 兜底**（§1.9） |
+| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**（§1.8）；**删掉 `preemption_mode` 参数、`num_uncomputed == 0` 兜底与 `running_snapshot`**（§1.8~§1.10） |
 | `cache.py` | 新增 `truncate()`（回滚 KV）与 `can_grow()`（只读容量查询）；**删掉 `over_subscribe`、`_available_blocks()` 与承诺额度记账**（§1.9） |
 | `engine.py` | 投机配置与组合校验；`_sample_plan()` 改为「每个请求取几行」；`_commit_tokens()` / `_commit_drafts()` 拆出提交点；**删掉 `preemption_mode` 与相关的两条组合校验**（§1.9） |
 | `request.py` | 删掉 `promised_blocks` 字段（§1.9） |
@@ -308,6 +308,45 @@ step52 起没有开关可以还原——这正是我们想要的（一个已经�
 逐块对照脚本 `diff_step51_step52.py` 因此改成给 step51 显式传
 `preemption_mode="recompute"`，再和 step52 比：11 个场景 × 2 seed **全部逐项一致**，
 这同时也就是「删干净了、没有顺手改坏别的东西」的证据。
+
+### 1.10 顺带：删掉一份已经不起作用的快照
+
+`_reserve_blocks()` 里有一句 `running_snapshot = list(self.running)`，把它传给
+`_make_room()` 当候选集合。它是**第四十四关留下的**，当时确实需要：
+
+```python
+# step44 的 _make_room
+for victim in reversed(running):      # 直接遍历传进来的列表
+    ...
+    self._preempt(victim)             # 而 _preempt 会 self.running.remove(seq)
+```
+
+边遍历边删同一个列表，后面的元素会被跳过。传一份快照进去，遍历的就是不会变的那一份。
+
+**第四十八关的重构让它的作用消失了**：候选的选择被抽成 `_victims_after()`，而它
+**先把候选物化成新列表再返回**；`_make_room()` 遍历的是那个新列表，`_preempt()` 改
+`self.running` 动不到它；本轮已被抢占的候选再由 `victim not in self.running` 滤掉。
+加上 `_reserve_blocks()` 期间 `self.running` 只减不增，于是
+
+```text
+活列表 ⊆ 快照          差集 = 本轮已被抢占的那些 = 会被那句 continue 滤掉的
+```
+
+也就是**两者可证明等价**，快照纯粹是多余的。删法是连参数一起删：`_make_room(seq, num_tokens, running)`
+→ `_make_room(seq, num_tokens)`、`_victims_after(seq, running)` → `_victims_after(seq)`。
+
+**与 §1.8 删掉的那半句不同**：那个是**有害**的（会吞掉零进展守卫的报错），这个是**无害**的
+（一步一次 `list()`，代价可忽略）。删它是因为「读到的集合」这个信息本来就不该由调用方钉成
+快照——`_make_room()` 到底该按哪一刻的集合选人，快照反而让语义变含糊。真正要守住的那条
+约束改用注释写在 `_victims_after()` 里：**它必须先把候选物化成列表**，将来谁把它内联回
+`_make_room()` 就会重新踩上第四十四关的坑。
+
+**等价性验证**（不是「测试都过了」，是差分）：800 组随机场景（fcfs/priority、池子 1~10 块、
+`block_size` 1/2/4、动态到达、prefix 开关）的逐步轨迹指纹，删前删后**完全相同**：
+
+```text
+1df45fd65c007a572addf74c180acfc9
+```
 
 ## 2. 不变量
 

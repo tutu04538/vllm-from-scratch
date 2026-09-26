@@ -312,13 +312,12 @@ class Scheduler:
     def _reserve_blocks(self, planned_items):
         """按计划顺序补物理块，返回**真的会 forward** 的那批 item。
 
-        容量不足时（只有超卖模式会走到）从排序键更靠后、且本轮尚未安排的请求里选犠牲者。
+        容量不足时从排序键更靠后、且本轮尚未安排的请求里选犠牲者。
         已经补过块的不动：本轮的 token 预算和刚分配的块都已经记账。
 
         草稿计划里被牺牲的请求直接跳过——它的 token 预算留空、不转给别人，
         也不能进 Engine 或算进重算量。
         """
-        running_snapshot = list(self.running)
         committed_items = []
         for item in planned_items:
             seq = item["request"]
@@ -334,7 +333,7 @@ class Scheduler:
             if self.kv_cache_pool.ensure_blocks(seq, item["num_scheduled_tokens"]):
                 committed_items.append(item)
                 continue
-            if self._make_room(seq, item["num_scheduled_tokens"], running_snapshot):
+            if self._make_room(seq, item["num_scheduled_tokens"]):
                 committed_items.append(item)
             # 否则：当前请求自己就是最后可选犠牲者，本轮先不排它，
             # 让已经安排在它前面的工作照常跑完。
@@ -401,7 +400,7 @@ class Scheduler:
                       priority_preemption=True)
         return True
 
-    def _victims_after(self, seq, running):
+    def _victims_after(self, seq):
         """可以当犠牲者的请求：本轮 forward 还没跑、且排在 seq 之后，从尾部往前。
 
         priority 模式按排序键取严格更靠后的——可以是优先级更低，**也可以是同级
@@ -413,19 +412,28 @@ class Scheduler:
         `scheduled_items` 是按 `running` 的顺序排出来的（priority 下 `_budget_groups()`
         按排序键升序）。本函数只返回排序键严格更靠后的请求，也就是**还没轮到**的那些，
         所以候选一定都是「本轮尚未补过块」的，不会回滚已记账的计划。
+
+        **本函数必须先把候选物化成新列表再返回**（两条分支都做到了）：`_make_room()`
+        会遍历结果并逐个 `_preempt()`，而 `_preempt()` 会改 `self.running`。直接在
+        `self.running` 上边遍历边抢占会跳过元素——第四十四关踩过这个坑，当时的写法就是
+        `for victim in reversed(running): ... self._preempt(victim)`。所以这里**不接收**
+        调用方传来的快照，读的就是活的 `self.running`：函数体内部只读不写，安全；
+        而把「读到的集合」钉成快照留给调用方，反而让 `_make_room()` 的语义变得含糊
+        （它到底该按哪一刻的集合选人？）。已被本轮抢占的候选由 `_make_room()` 里那句
+        `victim not in self.running` 滤掉。
         """
         if self.scheduling_policy != "priority":
             out = []
-            for victim in reversed(running):
+            for victim in reversed(self.running):
                 if victim is seq:
                     break
                 out.append(victim)
             return out
-        later = [v for v in running if v.sort_key > seq.sort_key]
+        later = [v for v in self.running if v.sort_key > seq.sort_key]
         later.sort(key=lambda v: v.sort_key, reverse=True)
         return later
 
-    def _make_room(self, seq, num_tokens, running):
+    def _make_room(self, seq, num_tokens):
         """释放排序键更靠后的、本轮尚未安排的请求，直到当前请求能补到块。
 
         返回 False 表示已经走到当前请求自己——按 FCFS 不再往后找犠牲者。
@@ -434,7 +442,7 @@ class Scheduler:
         走，而那个顺序就是 `running` 的顺序，`_victims_after()` 又只返回排序键严格
         更靠后的——两者方向刚好相反。详见 `_victims_after()` 的说明。
         """
-        for victim in self._victims_after(seq, running):
+        for victim in self._victims_after(seq):
             if victim not in self.running:
                 continue        # 本轮已经被抢占过了
             self._preempt(victim, blocker=seq)
