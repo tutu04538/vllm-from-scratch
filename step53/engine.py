@@ -323,8 +323,19 @@ class Engine:
     def _sample_with_sampler(self, logits, picked, notify):
         """投机开关关闭时的原路径：每个请求用自己的采样参数与惩罚项。
 
-        `copy=True` 是必须的：Graph 的 logits 输出缓冲会被下次 replay 复用，
-        而且 FP32 张量的 `.float()` 不产生副本。
+        **这里的 `.to(torch.float32)` 是硬性的，和上面投机那条路不同**：`apply_penalties()`
+        算 presence / frequency 惩罚时，惩罚量 `delta` 是在 **FP32** 上算的，回写却要用
+        `index_put` 写进 logits 那一行——dtype 不匹配会直接抛：
+
+            RuntimeError: Index put requires the source and destination dtypes match,
+            got BFloat16 for the destination and Float for the source
+
+        也就是说：**BF16 模型 + 带 presence/frequency 惩罚的请求，不转 FP32 就跑不起来**
+        （只有 repetition 那条分支能过，因为它全程在同一精度里算）。顺带的好处是
+        softmax / top-k / top-p 也都在 FP32 上算，数值质量更好。
+
+        `copy=True` 是必须的：模型给的 logits 可能落在 Graph 复用的缓冲上，
+        而 FP32 张量的 `.to(torch.float32)` 不产生副本（同 dtype 直接返回自身）。
         """
         seqs = [item["request"] for item in picked]
         rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32, copy=True),

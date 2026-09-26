@@ -1,8 +1,8 @@
 # step53：批量投机验证与抢占恢复
 
 - 对应代码：`step53/`（新增，从 `step52/` 复制，入口改名 `step53.py`）
-- 包摘要 SHA256：`9bc0f9267309bcfb…`（16 个 .py / 3798 行，验收方 `source_digest()` 口径）
-- 基线：`step52/`，指纹 `9bc0f9267309bcfb…`（16 个 .py / 3798 行），原样保留未改
+- 包摘要 SHA256：`45c4a962f430dab1…`（16 个 .py / 3809 行，验收方 `source_digest()` 口径）
+- 基线：`step52/`，指纹 `45c4a962f430dab1…`（16 个 .py / 3809 行），原样保留未改
 - **改动 4 个文件**：
 
 | 文件 | 改动 |
@@ -148,8 +148,24 @@ for item in picked:
    > logits」的差别，也就是两种**模型精度**的对比；而两条路径用的是同一个模型、同一个
    > dtype，张量里的数一模一样。widening 是精确的，argmax 不可能因此改变。
 
-   **真正需要 FP32 的是普通路径**：`apply_penalties` 要在 FP32 上做算术、
-   `torch.multinomial` 要浮点概率——那里转换是有用的，别照着投机这行把它删掉。
+   **真正需要 FP32 的是普通路径**，而且是**硬性**的：`apply_penalties()` 算
+   presence / frequency 惩罚时，惩罚量 `delta` 在 FP32 上算，回写却用 `index_put`
+   写进 logits 那一行——dtype 不匹配直接抛：
+
+   ```text
+   RuntimeError: Index put requires the source and destination dtypes match,
+   got BFloat16 for the destination and Float for the source
+   ```
+
+   实测：**BF16 + 只有 repetition_penalty** 能过（全程同一精度）；
+   **BF16 + presence_penalty 或 frequency_penalty** 直接抛。
+   也就是「BF16 模型 + 带这两种惩罚的请求，不转 FP32 就跑不起来」。
+
+   > 这一段也返工过两次：先是写成「`torch.multinomial` 要浮点概率」（错——BF16
+   > 也是浮点，实测 CPU/CUDA 上 softmax + multinomial 都能跑），
+   > 又写成「BF16 的格点步长会把小惩罚抹掉」（也错——`row.index_select(...) - delta`
+   > 里 `delta` 是 FP32，减法被提升到 FP32 精确算完；是回写那一步先崩了）。
+   > 现在的结论是照着真实报错写的。
 
 3. **提交顺序严格按 `picked`**。第五十二关是「先提交所有 plain、再提交 drafts」，
    单请求时看不出差别；批量下那会打乱本轮的事件顺序，所以改成一条循环走到底。
