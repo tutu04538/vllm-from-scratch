@@ -68,25 +68,31 @@ check("8192 长历史 + 一路无匹配：线性扫描走满，不复制整段�
 EOS = {63}
 d = verify_drafts([5, 6], [9, 7, 8], EOS, remaining_outputs=8)
 check("首枚被拒：提交 [t0]，本轮输入只留 [x]",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (0, [9], 1, False))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (0, [9], 1))
 d = verify_drafts([5, 6], [5, 9, 1], EOS, remaining_outputs=8)
 check("部分接受：提交 [d0, t1]，本轮输入留 [x, d0]",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (1, [5, 9], 2, False))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (1, [5, 9], 2))
 d = verify_drafts([5, 6], [5, 6, 7], EOS, remaining_outputs=8)
 check("全部接受：提交 [d0, d1, bonus]，本轮输入留 [x, d0, d1]",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (2, [5, 6, 7], 3, False))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (2, [5, 6, 7], 3))
 d = verify_drafts([], [9], EOS, remaining_outputs=8)
 check("无草稿：就是普通的 1-token 路径",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (0, [9], 1, False))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (0, [9], 1))
 d = verify_drafts([5, 6], [5, 6, 63], EOS, remaining_outputs=8)
 check("bonus 是 EOS：全部提交后停下，草稿的 KV 仍然要留",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (2, [5, 6, 63], 3, True))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (2, [5, 6, 63], 3))
 d = verify_drafts([63, 6], [63, 6, 7], EOS, remaining_outputs=8)
 check("**草稿本身**是 EOS：只提交它，它之前的草稿才留 KV（这里没有）",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (2, [63], 1, True))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (2, [63], 1))
 d = verify_drafts([5, 63, 8], [5, 63, 9, 1], EOS, remaining_outputs=8)
 check("第二枚草稿是 EOS：留第一枚的 KV，第三枚根本不提交",
-      (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (2, [5, 63], 2, True))
+      (d.num_accepted, d.committed_ids, d.kept_inputs) == (2, [5, 63], 2))
+# 「因 EOS 停下」不再是单独一个字段：它就是 committed_ids 的最后一个元素。
+# 下面三个 EOS 用例里，提交列表都比接受数少的那个瞬间短，就是这个信号。
+check("因 EOS 停下 = 提交的最后一枚是终止 token（不再单开字段）",
+      verify_drafts([5, 6], [5, 6, 63], EOS, 8).committed_ids[-1] in EOS
+      and verify_drafts([5, 6], [5, 6, 7], EOS, 8).committed_ids[-1] not in EOS)
+
 # 输出上限是**前置条件**（K <= R-1），不是截断阈值：_plan_drafts() 保证它成立，
 # 传进来不满足就直接报错——截断会让 kept_inputs 超过实际提交的 token 数。
 check("输出上限不够（K+1 > R）：报错，不默默截断",

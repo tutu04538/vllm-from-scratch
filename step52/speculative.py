@@ -43,15 +43,18 @@ def propose_ngram(token_ids, n, k):
 class DraftVerification:
     """一次投机验证的结论：全是「提交之前」就能定下来的量。
 
-    - `num_accepted`：前几枚草稿与目标模型的贪心结果逐个相同；
-    - `committed_ids`：真正要提交的输出 token（遇到 EOS 就到此为止）；
-    - `kept_inputs`：本轮输入的 KV 要保留多少个（其余是必须回滚的拒绝部分）；
-    - `stopped`：是否因为 EOS 提前停下（后面不再提交草稿/bonus）。
+    - `num_accepted`：前几枚草稿与目标模型的贪心结果逐个相同。**这个推不出来**：
+      `committed_ids` 以 EOS 结尾时，「EOS 是草稿本身」与「EOS 是 bonus」会给出
+      同样的 `(committed_ids, kept_inputs)`——比如接受 1 枚、bonus 是 EOS，与接受
+      2 枚、第二枚草稿是 EOS，两者的可见结果完全一样；
+    - `committed_ids`：真正要提交的输出 token；遇到 EOS 就到此为止，所以
+      `committed_ids[-1] in eos_token_ids` 就是「因 EOS 停下」这个信号本身，
+      不必再单开一个字段；
+    - `kept_inputs`：本轮输入的 KV 要保留多少个（其余是必须回滚的拒绝部分）。
     """
     num_accepted: int
     committed_ids: list
     kept_inputs: int
-    stopped: bool
 
 
 def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
@@ -99,11 +102,10 @@ def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
         num_accepted += 1
     candidates = list(draft_ids[:num_accepted]) + [greedy_ids[num_accepted]]
 
-    committed_ids, stopped, kept_drafts = [], False, num_accepted
+    committed_ids, kept_drafts = [], num_accepted
     for index, token_id in enumerate(candidates):
         committed_ids.append(token_id)
         if token_id in eos_token_ids:
-            stopped = True
             # 终止 token 的 KV 不必留作下一轮输入，保留它**之前**那些——要留几枚
             # 恰好就是 index。这里的两种情况都不用另写分支：
             #   index <  num_accepted：终止的是草稿 d_index，它的 KV 要退掉；
@@ -113,4 +115,4 @@ def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
             kept_drafts = index
             break
     # 本轮输入恒以最后一个真实 token x 开头，它一定还要用
-    return DraftVerification(num_accepted, committed_ids, 1 + kept_drafts, stopped)
+    return DraftVerification(num_accepted, committed_ids, 1 + kept_drafts)

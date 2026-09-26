@@ -1,7 +1,7 @@
 # step52：单请求贪心 n-gram 投机解码
 
 - 对应代码：`step52/`（新增，从 `step51/` 复制，入口改名 `step52.py`）
-- 包摘要 SHA256：`ce1c9e9a181f3daf…`（16 个 .py / 3751 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`6e3be2b00b03e2a4…`（16 个 .py / 3753 行，验收方 `source_digest()` 口径）
 - 基线：`step51/`，指纹 `7115f26936cf9472…`（15 个 .py / 3425 行），原样保留未改
 - **改动 5 个文件 + 新增 1 个**：
 
@@ -71,8 +71,21 @@ class DraftVerification:
     num_accepted: int      # 前几枚草稿与目标贪心相同
     committed_ids: list    # 真正要提交的输出（遇到 EOS 就到此为止）
     kept_inputs: int       # 本轮输入的 KV 要保留几个
-    stopped: bool          # 是否因 EOS 提前停下
 ```
+
+只有三个字段，引擎读的是后两个。`num_accepted` 引擎不读，但留着——它是「接受了几枚」
+这个量本身（需求 §4.1 点名要算的三个量之一），而且**推不出来**：`committed_ids` 以
+EOS 结尾时，「接受 1 枚、bonus 是 EOS」与「接受 2 枚、第二枚草稿是 EOS」给出完全一样的
+`(committed_ids, kept_inputs)`：
+
+```text
+verify_drafts([5, 6],  [5, 63, 7], eos, 8)  ->  (num_accepted=1, [5, 63], kept=2)
+verify_drafts([5, 63], [5, 63, 7], eos, 8)  ->  (num_accepted=2, [5, 63], kept=2)
+```
+
+`stopped` 那个字段**删掉了**：它完全可从 `committed_ids` 推出——
+`committed_ids[-1] in eos_token_ids` 就是「因 EOS 停下」，而且 `committed_ids` 永远
+非空（候选至少有一枚），不用额外判空。引擎本来也没读它，只有测试读。
 
 四条规则，逐条对应需求 §1 与 §3.D：
 
@@ -417,6 +430,7 @@ len(block_table) == ceil(cache.length / block_size)
 - `propose_ngram`：找不到 / 找到 1 个 / 找到 2 个 / **多个匹配取最近** / `k` 截断 /
   `n=1` / 不自己匹配自己 / 直接吃只读视图；8192 长历史不复制整段；
 - `verify_drafts`：三种验证结果 + 无草稿 + bonus 是 EOS + **草稿本身是 EOS** +
+  「因 EOS 停下」由 `committed_ids` 末元素体现 +
   第二枚草稿是 EOS + **输出上限不够时报错（不截断）** + 卡在 `K+1 == R` 边界仍正常
   + 行数不匹配报错；
 - `truncate`：回滚到块边界 / 块内 / 0；非法目标报错；**不动已发布的完整块与其
