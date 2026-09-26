@@ -187,11 +187,21 @@ while item["draft_ids"] and not self.kv_cache_pool.can_grow(seq, item["num_sched
 真正补块仍然只有 `ensure_blocks()` 一处——这和第四十八关以来的「先计划、后提交」
 是同一条规矩。
 
-**要说实话：这个缩短循环在当前允许的配置下走不到。** 准入已经按最坏情况
-`ceil((len(prompt) + max_new_tokens - 1) / block_size)` 把额度承诺给了这条请求，
-而 `K <= R-1` 保证本轮要的块数不超过那个最坏值，池子里又只有这一条请求
-（`max_num_seqs=1`），所以 `ensure_blocks()` 必然成功。它是安全网，不是热路径；
-单测里直接验 `can_grow()` 的判断本身，端到端跑不到它。
+**要说实话：这个缩短循环在当前允许的配置下走不到。** 理由两条：
+
+1. 准入仍然拒绝「单独跑也装不下」的请求——`max_request_blocks =
+   ceil((len(prompt) + max_new_tokens - 1) / block_size) > num_kv_blocks` 就抛
+   `InfeasibleRequest`（§1.9 删掉的是**承诺账本**，这条可行性检查还在）；
+2. `max_num_seqs=1` 意味着池子里只有这一条请求：它的块 + 链上的块 = 全部块。
+
+于是 `本轮需要的块数 <= max_request_blocks <= num_kv_blocks = 它已持有的 + 链上的`，
+`can_grow()` 恒为真、`ensure_blocks()` 必然成功。
+
+（§1.9 之前这里的论证是「准入已经按最坏情况把额度**承诺**给了它」——承诺账本删掉
+之后那句话不再成立，但结论没变，理由换成了上面两条。）
+
+所以它是安全网，不是热路径；单测里直接验 `can_grow()` 的判断本身，端到端跑不到它，
+`_shrink_draft()` 眼下一次也不会被调用。
 
 ### 1.5 一次 forward，取 K+1 行
 
