@@ -468,6 +468,52 @@ check("前缀命中：命中那条请求的两套 KV 与「对已提交前缀单
       f"B: target={hit_seq[0].cache.length if hit_seq else None} "
       f"draft={hit_seq[0].draft_cache.length if hit_seq else None}")
 
+# ------------------------------------------------ 9. 带惩罚项的 greedy：与普通路径逐 token 相同
+
+# 惩罚项让**每一行**的历史都不同（真实生成 + 前 i 枚草稿），两个模型的提议与验证都必须
+# 按这条规则喂历史，否则 argmax 会偏。这里用「整体 +1、但在位置 10 分叉」的目标脚本：
+# 大部分草稿被接受、偶尔被拒，两条路径仍必须给出同一串 token。
+target_diverge = lambda token, position: 3 if position == 10 else (token + 1) % 64
+pen = dict(repetition_penalty=1.4, presence_penalty=0.4, frequency_penalty=0.3)
+pen_spec = build(17, target_diverge, shift, num_speculative_tokens=2, num_kv_blocks=32)
+pen_plain = build(17, target_diverge, shift, speculative_mode=None, num_kv_blocks=32,
+                  with_draft=False)
+pen_prompt = [5, 5, 1, 5, 5, 1, 5, 5]
+spec_pen = steps(pen_spec, [dict({"request_id": "A", "prompt_ids": pen_prompt,
+                                  "max_new_tokens": 10}, **pen)])
+plain_pen = steps(pen_plain, [dict({"request_id": "A", "prompt_ids": pen_prompt,
+                                    "max_new_tokens": 10}, **pen)])
+check("带三种惩罚项的 greedy：draft_model 与普通路径**逐 token 相同**（逐行历史一致）",
+      final_output(spec_pen, "A") == final_output(plain_pen, "A"),
+      f"\n  投机 {final_output(spec_pen, 'A')}\n  普通 {final_output(plain_pen, 'A')}")
+check("带惩罚项的 greedy：那条负载真的投了机（不是没草稿所以相等）",
+      len(spec_rounds(spec_pen)) > 0
+      and pen_spec.draft_proposer.num_proposed_tokens > 0,
+      f"草稿 {pen_spec.draft_proposer.num_proposed_tokens} 枚")
+
+# ------------------------------------------------ 10. CUDA FP32 / BF16 冒烟
+
+if torch.cuda.is_available():
+    for dtype in (torch.float32, torch.bfloat16):
+        for mode in ("draft_model", "ngram", None):
+            cuda = build(18, shift, shift, device="cuda", dtype=dtype,
+                         num_speculative_tokens=2, num_kv_blocks=32, draft_num_kv_blocks=16,
+                         max_num_seqs=2, speculative_mode=mode,
+                         with_draft=(mode == "draft_model"))
+            cuda_trace = steps(cuda, [
+                {"request_id": "A", "prompt_ids": PROMPT, "max_new_tokens": 8},
+                {"request_id": "B", "prompt_ids": [5, 6, 5, 6], "max_new_tokens": 8,
+                 "temperature": 0.8, "top_k": 8, "seed": 3}])
+            lengths = {rid: len(final_output(cuda_trace, rid)) for rid in ("A", "B")}
+            pools_ok = all(u == 0 for u in cuda.kv_cache_pool.block_usage)
+            draft_pool = getattr(cuda, "draft_kv_pool", None)
+            if draft_pool is not None:
+                pools_ok = pools_ok and all(u == 0 for u in draft_pool.block_usage)
+            check(f"CUDA/{str(dtype).replace('torch.', '')}/{mode}：两条请求都跑完、两套池子归零",
+                  lengths == {"A": 8, "B": 8} and pools_ok, str(lengths))
+else:
+    print("SKIP  CUDA 冒烟（本机没有 CUDA）")
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

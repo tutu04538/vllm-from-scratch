@@ -231,6 +231,21 @@ check("一般 q + EOS：接受终止 token 后当场结束，第二枚不再验�
       (r.num_accepted, r.committed_ids, r.kept_inputs) == (1, [3], 1)
       and (d.n_uniform, d.n_token) == (0, 0), f"uniform={d.n_uniform} token={d.n_token}")
 
+# K=2 的**部分接受**（一般 q）：第一枚接受、第二枚拒绝
+#   row0/q0 都 one-hot 在 1 -> 接受概率 1（必接受，不抽 uniform）
+#   row1/q1 上 p[2]=0.2、q[2]=0.4 -> 接受概率 0.5，u=0.9 -> 拒
+#   纠正分布 = normalize(max(p1-q1,0)) = [1/3, 0, 0, 2/3]
+P_GQ2 = [probs(0, 1, 0, 0), probs(0.3, 0.3, 0.2, 0.2)]
+Q_GQ2 = [probs(0, 1, 0, 0), probs(0.2, 0.4, 0.4, 0.0)]
+d = Draws(uniforms=[0.9], tokens=[3])
+r = verify([1, 2], P_GQ2 + [probs(0, 0, 0, 1)], d, draft_q=Q_GQ2)
+check("一般 q 的部分接受：第一枚接受、第二枚拒绝，纠正 token 从 max(p-q,0) 里抽",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (1, [1, 3], 2)
+      and (d.n_uniform, d.n_token) == (1, 1),
+      f"uniform={d.n_uniform} token={d.n_token}")
+check("一般 q 的部分接受：纠正分布 = normalize([0.1, 0, 0, 0.2])",
+      abs(residual_probs(P_GQ2[1], Q_GQ2[1], 2)[3].item() - 2 / 3) < 1e-6)
+
 # ------------------------------------------------ 2. 分布正确性
 
 def empirical(draft_id, target, n, seed):

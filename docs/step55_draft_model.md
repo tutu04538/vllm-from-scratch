@@ -187,17 +187,17 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 
 ## 8. 验证
 
-### 8.1 脚本清单（全部通过，共 293 项）
+### 8.1 脚本清单（全部通过，共 304 项）
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
 | `check_step55_speculative.py` | 57 | 第五十二关的纯函数 + 本关的 draft_model 配置校验 |
 | `check_step55_batch.py` | 35 | 第五十三关的行映射 / 混批 / 预算 / 容量 / 恢复 |
-| `check_step55_rejection.py` | 48 | 拒绝采样验证层（含一般 p/q 与统计检验） |
+| `check_step55_rejection.py` | 50 | 拒绝采样验证层（含一般 p/q 与统计检验） |
 | `check_step55_random.py` | 22 | 第五十四关的引擎状态（临时计数、RNG、重算、混批） |
 | `check_step55_engine.py` | 55 | 单/多请求等价性、目录加载入口 |
 | `check_step55_combinations.py` | 17 | priority / 前缀缓存与投机的组合 |
-| `check_step55_draft_kv.py` | 39 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、前缀命中） |
+| `check_step55_draft_kv.py` | 47 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、前缀命中、惩罚一致性、CUDA 冒烟） |
 | `check_step55_loading.py` | 12 | 分片权重 + 双目录加载 |
 | `check_step55_real_qwen3.py` | 9 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
 | `diff_step54_step55.py` | 88 | `speculative_mode=None` 下与 step54 **逐步逐字节一致** |
@@ -219,6 +219,10 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 - **真实模型 greedy 逐 token 相同**：1.7B target + 0.6B draft，两条请求各 16 个 token，
   与不开投机的贪心**逐个 ID 相等**。贪心时目标分布是 one-hot，投机只能改「怎么算」。
 - **target 每轮最多一次 forward**（16 次 / 16 步）、提议是批量的（1.46 枚/次）。
+- **带三种惩罚项的 greedy 与普通路径逐 token 相同**：惩罚让每一行的历史都不同
+  （真实生成 + 前 i 枚草稿），两个模型的提议与验证都按这条规则喂历史。
+- **CUDA FP32 / BF16 冒烟**：draft_model / ngram / 关 三种模式各跑一遍，两条请求
+  都完成、两套池子归零。
 
 ### 8.3 反证清单
 
