@@ -29,10 +29,22 @@ class SampleRuntime:
     （`engine.on_token` 是公开参数，用户可能在任何时候设置它），所以走 `run()` 的参数。
     """
 
-    def __init__(self, sampler, kv_cache_pool, eos_token_ids):
+    def __init__(self, sampler, kv_cache_pool, eos_token_ids, draft_proposer=None):
         self.sampler = sampler
         self.kv_cache_pool = kv_cache_pool
         self.eos_token_ids = eos_token_ids
+        # 第五十五关：draft model 那一层（None 表示不投机或 ngram）。
+        # 采样层只用一个入口 `align()`——验证之后两套 KV 的回滚/对齐在同一个地方做。
+        self.draft_proposer = draft_proposer
+
+    def _align_draft(self, seq):
+        """验证之后把 draft 的 KV 夹回 target 的真实计算边界。
+
+        与 target 的 `truncate` 是**同一时刻**的两件事：都在提交 token 之前、
+        `post_step()` 之前，所以 post_step 读到的两套进度都是真实进度。
+        """
+        if self.draft_proposer is not None:
+            self.draft_proposer.align(seq)
 
     # -------- 1) 行映射（纯） --------
 
@@ -179,6 +191,7 @@ class SampleRuntime:
 
         # 1) 先回滚：本轮输入 [x, d0..] 里只有 x 和「被接受且还要当下一轮输入」的草稿要留
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
+        self._align_draft(seq)
         # 2) 再提交：逐枚走和普通路径同一个入口，事件序号自然连续
         self._commit_tokens(seq, result.committed_ids, on_token)
 
@@ -222,9 +235,14 @@ class SampleRuntime:
                                                          generator=state.generator)
 
         remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
+        # `draft_probs` 是 draft_model 每枚草稿的**实际**提议分布 q（ngram 时为空：
+        # 确定性提议的 q 是 one-hot，验证层内部退化成 p[d] 与「挖掉 d」）
         result = verify_drafts_random(draft_ids, row_probs, self.eos_token_ids,
-                                      remaining_outputs, draw_uniform, draw_token)
+                                      remaining_outputs, draw_uniform, draw_token,
+                                      draft_probs=item["draft_probs"] or None)
 
-        # 先回滚（被拒草稿的 KV 已经随本轮输入写进物理块），再走唯一提交入口
+        # 先回滚两套 KV（被拒草稿的 KV 已经随本轮输入写进各自的物理块），
+        # 再走唯一提交入口
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
+        self._align_draft(seq)
         self._commit_tokens(seq, result.committed_ids, on_token)

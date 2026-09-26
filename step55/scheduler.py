@@ -4,6 +4,7 @@
 """
 
 from .cache import CacheConfig, InfeasibleRequest, KVCachePool, SequenceConfig
+from .draft import make_draft_generator
 from .model import DEFAULT_EOS_TOKEN_IDS
 from .sampling import SamplingParams, SamplingState
 from .speculative import propose_ngram
@@ -67,7 +68,7 @@ def _check_request_ids(request, vocab_size):
 
 class Scheduler:
 
-    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None):
+    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None, draft_proposer=None):
 
         if max_num_batched_tokens <= 0:
             # 一步都排不出 token 的配置没有意义，构造时就明确拒绝，
@@ -104,6 +105,10 @@ class Scheduler:
         # 剩余上下文长度的上限来源。草稿会让本轮多算几个位置，必须提前卡住，
         # 不能等到模型准备输入时才报「超出 max_seq_len」。
         self.max_seq_len = max_seq_len
+        # 第五十五关：draft model 的提议层（持有 draft 模型与**第二个** KV 池）。
+        # 调度器只用它做三件事：只读地问 draft 池放不放得下、把草稿写进计划、
+        # 以及抢占/完成/失败时释放那一套 KV。真正的前向与采样在这一层之外。
+        self.draft_proposer = draft_proposer
 
     def add_request(self, request):
         # 先把参数校验完再建请求对象：非法参数在入队、分配 KV 之前就报出来
@@ -129,6 +134,11 @@ class Scheduler:
         self._arrival_counter += 1
         seq.sampling_params = params
         seq.sampling_state = SamplingState(params, seq.prompt_ids, self.kv_cache_pool.device)
+        if self.speculative_mode == "draft_model":
+            # draft 的随机流与 target 的那条**相互独立**：draft 抽提议、target 抽
+            # 接受/纠正/bonus。种子的派生规则见 draft.derive_draft_seed()。
+            seq.draft_generator, seq.draft_seed = make_draft_generator(
+                params, self.kv_cache_pool.device)
         self._enqueue(seq)
 
     def _ordered_insert(self, lst, seq):
@@ -258,10 +268,24 @@ class Scheduler:
                 if id(seq) in ready_ids:
                     # 真实历史只差最后一个 token，正好是投机的时机：
                     # 输入 = [x] + 草稿，num_real 记的是「真实历史那几个 token」。
-                    draft_ids = self._plan_drafts(seq, prefill_token_budget)
-                    num_real = 1
-                    prefill_token_budget -= len(draft_ids)
-                    num_scheduled_tokens = num_real + len(draft_ids)
+                    #
+                    # ngram 的草稿是**纯函数直接算出来的**（确定性提议）；
+                    # draft_model 的草稿要跑过 draft 才知道，这里只放一个**预留额度**
+                    # `max_draft_k`，草稿由 Engine 在 target forward 之前填进来
+                    # （第五十五关）。两者都记进 `num_scheduled_tokens`：本轮的 token
+                    # 预算与物理块按最坏情况先占住，实际用不到的由验证后的回滚还回。
+                    if self.speculative_mode == "draft_model":
+                        max_draft_k = self._plan_draft_budget(seq, prefill_token_budget)
+                        draft_ids = []
+                        num_real = 1
+                        prefill_token_budget -= max_draft_k
+                        num_scheduled_tokens = num_real + max_draft_k
+                    else:
+                        max_draft_k = 0
+                        draft_ids = self._plan_drafts(seq, prefill_token_budget)
+                        num_real = 1
+                        prefill_token_budget -= len(draft_ids)
+                        num_scheduled_tokens = num_real + len(draft_ids)
                 else:
                     # 这里**不再**判 num_uncomputed == 0：那一半靠入口校验已经不可能成立
                     # ——prompt 非空（add_request 拒绝空 prompt），而 running 里的请求
@@ -275,6 +299,7 @@ class Scheduler:
                     prefill_token_budget -= num_scheduled_tokens
                     num_real = num_scheduled_tokens
                     draft_ids = []
+                    max_draft_k = 0        # prefill / 重算 chunk 都不投机
 
                 start = seq.cache.length
                 input_ids = seq.all_token_ids[start:start + num_real]
@@ -286,6 +311,10 @@ class Scheduler:
                     "input_ids": input_ids,
                     "num_scheduled_tokens": num_scheduled_tokens,
                     "draft_ids": list(draft_ids),
+                    # 草稿的预留上限（draft_model 用；ngram 这里是 0——它的草稿已经
+                    # 由 `draft_ids` 表示，不需要第二个计数）
+                    "max_draft_k": max_draft_k,
+                    "draft_probs": [],
                     # 回滚与重算统计都要「本轮从哪儿开始算」；用 end - num_scheduled_tokens
                     # 反推在投机下是错的——那个 end 是回滚后的长度。
                     "start_cache_length": start,
@@ -323,6 +352,28 @@ class Scheduler:
             return []
         return propose_ngram(seq.all_token_ids, self.prompt_lookup_n, k)
 
+    def _plan_draft_budget(self, seq, spare_budget):
+        """draft_model 模式下一条 ready 请求的**草稿上限**（只算上限，不产生草稿）。
+
+        四个上限与 ngram 那条一致（配置、token 预算、剩余输出额度、剩余上下文），
+        缩小到 0 就退回普通的 1-token 路径。**容量不在这里判**——那是
+        `_reserve_blocks()` 的事，它会按两个池子的现状逐枚缩。
+        """
+        remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
+        k = min(self.num_speculative_tokens, spare_budget, remaining_outputs - 1)
+        if self.max_seq_len is not None:
+            k = min(k, self.max_seq_len - seq.cache.length - 1)
+        return max(k, 0)
+
+    def _draft_fits(self, seq, k):
+        """只读地问 draft 池放不放得下「补算缺口 + k 枚草稿」。
+
+        没有 draft 提议层（不投机 / ngram）时恒为 True——那种模式下没有第二个池子。
+        """
+        if self.draft_proposer is None or k <= 0:
+            return True
+        return self.draft_proposer.fits(seq, k)
+
     def _reserve_blocks(self, planned_items):
         """按计划顺序补物理块，返回**真的会 forward** 的那批 item。
 
@@ -337,12 +388,16 @@ class Scheduler:
             seq = item["request"]
             if seq not in self.running:
                 continue        # 本轮被选成犠牲者，计划作废
-            if item["draft_ids"]:
+            if item["draft_ids"] or item["max_draft_k"]:
                 # 草稿是**可选**的加速：容量不够就逐枚缩短，最终退回普通 1-token 路径。
                 # 缩短只改这一轮进模型几个 token，不动任何已提交状态。
-                # 只读地问（can_grow 不摘链），真正补块仍然只有 ensure_blocks 一处。
-                while item["draft_ids"] and not self.kv_cache_pool.can_grow(
-                        seq, item["num_scheduled_tokens"]):
+                # 只读地问（can_grow / fits 都不摘链），真正补块仍然只有 ensure_blocks 一处。
+                # **两个池子都要问**：target 池放不下整段输入、或 draft 池放不下
+                # 「补算缺口 + 草稿」，任一不满足都砍一枚。draft 池不够时只缩草稿，
+                # 绝不为可选草稿去抢占 target 的其他请求。
+                while (item["draft_ids"] or item["max_draft_k"]) and (
+                        not self.kv_cache_pool.can_grow(seq, item["num_scheduled_tokens"])
+                        or not self._draft_fits(seq, item["max_draft_k"])):
                     self._shrink_draft(item)
             if self.kv_cache_pool.ensure_blocks(seq, item["num_scheduled_tokens"]):
                 committed_items.append(item)
@@ -357,12 +412,18 @@ class Scheduler:
     def _shrink_draft(item):
         """把计划里的草稿砍掉最后一枚。
 
-        只改这一轮的临时计划（输入、计数）。`_plan_tokens()` 已经把 token 预算
-        按原长度发下去了，砍短之后多出来的额度**不回收**——本关投机只允许
-        `max_num_seqs=1`，没有别的请求在等这份额度，留给同一个请求反而更简单。
+        ngram 砍的是**已知草稿**（`draft_ids`，输入行跟着变短）；draft_model 砍的是
+        **预留额度**（草稿还没提，要跑过 draft 才知道）。两者都只改这一轮的临时计划，
+        不动任何已提交状态。
+
+        `_plan_tokens()` 已经把 token 预算按原长度发下去了，砍短之后多出来的额度
+        **不回收**——留给同一个请求反而更简单，本关也不做「缩 K 后重发预算」。
         """
-        item["draft_ids"] = item["draft_ids"][:-1]
-        item["input_ids"] = item["input_ids"][:-1]
+        if item["draft_ids"]:
+            item["draft_ids"] = item["draft_ids"][:-1]
+            item["input_ids"] = item["input_ids"][:-1]
+        else:
+            item["max_draft_k"] -= 1
         item["num_scheduled_tokens"] -= 1
 
     def _check_progress(self):
@@ -501,6 +562,10 @@ class Scheduler:
         # 物理 KV 进度归零；prompt_ids / output_ids / SamplingState 原样留着，
         # 下一轮从 all_token_ids[cache.length] 继续重放
         seq.cache = CacheConfig()
+        if self.draft_proposer is not None:
+            # 两套活动 KV 一起释放/失效。两条随机流与真实历史都不动——被抢占的请求
+            # 恢复后 draft 会从已提交历史重新补算（draft 池不做前缀共享）。
+            self.draft_proposer.release(seq)
         # 物理块已经还回去了，hash 链跟着作废；下次准入会按当时的历史重建
         seq.block_hashes = []
         seq.num_preemptions += 1
@@ -526,6 +591,8 @@ class Scheduler:
         if seq.cache is not None and seq.cache.block_table:
             self.kv_cache_pool.deallocate_block(seq)
         seq.cache = None
+        if self.draft_proposer is not None:
+            self.draft_proposer.release(seq)
         self._failed_this_step += 1
         record = {"request_id": seq.request_id, "output_ids": list(seq.output_ids),
                   "error": message}
@@ -590,6 +657,8 @@ class Scheduler:
                 self.step_done.append({"request_id": seq.request_id, "output_ids": output_ids})
                 self.kv_cache_pool.deallocate_block(seq)
                 seq.cache = None  # Reset past_kv for completed sequences
+                if self.draft_proposer is not None:
+                    self.draft_proposer.release(seq)
 
         self.running = [seq for seq in self.running
                         if len(seq.output_ids) < seq.max_new_tokens

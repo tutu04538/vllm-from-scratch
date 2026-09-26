@@ -9,7 +9,7 @@ Engine 在 `_init_runtime()` 里调它们，`check_runtime` 在两条构造路�
 import torch
 
 SCHEDULING_POLICIES = ("fcfs", "priority")
-SPECULATIVE_MODES = (None, "ngram")
+SPECULATIVE_MODES = (None, "ngram", "draft_model")
 
 
 def check_scheduling_policy(scheduling_policy):
@@ -38,7 +38,7 @@ def check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
     """
     if speculative_mode not in SPECULATIVE_MODES:
         raise ValueError(f"未知的 speculative_mode: {speculative_mode!r}，"
-                         f"可选 None（关）或 'ngram'")
+                         f"可选 None（关）、'ngram' 或 'draft_model'")
     for name, value in (("num_speculative_tokens", num_speculative_tokens),
                         ("prompt_lookup_n", prompt_lookup_n)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -51,7 +51,61 @@ def check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
     ]
     problems = [message for bad, message in unsupported if bad]
     if problems:
-        raise ValueError("speculative_mode='ngram' 不支持的组合：" + "；".join(problems))
+        raise ValueError(f"speculative_mode={speculative_mode!r} 不支持的组合："
+                         + "；".join(problems))
+
+
+def check_draft_model(target_model, draft_model, draft_num_kv_blocks,
+                      draft_max_num_batched_tokens):
+    """draft model 与 target 的兼容性校验（第五十五关）。
+
+    两个模型各读各的目录、各建各的 KV，所以这里只查**必须一致**的三样：token ID
+    的语义（词表大小）、停止规则（EOS 集合）、上下文长度上限（draft 至少要和 target
+    一样长，否则 target 能算的位置 draft 算不了）。**不查结构**：层数、hidden、
+    头数不同是本关的常态。
+
+    词表大小相同**不等于** tokenizer 相同；本关只接受调用方提供的同词表模型，
+    不做 tokenizer 转换——这一条写在文档里，代码只能查到大小。
+    """
+    if draft_model is None:
+        raise ValueError("speculative_mode='draft_model' 必须同时给 draft_model"
+                         "（或用 from_model_dir(..., draft_model_dir=...)）")
+    if draft_num_kv_blocks is None:
+        raise ValueError("speculative_mode='draft_model' 必须显式配置 draft_num_kv_blocks："
+                         "draft 的 KV 是独立的一份，容量不能靠 target 那边的数字猜")
+    if isinstance(draft_num_kv_blocks, bool) or not isinstance(draft_num_kv_blocks, int) \
+            or draft_num_kv_blocks < 1:
+        raise ValueError(f"draft_num_kv_blocks 必须是 >=1 的整数，收到 {draft_num_kv_blocks!r}")
+    if isinstance(draft_max_num_batched_tokens, bool) \
+            or not isinstance(draft_max_num_batched_tokens, int) \
+            or draft_max_num_batched_tokens < 1:
+        raise ValueError(f"draft_max_num_batched_tokens 必须是 >=1 的整数，"
+                         f"收到 {draft_max_num_batched_tokens!r}")
+
+    problems = []
+    if draft_model.device != target_model.device:
+        problems.append(f"两个模型必须在同一个设备上：target={target_model.device}、"
+                        f"draft={draft_model.device}")
+    if draft_model.vocab_size != target_model.vocab_size:
+        problems.append(f"词表大小必须一致：target={target_model.vocab_size}、"
+                        f"draft={draft_model.vocab_size}（token ID 的语义不同就没法"
+                        f"互相验证；本关不做 tokenizer 转换）")
+    if set(draft_model.eos_token_ids) != set(target_model.eos_token_ids):
+        # 不要求「一个是另一个的子集」：停止规则由 target 决定，draft 的集合不同就意味着
+        # 「draft 该不该在某个 token 上停」与请求的真实终止规则不一致，那是配置错误
+        problems.append(f"EOS 集合必须一致：target={sorted(target_model.eos_token_ids)}、"
+                        f"draft={sorted(draft_model.eos_token_ids)}")
+    if draft_model.max_seq_len < target_model.max_seq_len:
+        problems.append(f"draft 的上下文上限不能小于 target："
+                        f"target={target_model.max_seq_len}、draft={draft_model.max_seq_len}")
+    if draft_model.max_num_query_tokens is None:
+        problems.append("draft 模型必须带固定输入缓冲（构造时给 max_num_query_tokens）")
+    elif draft_model.max_num_query_tokens < draft_max_num_batched_tokens:
+        problems.append(f"draft 的输入缓冲 {draft_model.max_num_query_tokens} 小于 "
+                        f"draft_max_num_batched_tokens={draft_max_num_batched_tokens}；"
+                        f"补算 chunk 会一次喂进这么多 token")
+    if problems:
+        raise ValueError("draft_model 与 target 不兼容：" + "；".join(problems))
 
 
 def resolve_device(device):

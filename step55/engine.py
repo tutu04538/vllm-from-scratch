@@ -14,6 +14,7 @@ import torch
 
 from .attention import AttentionMetadata
 from .cache import KVCachePool
+from .draft import DraftModelProposer
 from .formats import CONFIG_NAME as MODEL_CONFIG_NAME
 from .formats import WEIGHTS_NAME as MODEL_WEIGHTS_NAME
 from .loading import (COMPATIBLE_FORMAT_VERSIONS, FORMAT_VERSION, MODEL_DTYPE, MODEL_TYPE,
@@ -23,8 +24,9 @@ from .model import TinyCausalLM
 from .sample_runtime import SampleRuntime
 from .sampling import TorchSampler
 from .scheduler import Scheduler
-from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, check_runtime,
-                         check_scheduling_policy, check_speculative, resolve_device)
+from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, check_draft_model,
+                         check_runtime, check_scheduling_policy, check_speculative,
+                         resolve_device)
 
 
 class Engine:
@@ -34,7 +36,9 @@ class Engine:
                  head_dim=None, use_qk_norm=False, eos_token_ids=None, dtype=torch.float32,
                  norm_backend="torch", rope_backend="torch", model=None, *, on_token=None,
                  scheduling_policy="fcfs",
-                 speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
+                 speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2,
+                 draft_model=None, draft_num_kv_blocks=None,
+                 draft_max_num_batched_tokens=None):
         # on_token 是 keyword-only：它放在**所有旧参数之后**，旧的位置参数一个都没挪位。
         # 插在中间会让 Engine(..., None, False) 里的 False 从 enable_prefix_caching
         # 变成 on_token —— Python 按位置配对，不会知道调用者的原意。
@@ -59,12 +63,14 @@ class Engine:
         self._init_runtime(model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
                            on_finished, enable_prefix_caching, on_token,
                            scheduling_policy, speculative_mode, num_speculative_tokens,
-                           prompt_lookup_n)
+                           prompt_lookup_n, draft_model, draft_num_kv_blocks,
+                           draft_max_num_batched_tokens)
 
     def _init_runtime(self, model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
                       on_finished, enable_prefix_caching, on_token=None,
                       scheduling_policy="fcfs", speculative_mode=None,
-                      num_speculative_tokens=2, prompt_lookup_n=2):
+                      num_speculative_tokens=2, prompt_lookup_n=2, draft_model=None,
+                      draft_num_kv_blocks=None, draft_max_num_batched_tokens=None):
         # 模型已经就位（随机初始化或从目录加载），这里只装运行时：元数据、KV 池、调度器
         device = model.device
         check_runtime(device, model.attention_backend, model.use_cuda_graph, model.dtype,
@@ -73,6 +79,16 @@ class Engine:
         check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
                           scheduling_policy, enable_prefix_caching,
                           model.attention_backend, model.use_cuda_graph)
+        # draft 模型那一侧的校验：两个模型必须能读同一段 token id
+        if draft_max_num_batched_tokens is None:
+            # 默认与 target 同一个预算；显式给值就是**分开计数**的两个预算
+            draft_max_num_batched_tokens = max_num_batched_tokens
+        if speculative_mode == "draft_model":
+            check_draft_model(model, draft_model, draft_num_kv_blocks,
+                              draft_max_num_batched_tokens)
+        elif draft_model is not None:
+            raise ValueError("给了 draft_model 却没有开 speculative_mode='draft_model'；"
+                             "两个模型只有在这条模式下才会一起跑")
 
         self.model = model
         self.model.eval()
@@ -96,9 +112,25 @@ class Engine:
         self.kv_cache_pool = KVCachePool(block_size, num_kv_blocks, model.num_kv_heads,
                                          model.head_dim, device, self.enable_prefix_caching,
                                          num_layers=model.num_layers, dtype=model.dtype)
+        # draft model 那一层（第五十五关）：第二个池子按**它自己**的层数/头数/精度建，
+        # 与 target 的池子没有任何共享。draft 池不做前缀缓存——两套缓存交互的复杂度
+        # 这一关照需求控制住（恢复时从真实历史补算，见 draft.DraftModelProposer）。
+        self.draft_model = draft_model
+        self.draft_proposer = None
+        if speculative_mode == "draft_model":
+            self.draft_kv_pool = KVCachePool(block_size, draft_num_kv_blocks,
+                                             draft_model.num_kv_heads, draft_model.head_dim,
+                                             draft_model.device, False,
+                                             num_layers=draft_model.num_layers,
+                                             dtype=draft_model.dtype)
+            self.draft_proposer = DraftModelProposer(
+                draft_model, self.draft_kv_pool, self.sampler, draft_model.eos_token_ids,
+                draft_max_num_batched_tokens)
+
         # 采样执行层：组合一个 SampleRuntime，把采样后端、KV 池、停止 token 交给它
+        # （draft 那一层也交给它：验证之后两套 KV 的回滚/对齐要在同一时刻做）
         self.sample_runtime = SampleRuntime(self.sampler, self.kv_cache_pool,
-                                            model.eos_token_ids)
+                                            model.eos_token_ids, self.draft_proposer)
         # 增量输出回调。不传就是 None —— 那时采样层连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
@@ -107,7 +139,8 @@ class Engine:
                           num_speculative_tokens=num_speculative_tokens,
                           prompt_lookup_n=prompt_lookup_n,
                           max_seq_len=model.max_seq_len,
-                          vocab_size=model.vocab_size)
+                          vocab_size=model.vocab_size,
+                          draft_proposer=self.draft_proposer)
 
     @classmethod
     def from_model_dir(cls, model_dir, device=None, attention_backend="torch", use_cuda_graph=False,
@@ -115,7 +148,9 @@ class Engine:
                        on_finished=None, enable_prefix_caching=True, dtype=torch.float32,
                        norm_backend="torch", rope_backend="torch", *, on_token=None,
                        scheduling_policy="fcfs",
-                       speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
+                       speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2,
+                       draft_model_dir=None, draft_num_kv_blocks=None,
+                       draft_max_num_batched_tokens=None):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
         check_scheduling_policy(scheduling_policy)
         device = resolve_device(device)
@@ -124,7 +159,19 @@ class Engine:
         model = load_model_from_dir(model_dir, device, attention_backend,
                                     max_num_batched_tokens, use_cuda_graph,
                                     dtype, norm_backend, rope_backend)
-        return cls(model=model, max_num_seqs=max_num_seqs,
+        draft_model = None
+        if draft_model_dir is not None:
+            # draft 按**它自己的目录**读结构与权重：层数、hidden、头数都可以不同，
+            # 也不能套用 target 的维度。它的固定输入缓冲按 draft 自己的预算开。
+            if draft_max_num_batched_tokens is None:
+                draft_max_num_batched_tokens = max_num_batched_tokens
+            draft_model = load_model_from_dir(draft_model_dir, device, attention_backend,
+                                              draft_max_num_batched_tokens, use_cuda_graph,
+                                              dtype, norm_backend, rope_backend)
+        return cls(model=model, draft_model=draft_model,
+                   draft_num_kv_blocks=draft_num_kv_blocks,
+                   draft_max_num_batched_tokens=draft_max_num_batched_tokens,
+                   max_num_seqs=max_num_seqs,
                    max_num_batched_tokens=max_num_batched_tokens, block_size=block_size,
                    num_kv_blocks=num_kv_blocks, on_finished=on_finished, on_token=on_token,
                    enable_prefix_caching=enable_prefix_caching,
@@ -151,6 +198,12 @@ class Engine:
             scheduled_items = self.scheduler.scheduled_items
 
             if scheduled_items:
+                # draft 阶段（第五十五关）：补算 draft 的历史 + 逐位置批量提议，把草稿
+                # 写回本轮计划。**必须在组装输入之前**——它改的正是本轮的输入行与
+                # token 计数；也必须在调度器之外，因为这是跑**第二个模型**。
+                if self.draft_proposer is not None:
+                    self.draft_proposer.run_round(scheduled_items)
+
                 # 本轮所有真实 token 拼成一维，prefill 与 decode 共用一次模型调用
                 # 先在 CPU 组装，再由图外的准备步骤一次写进固定 GPU 缓冲
                 input_ids = torch.tensor([token for item in scheduled_items for token in item["input_ids"]], dtype=torch.long)

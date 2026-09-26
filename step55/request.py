@@ -83,6 +83,16 @@ class SequenceConfig:
         self._all_token_ids_view = ReadOnlyTokenList(self._all_token_ids)
         self._output_ids_view = ReadOnlyTokenList(self._output_ids)
         self.cache = CacheConfig()
+        # draft model 的那一套 KV（第五十五关）：**只有 draft 模型会写它**，与
+        # `cache` 表示的是两个模型各自的中间结果，物理块绝不能互换。默认是空配置，
+        # 不投机时它一直是空的（长度 0、块表为空），不额外占任何资源。
+        # 它自己的 block_size 与池子由 draft 侧决定，这里只存进度与块表。
+        self.draft_cache = CacheConfig()
+        # draft 提议用的随机流，**与 sampling_state.generator 相互独立**：
+        # 草稿被拒绝后不要求回退这条流（KV 回滚与 RNG 回滚是两件事），但抢占、
+        # 重算也不重置它。贪心请求不需要它（`draw()` 走 argmax），为 None。
+        self.draft_generator = None
+        self.draft_seed = None
         self.block_size = block_size  # Size of each block in the KV cache
         self.block_hashes = []  # 本请求已确定的前缀块 hash 链，命中时从缓存里的前缀接上
         # 采样参数与状态跟着请求走，不跟着 batch 行号走

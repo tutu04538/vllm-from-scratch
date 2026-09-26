@@ -234,6 +234,20 @@ class TorchSampler:
             return probs
         return _filter_and_probs(penalized, params)
 
+    def draw(self, probs, params: SamplingParams, generator):
+        """从一行**概率**里取一个 token（留在 GPU 上）。
+
+        「分布 -> token」只有这一份实现：`select()` 用它，draft model 的提议也用它
+        （第五十五关）——草稿必须真的从 q 抽出来，不能 argmax 提议却拿 q 去验证。
+
+        贪心取 argmax、不抽随机数（贪心请求也没有 generator，见
+        `SamplingState.__init__`）；并列取最小 token id，`torch.argmax` 返回第一个
+        最大值，正好是下标最小的那个。
+        """
+        if params.is_greedy:
+            return torch.argmax(probs)
+        return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(0)
+
     def select(self, row, params: SamplingParams, state: SamplingState):
         """一行**原始** logits -> 一个 tensor 标量（留在 GPU 上）。
 
@@ -243,12 +257,10 @@ class TorchSampler:
         """
         if params.is_greedy:
             # 不建整个分布：one-hot 的 argmax 就是**惩罚后**的 argmax，少一次
-            # 词表大小的分配。也绝不能走 multinomial——贪心请求没有 generator，
-            # `torch.multinomial(generator=None)` 会静默改用全局随机源。
-            # 并列取最小 token id：torch.argmax 返回第一个最大值，正好是下标最小的
+            # 词表大小的分配（这是默认路径，值得留这条短路）。绝不能走 multinomial
+            # ——贪心请求没有 generator，`generator=None` 会静默改用全局随机源。
             return torch.argmax(apply_penalties(row, params, state))
-        return torch.multinomial(self.distribution(row, params, state), num_samples=1,
-                                 generator=state.generator).squeeze(0)
+        return self.draw(self.distribution(row, params, state), params, state.generator)
 
     def select_batch(self, rows, params_list, states):
         """整批选 token。Engine 只认这个接口。

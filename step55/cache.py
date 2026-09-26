@@ -281,20 +281,30 @@ class KVCachePool:
 
     def ensure_blocks(self, seq: SequenceConfig, num_new_tokens: int):
         """按需补齐：保证块表能覆盖 [0, cache.length + num_new_tokens)。只补差额。"""
-        needed_blocks = math.ceil((seq.cache.length + num_new_tokens) / self.block_size)
-        num_missing_blocks = needed_blocks - len(seq.cache.block_table)
+        return self.ensure_blocks_for(seq.cache, num_new_tokens)
+
+    def ensure_blocks_for(self, cache, num_new_tokens: int):
+        """`ensure_blocks()` 的**按 cache 操作**版本（第五十五关）。
+
+        块管理只有一份实现：target 池与 draft 池是同一个类的两个实例，差别只在
+        「往哪个 CacheConfig 上记账」。draft 池走的正是这个入口——它没有准入、
+        没有前缀缓存，也不需要认识 `SequenceConfig`。
+        """
+        needed_blocks = math.ceil((cache.length + num_new_tokens) / self.block_size)
+        # draft 的 CacheConfig 一开始就是空的（block_table 为 None），按空表算
+        num_missing_blocks = needed_blocks - len(cache.block_table or ())
         if num_missing_blocks <= 0:
             return True
 
-        plan = self._plan_block_growth(seq, num_missing_blocks)
+        plan = self._plan_block_growth(num_missing_blocks)
         if plan is None:
             # 本次就是分不到。一个字节都不改：不追加 block table、不动引用计数、
             # 不改 cache.length。谁该让路由 Scheduler 决定，池子不认识请求优先级。
             return False
-        self._commit_block_growth(seq, plan)
+        self._commit_block_growth(cache, plan)
         return True
 
-    def _plan_block_growth(self, seq: SequenceConfig, num_missing_blocks: int):
+    def _plan_block_growth(self, num_missing_blocks: int):
         """只读地选出本轮要取走的物理块。
 
         直接从可分配链的**队首**取前 k 个——不扫全池，这是本关要消掉的瓶颈。
@@ -309,7 +319,7 @@ class KVCachePool:
             return None
         return BlockGrowthPlan(block_ids)
 
-    def _commit_block_growth(self, seq: SequenceConfig, plan: BlockGrowthPlan):
+    def _commit_block_growth(self, cache, plan: BlockGrowthPlan):
         for block_idx in plan.new_block_ids:
             # 计划里选的这些块此刻仍在链上——计划与提交之间没有任何东西改链表，
             # 所以直接按块自己的前后指针摘掉即可，O(1)，不必再从队首走一遍。
@@ -317,7 +327,9 @@ class KVCachePool:
             # 取到带 hash 的块就地清掉缓存条目（它马上要被覆写）
             self._evict_hash_if_cached(block_idx)
             self.block_usage[block_idx] = 1
-        seq.cache.block_table.extend(plan.new_block_ids)
+        if cache.block_table is None:
+            cache.block_table = []      # draft 的 cache 从空表开始
+        cache.block_table.extend(plan.new_block_ids)
 
     def can_grow(self, seq: SequenceConfig, num_new_tokens: int):
         """只读地问一句：现在能不能补出这么多块。**不改任何状态**。
@@ -326,8 +338,13 @@ class KVCachePool:
         在计划里缩短它，而不是等 `ensure_blocks()` 走到提交阶段才发现。只沿可分配链
         看前 k 个够不够，不摘链、不清 hash、不动引用。
         """
-        needed_blocks = math.ceil((seq.cache.length + num_new_tokens) / self.block_size)
-        num_missing_blocks = needed_blocks - len(seq.cache.block_table)
+        return self.can_grow_for(seq.cache, num_new_tokens)
+
+    def can_grow_for(self, cache, num_new_tokens: int):
+        """`can_grow()` 的按 cache 操作版本（第五十五关，draft 池用）。"""
+        needed_blocks = math.ceil((cache.length + num_new_tokens) / self.block_size)
+        # draft 的 CacheConfig 一开始就是空的（block_table 为 None），按空表算
+        num_missing_blocks = needed_blocks - len(cache.block_table or ())
         if num_missing_blocks <= 0:
             return True
         return len(self._peek_allocatable(num_missing_blocks)) >= num_missing_blocks
@@ -347,18 +364,34 @@ class KVCachePool:
         if new_length < 0 or new_length > seq.cache.length:
             raise ValueError(f"回滚目标 {new_length} 不在 [0, {seq.cache.length}] 内"
                              f"（请求 {seq.request_id!r}）")
+        self.truncate_cache(seq.cache, new_length)
+
+    def truncate_cache(self, cache, new_length: int):
+        """`truncate()` 的按 cache 操作版本（第五十五关，draft 池用）。
+
+        与 target 侧同一份回滚逻辑：只动 `length` 与多占的整块。
+        """
+        if new_length < 0 or new_length > cache.length:
+            raise ValueError(f"回滚目标 {new_length} 不在 [0, {cache.length}] 内")
         keep_blocks = math.ceil(new_length / self.block_size)
-        for block_idx in seq.cache.block_table[keep_blocks:]:
+        for block_idx in cache.block_table[keep_blocks:]:
             self.block_usage[block_idx] -= 1
             if self.block_usage[block_idx] == 0:
                 # 和释放一样：无 hash 的回队首，带 hash 的留作闲置缓存
                 self._release_block(block_idx)
-        del seq.cache.block_table[keep_blocks:]
-        seq.cache.length = new_length
+        del cache.block_table[keep_blocks:]
+        cache.length = new_length
 
     def deallocate_block(self, seq: SequenceConfig):
         # 只释放本请求持有的全部活动引用；已登记的缓存条目继续保留为闲置缓存
-        for block_idx in seq.cache.block_table:
+        self.release_cache(seq.cache)
+
+    def release_cache(self, cache):
+        """`deallocate_block()` 的按 cache 操作版本（第五十五关，draft 池用）。
+
+        调用方负责把 cache 复位成 `CacheConfig()`（target 侧就是 `seq.cache = ...`）。
+        """
+        for block_idx in cache.block_table:
             self.block_usage[block_idx] -= 1
             if self.block_usage[block_idx] == 0:
                 # 引用降到 0：无 hash 的放队首（优先复用），带 hash 的放队尾（后淘汰）
