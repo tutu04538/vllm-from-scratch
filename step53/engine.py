@@ -302,15 +302,13 @@ class Engine:
         # 开了投机的路径：所有请求在 add_request() 时就已经保证「贪心且无惩罚项」，
         # 所以这里可以**整批一次 argmax、一次 .tolist()**，再按每项的区间切 Python 列表。
         # 逐请求做 `select()` + `.item()` 会为每个请求付一次设备同步，批量下不划算。
-        # `.to(torch.float32)` 是为了和普通路径的贪心一致：普通路径（`TorchSampler`）
-        # 也是先把 logits 转成 FP32 再 argmax，这里必须用同一个精度。
-        # BF16 只有 8 位尾数（相对精度 ~0.2%），两个在 FP32 里分得开的 logits 会被
-        # 舍入成同一个值，argmax 就只能按「并列取最小下标」挑，于是选出**另一个 token**。
-        # 实测（随机 logits、量级同真模型）：词表 64 时 0.67% 的行会不一致、
-        # 词表 151936 时 2.56%——不是理论风险，是每几百行撞一次。
-        # 「投机不改变结果」是本关最硬的一条保证，所以这一次转换不能省。
-        # （FP32 输入时 `.to()` 直接返回自身，不复制；BF16 时整批一次转换，不是每请求一次。）
-        greedy = torch.argmax(logits.to(torch.float32), dim=-1).tolist()
+        # 这里**不**把 logits 转成 FP32：模型跑 FP32 时它本来就是 FP32；跑 BF16 时它
+        # 已经是 BF16——那是模型算出来的精度，事后加宽不恢复任何信息（BF16 -> FP32 是
+        # 精确加宽，值、顺序、并列关系都不变，argmax 结果必然相同）。实测三种组合
+        # （CPU/FP32、CUDA/FP32、CUDA/BF16）都是 0 次不同。
+        # 真正需要 FP32 的是普通路径：`apply_penalties` 要在 FP32 上做算术、
+        # `multinomial` 要浮点概率，那里转换是有用的，别照着这行把它删掉。
+        greedy = torch.argmax(logits, dim=-1).tolist()
         for item in picked:
             start = item["sample_offset"]
             ids = greedy[start:start + item["num_sample_rows"]]

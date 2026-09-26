@@ -1,8 +1,8 @@
 # step53：批量投机验证与抢占恢复
 
 - 对应代码：`step53/`（新增，从 `step52/` 复制，入口改名 `step53.py`）
-- 包摘要 SHA256：`ea983e2fc8759d24…`（16 个 .py / 3800 行，验收方 `source_digest()` 口径）
-- 基线：`step52/`，指纹 `ea983e2fc8759d24…`（16 个 .py / 3800 行），原样保留未改
+- 包摘要 SHA256：`9bc0f9267309bcfb…`（16 个 .py / 3798 行，验收方 `source_digest()` 口径）
+- 基线：`step52/`，指纹 `9bc0f9267309bcfb…`（16 个 .py / 3798 行），原样保留未改
 - **改动 4 个文件**：
 
 | 文件 | 改动 |
@@ -118,7 +118,7 @@ def _sample_plan(scheduled_items):
 if self.speculative_mode is None:
     self._sample_with_sampler(logits, picked, notify)    # 原采样后端，随机/惩罚项都在
     return None
-greedy = torch.argmax(logits.to(torch.float32), dim=-1).tolist()   # 整批一次
+greedy = torch.argmax(logits, dim=-1).tolist()      # 整批一次 argmax
 for item in picked:
     ids = greedy[item["sample_offset"]:item["sample_offset"] + item["num_sample_rows"]]
     if item["draft_ids"]:
@@ -132,26 +132,25 @@ for item in picked:
 1. **投机开着时不需要走采样后端**：`add_request()` 已经保证所有请求都是贪心且无惩罚项，
    所以整批一次 argmax 就够，而且只有**一次**设备回传。逐请求 `select()` + `.item()`
    会为每条请求付一次同步。
-2. **`.to(torch.float32)` 不能省**：普通路径（`TorchSampler`）也是先把 logits 转 FP32
-   再 argmax，这里必须用同一个精度。BF16 只有 8 位尾数（相对精度 ~0.2%），两个在 FP32
-   里分得开的 logits 会被舍入成同一个值，argmax 就按「并列取最小下标」挑，于是选出
-   **另一个 token**。实测（随机 logits、量级同真模型）：
+2. **不需要把 logits 转成 FP32**。模型跑 FP32 时它本来就是 FP32；跑 BF16 时它已经
+   是 BF16——那是模型**算出来的**精度，事后加宽不恢复任何信息（BF16 → FP32 是精确加宽，
+   值、顺序、并列关系都不变，argmax 结果必然相同）。实测三种组合都是 0 次不同：
 
-   | 词表 | argmax 结果不同的行 |
-   |---:|---:|
-   | 64 | **0.67%** |
-   | 151936 | **2.56%** |
+   | 组合 | logits dtype | `argmax(原张量)` vs `argmax(转 FP32)` |
+   |---|---|---|
+   | CPU / FP32 | float32 | 0 次不同 |
+   | CUDA / FP32 | float32 | 0 次不同 |
+   | CUDA / BF16 | **bfloat16** | 0 次不同 |
 
-   抓到的现行（词表 151936 的第 28 行）——
+   > 这里曾经写过一个**错误**的理由：说「BF16 只有 8 位尾数，两个 FP32 里分得开的
+   > logits 会被舍入成同一个值，于是 argmax 选另一个 token」。那个数字（词表 64 时
+   > 0.67%、151936 时 2.56%）测的是「**全精度算出来的** logits」与「**BF16 舍入后的**
+   > logits」的差别，也就是两种**模型精度**的对比；而两条路径用的是同一个模型、同一个
+   > dtype，张量里的数一模一样。widening 是精确的，argmax 不可能因此改变。
 
-   ```text
-   第1名 token= 62134  FP32=20.732908  BF16=20.750000
-   第2名 token= 40821  FP32=20.732719  BF16=20.750000
-   FP32 argmax = 62134   BF16 argmax = 40821      # 两者在 BF16 里并成同一个值
-   ```
+   **真正需要 FP32 的是普通路径**：`apply_penalties` 要在 FP32 上做算术、
+   `torch.multinomial` 要浮点概率——那里转换是有用的，别照着投机这行把它删掉。
 
-   不是理论风险，是每几百行撞一次；而「投机不改变结果」正是本关最硬的一条保证。
-   代价可以忽略：FP32 输入时 `.to()` 返回自身不复制，BF16 时整批一次转换（不是每请求一次）。
 3. **提交顺序严格按 `picked`**。第五十二关是「先提交所有 plain、再提交 drafts」，
    单请求时看不出差别；批量下那会打乱本轮的事件顺序，所以改成一条循环走到底。
 
