@@ -95,21 +95,31 @@ class DraftModelProposer:
         # draft 自己的计算预算，与 target 的 max_num_batched_tokens **分开计数**：
         # 小模型的前向也是计算，不能偷偷记成 0。补算与提议都从这里扣。
         self.max_num_batched_tokens = max_num_batched_tokens
-        # 累计统计（测试与文档用）：draft 前向次数、补算 token 数、提议位置数
-        self.num_forwards = 0
+        # 累计统计（测试与文档用）：补算与提议分别计数——两者的形状完全不同
+        # （补算是「一条请求、一段 chunk」，提议是「多条请求、各一个位置」），
+        # 混在一起看不出「提议到底批量了没有」，也看不出小模型的计算被记成了多少。
+        self.num_catchup_forwards = 0
+        self.num_proposal_forwards = 0
         self.num_catchup_tokens = 0
         self.num_proposed_tokens = 0
 
+    @property
+    def num_forwards(self):
+        return self.num_catchup_forwards + self.num_proposal_forwards
+
     # -------- 前向 --------
 
-    def _run(self, input_ids, num_scheduled_tokens, caches, sample_rows=None):
+    def _run(self, input_ids, num_scheduled_tokens, caches, sample_rows=None, proposing=False):
         """跑一次 draft 前向。`caches` 与 `num_scheduled_tokens` 逐项对应。
 
         补算是「一条请求、一段连续位置」（`sample_rows=[]`，不要 logits）；
         提议是「多条请求、各一个位置」（要 logits，行号就是批内下标）。
         """
         tokens = torch.tensor(list(input_ids), dtype=torch.long, device=self.model.device)
-        self.num_forwards += 1
+        if proposing:
+            self.num_proposal_forwards += 1
+        else:
+            self.num_catchup_forwards += 1
         return self.model._forward_append(tokens, list(num_scheduled_tokens), list(caches),
                                           self.kv_cache_pool, sample_rows=sample_rows)
 
@@ -212,7 +222,7 @@ class DraftModelProposer:
                                  else drafts[id(it)][0][step - 1])
                 caches.append(seq.draft_cache)
             logits = self._run(input_ids, [1] * len(batch), caches,
-                               sample_rows=list(range(len(batch))))
+                               sample_rows=list(range(len(batch))), proposing=True)
             budget -= len(batch)
             self.num_proposed_tokens += len(batch)
 

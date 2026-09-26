@@ -68,6 +68,14 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--no-prefix-caching", action="store_true")
+    parser.add_argument("--speculative", choices=("none", "ngram", "draft_model"), default="none",
+                        help="投机解码：none（关）/ ngram / draft_model（需要 --draft-model-dir）")
+    parser.add_argument("--draft-model-dir", default=None, help="draft 模型目录（draft_model 模式）")
+    parser.add_argument("--draft-num-kv-blocks", type=int, default=None,
+                        help="draft 自己的 KV 块数（draft_model 模式必填）")
+    parser.add_argument("--draft-max-num-batched-tokens", type=int, default=None,
+                        help="draft 每个 chunk 的 token 预算（默认与 target 相同，分开计数）")
+    parser.add_argument("--num-speculative-tokens", type=int, default=2, help="每轮最多提几枚草稿")
     args = parser.parse_args(argv)
     questions = args.questions or DEFAULT_QUESTIONS
 
@@ -86,6 +94,11 @@ def main(argv=None):
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
     prompts = [encode(tokenizer, question) for question in questions]
 
+    if args.speculative == "draft_model" and not args.draft_model_dir:
+        parser.error("--speculative draft_model 必须同时给 --draft-model-dir")
+    if args.speculative == "draft_model" and args.draft_num_kv_blocks is None:
+        parser.error("--speculative draft_model 必须显式给 --draft-num-kv-blocks")
+
     engine = Engine.from_model_dir(
         model_dir,
         device=args.device,
@@ -99,6 +112,11 @@ def main(argv=None):
         dtype=runtime_dtype,
         norm_backend=args.norm_backend,
         rope_backend=args.rope_backend,
+        speculative_mode=None if args.speculative == "none" else args.speculative,
+        num_speculative_tokens=args.num_speculative_tokens,
+        draft_model_dir=args.draft_model_dir,
+        draft_num_kv_blocks=args.draft_num_kv_blocks,
+        draft_max_num_batched_tokens=args.draft_max_num_batched_tokens,
     )
     load_seconds = time.perf_counter() - started
 
@@ -106,6 +124,9 @@ def main(argv=None):
     # 打印**实际**精度：参数、KV 池、输入缓冲各查一次，避免「配置写 BF16、其实还在跑 FP32」
     param = next(model.parameters())
     print(f"模型: {model_dir}")
+    if engine.draft_model is not None:
+        print(f"  投机 draft: {args.draft_model_dir}（{engine.draft_model.num_layers} 层、"
+              f"d_model {engine.draft_model.d_model}、draft KV {args.draft_num_kv_blocks} 块）")
     print(f"  运行精度 {model.dtype}：参数 {param.dtype}，KV 池 {engine.kv_cache_pool.k_cache.dtype}，"
           f"输入缓冲 {model.input_buffer.dtype}（整数索引）")
     print(f"  后端：attention={engine.attention_backend}，norm={model.norm_backend}"
@@ -153,6 +174,14 @@ def main(argv=None):
         engine.step()
         steps += 1
     seconds = time.perf_counter() - start
+
+    if engine.draft_proposer is not None:
+        # 草稿是**可选**加速：这里只报「提了多少、接受率多少」，不承诺提速
+        proposed = engine.draft_proposer.num_proposed_tokens
+        accepted = max(len(v) for v in results.values())
+        print(f"\n投机：draft 前向 {engine.draft_proposer.num_forwards} 次、"
+              f"提议 {proposed} 枚、补算 {engine.draft_proposer.num_catchup_tokens} 个 token；"
+              f"最长一条请求实际生成 {accepted} 枚")
 
     for i, question in enumerate(questions):
         output_ids = results[f"q{i}"]

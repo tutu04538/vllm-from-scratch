@@ -1,4 +1,4 @@
-"""第 54 关：把 priority / prefix 与投机一起放开之后验一遍。
+"""第 55 关的回归套件：priority / 前缀缓存与投机的组合。
 
 第五十二到五十三关把投机限制在 `fcfs` + 关前缀缓存，理由是「没验证过的组合」。
 本脚本把那两条放开（`validation.check_speculative()` 里只剩 Torch attention 与
