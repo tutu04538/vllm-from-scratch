@@ -3,11 +3,7 @@
 这些函数不碰实例、不碰模型，只回答「这组配置能不能一起用」。放在引擎之外，
 是因为它们与「运行时怎么装、前向怎么编排」无关，Engine 只是调用方之一。
 
-**名字保留下划线前缀**：它们是包内部用的，engine.py 里按同名重导出，
-`step54.engine._check_speculative` 这种**打桩点**因此继续有效——
-`Engine._init_runtime()` 调它们时写的是裸名字（模块全局查找），
-所以替换 engine 模块里的同名全局就能生效（验收方的
-`benchmarks/probe_step53_combinations.py:15-20` 正是这么用的）。
+Engine 在 `_init_runtime()` 里调它们，`check_runtime` 在两条构造路径上都会走到。
 """
 
 import torch
@@ -16,13 +12,13 @@ SCHEDULING_POLICIES = ("fcfs", "priority")
 SPECULATIVE_MODES = (None, "ngram")
 
 
-def _check_scheduling_policy(scheduling_policy):
+def check_scheduling_policy(scheduling_policy):
     if scheduling_policy not in SCHEDULING_POLICIES:
         raise ValueError(f"未知的 scheduling_policy: {scheduling_policy!r}，"
                          f"可选 {list(SCHEDULING_POLICIES)}")
 
 
-def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
+def check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
                        scheduling_policy, enable_prefix_caching,
                        attention_backend, use_cuda_graph):
     """投机解码的开关与组合校验。
@@ -58,12 +54,12 @@ def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n
         raise ValueError("speculative_mode='ngram' 不支持的组合：" + "；".join(problems))
 
 
-def _resolve_device(device):
+def resolve_device(device):
     return torch.device(device) if device is not None else \
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _check_runtime(device, attention_backend, use_cuda_graph, dtype=torch.float32,
+def check_runtime(device, attention_backend, use_cuda_graph, dtype=torch.float32,
                    norm_backend="torch", rope_backend="torch"):
     # 后端、设备与精度的组合校验；随机初始化和从目录加载两条路都走这里
     if attention_backend not in ("torch", "triton"):

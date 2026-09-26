@@ -1,7 +1,7 @@
 """第 54 关：把 priority / prefix 与投机一起放开之后验一遍。
 
 第五十二到五十三关把投机限制在 `fcfs` + 关前缀缓存，理由是「没验证过的组合」。
-本脚本把那两条放开（`engine._check_speculative()` 里只剩 Torch attention 与
+本脚本把那两条放开（`validation.check_speculative()` 里只剩 Torch attention 与
 关 CUDA Graph 两条实现层面的硬约束），然后逐项验证：
 
   1. priority + 投机：名额抢占、容量抢占、被抢占的计划作废；

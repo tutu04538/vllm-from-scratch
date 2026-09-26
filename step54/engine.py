@@ -1,12 +1,11 @@
 """Engine：把模型与运行时装起来，并按一轮一轮地推进。
 
 前向编排只有三步（见 `step()`）：调度器排出本轮计划 → 模型一次 forward → 采样。
-采样那一层的实现在 `sample_loop.py`，配置校验在 `validation.py`，
+采样那一层的实现在 `sample_loop.py`（`SampleRuntime`），配置校验在 `validation.py`，
 模型装配与目录加载在 `loading.py`——这里只做装配与编排。
 
-下面这些名字是从那几个模块**重导出**的，老 import 路径继续可用
-（`from step54.engine import load_model_config` 之类）。
-调用点写的是**裸名字**：打桩 `step54.engine._check_speculative = ...` 因此仍然生效。
+`load_model_config` 这几个加载入口在这里**重导出**，老 import 路径继续可用
+（`from step54.engine import load_model_config`）。
 """
 
 import math
@@ -23,8 +22,9 @@ from .model import TinyCausalLM
 from .sample_loop import SampleRuntime
 from .sampling import TorchSampler
 from .scheduler import Scheduler
-from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, _check_runtime,
-                         _check_scheduling_policy, _check_speculative, _resolve_device)
+from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, check_runtime,
+                         check_scheduling_policy, check_speculative, resolve_device)
+
 
 class Engine:
 
@@ -39,10 +39,10 @@ class Engine:
         # 变成 on_token —— Python 按位置配对，不会知道调用者的原意。
         # model 给定时用它，不再按上面的维度参数随机初始化（加载路径走这里）
         # 后端与 Graph 开关也以模型上的为准，避免两边不一致
-        _check_scheduling_policy(scheduling_policy)
+        check_scheduling_policy(scheduling_policy)
         if model is None:
-            device = _resolve_device(device)
-            _check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend,
+            device = resolve_device(device)
+            check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend,
                            rope_backend)
             model = TinyCausalLM(vocab_size=vocab_size, d_model=d_model, max_seq_len=max_seq_len,
                                  device=device, attention_backend=attention_backend,
@@ -66,12 +66,12 @@ class Engine:
                       num_speculative_tokens=2, prompt_lookup_n=2):
         # 模型已经就位（随机初始化或从目录加载），这里只装运行时：元数据、KV 池、调度器
         device = model.device
-        _check_runtime(device, model.attention_backend, model.use_cuda_graph, model.dtype,
-                       model.norm_backend, model.rope_backend)
+        check_runtime(device, model.attention_backend, model.use_cuda_graph, model.dtype,
+                      model.norm_backend, model.rope_backend)
         # 组合校验放在这里：模型已经就位，attention 后端与 Graph 开关都以它为准
-        _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
-                           scheduling_policy, enable_prefix_caching,
-                           model.attention_backend, model.use_cuda_graph)
+        check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
+                          scheduling_policy, enable_prefix_caching,
+                          model.attention_backend, model.use_cuda_graph)
 
         self.model = model
         self.model.eval()
@@ -95,9 +95,9 @@ class Engine:
         self.kv_cache_pool = KVCachePool(block_size, num_kv_blocks, model.num_kv_heads,
                                          model.head_dim, device, self.enable_prefix_caching,
                                          num_layers=model.num_layers, dtype=model.dtype)
-        # 采样执行层：只拿**稳定的**依赖（KV 池、停止 token）；每轮把 sampler /
-        # on_token / _commit_tokens 现取着传进去（见 _sample 的说明）。
-        self.sample_runtime = SampleRuntime(self.kv_cache_pool, model.eos_token_ids)
+        # 采样执行层：组合一个 SampleRuntime，把采样后端、KV 池、停止 token 交给它
+        self.sample_runtime = SampleRuntime(self.sampler, self.kv_cache_pool,
+                                            model.eos_token_ids)
         # 增量输出回调。不传就是 None —— 那时采样层连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
@@ -117,12 +117,12 @@ class Engine:
                        speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
         # 外部配置只读一次：适配器选出来之后，配置和权重都交给它翻译。
-        _check_scheduling_policy(scheduling_policy)
+        check_scheduling_policy(scheduling_policy)
         adapter, raw, generation = read_raw_config(model_dir)
         config = adapter.to_internal_config(raw, generation)
 
-        device = _resolve_device(device)
-        _check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend, rope_backend)
+        device = resolve_device(device)
+        check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend, rope_backend)
         model = build_model_from_config(config, device, attention_backend,
                                         max_num_batched_tokens, use_cuda_graph, dtype, norm_backend,
                                         rope_backend)
@@ -143,44 +143,6 @@ class Engine:
     def has_unfinished_requests(self):
         return self.scheduler.has_unfinished_requests()
 
-    # 采样执行层在 sample_loop.py；这里保留两个**薄的转发**，既有调用形状不变。
-
-    _sample_plan = staticmethod(SampleRuntime.plan_sample_rows)   # 既有脚本在类上调用它
-
-    def _sample(self, logits, picked):
-        """本轮采样 —— 实现在 `SampleRuntime.run()`，这里只做转发。
-
-        `sampler` / `on_token` / `_commit_tokens` **在调用点现取**：它们是实例属性，
-        测试会在构造之后替换（`e.on_token = ...`、`engine._commit_tokens = spy`），
-        提前捕获引用会让替换失效。
-        """
-        return self.sample_runtime.run(logits, picked, self.sampler,
-                                       self.on_token, self._commit_tokens)
-
-    def _commit_tokens(self, seq, token_ids, notify):
-        """把 token 提交进请求状态：已提交历史、惩罚计数、回调**同进同退**。
-
-        这里是唯一的提交点，普通路径与投机路径共用（采样层通过 `commit=` 回调它）。
-        只有真正被接受的 token 才会走到这儿——草稿在验证通过之前一个都不进来。
-
-        它**留在 Engine**（没有搬到 sample_loop.py）有两个原因：请求状态归 Engine 管；
-        而且它是可替换的缝——`engine._commit_tokens = spy` 这种打桩必须继续生效。
-
-        回调顺序沿用 `picked` —— 也就是本轮采样的顺序，不等于 `running` 列表的顺序。
-        """
-        for token_id in token_ids:
-            # 通知点就在这儿：token 已经是 Python int、马上要提交进请求状态，
-            # 但请求还没被判停、没被回收。
-            index = len(seq.output_ids)      # 提交前的长度就是这次的序号（只数生成 token）
-            seq.append_output_ids(token_id)   # 唯一写入点：同步更新已提交历史与输出
-            # 只有真正提交的输出 token 才进惩罚计数；M=0、中间 prefill 块都不经过这里
-            seq.sampling_state.note_output_token(token_id)
-            if notify is not None:
-                # 每次新建一个独立字典，只放 CPU 上的 ID/整数：调用方存起来或改它
-                # 都不会碰到引擎状态。不传 SequenceConfig，也不传内部列表。
-                notify({"request_id": seq.request_id, "token_id": token_id,
-                        "output_index": index})
-
     def step(self):
 
         with torch.inference_mode():
@@ -199,11 +161,11 @@ class Engine:
                 num_scheduled_tokens = [item["num_scheduled_tokens"] for item in scheduled_items]
                 past_kv = [item["request"].cache for item in scheduled_items]
 
-                # 采样计划在 forward 之前就定好：模型只拿行号，Engine 只拿请求
-                sample_rows, picked = self._sample_plan(scheduled_items)
+                # 采样计划在 forward 之前就定好：模型只拿行号，采样层只拿请求
+                sample_rows, picked = self.sample_runtime.plan_sample_rows(scheduled_items)
                 logits = self.model._forward_append(input_ids, num_scheduled_tokens, past_kv,
                                                     self.kv_cache_pool, sample_rows=sample_rows)
-                self._sample(logits, picked)
+                self.sample_runtime.run(logits, picked, self.on_token)
 
             self.scheduler.post_step()
 

@@ -1,7 +1,9 @@
-"""把本轮的 picked logits 变成 token，再交回提交入口。
+"""采样执行层：把本轮的 picked logits 变成 token，再提交进请求状态。
 
 一轮的顺序固定：**行映射**（纯）→ **三条采样路径** → **验证与 KV 回滚** → **提交**。
-这一层不认识模型前向、不认识请求队列，也不认识 `Engine` 这个类型。
+这一层不认识模型前向、不认识请求队列，也不认识 `Engine` 这个类型：它需要的东西
+（采样后端、KV 池、停止 token）在构造时给它，每轮变的部分（logits、本轮计划、
+输出回调）按参数传进来。
 
 依赖方向是单向的：`sampling` / `speculative` → `sample_loop` → `engine`。
 
@@ -9,8 +11,7 @@
 `Sampler` 与 `rejection_sampler.py` 的 `RejectionSampler` 都是独立的类，被
 `v1/worker/gpu_model_runner.py` **持有为属性**（`:594 self.sampler = Sampler(...)`、
 `:705 self.rejection_sampler = RejectionSampler(self.sampler, self.speculative_config,
-self.device)`），构造参数正好是「它需要的稳定依赖 + 配置」。本仓库第 48 关的
-行为不变重构也写了「不为优雅引入继承结构」。
+self.device)`），构造参数正好是「它需要的稳定依赖 + 配置」。
 """
 
 from types import SimpleNamespace
@@ -22,16 +23,15 @@ from .speculative import verify_drafts, verify_drafts_random
 
 
 class SampleRuntime:
-    """本轮采样的执行者。
+    """本轮采样的执行者：行映射 → 三条路径 → 验证与回滚 → 提交。
 
-    构造时只拿**稳定的**依赖：KV 池与停止 token——引擎一生只建一次，没人会改它们。
-    每轮把引擎拥有的东西按参数传进来（`logits` / `picked` / `sampler` / `notify` /
-    `commit`），**尤其是 `notify` 与 `commit` 必须在调用点现取**：它们是实例属性，
-    测试会在构造之后替换（`e.on_token = ...`、`engine._commit_tokens = spy`），
-    构造时捕获会让替换失效。`sampler` 同理（验收脚本打过 `e.sampler.select_batch` 的桩）。
+    它需要的东西分两类：**稳定的**（采样后端、KV 池、停止 token）在构造时给它；
+    **每轮变的**（logits、本轮计划、输出回调）按参数传。输出回调归 Engine 所有
+    （`engine.on_token` 是公开参数，用户可能在任何时候设置它），所以走 `run()` 的参数。
     """
 
-    def __init__(self, kv_cache_pool, eos_token_ids):
+    def __init__(self, sampler, kv_cache_pool, eos_token_ids):
+        self.sampler = sampler
         self.kv_cache_pool = kv_cache_pool
         self.eos_token_ids = eos_token_ids
 
@@ -71,7 +71,7 @@ class SampleRuntime:
 
     # -------- 2) 三条采样路径的分派 --------
 
-    def run(self, logits, picked, sampler, notify, commit):
+    def run(self, logits, picked, on_token=None):
         # logits 已经是「需要采样的那几行」，行序与 picked 一致，不再按原始行号二次索引
         if not picked:
             return None
@@ -85,7 +85,7 @@ class SampleRuntime:
         plain = [item for item in picked if not item["draft_ids"]]
         plain_tokens = {}
         if plain:
-            for item, token in zip(plain, self._sampler_tokens(logits, plain, sampler)):
+            for item, token in zip(plain, self._sampler_tokens(logits, plain)):
                 plain_tokens[id(item)] = token
 
         # 2) 贪心且无惩罚的投机项：保留第五十三关的整批 argmax 快路径（一次回传）。
@@ -100,11 +100,11 @@ class SampleRuntime:
             seq = item["request"]
             start, nrows = item["sample_offset"], item["num_sample_rows"]
             if not item["draft_ids"]:
-                commit(seq, [plain_tokens[id(item)]], notify)
+                self._commit_tokens(seq, [plain_tokens[id(item)]], on_token)
             elif greedy is not None and self._is_greedy_without_penalty(seq):
-                self._commit_drafts(item, greedy[start:start + nrows], notify, commit)
+                self._commit_drafts(item, greedy[start:start + nrows], on_token)
             else:
-                self._commit_drafts_random(item, logits[start:start + nrows], notify, commit)
+                self._commit_drafts_random(item, logits[start:start + nrows], on_token)
         return None
 
     @staticmethod
@@ -117,7 +117,7 @@ class SampleRuntime:
         params = seq.sampling_params
         return params.is_greedy and not params.has_penalty
 
-    def _sampler_tokens(self, logits, items, sampler):
+    def _sampler_tokens(self, logits, items):
         """按每项自己的采样参数与惩罚项抽一枚 token，返回与 items 同序的 Python 列表。
 
         整批一次 `select_batch`、一次 `.tolist()`，不逐请求 `.item()`。
@@ -133,14 +133,37 @@ class SampleRuntime:
         rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32),
                                 seq.sampling_params, seq.sampling_state)
                 for item, seq in zip(items, seqs)]
-        tokens = sampler.select_batch(
+        tokens = self.sampler.select_batch(
             rows, [s_.sampling_params for s_ in seqs], [s_.sampling_state for s_ in seqs])
         # token id 整批回传，不逐请求 .item()
         return torch.stack(tokens).tolist()
 
-    # -------- 3) 验证与回滚 --------
+    # -------- 3) 提交：token 进入请求状态的唯一入口 --------
 
-    def _commit_drafts(self, item, greedy_ids, notify, commit):
+    def _commit_tokens(self, seq, token_ids, on_token):
+        """把 token 提交进请求状态：已提交历史、惩罚计数、回调**同进同退**。
+
+        这里是唯一的提交点，普通路径与投机路径共用。只有真正被接受的 token 才
+        会走到这儿——草稿在验证通过之前一个都不进来。
+
+        回调顺序沿用 `picked` —— 也就是本轮采样的顺序，不等于 `running` 列表的顺序。
+        """
+        for token_id in token_ids:
+            # 通知点就在这儿：token 已经是 Python int、马上要提交进请求状态，
+            # 但请求还没被判停、没被回收。
+            index = len(seq.output_ids)      # 提交前的长度就是这次的序号（只数生成 token）
+            seq.append_output_ids(token_id)   # 唯一写入点：同步更新已提交历史与输出
+            # 只有真正提交的输出 token 才进惩罚计数；M=0、中间 prefill 块都不经过这里
+            seq.sampling_state.note_output_token(token_id)
+            if on_token is not None:
+                # 每次新建一个独立字典，只放 CPU 上的 ID/整数：调用方存起来或改它
+                # 都不会碰到引擎状态。不传 SequenceConfig，也不传内部列表。
+                on_token({"request_id": seq.request_id, "token_id": token_id,
+                          "output_index": index})
+
+    # -------- 4) 验证与回滚 --------
+
+    def _commit_drafts(self, item, greedy_ids, on_token):
         """投机项（贪心快路径）：用目标模型一次 forward 的 K+1 行验证草稿，回滚 KV，再提交。
 
         顺序不能换：**回滚必须在 `scheduler.post_step()` 之前**。被拒绝草稿的 KV
@@ -159,15 +182,15 @@ class SampleRuntime:
         # 1) 先回滚：本轮输入 [x, d0..] 里只有 x 和「被接受且还要当下一轮输入」的草稿要留
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
         # 2) 再提交：逐枚走和普通路径同一个入口，事件序号自然连续
-        commit(seq, result.committed_ids, notify)
+        self._commit_tokens(seq, result.committed_ids, on_token)
 
-    def _commit_drafts_random(self, item, rows, notify, commit):
+    def _commit_drafts_random(self, item, rows, on_token):
         """投机项（随机采样，或带惩罚项的贪心）：逐行构造目标分布做拒绝采样。
 
         **每一行的惩罚历史不同**（需求 §3）：行 j 预测的是「真实历史 + 前 j 枚草稿」
         之后那个 token。所以这里用的是一份**临时计数**——从真实计数复制一份，接受
         一枚草稿就往里加一枚；真实 `sampling_state` 与 `all_token_ids` 在
-        `commit()` 之前一个字都不动。
+        `_commit_tokens()` 之前一个字都不动。
 
         行的分布按「全都接受」构造：拒绝点之后的行根本不会被读到（`verify_drafts_random`
         首次拒绝就停），而拒绝点之前的行历史恰好就是「前 j 枚都被接受」。
@@ -206,4 +229,4 @@ class SampleRuntime:
 
         # 先回滚（被拒草稿的 KV 已经随本轮输入写进物理块），再走唯一提交入口
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
-        commit(seq, result.committed_ids, notify)
+        self._commit_tokens(seq, result.committed_ids, on_token)

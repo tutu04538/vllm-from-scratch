@@ -1,7 +1,7 @@
 """第 54 关：批量投机验证——行映射、提交顺序、预算与容量压力。
 
 分四块：
-  1. 行映射本身：拿需求 §2 那张表手工造 `scheduled_items`，直接验 `_sample_plan()`；
+  1. 行映射本身：拿需求 §2 那张表手工造 `scheduled_items`，直接验 `plan_sample_rows()`；
   2. 混批：同一步里有不同 K 的投机项、无草稿的普通 decode、中间 prefill，
      检查模型收到的一次 forward、sample_rows、筛选后偏移、提交顺序与事件序号；
   3. 预算压力：预算不够全部 ready 时「真实 token 优先」，不 assert、不排 0 token 项；
@@ -20,6 +20,7 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import step54
 from step54 import Engine as Engine53
+from step54.sample_loop import SampleRuntime
 
 FAIL = []
 
@@ -141,7 +142,7 @@ manual = [
     {"request": C, "num_scheduled_tokens": 1, "draft_ids": [], "can_sample": True},
     {"request": D, "num_scheduled_tokens": 2, "draft_ids": [13], "can_sample": True},
 ]
-rows, picked = Engine53._sample_plan(manual)
+rows, picked = SampleRuntime.plan_sample_rows(manual)
 check("需求 §2 那张表：sample_rows = [0,1,2,7,8,9]（中间 prefill 占输入位置但不取行）",
       rows == [0, 1, 2, 7, 8, 9], str(rows))
 check("筛选后偏移：A=[0:3]、C=[3:4]、D=[4:6]",

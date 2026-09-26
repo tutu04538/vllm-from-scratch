@@ -1,7 +1,7 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`962f07b392c2f6c8…`（19 个 .py / 4087 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`00df4cb05625fb90…`（19 个 .py / 4068 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
@@ -14,7 +14,7 @@
 | `engine.py` | `_sample()` 拆成「无草稿项走采样后端 / 贪心无惩罚走批量快路径 / 其余走随机验证」三条；新增 `_commit_drafts_random()`（逐行历史 + 临时计数）；`_sample_with_sampler()` 改名 `_sample_rows()` 并改为**只算 token、不提交**（提交统一按 picked 顺序） |
 | `scheduler.py` | 删掉「投机只支持贪心且无惩罚项」的限制；顺带修掉 `request_id = request.get(...)` 写了两遍（验收方指出的） |
 | `__init__.py`、`step54.py` | 包说明、入口改名 |
-| `sample_loop.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚，从 `engine.py` 搬出 |
+| `sample_loop.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚、唯一提交入口，从 `engine.py` 搬出 |
 | `validation.py`（新增，§8） | 配置与后端的组合校验，从 `engine.py` 搬出 |
 | `loading.py`（新增，§8） | 模型装配与目录加载，从 `engine.py` 搬出 |
 
@@ -220,8 +220,7 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 列表而不提交（提交统一按 `picked` 顺序在 `_sample()` 里做）。
 
 **再往后（§8）**：采样执行的实现搬进了 `sample_loop.py`（`SampleRuntime`），
-`Engine._sample` 只剩一行转发；`Engine._sample_plan` 变成对
-`SampleRuntime.plan_sample_rows` 的 `staticmethod` 绑定。**外部可见的调用形状没变。**
+`Engine` 上不再有 `_sample` / `_sample_plan` / `_commit_*` 这些方法。
 
 ### 7.2 遗留
 
@@ -239,20 +238,38 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
    `softmax` 的结果可能落在 0/1 附近而不是精确的端点上；那时会走「抽 uniform」那条正常
    路径，结果仍然正确（只是多消耗一个随机数）。
 
-## 8. 顺带：把 engine.py 里的三块拆出去
+## 8. 顺带：把 engine.py 里混着的三块拆出去
 
-`engine.py` 一度 473 行，塞了三类互不相干的东西。这次拆成「Engine 只做装配与编排」：
+`engine.py` 一度 473 行，塞了三类互不相干的东西。拆完 **171 行**，`Engine` 上只剩
+`_init_runtime` / `from_model_dir` / `add_request` / `has_unfinished_requests` / `step`
+——装配 + 编排，没有别的。
 
-| 新模块 | 装什么 | 为什么能拆 |
+| 新模块 | 装什么 | 为什么能拆出去 |
 |---|---|---|
-| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与回滚 | 一轮的数据流，不认识 Engine 这个类型 |
-| `validation.py` | `SCHEDULING_POLICIES` / `SPECULATIVE_MODES` / `_check_runtime` / `_check_speculative` / `_check_scheduling_policy` / `_resolve_device` | 纯校验，不碰实例 |
+| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 | 一轮的数据流；不认识 Engine 这个类型 |
+| `validation.py` | `SCHEDULING_POLICIES` / `SPECULATIVE_MODES` / `check_speculative` / `check_runtime` / `check_scheduling_policy` / `resolve_device` | 纯校验，不碰实例 |
 | `loading.py` | `build_model_from_config` / `load_model_config` / `load_model_weights` | 纯装配，不认识运行时 |
 
-拆完 `engine.py` **210 行**（473 → 210）：装运行时 + `step()` 编排 + 唯一提交入口
-`_commit_tokens()`。
+### 8.1 `SampleRuntime` 的形状
 
-### 8.1 为什么是**组合**而不是继承
+```python
+class SampleRuntime:
+    def __init__(self, sampler, kv_cache_pool, eos_token_ids): ...
+    @staticmethod
+    def plan_sample_rows(scheduled_items): ...          # 纯：原始行号 -> rows + 偏移
+    def run(self, logits, picked, on_token=None): ...   # 三条路径的分派 + 提交
+    def _commit_tokens(self, seq, token_ids, on_token): ...   # 唯一提交入口
+    ...
+```
+
+**稳定的依赖**（采样后端、KV 池、停止 token）构造时给它；**每轮变的**（logits、
+本轮计划、输出回调）按参数传。`on_token` 走参数是因为它归 Engine 所有——
+`Engine(on_token=...)` 是公开参数，用户可能在任何时候设置它。
+
+提交入口 `_commit_tokens()` 也随之搬进了采样层：「采样出哪些 token」和「这些 token
+怎么进请求状态」本来就是一件事；`Engine` 那侧不用再回传一个 commit 回调。
+
+### 8.2 为什么是**组合**而不是继承
 
 依据是 vLLM 自己的做法（在本机 `vllm 0.28.0` 里核过）：
 
@@ -266,29 +283,27 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 
 本仓库第 48 关那次行为不变重构也写了「不为优雅引入继承结构」，方向一致。
 
-### 8.2 拆的时候有**四条缝**不能碰断
+### 8.3 对既有脚本的影响（只有两处）
 
-抽取不是「搬完就完」——既有脚本会伸进 Engine 内部，这些缝必须保持可打桩：
+| 脚本 | 改动 |
+|---|---|
+| `benchmarks/check_step54_batch.py:145` | `Engine53._sample_plan(manual)` → `SampleRuntime.plan_sample_rows(manual)` |
+| `benchmarks/check_step54_random.py:173,179` | `engine._commit_tokens` → `engine.sample_runtime._commit_tokens` |
 
-| 缝 | 谁在用 | 怎么保住 |
-|---|---|---|
-| `Engine._sample_plan(items)` 在**类上**调用 | `check_step54_batch.py:144` | `_sample_plan = staticmethod(SampleRuntime.plan_sample_rows)` |
-| `engine._commit_tokens = spy` **实例替换** | `check_step54_random.py:173-179` | `_commit_tokens` 留在 Engine，采样层通过 `commit=` 回调它（每次现取） |
-| `e.on_token = ...` / `e.sampler` 构造后赋值 | 十几个脚本 | `on_token` / `sampler` 按参数逐轮传，不在构造时捕获 |
-| `step54.engine._check_speculative = ...` | 验收方的 `probe_step53_combinations.py:15-20` | `engine.py` 重导出这些名字，调用点写**裸名字**（模块全局查找） |
+其余测试一个字没动：`e.on_token = ...`、`e.sampler`、`e.kv_cache_pool` 这些**公开属性**
+都还在 Engine 上，采样层每轮现取着用。
 
-最后一条最容易被忽略：`from .validation import _check_speculative` 之后，只要
-`_init_runtime()` 里写的还是裸名字 `_check_speculative(...)`，替换
-`step54.engine._check_speculative` 就仍然生效——Python 每次调用都去模块全局里查一次。
+验收方那边：`benchmarks/probe_step53_combinations.py` 打的是 `step53.engine` 的桩，
+step53 没动、不受影响；将来若要写 step54 的同类探针，打桩点变成
+`step54.validation.check_speculative`。
 
-### 8.3 验证
+### 8.4 验证
 
-- **七个脚本一个字都没改，全部原样通过**（53 / 35 / 32 / 21 / 51 / 17 / 88 项）。
-  其中 `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，
-  是行为不变的主要证据；其余六份正好覆盖上面那四条缝；
-- 四条缝另写了一次性探针直接验：打桩 `engine._check_speculative` 后
-  「priority + 前缀缓存 + 投机」能构造出来、`Engine._sample_plan` 类上可调、
-  实例替换的 `_commit_tokens` 被走到；
-- 公开 import 路径：`from step54 import Engine, load_model_config, SampleRuntime` 与
-  `from step54.engine import load_model_config` 都能导入；
-- 随机压测 500 + 500 组、验收方的 `review_step53.py` 重跑一致。
+- 七个脚本全部通过（53 / 35 / 32 / 21 / 51 / 17 / 88 项）；其中
+  `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，
+  是行为不变的主要证据；
+- 公开 import 路径不变：`from step54.engine import load_model_config`、
+  `from step54 import Engine, SampleRuntime, load_model_config` 都能导入；
+- 随机压测 500 + 500 组、验收方的 `review_step53.py` 重跑一致；
+- `Engine` 上不再有采样内部方法（`_sample` / `_sample_plan` / `_sample_rows` /
+  `_commit_tokens` / `_commit_drafts`），只剩五个方法。

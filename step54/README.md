@@ -33,14 +33,18 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 
 ## 模块划分
 
-`engine.py` 只做装配与编排（210 行）：装运行时、`step()` 走「调度 → 一次 forward → 采样」、
-以及唯一提交入口 `_commit_tokens()`。三块内容各归一个模块：
+`engine.py` 只做装配与编排（171 行）：装运行时、`step()` 走「调度 → 一次 forward → 采样」，
+`Engine` 上只剩 `_init_runtime` / `from_model_dir` / `add_request` /
+`has_unfinished_requests` / `step`。三块内容各归一个模块：
 
 | 模块 | 装什么 |
 |---|---|
-| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚 |
+| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 |
 | `validation.py` | 配置与后端的组合校验（构造阶段报错） |
 | `loading.py` | 模型装配与目录加载 |
+
+`SampleRuntime` 构造时拿稳定的依赖（采样后端、KV 池、停止 token），每轮把 logits、
+本轮计划、输出回调按参数传进去。
 
 用**组合**不用继承——依据是 vLLM（`Sampler` / `RejectionSampler` 都是独立类、被
 `gpu_model_runner` 持有为属性）。详见

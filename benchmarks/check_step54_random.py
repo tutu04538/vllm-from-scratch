@@ -170,13 +170,13 @@ check("恢复后 generator 没有回到初始状态（没有把随机流重置�
 def tracked_commits(engine):
     """包一层唯一的提交入口，记录每次提交之后的 (惩罚计数, 已提交输出数)。"""
     seen = {}
-    original = engine._commit_tokens
+    original = engine.sample_runtime._commit_tokens
 
     def spy(seq, token_ids, notify):
         original(seq, token_ids, notify)
         seen[seq.request_id] = (seq.sampling_state.generated_total, len(seq.output_ids))
 
-    engine._commit_tokens = spy
+    engine.sample_runtime._commit_tokens = spy
     return seen
 
 
