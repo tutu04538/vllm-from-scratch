@@ -1,7 +1,7 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`09265fb7fe4cd678…`（19 个 .py / 4080 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`39c096cbabfc80a3…`（18 个 .py / 4065 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
@@ -316,7 +316,29 @@ step53 没动、不受影响；将来若要写 step54 的同类探针，打桩�
 顺带用一遍 AST 扫了 `step54/` 全体模块的「用到但没定义也没 import」的名字，
 除了上面这处（已修）只剩 `step54.py` 里的 `__file__`（误报）。
 
-### 8.5 验证
+### 8.5 顺手删掉 `sampler.py`
+
+`<包>/sampler.py` 是第 13 关那个贪心采样器（`class Sampler`，13 行，
+`softmax` + `argmax`）。**从第 35 关起引擎就用 `sampling.TorchSampler` 了**，
+它一路作为死代码被复制到本关，只剩 `__init__.py` 的导入与 `__all__` 还在提它。
+本关删掉，并把 `Sampler` 从 `__all__` 去掉。
+
+于是「采样」相关只剩三个模块，正好是三层，依赖单向：
+
+```text
+sampling.py     原语层：参数 / 状态（含每请求自己的 RNG）/ 三种惩罚 /
+                温度与 top-k,p / 目标分布，以及采样后端 TorchSampler
+      ↓
+speculative.py  算法层（纯函数）：n-gram 提议 + 贪心/随机两种验证
+      ↓
+sample_loop.py  执行层：行映射 -> 三路分派 -> 回滚 -> 提交（认识请求与 KV 池）
+      ↓
+engine.py       装配与编排
+```
+
+命名上「sampler / sampling」两个并存确实是之前乱的一个来源，现在只剩 `sampling`。
+
+### 8.6 验证
 
 - 七个脚本全部通过（53 / 35 / 32 / **55** / 21 / 17 / 88 项）；其中
   `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，

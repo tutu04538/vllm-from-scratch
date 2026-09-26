@@ -9,8 +9,7 @@
     norm       融合 RMSNorm 的 Triton kernel
     rope       融合 RoPE 的 Triton kernel
     model      RoPE / RMSNorm / DecoderLayer（QKV 与 gate/up 各一次 GEMM）/ TinyCausalLM
-    sampler    采样后端（本关只剩 Torch 一条路）
-    sampling   行级采样原语：参数/状态/三种惩罚/温度与 top-k,p/目标分布
+    sampling   采样原语与后端：参数/状态/三种惩罚/温度与 top-k,p/目标分布、TorchSampler
     speculative  投机解码的纯函数：n-gram 提议 + 贪心/随机两种验证
     validation 配置与后端的组合校验（构造阶段就报错）
     loading    模型装配与目录加载
@@ -39,7 +38,6 @@ from .norm import rms_norm
 from .rope import rope
 from .sampling import (SamplingParams, SamplingState, TorchSampler, apply_penalties,
                        row_distribution)
-from .sampler import Sampler
 from .sample_loop import SampleRuntime
 from .scheduler import Scheduler
 from .speculative import (DraftVerification, propose_ngram, residual_probs,
@@ -48,7 +46,7 @@ from .speculative import (DraftVerification, propose_ngram, residual_probs,
 __all__ = [
     "Engine", "TinyCausalLM", "DecoderLayer", "RMSNorm", "RotaryEmbedding", "DummyModel",
     "AttentionMetadata", "paged_attention", "tiled_paged_attention", "KVCachePool", "CacheConfig", "SequenceConfig", "InfeasibleRequest",
-    "Sampler", "Scheduler", "SampleRuntime", "save_model", "load_model_config", "load_model_weights",
+    "Scheduler", "SampleRuntime", "save_model", "load_model_config", "load_model_weights",
     "build_model_from_config", "native_format", "qwen3_format",
     "DEFAULT_EOS_TOKEN_IDS", "GENERATION_CONFIG_NAME", "rms_norm", "rope",
     "SamplingParams", "SamplingState", "TorchSampler", "apply_penalties", "row_distribution",
