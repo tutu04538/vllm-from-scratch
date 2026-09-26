@@ -5,7 +5,7 @@
 （采样后端、KV 池、停止 token）在构造时给它，每轮变的部分（logits、本轮计划、
 输出回调）按参数传进来。
 
-依赖方向是单向的：`sampling` / `speculative` → `sample_loop` → `engine`。
+依赖方向是单向的：`sampling` / `speculative` → `sample_runtime` → `engine`。
 
 为什么是**组合**而不是继承：vLLM 就是这么分的——`vllm/v1/sample/sampler.py` 的
 `Sampler` 与 `rejection_sampler.py` 的 `RejectionSampler` 都是独立的类，被

@@ -1,7 +1,7 @@
 """Engine：把模型与运行时装起来，并按一轮一轮地推进。
 
 前向编排只有三步（见 `step()`）：调度器排出本轮计划 → 模型一次 forward → 采样。
-采样那一层的实现在 `sample_loop.py`（`SampleRuntime`），配置校验在 `validation.py`，
+采样那一层的实现在 `sample_runtime.py`（`SampleRuntime`），配置校验在 `validation.py`，
 模型装配与目录加载在 `loading.py`——这里只做装配与编排。
 
 `load_model_config` 这几个加载入口在这里**重导出**，老 import 路径继续可用
@@ -20,7 +20,7 @@ from .loading import (COMPATIBLE_FORMAT_VERSIONS, FORMAT_VERSION, MODEL_DTYPE, M
                       build_model_from_config, load_model_config, load_model_from_dir,
                       load_model_weights)
 from .model import TinyCausalLM
-from .sample_loop import SampleRuntime
+from .sample_runtime import SampleRuntime
 from .sampling import TorchSampler
 from .scheduler import Scheduler
 from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, check_runtime,

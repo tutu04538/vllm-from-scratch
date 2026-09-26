@@ -13,12 +13,12 @@
     speculative  投机解码的纯函数：n-gram 提议 + 贪心/随机两种验证
     validation 配置与后端的组合校验（构造阶段就报错）
     loading    模型装配与目录加载
-    sample_loop  采样执行层：行映射 -> 三条路径 -> 验证与回滚 -> 交回提交
+    sample_runtime 采样执行层：行映射 -> 三条路径 -> 验证与回滚 -> 交回提交
     scheduler  本轮跑谁、跑几个 token
     engine     Engine：把上面这些装起来，并按轮编排（调度 -> forward -> 采样）
 
 上层只依赖下层，model 不认请求、scheduler 不认模型，
-sample_loop 也不认 Engine 这个类型（依赖按参数传进去）。
+sample_runtime 也不认 Engine 这个类型（依赖按参数传进去）。
 """
 
 from .attention import (AttentionMetadata, _paged_attention_kernel,
@@ -38,7 +38,7 @@ from .norm import rms_norm
 from .rope import rope
 from .sampling import (SamplingParams, SamplingState, TorchSampler, apply_penalties,
                        row_distribution)
-from .sample_loop import SampleRuntime
+from .sample_runtime import SampleRuntime
 from .scheduler import Scheduler
 from .speculative import (DraftVerification, propose_ngram, residual_probs,
                           verify_drafts, verify_drafts_random)

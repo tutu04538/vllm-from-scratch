@@ -1,7 +1,7 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`39c096cbabfc80a3…`（18 个 .py / 4065 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`604b1732da23c58e…`（18 个 .py / 4065 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
@@ -14,7 +14,7 @@
 | `engine.py` | `_sample()` 拆成「无草稿项走采样后端 / 贪心无惩罚走批量快路径 / 其余走随机验证」三条；新增 `_commit_drafts_random()`（逐行历史 + 临时计数）；`_sample_with_sampler()` 改名 `_sample_rows()` 并改为**只算 token、不提交**（提交统一按 picked 顺序） |
 | `scheduler.py` | 删掉「投机只支持贪心且无惩罚项」的限制；顺带修掉 `request_id = request.get(...)` 写了两遍（验收方指出的） |
 | `__init__.py`、`step54.py` | 包说明、入口改名 |
-| `sample_loop.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚、唯一提交入口，从 `engine.py` 搬出 |
+| `sample_runtime.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚、唯一提交入口，从 `engine.py` 搬出 |
 | `validation.py`（新增，§8） | 配置与后端的组合校验，从 `engine.py` 搬出 |
 | `loading.py`（新增，§8） | 模型装配、目录加载与「读配置→建模型→装权重」整条流程，从 `engine.py` 搬出 |
 
@@ -219,7 +219,7 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 **内部签名变化**：`Engine._sample_with_sampler()` → `Engine._sample_rows()`，改为返回 token
 列表而不提交（提交统一按 `picked` 顺序在 `_sample()` 里做）。
 
-**再往后（§8）**：采样执行的实现搬进了 `sample_loop.py`（`SampleRuntime`），
+**再往后（§8）**：采样执行的实现搬进了 `sample_runtime.py`（`SampleRuntime`），
 `Engine` 上不再有 `_sample` / `_sample_plan` / `_commit_*` 这些方法。
 
 ### 7.2 遗留
@@ -246,7 +246,7 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 
 | 新模块 | 装什么 | 为什么能拆出去 |
 |---|---|---|
-| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 | 一轮的数据流；不认识 Engine 这个类型 |
+| `sample_runtime.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 | 一轮的数据流；不认识 Engine 这个类型 |
 | `validation.py` | `SCHEDULING_POLICIES` / `SPECULATIVE_MODES` / `check_speculative` / `check_runtime` / `check_scheduling_policy` / `resolve_device` | 纯校验，不碰实例 |
 | `loading.py` | `build_model_from_config` / `load_model_config` / `load_model_weights` | 纯装配，不认识运行时 |
 
@@ -331,14 +331,25 @@ sampling.py     原语层：参数 / 状态（含每请求自己的 RNG）/ 三�
       ↓
 speculative.py  算法层（纯函数）：n-gram 提议 + 贪心/随机两种验证
       ↓
-sample_loop.py  执行层：行映射 -> 三路分派 -> 回滚 -> 提交（认识请求与 KV 池）
+sample_runtime.py  执行层：行映射 -> 三路分派 -> 回滚 -> 提交（认识请求与 KV 池）
       ↓
 engine.py       装配与编排
 ```
 
 命名上「sampler / sampling」两个并存确实是之前乱的一个来源，现在只剩 `sampling`。
 
-### 8.6 验证
+### 8.6 模块名改回 `sample_runtime.py`
+
+这一版先叫 `sample_loop.py`，但那是个**不准确**的名字：模块里根本没有「loop」——
+引擎才是那个按步循环的人，这个模块只做**一轮**。而且它装的是 `SampleRuntime`，
+模块名和类名对不上。
+
+vLLM 的命名是「模块名 = 类名的 snake_case」（`sampler.py` -> `Sampler`、
+`rejection_sampler.py` -> `RejectionSampler`），本包其它模块也一致
+（`scheduler.py` -> `Scheduler`、`cache.py` -> `KVCachePool`）。所以改成
+`sample_runtime.py`，与 `SampleRuntime` 对上。
+
+### 8.7 验证
 
 - 七个脚本全部通过（53 / 35 / 32 / **55** / 21 / 17 / 88 项）；其中
   `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，

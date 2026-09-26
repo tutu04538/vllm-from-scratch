@@ -20,7 +20,7 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import step54
 from step54 import Engine as Engine53
-from step54.sample_loop import SampleRuntime
+from step54.sample_runtime import SampleRuntime
 
 FAIL = []
 

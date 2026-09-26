@@ -39,12 +39,12 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 
 | 模块 | 装什么 |
 |---|---|
-| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 |
+| `sample_runtime.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚、唯一提交入口 |
 | `validation.py` | 配置与后端的组合校验（构造阶段报错） |
 | `loading.py` | 模型装配与目录加载 |
 
 （`sampler.py` 是第 13 关那个贪心采样器的遗留，从第 35 关起就没用了，本关删掉；
-「采样」相关只剩 `sampling` / `speculative` / `sample_loop` 三个模块，对应原语 / 算法 / 执行三层。）
+「采样」相关只剩 `sampling` / `speculative` / `sample_runtime` 三个模块，对应原语 / 算法 / 执行三层。）
 
 `SampleRuntime` 构造时拿稳定的依赖（采样后端、KV 池、停止 token），每轮把 logits、
 本轮计划、输出回调按参数传进去。
