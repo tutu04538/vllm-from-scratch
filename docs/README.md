@@ -54,3 +54,4 @@
 | [step52_ngram_speculative.md](step52_ngram_speculative.md) | `step52/`（包） | 单请求贪心 n-gram 投机解码：草稿 → 一次 forward 验证 K+1 行 → 只提交认可的 → 回滚 KV；抢占改无条件（对齐 vLLM V1） |
 | [step53_batched_speculative.md](step53_batched_speculative.md) | `step53/`（包） | 批量投机验证与抢占恢复：行映射两个坐标系、真实 token 优先的预算、先缩草稿再抢占 |
 | [step54_random_speculative.md](step54_random_speculative.md) | `step54/`（包） | 随机采样投机解码：拒绝采样 + 纠正分布 + 逐行惩罚历史 + 随机数归请求 |
+| [step55_draft_model.md](step55_draft_model.md) | `step55/`（包） | draft model 双 KV：一般 p/q 拒绝采样 + 独立提议层 + 双池容量与对齐 + 分片加载 |

@@ -84,6 +84,7 @@ step42/          说明该关结论与数据位置（实测数据仍在 benchmar
 | 52 | `step52/`（包，入口 `step52/step52.py`） | 单请求贪心 n-gram 投机解码：草稿只进本轮计划，目标模型一次 forward 验 K+1 行，拒绝的 KV 撤回；抢占改无条件，删掉 `preemption_mode` / `over_subscribe` |
 | 53 | `step53/`（包，入口 `step53/step53.py`） | 批量投机验证与抢占恢复：不同 K 的投机请求 + 普通 decode + 中间 prefill 同批，先缩草稿再抢占 |
 | 54 | `step54/`（包，入口 `step54/step54.py`） | 随机采样投机解码：拒绝采样 + 纠正分布 + 逐行惩罚历史；采样参数不再受限 |
+| 55 | `step55/`（包，入口 `step55/step55.py`） | draft model 双 KV：一般 `min(1,p/q)` 拒绝采样 + 独立提议层（补算/批量/对齐）+ 双池容量取舍 + 分片 safetensors 与双目录加载 |
 
 大致的推进脉络：
 
@@ -114,4 +115,4 @@ python benchmarks/bench_step25_engine.py    # 跑性能脚本
 
 `docs/` 下每次改动一篇记录（命名 `stepNN_<主题>.md`），固定五节：需求大概、改动内容、设计要点、验证、接口变化与遗留。索引见 [docs/README.md](docs/README.md)。
 
-已记录：第 18–54 关。
+已记录：第 18–55 关。
