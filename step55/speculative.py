@@ -64,23 +64,38 @@ class DraftVerification:
     kept_inputs: int
 
 
-def residual_probs(probs, token_id):
-    """拒绝之后要用的**纠正分布**：把被拒的那个 token 挖掉再重新归一化。
+def residual_probs(probs, q, token_id):
+    """拒绝之后要用的**纠正分布**：`normalize(max(p - q, 0))`。
 
-    为什么不能拒绝后仍从原分布 p 重抽：那会让被拒 token 的概率变成
-    `p[d] + (1-p[d])*p[d]`，明显偏大。挖掉再归一化之后，任何 token y≠d 的最终
-    概率是 `p[d]*[y==d] + (1-p[d]) * p[y]/(1-p[d]) = p[y]`——**恰好还原目标分布**。
+    `q` 是**抽出这枚草稿时用的实际提议分布**（一般 draft model 就传它）。为什么必须
+    是 `max(p-q, 0)`：拒绝采样要保证「最终提交的第一个 token 服从 p」。按提议分布 q
+    抽到 y 的概率是 `q[y]`，它以 `min(1, p[y]/q[y])` 被接受；被拒的那部分质量
+    `Σ_x q[x]·(1 - min(1,p[x]/q[x]))` 全部落到纠正分布上。于是
 
-    这不是锦上添花：本关的验收就是拿经验分布去对 p，用错分布会直接被统计检验抓出来
-    （p=[0.6,0.3,0.1]、草稿 d=1 时，错的是 [0.42,0.51,0.07]）。
+        提交 y 的概率 = q[y]·min(1, p[y]/q[y]) + 拒绝质量 · residual[y]
+                      = min(q[y], p[y]) + max(p[y] - q[y], 0) = p[y]
+
+    ——两个 min/max 刚好互补。**换成别的纠正分布这条等式就断了**：第五十二到五十四关
+    的 n-gram 是确定性提议（q 是 token 上的 one-hot），那时 `max(p-q,0)` 退化成
+    「把该 token 挖掉再归一化」；对一般 q 继续只挖掉一个 token，得到的就不是 p 了
+    （p=[0.6,0.3,0.1]、q=[0.2,0.5,0.3]、草稿 1 时，正确纠正分布是 [1,0,0]，
+    只挖 token 1 会得到 [6/7,0,1/7]）。
+
+    `q=None` 表示确定性提议：不建整张 one-hot，直接把那个 token 挖掉——数值上完全
+    一样（`q[d]=1 > p[d]` 保证 `p[d]-q[d] < 0 → 0`），少一次词表大小的分配。
     """
-    residual = probs.clone()
-    residual[token_id] = 0
+    if q is None:
+        residual = probs.clone()
+        residual[token_id] = 0
+    else:
+        residual = (probs - q).clamp(min=0)     # 本模块不 import torch：只用张量自己的方法
     total = residual.sum()
     if float(total) <= 0.0:
-        # 走到这里说明「被拒」与「有效质量」自相矛盾（例如 p 是个 one-hot 却判了拒绝）。
-        # 明确报错，绝不悄悄退回 argmax——那会把分布错误伪装成一次正常采样。
-        raise ValueError(f"排除 token {token_id} 之后目标分布没有剩余质量，无法抽纠正 token")
+        # 走到这里说明「被拒」与「有效质量」自相矛盾（例如 p 是个 one-hot 却判了拒绝、
+        # 或 q 与 p 在数值上相等）。明确报错，绝不悄悄退回 argmax——那会把分布错误
+        # 伪装成一次正常采样。**不按实际质量归一化以外的任何方式**（不加 epsilon 伪造）。
+        raise ValueError(f"排除草稿 {token_id} 之后 max(p-q, 0) 没有剩余质量，"
+                         f"无法抽纠正 token")
     return residual / total
 
 
@@ -149,12 +164,17 @@ def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
 
 
 def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
-                         draw_uniform, draw_token):
+                         draw_uniform, draw_token, draft_probs=None):
     """随机采样下的验证：按目标分布做拒绝采样，返回与 `verify_drafts()` 同样的结论。
 
-    n-gram 是**确定性提议**，所以提议分布 `q(d) = 1`、其余为 0，接受概率
-    `min(1, p[d]/q[d])` 就退化成 `p[d]`——不用构造整张 q 矩阵，也不用写
-    `max(p-q, 0)` 的归一化。（一般 draft model 那套留给后续关卡。）
+    一般形式（`draft_probs` 给出每枚草稿的提议分布 q，见第五十五关）：
+
+        第 i 枚接受概率 = min(1, p_i[d_i] / q_i[d_i])
+        被拒后的纠正分布 = normalize(max(p_i - q_i, 0))     （见 `residual_probs`）
+
+    `draft_probs=None` 表示**确定性提议**（n-gram）：`q_i(d_i) = 1`、其余为 0，
+    接受概率退化成 `p_i[d_i]`，纠正分布退化成「挖掉 d_i」——两条路径是同一个式子，
+    EOS 与「保留多少 KV」的规则也只有一份（`_finish_candidates`）。
 
     规则（需求 §2）：
 
@@ -164,11 +184,19 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
     3. 全部接受：从**最后一行的分布**抽一枚 bonus；
     4. 结果交回 `_finish_candidates()` 统一做 EOS 截断与「留多少 KV」。
 
-    两个边界按约定处理，并在文档与测试里固定下来：
+    两个边界按约定处理，并在文档与测试里固定下来（判的是**接受概率** `min(1,p/q)`，
+    `q=None` 时它就是 `p[d]`）：
 
-    - `p[d] == 0`：必拒，**不消耗** uniform（抽了也是白抽）；
-    - `p[d] == 1`：必接受，同样不消耗——顺带避开「residual 全零」那条路。这条
-      **一样要过终止检查**，必接受不是「跳过后面步骤」的捷径。
+    - 接受概率 `<= 0`（`p[d] == 0`）：必拒，**不消耗** uniform（抽了也是白抽）；
+    - 接受概率 `>= 1`（`p[d] >= q[d]`，含 `p[d] == 1`）：必接受，同样不消耗——
+      顺带避开「residual 全零」那条路。这条**一样要过终止检查**，必接受不是
+      「跳过后面步骤」的捷径。
+
+    `p == q` 时每一枚都落在「必接受」上：整轮全接受、不抽接受随机数，也不会走到
+    residual。这正是「同结构同权重的 draft 模型」那条用例。
+
+    提议分布必须**真的**是抽出草稿的那一个：`q_i[d_i] == 0` 是非法输入（从 q 里
+    抽不出一个 q 质量为零的 token），这里明确报错，不除零、也不默默当成必接受。
 
     随机数的消费顺序（需求 §4C）：**逐位置先决定接受**，接受的当下就判终止；没在
     终止 token 上停下时，才是「首次拒绝抽纠正 / 全部接受抽 bonus」。顺序是约定的
@@ -183,6 +211,8 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
     if len(row_probs) != num_drafts + 1:
         raise ValueError(f"验证需要 {num_drafts + 1} 行的目标分布（K 枚草稿 + 1 枚 bonus），"
                          f"收到 {len(row_probs)} 行")
+    if draft_probs is not None and len(draft_probs) != num_drafts:
+        raise ValueError(f"提议分布应有 {num_drafts} 行（每枚草稿一行），收到 {len(draft_probs)} 行")
     if num_drafts > remaining_outputs - 1:
         raise ValueError(
             f"{num_drafts} 枚草稿要占 {num_drafts + 1} 个输出额度，但只剩 {remaining_outputs} 个；"
@@ -192,12 +222,23 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
     while num_accepted < num_drafts:
         token = draft_ids[num_accepted]
         p_draft = float(row_probs[num_accepted][token])
-        if p_draft >= 1.0:
+        if draft_probs is None:
+            # 确定性提议：q 是 token 上的 one-hot，接受概率就是 p[d]
+            accept_prob = p_draft
+        else:
+            q_draft = float(draft_probs[num_accepted][token])
+            if q_draft <= 0.0:
+                raise ValueError(
+                    f"第 {num_accepted} 枚草稿 {token} 的提议概率 q[d]={q_draft}："
+                    f"从 q 里抽不出一个 q 质量为零的 token，这是调用方的错（提议必须"
+                    f"真的从 q 抽样，不能 argmax 提议却拿 softmax q 来验证）")
+            accept_prob = p_draft / q_draft
+        if accept_prob >= 1.0:
             accepted = True                        # 必接受，不消耗随机数
-        elif p_draft <= 0.0:
+        elif accept_prob <= 0.0:
             accepted = False                       # 必拒绝，同样不消耗
         else:
-            accepted = draw_uniform() < p_draft
+            accepted = draw_uniform() < accept_prob
         if not accepted:
             break
         num_accepted += 1
@@ -215,9 +256,12 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
         # 全部接受：bonus 从**最后一行**的分布里抽
         candidates = list(draft_ids) + [int(draw_token(row_probs[num_drafts]))]
     else:
-        # 首次拒绝：从挖掉该草稿的纠正分布里抽
-        candidates = list(draft_ids[:num_accepted]) + [
-            int(draw_token(residual_probs(row_probs[num_accepted], draft_ids[num_accepted])))]
+        # 首次拒绝：从 normalize(max(p-q, 0)) 里抽（q=None 时退化成「挖掉该草稿」）
+        rejected = num_accepted
+        candidates = list(draft_ids[:rejected]) + [
+            int(draw_token(residual_probs(row_probs[rejected],
+                                          None if draft_probs is None else draft_probs[rejected],
+                                          draft_ids[rejected])))]
 
     committed_ids, kept_inputs = _finish_candidates(candidates, num_accepted, eos_token_ids)
     return DraftVerification(num_accepted, committed_ids, kept_inputs)

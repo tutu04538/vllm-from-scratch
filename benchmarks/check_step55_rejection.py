@@ -65,8 +65,9 @@ def probs(*values):
     return torch.tensor(values, dtype=torch.float32)
 
 
-def verify(draft_ids, row_probs, draws, remaining=8, eos=EOS):
-    return verify_drafts_random(draft_ids, row_probs, eos, remaining, draws.uniform, draws.token)
+def verify(draft_ids, row_probs, draws, remaining=8, eos=EOS, draft_q=None):
+    return verify_drafts_random(draft_ids, row_probs, eos, remaining, draws.uniform, draws.token,
+                                draft_probs=draft_q)
 
 
 # ------------------------------------------------ 1. 确定性分支
@@ -161,13 +162,74 @@ def _raises(fn):
     except ValueError as exc:
         return str(exc)
 
-# residual：挖掉草稿再归一化；无剩余质量时明确报错
-res = residual_probs(probs(0.6, 0.3, 0.1), 1)
-check("纠正分布：挖掉 d 再归一化（需求 §2 的例子 [6/7, 0, 1/7]）",
+# residual：确定性提议（q=None）时就是「挖掉草稿再归一化」；无剩余质量时明确报错
+res = residual_probs(probs(0.6, 0.3, 0.1), None, 1)
+check("纠正分布（确定性提议）：挖掉 d 再归一化（需求 §2 的例子 [6/7, 0, 1/7]）",
       res[1].item() == 0.0 and abs(res[0].item() - 6 / 7) < 1e-6
       and abs(res[2].item() - 1 / 7) < 1e-6, str([round(v, 4) for v in res.tolist()]))
 check("纠正分布没有剩余质量时明确报错，不偷偷退回 argmax",
-      _raises(lambda: residual_probs(probs(0.0, 1.0, 0.0), 1)) is not None)
+      _raises(lambda: residual_probs(probs(0.0, 1.0, 0.0), None, 1)) is not None)
+
+# ------------------------------------------------ 1b. 一般 q（第五十五关）
+
+# 需求 §4 的例子：p=[0.6,0.3,0.1]、q=[0.2,0.5,0.3]、草稿 d=1
+#   接受概率 = p[d]/q[d] = 0.3/0.5 = 0.6
+#   纠正分布 = normalize(max(p-q, 0)) = [1, 0, 0]
+P_EX, Q_EX = probs(0.6, 0.3, 0.1), probs(0.2, 0.5, 0.3)
+res = residual_probs(P_EX, Q_EX, 1)
+check("一般 q 的纠正分布 = normalize(max(p-q,0)) = [1,0,0]（需求 §4 的例子）",
+      res.tolist() == [1.0, 0.0, 0.0], str([round(v, 4) for v in res.tolist()]))
+check("对一般 q 继续「只挖掉 d」是错的：那会得到 [6/7, 0, 1/7]",
+      abs(residual_probs(P_EX, None, 1)[0].item() - 6 / 7) < 1e-6)
+
+# 接受概率：u < p/q 才接受（注入随机数，顺便数清调用次数）
+d = Draws(uniforms=[0.59], tokens=[7])
+r = verify([1], [P_EX, probs(0, 0, 1)], d, draft_q=[Q_EX])
+check("u=0.59 < 0.6：接受草稿，提交 [d, bonus]，输入留 1+K",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (1, [1, 7], 2)
+      and (d.n_uniform, d.n_token) == (1, 1), f"uniform={d.n_uniform} token={d.n_token}")
+
+d = Draws(uniforms=[0.61], tokens=[2])
+r = verify([1], [P_EX, probs(0, 0, 1)], d, draft_q=[Q_EX])
+check("u=0.61 >= 0.6：拒绝，纠正分布是 [1,0,0]（注入的 token 只是记账用）",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (0, [2], 1)
+      and (d.n_uniform, d.n_token) == (1, 1), f"uniform={d.n_uniform} token={d.n_token}")
+
+# p == q：每一枚的接受概率都是 1 -> 全部必接受，不抽接受随机数，也不走 residual
+d = Draws(tokens=[7])
+r = verify([1, 2], [P_EX, P_EX, probs(0, 1, 0)], d, draft_q=[P_EX, P_EX])
+check("p == q：全部必接受、不抽接受随机数，只抽一次 bonus",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (2, [1, 2, 7], 3)
+      and (d.n_uniform, d.n_token) == (0, 1), f"uniform={d.n_uniform} token={d.n_token}")
+
+# p[d] = 0（两个分布支持集合不同）：接受概率 0 -> 必拒且不抽 uniform
+P2, Q2 = probs(0.6, 0.4, 0.0), probs(0.2, 0.3, 0.5)
+d = Draws(uniforms=[0.5], tokens=[0])
+r = verify([2], [P2, probs(0, 1, 0)], d, draft_q=[Q2])
+check("p[d]=0：接受概率 0 -> 必拒、不抽 uniform；纠正分布 = normalize([0.4,0.1,0]) = [0.8,0.2,0]",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (0, [0], 1)
+      and (d.n_uniform, d.n_token) == (0, 1)
+      and abs(residual_probs(P2, Q2, 2)[1].item() - 0.2) < 1e-6,
+      f"uniform={d.n_uniform} token={d.n_token}")
+
+# q[d] = 0 是**非法输入**：从 q 里抽不出一个 q 质量为零的 token
+check("提议到 d 却 q[d]=0：明确报错（不除零、不默默当成必接受）",
+      _raises(lambda: verify([2], [P_EX, probs(0, 0, 1)], Draws(),
+                             draft_q=[probs(0.5, 0.5, 0.0)])) is not None)
+check("提议分布行数与草稿数不一致：明确报错",
+      _raises(lambda: verify([1, 2], [P_EX, P_EX, probs(0, 0, 1)], Draws(),
+                             draft_q=[Q_EX])) is not None)
+
+# EOS 规则在一般 q 下同样成立：接受的草稿是终止 token 就当场停、不抽后续随机数
+EOS3 = {3}
+Q3 = probs(0.1, 0.2, 0.3, 0.4)
+P3 = probs(0.0, 0.0, 0.0, 1.0)
+d = Draws(uniforms=[0.5], tokens=[9])
+r = verify([3, 2], [P3, probs(0.1, 0.2, 0.4, 0.3), probs(0, 1, 0, 0)], d, eos=EOS3,
+           draft_q=[Q3, probs(0.2, 0.3, 0.4, 0.1)])
+check("一般 q + EOS：接受终止 token 后当场结束，第二枚不再验证、不抽 uniform",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (1, [3], 1)
+      and (d.n_uniform, d.n_token) == (0, 0), f"uniform={d.n_uniform} token={d.n_token}")
 
 # ------------------------------------------------ 2. 分布正确性
 
@@ -240,6 +302,70 @@ check("全部接受后 bonus 来自**第二行**的分布（不是第一行）",
       abs(got2[0] - 0.25) < 5 * math.sqrt(0.25 * 0.75 / n3)
       and abs(got2[1] - 0.75) < 5 * math.sqrt(0.25 * 0.75 / n3),
       str([round(v, 4) for v in got2]))
+
+# ---- 一般 q 的统计正确性：草稿每次**从 q 抽**，最终第一个 token 必须回到 p ----
+
+# 需求 §4：非 one-hot q 下「首 token 分布 = p」是拒绝采样成立的唯一判据。
+# q 是抽出草稿的那一个分布：每轮先 d ~ q，再按 p/q 接受或走 max(p-q,0)。
+P_GQ, Q_GQ = probs(0.6, 0.3, 0.1), probs(0.2, 0.5, 0.3)
+n_gq, seed_gq = 200000, 20240926
+gen = torch.Generator(device="cpu").manual_seed(seed_gq)
+counts = {0: 0, 1: 0, 2: 0}
+for _ in range(n_gq):
+    draft = int(torch.multinomial(Q_GQ, 1, generator=gen))          # 提议：真的从 q 抽
+    r = verify_drafts_random([draft], [P_GQ, P_GQ], set(), 8,
+                             lambda: float(torch.rand((), generator=gen)),
+                             lambda pr: torch.multinomial(pr, 1, generator=gen),
+                             draft_probs=[Q_GQ])
+    counts[r.committed_ids[0]] += 1
+got_gq = [counts[i] / n_gq for i in range(3)]
+sigma_gq = [math.sqrt(p * (1 - p) / n_gq) for p in (0.6, 0.3, 0.1)]
+check("一般 q：草稿从 q 抽、按 p/q 接受，最终首 token 分布回到 p（5σ 容差）",
+      all(abs(got_gq[i] - [0.6, 0.3, 0.1][i]) < 5 * sigma_gq[i] for i in range(3)),
+      str([round(v, 4) for v in got_gq]))
+
+# 反面：对一般 q 继续用「只挖掉草稿」的 n-gram 纠正分布，首 token 分布会明显偏
+# （拒绝质量 0.4 全部落在那一个 token 上，这里实测约 0.504 而不是 0.6）
+wrong_gq = [0.504, 0.367, 0.129]
+check("反面：用「只挖掉草稿」的纠正分布会明显偏离 p（这条用例能判别）",
+      all(abs(got_gq[i] - wrong_gq[i]) > 10 * sigma_gq[i] for i in range(3)),
+      f"实测 {[round(v, 4) for v in got_gq]}  vs 错的 {wrong_gq}")
+
+# 条件两 token 的联合分布（一般 q 版）：接受时是「草稿 + 第二行的 bonus」，
+# 被拒时本轮只有纠正 token；两部分的概率都要用 p/q 与 max(p-q,0) 算。
+row1_q = probs(0.25, 0.75, 0.0)
+n_j, seed_j = 120000, 11
+gen = torch.Generator(device="cpu").manual_seed(seed_j)
+joint_q = {}
+for _ in range(n_j):
+    draft = int(torch.multinomial(Q_EX, 1, generator=gen))
+    r = verify_drafts_random([draft], [P_EX, row1_q], set(), 8,
+                             lambda: float(torch.rand((), generator=gen)),
+                             lambda pr: torch.multinomial(pr, 1, generator=gen),
+                             draft_probs=[Q_EX])
+    joint_q[tuple(r.committed_ids)] = joint_q.get(tuple(r.committed_ids), 0) + 1
+# 逐枚草稿算理论值。**接受与拒绝的质量都要按那一枚草稿自己的概率算**：
+#   P(提交 (y,z)) = q_y·min(1, p_y/q_y)·row1[z]          （接受了草稿 y，z 是 bonus）
+#   P(提交 (c,))  = Σ_y [q_y - q_y·min(1, p_y/q_y)]·residual_y(c)   （草稿 y 被拒）
+# 注意纠正分布与拒绝质量都是**逐枚草稿**的：草稿不同，residual 不同、
+# 接受概率也不同（draft 0 的接受概率是 1，永远不会走到纠正）。
+theory_q = {}
+for y in range(3):
+    accept = Q_EX[y].item() * min(1.0, P_EX[y].item() / Q_EX[y].item())
+    theory_q[(y, 0)] = theory_q.get((y, 0), 0) + accept * 0.25
+    theory_q[(y, 1)] = theory_q.get((y, 1), 0) + accept * 0.75
+    reject = Q_EX[y].item() - accept
+    residual = residual_probs(P_EX, Q_EX, y)
+    for c in range(3):
+        if residual[c].item() > 0:
+            theory_q[(c,)] = theory_q.get((c,), 0) + reject * residual[c].item()
+worst_q = max(abs(joint_q.get(k, 0) / n_j - v) for k, v in theory_q.items())
+tol_q = max(5 * math.sqrt(max(min(v, 1.0), 1e-9) * (1 - min(v, 1.0)) / n_j)
+            for v in theory_q.values())
+check("一般 q：条件两 token 的联合分布 = 接受部分 + 拒绝部分的纠正分布",
+      worst_q < tol_q,
+      f"实测 { {k: round(v / n_j, 4) for k, v in sorted(joint_q.items())} }，"
+      f"理论 { {k: round(v, 4) for k, v in sorted(theory_q.items())} }")
 
 # ------------------------------------------------ 3. 惩罚与过滤
 
