@@ -162,7 +162,13 @@ def apply_penalties(row, params: SamplingParams, state: SamplingState):
 
 
 def _filter_and_probs(row, params: SamplingParams):
-    """温度 → top-k → softmax → top-p。返回 (probs, keep_mask)，都按**原始词表顺序**。"""
+    """温度 → top-k → softmax → top-p，返回**整个词表**上的概率，按原始词表顺序。
+
+    只返回 `probs` 一个张量：top-k / top-p 的保留集合（`keep_k` / `keep`）在函数内部
+    用完就丢，调用方只关心概率本身。早年的注释写的是「返回 (probs, keep_mask)」，
+    那是设计草稿里的说法——本仓库从第一次提交起这个函数就一直只返回 `probs`，
+    没有任何调用方解包过第二个值。
+    """
     vocab = row.shape[-1]
     scaled = row / params.temperature
 
