@@ -158,7 +158,8 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
 
     规则（需求 §2）：
 
-    1. 逐位置抽 `u ∈ [0,1)`，`u < p[d]` 就接受这一枚，继续看下一枚；
+    1. 逐位置抽 `u ∈ [0,1)`，`u < p[d]` 就接受这一枚；**接受的这一枚若是终止 token，
+       当场结束**——它后面的草稿不再验证，bonus 也不抽（需求 §4C）；
     2. 首次拒绝就停：从「挖掉 d 的纠正分布」抽一枚，本轮输出 = 已接受的草稿 + 它；
     3. 全部接受：从**最后一行的分布**抽一枚 bonus；
     4. 结果交回 `_finish_candidates()` 统一做 EOS 截断与「留多少 KV」。
@@ -166,11 +167,13 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
     两个边界按约定处理，并在文档与测试里固定下来：
 
     - `p[d] == 0`：必拒，**不消耗** uniform（抽了也是白抽）；
-    - `p[d] == 1`：必接受，同样不消耗——顺带避开「residual 全零」那条路。
+    - `p[d] == 1`：必接受，同样不消耗——顺带避开「residual 全零」那条路。这条
+      **一样要过终止检查**，必接受不是「跳过后面步骤」的捷径。
 
-    随机数的消费顺序（需求 §4C）：**逐位置先决定接受**；被接受的草稿里如果出现终止
-    token，当场结束、**不抽 bonus**；否则首次拒绝抽纠正、全部接受抽 bonus。
-    顺序是约定的一部分，测试会数调用次数。
+    随机数的消费顺序（需求 §4C）：**逐位置先决定接受**，接受的当下就判终止；没在
+    终止 token 上停下时，才是「首次拒绝抽纠正 / 全部接受抽 bonus」。顺序是约定的
+    一部分，测试会数调用次数——接受终止 token 之后**一个随机数都不能再抽**，
+    否则请求自己的随机流就与「没有投机时」错位了。
 
     `row_probs` 是 K+1 行的目标分布，行 j 的惩罚历史必须包含**前 j 枚草稿**
     （接受的那些）。调用方按「全都接受」构造即可：拒绝点之后的行根本不会被读到，
@@ -187,23 +190,27 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
 
     num_accepted = 0
     while num_accepted < num_drafts:
-        probs = row_probs[num_accepted]
-        p_draft = float(probs[draft_ids[num_accepted]])
+        token = draft_ids[num_accepted]
+        p_draft = float(row_probs[num_accepted][token])
         if p_draft >= 1.0:
-            num_accepted += 1                      # 必接受，不消耗随机数
-            continue
-        if p_draft <= 0.0:
-            break                                  # 必拒绝，同样不消耗
-        if draw_uniform() >= p_draft:
+            accepted = True                        # 必接受，不消耗随机数
+        elif p_draft <= 0.0:
+            accepted = False                       # 必拒绝，同样不消耗
+        else:
+            accepted = draw_uniform() < p_draft
+        if not accepted:
             break
         num_accepted += 1
+        # **接受的当下**就看它是不是终止 token：是则立即结束——它后面的草稿与 bonus
+        # 既不提交、也不验证、更不抽随机数。「终止后不再消费随机数」是需求 §4C 的约定，
+        # 所以这条检查必须在**两条**接受分支之后（必接受那条不是跳过它的捷径）。
+        if token in eos_token_ids:
+            break
 
-    # 被接受的草稿里若出现终止 token，本轮**当场结束**：它后面的草稿与 bonus 都不提交，
-    # 也**不抽**随机数——「终止后不再消费随机数」是约定的一部分。
-    stop_at = next((index for index, token in enumerate(draft_ids[:num_accepted])
-                    if token in eos_token_ids), None)
-    if stop_at is not None:
-        candidates = list(draft_ids[:stop_at + 1])
+    # 「最后一枚被接受的草稿是终止 token」等价于「因终止而停下」：循环一到终止 token
+    # 就 break，不会再去看它后面的位置，所以拒绝不可能发生在终止 token 之后。
+    if num_accepted > 0 and draft_ids[num_accepted - 1] in eos_token_ids:
+        candidates = list(draft_ids[:num_accepted])
     elif num_accepted == num_drafts:
         # 全部接受：bonus 从**最后一行**的分布里抽
         candidates = list(draft_ids) + [int(draw_token(row_probs[num_drafts]))]

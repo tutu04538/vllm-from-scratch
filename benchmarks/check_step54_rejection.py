@@ -100,12 +100,15 @@ r = verify([2], [probs(0.2, 0.5, 0.3, 0), probs(0, 0, 0, 1)], d)
 check("u < p[d] 时接受这一枚", (r.num_accepted, r.committed_ids) == (1, [2, 9]))
 check("接受这一枚后没有发生纠正抽样（token 只抽了 bonus）", (d.n_uniform, d.n_token) == (1, 1))
 
-# 草稿本身是 EOS：它之前的草稿才留 KV。小词表测试用 token 3 当终止 token。
-d = Draws(tokens=[9])
-r = verify([3, 2], [probs(0, 0, 0, 1), probs(0, 0, 1, 0), probs(0, 0, 0, 1)], d, eos={3})
-check("被接受的草稿本身是 EOS：只提交到它，且它之前的草稿才留 KV",
-      (r.num_accepted, r.committed_ids, r.kept_inputs) == (2, [3], 1))
-check("草稿是 EOS 时当场结束，**不抽** bonus（终止后不再消费随机数）",
+# 草稿本身是 EOS（走**必接受**分支看到它）。小词表测试用 token 3 当终止 token。
+# 后面那枚草稿故意给 p=0.4：「先验证完整个前缀、再回头截断」的旧写法会为它抽一次
+# uniform，而正确的写法在接受的当下就停——这里正好把两者分开（验收方复验第五十四关
+# 时用这个形状抓出过漏子：文本对，随机流错）。
+d = Draws(uniforms=[0.1], tokens=[9])
+r = verify([3, 2], [probs(0, 0, 0, 1), probs(0.1, 0.2, 0.4, 0.3), probs(0, 0, 0, 1)], d, eos={3})
+check("被接受的草稿本身是 EOS：只提交到它，num_accepted 不含它后面的草稿",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (1, [3], 1))
+check("接受 EOS 后当场结束：不抽 bonus，也不为后面的草稿抽 uniform",
       (d.n_uniform, d.n_token) == (0, 0), f"uniform={d.n_uniform} token={d.n_token}")
 
 # 第二枚草稿是 EOS：第一枚的 KV 要留
@@ -113,6 +116,25 @@ d = Draws(tokens=[9])
 r = verify([1, 3], [probs(0, 1, 0, 0), probs(0, 0, 0, 1), probs(0, 0, 0, 1)], d, eos={3})
 check("第二枚草稿是 EOS：留第一枚的 KV，后面的不抽不提交",
       (r.num_accepted, r.committed_ids, r.kept_inputs) == (2, [1, 3], 2) and d.n_token == 0)
+
+# 全部接受、**bonus 是 EOS**：与「草稿是 EOS」不同，bonus 那次抽样照常发生；
+# 它从没作为输入行进过模型，所以草稿的 KV 一个都不用退（1+K）
+d = Draws(tokens=[3])
+r = verify([1, 2], [probs(0, 1, 0, 0), probs(0, 0, 1, 0), probs(0, 0, 0, 1)], d, eos={3})
+check("全部接受且 bonus 是 EOS：提交到 bonus 为止，草稿的 KV 都留（1+K）",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (2, [1, 2, 3], 3))
+check("bonus 是 EOS 与草稿是 EOS 的区别：bonus 那次抽样照常发生",
+      (d.n_uniform, d.n_token) == (0, 1), f"uniform={d.n_uniform} token={d.n_token}")
+
+# 同一件事的另一条接受分支：中间那枚草稿靠 uniform **接受**上 EOS
+d = Draws(uniforms=[0.1, 0.1], tokens=[9])
+r = verify([1, 3, 2],
+           [probs(0, 1, 0, 0), probs(0.2, 0.3, 0.0, 0.5), probs(0.1, 0.2, 0.4, 0.3),
+            probs(0, 0, 0, 1)], d, eos={3})
+check("uniform 接受分支碰上 EOS：同样当场结束，第三枚草稿不再验证",
+      (r.num_accepted, r.committed_ids, r.kept_inputs) == (2, [1, 3], 2))
+check("uniform 接受 EOS 后只花了那一次 uniform（第三枚那一次没有发生）",
+      (d.n_uniform, d.n_token) == (1, 0), f"uniform={d.n_uniform} token={d.n_token}")
 
 # 纠正 token 是 EOS：照常停下
 d = Draws(uniforms=[0.9], tokens=[3])

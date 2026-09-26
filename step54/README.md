@@ -26,8 +26,9 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 
 1. **逐行历史**：行 j 看到的生成历史是「真实生成 + 前 j 枚草稿」，所以要一份**临时计数**；
    真实 `sampling_state` 与 `all_token_ids` 在提交之前一个字不动。
-2. **RNG 归请求**：抢占不重置也不消耗它；`p[d] ∈ {0,1}` 时不抽 uniform；终止之后一个
-   随机数都不再消耗。
+2. **RNG 归请求**：抢占不重置也不消耗它；`p[d] ∈ {0,1}` 时不抽 uniform；接受的草稿是
+   终止 token 时**在接受的当下就停**——不是「先把整个前缀验证完再回头截断」，那样文本
+   一样、随机流会错位（验收方复验时抓到的漏子，见 docs §8.10）。
 3. **快路径不能被破坏**：贪心且无惩罚的投机项仍走第五十三关的整批 argmax；只有带惩罚的
    贪心与随机采样才走逐行分布。
 
@@ -67,11 +68,12 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 
 | 检查 | 结果 |
 |---|---|
-| `benchmarks/check_step54_rejection.py`：验证层（分支 / 概率 / 惩罚） | **29 项全通过** |
+| `benchmarks/check_step54_rejection.py`：验证层（分支 / 概率 / 惩罚 / EOS 停点） | **36 项全通过** |
 | `benchmarks/check_step54_random.py`：引擎状态（临时计数、RNG、重算计数、混批） | **21 项全通过** |
 | `benchmarks/check_step54_speculative.py` / `check_step54_batch.py` / `check_step54_engine.py` | 53 / 35 / 51 项全过（第五十二、五十三关整套用例） |
 | `benchmarks/diff_step53_step54.py`：投机关闭时与 step53 逐步对照 | **88 项全通过**（未放宽字段） |
 | `benchmarks/check_step54_combinations.py`：priority / 前缀缓存与投机组合 | **17 项全通过** |
+| `benchmarks/review_step54_eos_rng.py`：验收方的「接受 EOS 后不再消费随机数」反例 | **PASS** |
 | 随机压测 500 组（随机/惩罚/不同 K、紧池子、动态到达） | 0 崩溃 0 活锁，计数与输出始终一致 |
 | CUDA FP32 / BF16 | 同批随机投机 + 带惩罚的贪心都能跑完 |
 
