@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import torch
 
-from .sampling import apply_penalties, row_distribution
 from .speculative import verify_drafts, verify_drafts_random
 
 
@@ -121,6 +120,7 @@ class SampleRuntime:
         """按每项自己的采样参数与惩罚项抽一枚 token，返回与 items 同序的 Python 列表。
 
         整批一次 `select_batch`、一次 `.tolist()`，不逐请求 `.item()`。
+        交给采样器的还是**原始**行（惩罚由 `TorchSampler` 内部做），但
         **这里必须把 logits 转成 FP32**，和投机那条路不同：`apply_penalties()` 算
         presence / frequency 惩罚时惩罚量是 FP32，回写要 `index_put` 进 logits 那一行，
         dtype 不匹配会直接抛（BF16 模型 + 这两种惩罚，不转 FP32 就跑不起来）。
@@ -130,9 +130,7 @@ class SampleRuntime:
         **如果以后把采样挪进异步调度、要跨步持有 logits，这里就得改回来。**
         """
         seqs = [item["request"] for item in items]
-        rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32),
-                                seq.sampling_params, seq.sampling_state)
-                for item, seq in zip(items, seqs)]
+        rows = [logits[item["sample_offset"]].to(torch.float32) for item in items]
         tokens = self.sampler.select_batch(
             rows, [s_.sampling_params for s_ in seqs], [s_.sampling_state for s_ in seqs])
         # token id 整批回传，不逐请求 .item()
@@ -204,7 +202,7 @@ class SampleRuntime:
                                generated_counts=dict(state.generated_counts))
         row_probs = []
         for index in range(len(draft_ids) + 1):
-            row_probs.append(row_distribution(rows[index].to(torch.float32), params, temp))
+            row_probs.append(self.sampler.distribution(rows[index].to(torch.float32), params, temp))
             if index < len(draft_ids):
                 token = draft_ids[index]
                 temp.generated_counts[token] = temp.generated_counts.get(token, 0) + 1

@@ -9,7 +9,7 @@
     norm       融合 RMSNorm 的 Triton kernel
     rope       融合 RoPE 的 Triton kernel
     model      RoPE / RMSNorm / DecoderLayer（QKV 与 gate/up 各一次 GEMM）/ TinyCausalLM
-    sampling   采样原语与后端：参数/状态/三种惩罚/温度与 top-k,p/目标分布、TorchSampler
+    sampling   采样原语与后端：参数/状态/三种惩罚/温度与 top-k,p，TorchSampler 出分布与 token
     speculative  投机解码的纯函数：n-gram 提议 + 贪心/随机两种验证
     validation 配置与后端的组合校验（构造阶段就报错）
     loading    模型装配与目录加载
@@ -36,8 +36,7 @@ from .model import (DEFAULT_EOS_TOKEN_IDS, DecoderLayer, DummyModel, RMSNorm, Ro
                     TinyCausalLM, _rotate_half)
 from .norm import rms_norm
 from .rope import rope
-from .sampling import (SamplingParams, SamplingState, TorchSampler, apply_penalties,
-                       row_distribution)
+from .sampling import SamplingParams, SamplingState, TorchSampler, apply_penalties
 from .sample_runtime import SampleRuntime
 from .scheduler import Scheduler
 from .speculative import (DraftVerification, propose_ngram, residual_probs,
@@ -49,7 +48,7 @@ __all__ = [
     "Scheduler", "SampleRuntime", "save_model", "load_model_config", "load_model_weights",
     "build_model_from_config", "native_format", "qwen3_format",
     "DEFAULT_EOS_TOKEN_IDS", "GENERATION_CONFIG_NAME", "rms_norm", "rope",
-    "SamplingParams", "SamplingState", "TorchSampler", "apply_penalties", "row_distribution",
+    "SamplingParams", "SamplingState", "TorchSampler", "apply_penalties",
     "propose_ngram", "verify_drafts", "verify_drafts_random", "residual_probs",
     "DraftVerification",
     "FORMAT_VERSION", "COMPATIBLE_FORMAT_VERSIONS", "MODEL_TYPE", "MODEL_DTYPE",

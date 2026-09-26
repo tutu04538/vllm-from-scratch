@@ -6,7 +6,10 @@
     greedy：只施加惩罚，然后 argmax（不算 softmax、不缩放温度、不筛选）
     random：惩罚 → 除以 temperature → top-k → softmax → top-p → 抽样
 
-执行顺序是固定的（见 docs），顺序本身会影响结果，不能各写各的。
+执行顺序是固定的（见 docs），顺序本身会影响结果，不能各写各的。所以整条链只有
+一份实现，都在 `TorchSampler` 里：`distribution()` 出一行的**完整分布**（随机采样
+要的概率，拒绝采样也要的同一个概率），`select()` 在这份分布上取一个 token。
+拒绝采样不重写温度/top-k/top-p，直接调 `distribution()`。
 """
 
 import math
@@ -206,40 +209,49 @@ def _filter_and_probs(row, params: SamplingParams):
     return probs
 
 
-def row_distribution(row, params: SamplingParams, state):
-    """一行 logits 在**给定惩罚历史**下的完整目标分布（贪心时是 one-hot）。
-
-    与 `TorchSampler` 走同一套顺序：惩罚 → 温度 → top-k → softmax → top-p，
-    只是把中间结果交出来给拒绝采样用——不复制第二份温度/top-p 规则。
-
-    `state` 只需要 `prompt_token_ids` 与 `generated_counts` 两个属性，所以投机可以
-    传一份**逐行的临时历史**进来（见 docs/step54_random_speculative.md §2）。
-    """
-    penalized = apply_penalties(row, params, state)
-    if params.is_greedy:
-        # 温度 0 的分布就是 one-hot：谁最大谁概率 1、其余 0。绝不能走
-        # `_filter_and_probs`——那里开头就是 `row / temperature`，会除零。
-        probs = torch.zeros_like(penalized)
-        probs[torch.argmax(penalized)] = 1.0
-        return probs
-    return _filter_and_probs(penalized, params)
-
-
 class TorchSampler:
-    """参考后端：全部用 Torch 算子，明确、好对照。"""
+    """参考后端：全部用 Torch 算子，明确、好对照。
+
+    「一行 logits 怎么变成分布、再变成一个 token」只有这一份实现。普通采样走
+    `select()`，拒绝采样要的是分布本身、走 `distribution()`——两条路吃的是同一个
+    函数，温度 / top-k / top-p 的规则不会有两份。
+    """
 
     name = "torch"
 
-    def select(self, row, params: SamplingParams, state: SamplingState):
-        """row 已经是施加过惩罚的 FP32 副本；返回一个 tensor 标量（留在 GPU 上）。"""
+    def distribution(self, row, params: SamplingParams, state):
+        """一行**原始** logits 在给定惩罚历史下的完整目标分布（贪心时是 one-hot）。
+
+        `state` 只需要 `prompt_token_ids` 与 `generated_counts` 两个属性，所以投机
+        可以传一份**逐行的临时历史**进来（见 docs/step54_random_speculative.md §2）。
+        """
+        penalized = apply_penalties(row, params, state)
         if params.is_greedy:
+            # 温度 0 的分布就是 one-hot：谁最大谁概率 1、其余 0。绝不能走
+            # `_filter_and_probs`——那里开头就是 `row / temperature`，会除零。
+            probs = torch.zeros_like(penalized)
+            probs[torch.argmax(penalized)] = 1.0
+            return probs
+        return _filter_and_probs(penalized, params)
+
+    def select(self, row, params: SamplingParams, state: SamplingState):
+        """一行**原始** logits -> 一个 tensor 标量（留在 GPU 上）。
+
+        惩罚在采样器内部做（随机那条走 `distribution()`，贪心那条直接
+        `apply_penalties()`），所以这里收的必须是**原始**行；`.to(torch.float32)`
+        仍由调用方负责（惩罚要在 FP32 上算，见 sample_runtime.py）。
+        """
+        if params.is_greedy:
+            # 不建整个分布：one-hot 的 argmax 就是**惩罚后**的 argmax，少一次
+            # 词表大小的分配。也绝不能走 multinomial——贪心请求没有 generator，
+            # `torch.multinomial(generator=None)` 会静默改用全局随机源。
             # 并列取最小 token id：torch.argmax 返回第一个最大值，正好是下标最小的
-            return torch.argmax(row)
-        probs = _filter_and_probs(row, params)
-        return torch.multinomial(probs, num_samples=1, generator=state.generator).squeeze(0)
+            return torch.argmax(apply_penalties(row, params, state))
+        return torch.multinomial(self.distribution(row, params, state), num_samples=1,
+                                 generator=state.generator).squeeze(0)
 
     def select_batch(self, rows, params_list, states):
-        """整批选 token。两个后端用同一个接口，Engine 只认这个。
+        """整批选 token。Engine 只认这个接口。
 
         返回与 rows 一一对应的 token id 列表，元素留在 GPU 上——
         调用方最后整批回传，不逐请求 .item()。

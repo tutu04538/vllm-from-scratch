@@ -10,7 +10,7 @@
 | 文件 | 改动 |
 |---|---|
 | `speculative.py` | 新增 `verify_drafts_random()`（拒绝采样）与 `residual_probs()`；抽出 `_finish_candidates()` 给两条验证路径共用（EOS 截断 + 留多少 KV 只有一份实现） |
-| `sampling.py` | 新增 `row_distribution()`：把「惩罚 → 温度 → top-k → softmax → top-p」这套**既有顺序**暴露出来给拒绝采样用，不复制第二份规则 |
+| `sampling.py` | 新增 `TorchSampler.distribution()`：把「惩罚 → 温度 → top-k → softmax → top-p」这套**既有顺序**暴露出来给拒绝采样用，不复制第二份规则（§8.9 把它并进了类） |
 | `engine.py` | `_sample()` 拆成「无草稿项走采样后端 / 贪心无惩罚走批量快路径 / 其余走随机验证」三条；新增 `_commit_drafts_random()`（逐行历史 + 临时计数）；`_sample_with_sampler()` 改名 `_sample_rows()` 并改为**只算 token、不提交**（提交统一按 picked 顺序） |
 | `scheduler.py` | 删掉「投机只支持贪心且无惩罚项」的限制；顺带修掉 `request_id = request.get(...)` 写了两遍（验收方指出的） |
 | `__init__.py`、`step54.py` | 包说明、入口改名 |
@@ -200,7 +200,8 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 ### 7.1 接口变化
 
 **新增**：`speculative.verify_drafts_random()`、`speculative.residual_probs()`、
-`sampling.row_distribution()`；`Engine._commit_drafts_random()`。
+`sampling.TorchSampler.distribution()`（§8.9 起；当时叫 `sampling.row_distribution()`）；
+`Engine._commit_drafts_random()`。
 
 **放开**：`speculative_mode="ngram"` 现在只拒绝两条**实现方式**决定的组合：
 
@@ -367,7 +368,8 @@ vLLM 的命名是「模块名 = 类名的 snake_case」（`sampler.py` -> `Sampl
 第 54 关的随机投机给每一行喂「真实生成 + 前 j 枚草稿」的**临时历史**，传进去的是
 `sample_runtime.py` 里那个 `SimpleNamespace` ——它只有 `prompt_token_ids` 与
 `generated_counts`，没有 `generator`、也没有 `note_output_token()`。注解从那一刻起就
-不准了，而同一个 `state` 参数在第 54 关新写的 `row_distribution()` 里是留白的。
+不准了，而同一个 `state` 参数在第 54 关新写的那个取分布的函数里是留白的
+（当时叫 `row_distribution()`，§8.9 之后是 `TorchSampler.distribution()`）。
 
 现在统一成留白，并把「为什么是鸭子类型」写进 docstring。本仓库没有类型检查器
 （也没有 mypy/ruff 配置），所以这个注解不会报错，只会误导读者——它暗示可以在这里
@@ -376,3 +378,63 @@ vLLM 的命名是「模块名 = 类名的 snake_case」（`sampler.py` -> `Sampl
 `TorchSampler.select()` 上的 `state: SamplingState` **保留**：那条路（
 `sample_runtime.py` 的普通采样路径）传的确实是 `seq.sampling_state`，而且它真的要
 `state.generator`。
+
+### 8.9 把 `row_distribution()` 并进 `TorchSampler`
+
+第 54 关新加的 `row_distribution()` 与既有的 `TorchSampler` 是**同一件事的两半**，
+而且契约还不一样：
+
+| | 收什么行 | 惩罚在哪做 | 贪心分支 |
+|---|---|---|---|
+| `row_distribution(row, params, state)` | **原始**行 | 函数内部 | 建 one-hot（拒绝采样要 p[d]） |
+| `TorchSampler.select(row, params, state)` | **已惩罚**的副本 | 调用方 | `argmax` |
+
+于是同一条「惩罚 → 温度 → top-k → softmax → top-p」的链被拼成两种形状：普通采样
+在 `_sampler_tokens()` 里先惩罚再交给 `select_batch()`，拒绝采样把原始行交给
+`row_distribution()`。贪心分支也写了两遍（one-hot 的 argmax 与惩罚后行的 argmax）。
+
+现在并成一个类方法 `TorchSampler.distribution(row, params, state)`，`select()` 建在它
+上面：
+
+```python
+def select(self, row, params, state):
+    if params.is_greedy:
+        return torch.argmax(apply_penalties(row, params, state))
+    return torch.multinomial(self.distribution(row, params, state), 1,
+                             generator=state.generator).squeeze(0)
+```
+
+**两条路的入口约定统一成「原始行 + params + state」**，温度 / top-k / top-p / 贪心
+的定义都只在一处。调用点相应改了三处：
+
+- `sample_runtime._sampler_tokens()`：不再自己 `apply_penalties`，直接把 FP32 的
+  **原始**行交给 `select_batch()`（`.to(torch.float32)` 留在原地，理由不变）；
+- `sample_runtime._commit_drafts_random()`：`row_distribution(...)` →
+  `self.sampler.distribution(...)`；
+- `step54/__init__.py`：`row_distribution` 不再导出（它现在是类方法）。
+
+**贪心那条为什么还留一个 `argmax(apply_penalties(...))` 的短路**：one-hot 的 argmax
+就是惩罚后行的 argmax，走 `distribution()` 要多分配一个词表大小的张量，而贪心是
+默认路径。这条等价关系有测试盯着（`check_step54_rejection.py` 的「贪心分布与
+`TorchSampler` 的贪心取到同一个 token」）。
+
+**为什么放到类上而不是留成模块级函数**：分布是**后端相关**的（Triton 后端会自己
+实现一套），而 `select_batch()` 已经是「引擎只认的接口」；vLLM 里拒绝采样也是
+**持有采样器对象**并调它（`RejectionSampler` 的 `self.sampler(...)` 取 bonus token，
+见 §8.2），而不是调一个游离函数。方向仍是单向的：`speculative` / `sampling` ←
+`sample_runtime` ← `engine`。
+
+**验证（这次改动的证据链）**：
+
+- `benchmarks/diff_step53_step54.py` 88 项：step52（**旧契约**：`select` 收已惩罚行）
+  与 step54 逐步逐字节一致；
+- 验收方的 `benchmarks/review_step53.py` 重跑：`sampler_regression` 12 组
+  「step52 vs step54 随机采样 + 四种惩罚组合」的事件流与完成记录**逐字节相等**
+  ——这正是被改的那段代码的前后对照；
+- 七个脚本全部通过：`check_step54_{speculative,batch,rejection,random,engine,combinations}.py`
+  与 `diff_step53_step54.py`（本机带 CUDA，`speculative` 57 / `random` 22，多出的是
+  CUDA 冒烟项；`rejection` 仍是 32 项）；
+- `check_step54_rejection.py` 是唯一被改的脚本，只改调用形状
+  （`row_distribution(x,y,z)` → `sampler.distribution(x,y,z)`，条数不变），末条对照
+  改成两边喂同一份历史、`select` 收原始行——它原来传的是已惩罚的行，正是这次要消灭
+  的那种契约。

@@ -18,7 +18,7 @@ import torch
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step54.sampling import SamplingParams, SamplingState, apply_penalties, row_distribution
+from step54.sampling import SamplingParams, SamplingState, TorchSampler
 from step54.speculative import DraftVerification, residual_probs, verify_drafts_random
 
 FAIL = []
@@ -227,7 +227,7 @@ def state_for(**kw):
 
 
 def hist(state, counts):
-    """一份只读的惩罚历史：`apply_penalties` / `row_distribution` 只用到这两个属性。
+    """一份只读的惩罚历史：`apply_penalties` / `distribution()` 只用到这两个属性。
 
     引擎里也是这么给每一行造临时历史的（临时计数不跟真实状态共享存储）。
     """
@@ -235,10 +235,12 @@ def hist(state, counts):
                            generated_counts=counts)
 
 
+sampler = TorchSampler()
+
 # top-k 把草稿过滤掉：分布里那个 token 的概率是 0 -> 必拒
 st, params = state_for(temperature=1.0, top_k=2, seed=1)
 row = probs(0.0, 0.5, 3.0, 1.0)          # 前 2 名是 token2、token3
-dist = row_distribution(row, params, st)
+dist = sampler.distribution(row, params, st)
 check("top-k 把草稿过滤掉：该 token 的目标概率为 0 -> 必拒",
       dist[1].item() == 0.0 and abs(dist.sum().item() - 1.0) < 1e-6,
       str([round(v, 4) for v in dist.tolist()]))
@@ -246,13 +248,13 @@ check("top-k 把草稿过滤掉：该 token 的目标概率为 0 -> 必拒",
 # top-p 同理
 st, params = state_for(temperature=1.0, top_p=0.5, seed=1)
 row = probs(0.0, 0.0, 3.0, 0.1)
-dist = row_distribution(row, params, st)
+dist = sampler.distribution(row, params, st)
 check("top-p 把草稿过滤掉：目标概率为 0", dist[1].item() == 0.0)
 
 # 温度：低温度把分布推向 one-hot
 st, params = state_for(temperature=0.01, seed=1)
 row = probs(0.0, 1.0, 3.0, 2.0)
-dist = row_distribution(row, params, st)
+dist = sampler.distribution(row, params, st)
 check("温度参与分布构造（0.01 时几乎 one-hot 在最大 logit 上）",
       dist[2].item() > 0.99, str([round(v, 4) for v in dist.tolist()]))
 
@@ -262,7 +264,7 @@ draft = [2, 2]
 temp = hist(st, dict(st.generated_counts))
 rows = []
 for j in range(len(draft) + 1):
-    rows.append(row_distribution(probs(0.0, 0.0, 2.0, 2.0), params, temp))
+    rows.append(sampler.distribution(probs(0.0, 0.0, 2.0, 2.0), params, temp))
     if j < len(draft):
         temp.generated_counts[draft[j]] = temp.generated_counts.get(draft[j], 0) + 1
 # 参考：第一行没有被惩罚过（token2 与 token3 都是 2.0）-> 并列取小下标 = 2
@@ -272,7 +274,7 @@ check("逐行历史：重复草稿让第二行的 frequency 惩罚与第一行�
       [int(torch.argmax(r)) for r in rows] == [2, 3, 3],
       str([int(torch.argmax(r)) for r in rows]))
 check("逐行惩罚与「普通单步采样」的参考实现逐行一致",
-      all(torch.equal(rows[j], row_distribution(probs(0.0, 0.0, 2.0, 2.0), params,
+      all(torch.equal(rows[j], sampler.distribution(probs(0.0, 0.0, 2.0, 2.0), params,
                                                 hist(st, counts)))
           for j, counts in enumerate([{}, {2: 1}, {2: 2}])))
 
@@ -287,7 +289,7 @@ greedy_state.generated_counts = {2: 1}
 not_onehot = []
 for trial in range(2000):
     row = torch.randn(4) * (10 ** (trial % 4))
-    dist = row_distribution(row, greedy_params,
+    dist = sampler.distribution(row, greedy_params,
                             hist(greedy_state, dict(greedy_state.generated_counts)))
     if not set(dist.tolist()) <= {0.0, 1.0}:
         not_onehot.append(dist.tolist())
@@ -300,7 +302,7 @@ def exploding_uniform():
 
 
 # 这一行的 argmax：token2 被三惩罚压到 -0.8，token3 是 3.0 -> 草稿取 3（p[d]=1 -> 必接受）
-greedy_rows = [row_distribution(probs(0.0, 0.0, 4.0, 3.0), greedy_params,
+greedy_rows = [sampler.distribution(probs(0.0, 0.0, 4.0, 3.0), greedy_params,
                                 hist(greedy_state, {2: 1})) for _ in range(2)]
 r = verify_drafts_random([3], greedy_rows, EOS, 8, exploding_uniform,
                          lambda pr: int(torch.argmax(pr)))
@@ -311,7 +313,7 @@ check("贪心分布喂进验证函数：一次都不会去抽 uniform（会抛�
 # 反面对照：随机分布（非 one-hot）**必须**抽 uniform，否则接受判定就是假的
 random_params = SamplingParams(vocab_size=4, temperature=0.8, seed=1)
 random_state = SamplingState(random_params, [1, 2], torch.device("cpu"))
-random_rows = [row_distribution(probs(0.0, 1.0, 3.0, 3.0), random_params, random_state)
+random_rows = [sampler.distribution(probs(0.0, 1.0, 3.0, 3.0), random_params, random_state)
                for _ in range(2)]
 d = Draws(uniforms=[0.5], tokens=[2])
 r = verify_drafts_random([1], random_rows, EOS, 8, d.uniform, d.token)
@@ -322,19 +324,19 @@ check("随机分布（非 one-hot）确实会抽 uniform——两个回调的选
 st, params = state_for(repetition_penalty=4.0)
 temp = hist(st, {2: 1})
 row = probs(0.0, 0.0, 4.0, 3.0)
-dist = row_distribution(row, params, temp)
+dist = sampler.distribution(row, params, temp)
 check("贪心 + 惩罚：one-hot 落在惩罚之后的 argmax 上（4.0/4 = 1.0 < 3.0）",
       dist[3].item() == 1.0 and dist[2].item() == 0.0,
       str([round(v, 4) for v in dist.tolist()]))
 
-# 贪心分布与「普通路径」的参考一致：TorchSampler 的贪心就是惩罚后的 argmax
-from step54.sampling import TorchSampler
+# 贪心分布与「普通路径」的参考一致：TorchSampler 的贪心就是惩罚后的 argmax。
+# 两边喂**同一份**历史（token2 被压到 4/4=1.0 < 3.0，argmax 落在 token3）
 st, params = state_for(repetition_penalty=4.0)
 temp = hist(st, {2: 1})
-penalized = apply_penalties(probs(0.0, 0.0, 4.0, 3.0), params, temp)
-check("贪心分布与 TorchSampler 的贪心取到同一个 token",
-      int(torch.argmax(row_distribution(probs(0.0, 0.0, 4.0, 3.0), params, temp)))
-      == int(TorchSampler().select(penalized, params, st)))
+row = probs(0.0, 0.0, 4.0, 3.0)
+check("贪心分布与 TorchSampler 的贪心取到同一个 token（同一个 argmax）",
+      int(torch.argmax(sampler.distribution(row, params, temp)))
+      == int(sampler.select(row, params, temp)))
 
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
