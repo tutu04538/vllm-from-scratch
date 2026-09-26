@@ -276,6 +276,37 @@ check("重算统计按计划里的真实起点算，不拿 num_scheduled_tokens 
 check("投机本身不产生重算量，也没有抢占（本关不支持抢占）",
       item["request"].num_preemptions == 0)
 
+# 需求 §3.D 说「本关禁用抢占」。删掉 preemption_mode 之后这条**不再是开关**，
+# 而是推论：max_num_seqs=1 + fcfs 让两个抢占入口都没有候选（名额没人可顶、
+# 尾部没有更靠后的犠牲者）。所以直接把池子压到可行性下限，看它守不守得住。
+TIGHT_PROMPT = [3, 1, 4, 1, 5, 9, 2, 6] * 2
+TIGHT_NEW = 12
+TIGHT_NEED = -(-(len(TIGHT_PROMPT) + TIGHT_NEW - 1) // 4)     # 池子的可行性下限
+torch.manual_seed(29)
+tight = step52.Engine(device="cpu", attention_backend="torch", max_num_seqs=1,
+                      max_num_batched_tokens=8, block_size=4, num_kv_blocks=TIGHT_NEED,
+                      enable_prefix_caching=False, scheduling_policy="fcfs", **SPEC, **DIMS)
+tight.on_token = lambda ev: None
+tight_steps, tight_finished, _ = run(tight, [{"request_id": "T", "prompt_ids": TIGHT_PROMPT,
+                                              "max_new_tokens": TIGHT_NEW}])
+check(f"投机 + 池子压到可行性下限（{TIGHT_NEED} 块）：一次抢占都没有，重算量恒为 0",
+      tight.scheduler.num_preemptions == 0
+      and all(it["request"].recomputed_tokens == 0
+              for slot in tight_steps for it in slot["items"])
+      and len(tight_finished) == 1 and len(tight_finished[0]["output_ids"]) == TIGHT_NEW,
+      f"抢占 {tight.scheduler.num_preemptions} 次")
+torch.manual_seed(29)
+too_small = step52.Engine(device="cpu", attention_backend="torch", max_num_seqs=1,
+                          max_num_batched_tokens=8, block_size=4,
+                          num_kv_blocks=TIGHT_NEED - 1, enable_prefix_caching=False,
+                          scheduling_policy="fcfs", **SPEC, **DIMS)
+too_small.on_token = lambda ev: None
+_, rejected, _ = run(too_small, [{"request_id": "T2", "prompt_ids": TIGHT_PROMPT,
+                                  "max_new_tokens": TIGHT_NEW}])
+check("池子比下限还小：请求被明确拒绝（InfeasibleRequest），不是卡死",
+      len(rejected) == 1 and "永远无法完成" in (rejected[0].get("error") or ""),
+      str(rejected))
+
 # 跨块边界的回滚：反复申请又归还
 engine = build(step52, 11, [1, 9, 8, 7, 6, 5, 4, 3], **dict(SPEC, num_kv_blocks=8))
 per_step, _, _ = run(engine, [REQUEST])

@@ -427,6 +427,24 @@ len(block_table) == ceil(cache.length / block_size)
 
 §1.9 之后**没有「已承诺额度」这条不变量了**——准入不再锁未来容量，账本随之消失。
 
+需求 §3.D 说「本关禁用抢占」。§1.9 删掉 `preemption_mode` 之后，这条**不再是一个开关**，
+而是从别的限制推出来的结论：
+
+| 抢占入口 | 在投机模式下为什么是空的 |
+|---|---|
+| `_preempt_for_slot()`（名额被顶掉） | `scheduling_policy="fcfs"` 时第一句就 `return False` |
+| `_make_room()`（容量不够选犠牲者） | `_victims_after()` 在 fcfs 下只返回排在 `seq` **之后**的请求，而 `max_num_seqs=1` 时 running 里只有它自己 → 空列表 |
+
+外加 `ensure_blocks()` 在投机模式下也不会返回 False（§1.4 的两条论证），所以第二个入口
+连进都进不去。这个性质现在有端到端回归盯着：把池子压到可行性下限（`ceil((len(prompt) +
+max_new_tokens - 1) / block_size)` 块）跑满一段输出，`num_preemptions` 与
+`recomputed_tokens` 都必须恒为 0。
+
+**要留意**：如果将来放宽 `max_num_seqs=1`（做多请求投机），抢占会**悄悄回来**——不是
+被禁用的东西被打开了，而是这个推论的前提没了。功能上投机代码承受得住（`_preempt()` 发生在
+`_reserve_blocks()` 里，是 forward **之前**，被抢占的项直接被丢掉、走不到 `_commit_drafts()`），
+但「本关不做抢占」那条推理要重写。
+
 **投机每一步之后仍满足 `num_uncomputed_tokens == 1`**——这是它能连续投机的根据：
 全部接受时 `cache.length` 与历史同步推进 `K+1`，首枚拒绝时只推进 1 而历史也只长 1。
 
@@ -451,7 +469,7 @@ len(block_table) == ceil(cache.length / block_size)
 - 配置校验：6 种不支持的组合与 3 种非法采样参数都**明确报错**，
   关掉投机后这些组合仍然合法。
 
-### 3.2 端到端（`benchmarks/check_step52_engine.py`，40 项全通过）
+### 3.2 端到端（`benchmarks/check_step52_engine.py`，42 项全通过）
 
 **脚本模型**：包住真模型，KV、位置、块表照常由真实现推进，只把 logits 换成脚本
 给定的 token。于是「目标模型会输出什么」完全可控，能造出确定性的用例：
@@ -471,6 +489,7 @@ len(block_table) == ceil(cache.length / block_size)
 | 结束状态 | 活动引用归零、链表成员等于真实可分配集合、无残留 hash、承诺归零 |
 | 入口校验 | 空 prompt / 负 `max_new_tokens` / 浮点或越界 token / bool / 不可迭代 都**在 `add_request` 就报错**；`max_new_tokens=0` 仍合法 |
 | 幽灵计划项 | 预算压到 1 个 token 时，计划里没有 0 token 的项（§1.8 删掉的那半句兜底的回归） |
+| 不做抢占 | 投机 + 池子压到可行性下限：`num_preemptions`、`recomputed_tokens` 恒为 0，正常跑完；池子再小一块就明确拒绝（`InfeasibleRequest`），不卡死 |
 
 **真模型等价性**：同一个随机小模型、同一个 prompt（重复片段多，n-gram 更容易命中），
 `speculative_mode="ngram"` 与 step51 的普通贪心**逐 token 相同**：
