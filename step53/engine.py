@@ -302,8 +302,14 @@ class Engine:
         # 开了投机的路径：所有请求在 add_request() 时就已经保证「贪心且无惩罚项」，
         # 所以这里可以**整批一次 argmax、一次 .tolist()**，再按每项的区间切 Python 列表。
         # 逐请求做 `select()` + `.item()` 会为每个请求付一次设备同步，批量下不划算。
-        # `.to(torch.float32)` 是为了和普通路径的贪心一致：BF16 下两个 FP32 上不等的
-        # logits 可能并成同一个值，argmax 的结果就会不一样。
+        # `.to(torch.float32)` 是为了和普通路径的贪心一致：普通路径（`TorchSampler`）
+        # 也是先把 logits 转成 FP32 再 argmax，这里必须用同一个精度。
+        # BF16 只有 8 位尾数（相对精度 ~0.2%），两个在 FP32 里分得开的 logits 会被
+        # 舍入成同一个值，argmax 就只能按「并列取最小下标」挑，于是选出**另一个 token**。
+        # 实测（随机 logits、量级同真模型）：词表 64 时 0.67% 的行会不一致、
+        # 词表 151936 时 2.56%——不是理论风险，是每几百行撞一次。
+        # 「投机不改变结果」是本关最硬的一条保证，所以这一次转换不能省。
+        # （FP32 输入时 `.to()` 直接返回自身，不复制；BF16 时整批一次转换，不是每请求一次。）
         greedy = torch.argmax(logits.to(torch.float32), dim=-1).tolist()
         for item in picked:
             start = item["sample_offset"]
