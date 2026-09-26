@@ -1,20 +1,20 @@
 # step52：单请求贪心 n-gram 投机解码
 
 - 对应代码：`step52/`（新增，从 `step51/` 复制，入口改名 `step52.py`）
-- 包摘要 SHA256：`13fe989556deedcc…`（16 个 .py / 3790 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`3673bfcf660aae0f…`（16 个 .py / 3723 行，验收方 `source_digest()` 口径）
 - 基线：`step51/`，指纹 `7115f26936cf9472…`（15 个 .py / 3425 行），原样保留未改
 - **改动 5 个文件 + 新增 1 个**：
 
 | 文件 | 改动 |
 |---|---|
 | `speculative.py`（新增，130 行） | 两个纯函数：`propose_ngram()` 提议、`verify_drafts()` 验证 + `DraftVerification` |
-| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**，并删掉 `_plan_tokens()` 里已成死代码的 `num_uncomputed == 0` 兜底（§1.8） |
-| `cache.py` | 新增 `truncate()`（回滚 KV）与 `can_grow()`（只读容量查询） |
-| `engine.py` | 投机配置与组合校验；`_sample_plan()` 改为「每个请求取几行」；`_commit_tokens()` / `_commit_drafts()` 拆出提交点 |
+| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**（§1.8）；**删掉 `preemption_mode` 参数与 `num_uncomputed == 0` 兜底**（§1.9） |
+| `cache.py` | 新增 `truncate()`（回滚 KV）与 `can_grow()`（只读容量查询）；**删掉 `over_subscribe`、`_available_blocks()` 与承诺额度记账**（§1.9） |
+| `engine.py` | 投机配置与组合校验；`_sample_plan()` 改为「每个请求取几行」；`_commit_tokens()` / `_commit_drafts()` 拆出提交点；**删掉 `preemption_mode` 与相关的两条组合校验**（§1.9） |
+| `request.py` | 删掉 `promised_blocks` 字段（§1.9） |
 | `__init__.py`、`step52.py` | 包说明、入口改名 |
 
-`request.py`、`model.py`、`attention.py`、`norm.py`、`rope.py`、`sampling.py`、`sampler.py`、
-`formats/` 未改。
+`model.py`、`attention.py`、`norm.py`、`rope.py`、`sampling.py`、`sampler.py`、`formats/` 未改。
 
 ## 0. 需求大概
 
@@ -238,6 +238,77 @@ if prefill_token_budget == 0:                          # 改之后
 删的同时留了注释说明为什么不变量成立，并加了回归用例：`max_num_batched_tokens=1/2`
 的预算压力下，计划里不允许出现 0 token 的项。
 
+### 1.9 抢占不再有模式开关：删掉 `preemption_mode` 与 `over_subscribe`
+
+**起因**：`preemption_mode` 在调度器里其实是**死状态**——`self.preemption_mode` 写了
+从来没人读，真正决定行为的是池子的 `over_subscribe`。也就是说这个「模式」早就退化成
+「一个用来推导布尔量的参数」，却让两块互不相干的代码（请求准入记账 / 抢占策略）看起来
+绑在一起，还顺带允许了「承诺式的调度器 + 超卖的池子」这种自相矛盾、又不报错的组合。
+
+**vLLM V1 没有这个开关**（0.28 全包 `grep preemption_mode` 零命中）。抢占是无条件的：
+
+```python
+while True:
+    new_blocks = self.kv_cache_manager.allocate_slots(request, num_new_tokens, ...)
+    if new_blocks is not None:
+        break
+    # The request cannot be scheduled. Preempt the lowest-priority request.
+    if self.policy == SchedulingPolicy.PRIORITY:
+        preempted_req = max(self.running, key=lambda r: (r.priority, r.arrival_time))
+    else:
+        preempted_req = self.running.pop()
+    self._preempt_request(preempted_req, ...)
+    if preempted_req == request:
+        break
+```
+
+牺牲者的选法（`(priority, arrival_time)` / 尾部一条）、抢占后的处理
+（`num_computed_tokens = 0` 全量重算、`waiting.prepend_request()` 插队首）、
+连 `policy: "fcfs" | "priority"` 无条件可用——都和我们的实现同构。V0 时代有过
+`preemption_mode: "swap" | "recompute"`，V1 把 swap 删掉，开关也一起没了。
+
+**删掉的东西**：
+
+| 位置 | 内容 |
+|---|---|
+| `Engine` | `preemption_mode` 参数（两个入口）、`_check_preemption_mode()`、`_check_scheduling_policy()` 里的 priority 闸门、`self.preemption_mode` |
+| `Scheduler` | `preemption_mode` 参数与 `self.preemption_mode`（本来就是死状态） |
+| `KVCachePool` | `over_subscribe` 参数、`_available_blocks()`、`promised_blocks` 的全部记账（`_plan_admission()` 的容量检查、`_commit_admission()` / `_commit_block_growth()` / `deallocate_block()` 里的增减） |
+| `SequenceConfig` | `promised_blocks` 字段 |
+| `_plan_block_growth()` | 承诺式那句「准入记账出错了」的 `raise`——现在不够就返回 `None` |
+
+**保留 `InfeasibleRequest`**：它判的是「这条请求**单独跑**装不装得下」，与容量策略无关
+——装不下就是装不下，谁让路都没用。删掉它，这种请求会永远排不动，最后撞上零进展守卫。
+
+**准入现在只判一件事**：`max_request_blocks > num_kv_blocks` 就拒绝。所以池子小的时候
+可以准入超过池子容量的请求数，不够时靠抢占腾——和 vLLM 一样。
+
+**行为影响**（默认配置、fcfs、同 seed 同请求）：
+
+最小的一例——池子 6 块、`block_size=4`、`max_num_seqs=2`，两条请求各要 4 块：
+
+| | 旧默认（承诺式） | 新默认（无条件抢占） |
+|---|---|---|
+| 准入 | A 锁 4 块 → B 只剩 2 块不够 → B 一直等 | A、B 都进来，按需拿块 |
+| 过程 | A 独占跑完，B 再跑 | B 被抢占 1 次、重算 |
+| 目标 forward 次数 | 12 | **10** |
+| 输出 | `A=[…] B=[…]` | **逐 token 相同** |
+
+**输出永远相同**：抢占只改「什么时候算」，不改模型算什么。
+
+| 扫描 | 结果 |
+|---|---|
+| 288 组 fcfs 配置（其中 102 组真的发生过抢占） | 输出、完成顺序、结束态资源**全部一致** |
+| 160 组刻意压小的池子（1~4 块） | 完全一致 |
+| 90 组 fcfs 配置的步数汇总 | 新默认更少 18 组、相同 72 组、**更多 0 组**（合计 −57 步） |
+
+**这是一次行为变更，而且是默认配置上的**：承诺式是第三十六到四十三关的历史行为，
+step44~51 的验收都以它为基线。旧行为现在只能从旧包里拿到（`step51/` 及更早原样保留），
+step52 起没有开关可以还原——这正是我们想要的（一个已经不存在的模式不该留个开关假装还在）。
+逐块对照脚本 `diff_step51_step52.py` 因此改成给 step51 显式传
+`preemption_mode="recompute"`，再和 step52 比：11 个场景 × 2 seed **全部逐项一致**，
+这同时也就是「删干净了、没有顺手改坏别的东西」的证据。
+
 ## 2. 不变量
 
 ```text
@@ -246,6 +317,8 @@ len(all_token_ids) == len(prompt_ids) + len(output_ids)
 cache.length - start_cache_length <= kept_inputs  只保留被认可的输入
 len(block_table) == ceil(cache.length / block_size)
 ```
+
+§1.9 之后**没有「已承诺额度」这条不变量了**——准入不再锁未来容量，账本随之消失。
 
 **投机每一步之后仍满足 `num_uncomputed_tokens == 1`**——这是它能连续投机的根据：
 全部接受时 `cache.length` 与历史同步推进 `K+1`，首枚拒绝时只推进 1 而历史也只长 1。
@@ -296,12 +369,17 @@ len(block_table) == ceil(cache.length / block_size)
 普通贪心要 12 步）。这是本关最强的一条检查——接受也好拒绝也好，提交的永远是目标
 模型自己的贪心 token，所以投机**不能**改变结果。
 
-### 3.3 默认模式不改行为（`benchmarks/diff_step51_step52.py`，88 项全通过）
+### 3.3 抢占：与旧的重算模式逐字节一致（`benchmarks/diff_step51_step52.py`，88 项全通过）
 
 11 个场景 × 2 seed，逐步比较调度队列、本轮计划（含 `draft_ids`）、输入 token、
-完成输出、每请求计数、承诺与引用、**物理块编号**、**每请求 hash 链**、结束态。
-不开投机时 step52 与 step51 应当逐字节一致，所以这里**没有放宽字段**——比第五十
-一关的对照更强。
+完成输出、每请求计数、抢占计数、**物理块编号**、**每请求 hash 链**、结束态。
+
+§1.9 之后 step52 不再接受 `preemption_mode`，所以脚本给 **step51 显式传
+`preemption_mode="recompute"`**，再和 step52 比——两者应当逐字节一致，**没有放宽
+任何字段**。这一条同时是 §1.9「删干净了、没有顺手改坏别的东西」的证据：
+删掉的那一堆记账在重算模式下本来就都是空操作。
+
+（与 step51 的**默认**配置相比则不再一致：§1.9 有量化对比。）
 
 ### 3.4 设备与精度
 
@@ -330,17 +408,27 @@ len(block_table) == ceil(cache.length / block_size)
 token 数（投机时是 `K+1`），不是「验证后留下的 token 数」——后者要看
 `cache.length - start_cache_length`。
 
-**行为变化**：分成两类。
+**删除的参数**（传了会 `TypeError`，**不静默忽略**——一个已经不存在的开关不该假装还在）：
+
+- `Engine(...)` / `from_model_dir(...)` 的 `preemption_mode`；
+- `KVCachePool(...)` 的 `over_subscribe`；
+- `Scheduler(...)` 的 `preemption_mode`（本来就是死状态）；
+- `SequenceConfig.promised_blocks`、`KVCachePool.promised_blocks`、`KVCachePool._available_blocks()`。
+
+**行为变化**：分成三类。
 
 1. 只与投机有关的：只在 `speculative_mode="ngram"` 时发生，且该模式的合法组合被
-   明确限定（见 §2 与 §4.2）。默认 `None` 时逐字节等同 step51（§3.3）。
-2. **与投机无关、所有模式都生效**：`add_request()` 现在拒绝
-   `prompt_ids=[]`（含与 `max_new_tokens=0` 的组合）、`prompt_ids` 里的非整数
-   （bool 不算）或越界值、不可迭代的 `prompt_ids`、负的 `max_new_tokens`。
-   这几种输入以前分别是「静默消失 / 静默截断 / IndexError / 守卫兜底报错」，
-   见 §1.8 的对照表。`max_new_tokens=0` 仍然合法。
+   明确限定（见 §4.2）。`speculative_mode=None` 时投机相关的代码一行都不走。
+2. **抢占变成无条件的**（§1.9）：默认配置下不再有「准入时按最坏情况锁未来块」的行为。
+   step52 的行为等价于「step51 + `preemption_mode='recompute'`」，与 step51 的**默认**
+   配置在池子小的时候不同（输出相同，步数与抢占次数可能不同）。要旧默认行为请用旧包。
+3. **与两者都无关、所有配置都生效**：`add_request()` 现在拒绝 `prompt_ids=[]`
+   （含与 `max_new_tokens=0` 的组合）、`prompt_ids` 里的非整数（bool 不算）或越界值、
+   不可迭代的 `prompt_ids`、负的 `max_new_tokens`。这几种输入以前分别是
+   「静默消失 / 静默截断 / IndexError / 守卫兜底报错」，见 §1.8 的对照表。
+   `max_new_tokens=0` 仍然合法。
 
-**未改**：默认模式下的调度与优先级、KV 准入与淘汰、prefix hash 算法与命中规则、
+**未改**：调度顺序与优先级规则、KV 按需分配与淘汰、prefix hash 算法与命中规则、
 采样结果、模型；`_shrink_draft()` 之外没有新的分配路径。
 
 ### 4.2 遗留
@@ -348,10 +436,17 @@ token 数（投机时是 `K+1`），不是「验证后留下的 token 数」—�
 1. **只做单请求**：`max_num_seqs=1`，`_sample_plan()` 不做「多个请求各要不同行数」的
    混合行映射（结构上支持「每个请求若干行」，但只被单请求验证过）。
 2. **只做贪心**：随机采样下「接受」的判定需要按概率比决定，本关明确拒绝非贪心请求。
-3. **不做前缀缓存 / 抢占 / CUDA Graph 的组合**：那几块要么会与「被拒绝草稿的 KV」
-   相互影响（prefix），要么与行映射冲突（graph），先把最小闭环站稳。
+3. **不做前缀缓存 / CUDA Graph 的组合**：那几块要么会与「被拒绝草稿的 KV」相互影响
+   （prefix），要么与行映射冲突（graph），先把最小闭环站稳。（抢占那条限制随 §1.9
+   一起取消：`max_num_seqs=1` 已经蕴含不会发生抢占——running 里只有一条请求，
+   fcfs 下既没有更靠后的犠牲者，也不存在「顶掉名额」。）
 4. **提议只有 n-gram**：没有 draft model、没有 EAGLE/Medusa 之类；
    `propose_ngram` 是线性扫描，长历史下应当换哈希索引（本关先不动）。
 5. **不做异步提议、不做 `k` 的自适应**：K 固定由配置与四个上限决定，
    不按历史接受率调整。
 6. **不承诺加速**：本关没有吞吐矩阵，步数只是目标 forward 次数。
+7. **准入侧没有缓冲旋钮**：§1.9 之后池子很小时可以准入超过容量的请求数，靠抢占腾地方。
+   vLLM 用 `scheduler_reserve_full_isl`（准入前检查整个 prompt 装不装得下）和
+   `watermark`（留一部分块不参与准入）缓解这种 thrashing，我们两个都没有。
+   本关的压测（1500 组刻意压小的池子）没有出现活锁或资源异常，但那是功能性结论，
+   不是「不会有 thrashing」的性能结论。

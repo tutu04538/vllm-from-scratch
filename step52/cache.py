@@ -1,6 +1,11 @@
 """KV 缓存池：分块存储、slot 寻址、前缀缓存与 LRU 淘汰。
 
 这一层管的是「物理块放在哪、谁还在引用它」，不管 attention 怎么算。
+
+**池子不做容量准入**：准入只判「这条请求单独跑装不装得下」（装不下就抛
+`InfeasibleRequest`，谁也帮不了它），块在真正排到 token 时才按需补。池子不够时
+`ensure_blocks()` 返回 False，由 `Scheduler` 选犧牲者——那是调度决策，池子不认识
+优先级，也不该替调度器做决定。
 """
 
 import hashlib
@@ -52,12 +57,7 @@ def _stable_hash(previous_hash: bytes, block: tuple[int, ...]) -> bytes:
 class KVCachePool:
 
     def __init__(self, block_size, num_kv_blocks, num_kv_heads, head_dim, device,
-                 enable_prefix_caching=True, num_layers=1, dtype=torch.float32,
-                 over_subscribe=False):
-        # over_subscribe：允许容量超卖（recompute 模式）。关掉按最坏情况承诺未来块，
-        # 准入只判断「这条请求单独跑是否可行」，块在真正排到 token 时才补。
-        # 代价是池子可能不够——那时由 Scheduler 选犧牲者，池子本身不做这个决定。
-        self.over_subscribe = over_subscribe
+                 enable_prefix_caching=True, num_layers=1, dtype=torch.float32):
         self.block_size = block_size
         self.num_kv_blocks = num_kv_blocks
         self.num_kv_heads = num_kv_heads
@@ -104,9 +104,6 @@ class KVCachePool:
         self.enable_prefix_caching = enable_prefix_caching
         self.hash_to_block = {}  # 前缀 hash -> 该块物理块编号
         self.block_to_hash = {}  # 物理块编号 -> 仍保留它的缓存条目 hash
-        # 所有活动请求已承诺、但还没真正分配出去的块数之和。
-        # 准入要扣掉它，否则多条请求会各自按「当前空闲」判断，合起来超额承诺。
-        self.promised_blocks = 0
 
     # ---- 可分配块的双向链表 ----
     #
@@ -206,26 +203,16 @@ class KVCachePool:
     #
     # 分两层，别混在一起：
     #
-    #   准入（allocate_block）  用**最坏情况**判断这条请求能不能跑完，并按块数「承诺」额度。
-    #                           承诺是记账，不占物理块——所以一条刚进来的请求占用块数是 0。
+    #   准入（allocate_block）  只判「这条请求**单独跑**装不装得下」——装不下就抛
+    #                           InfeasibleRequest，那是谁也帮不了它的请求。
+    #                           准入**不锁未来容量**：一条刚进来的请求占用块数是 0。
     #   生长（ensure_blocks）   真正要写 KV 之前，按这一轮要写的 token 数补物理块。
     #
-    # 为什么要保留「准入时按最坏情况记账」：只按需分配、准入不做总量控制的话，
-    # 池子 4 块、两条各需 3 块的请求会各自拿 1 块起步，然后同时卡在长第 3 块上——
-    # 零进展且无错误。现在这套「承诺额度」把总量卡住，任何已接纳的请求都能长到它承诺的量。
-
-    def _available_blocks(self, exclude=()):
-        # 现在能拿到的块数：直接空闲 + 可淘汰的闲置缓存，再扣掉别人已承诺还没用的。
-        # exclude 是本条请求「本次就要借用的命中前缀块」——它们的引用计数要等检查通过
-        # 才加上去，此刻看起来还是「活动引用为 0 的闲置缓存」，不排掉就会把
-        # 马上要用的块算成可用，准入因此偏松。
-        # 可分配总数直接取链表长度；exclude 里那些「马上要被本请求借走」的块
-        # 引用计数还是 0、此刻仍在链上，必须从可用量里扣掉。
-        available = self.num_allocatable
-        for block_idx in exclude:
-            if self._in_alloc_list(block_idx):
-                available -= 1
-        return available - self.promised_blocks
+    # 为什么不锁：块是稀缺资源，未来会不会真的用到那么长谁也说不准。按最坏情况预留在
+    # 账面，短请求会替长请求白占容量；池子不够时也不是死路——让调度器选一条犧牲者
+    # 把块腾出来就行（vLLM V1 就是这么做的，它连「抢占模式」这个开关都没有）。
+    # 代价是池子可能真的不够，那时 `ensure_blocks()` 返回 False，由 `Scheduler` 决定
+    # 谁让路——这个决定依赖优先级，只有调度器做得了。
 
     # ---- 准入：先计划、后提交 ----
 
@@ -240,7 +227,7 @@ class KVCachePool:
     def _plan_admission(self, seq: SequenceConfig):
         """只读地判断这条请求能不能准入。
 
-        - 不改块引用、不改 LRU、不改块表 / cache.length / reused_tokens / 承诺；
+        - 不改块引用、不改 LRU、不改块表 / cache.length / reused_tokens；
         - 返回 None 表示「暂时不够」；
         - 不可能完成时抛 InfeasibleRequest（单独跑也装不下，谁也帮不了它）。
         """
@@ -269,13 +256,10 @@ class KVCachePool:
                 f"（prompt {len(seq.prompt_ids)} + 输出上限 {seq.max_new_tokens} 个 token，"
                 f"block_size={self.block_size}），而整个 KV 池只有 {self.num_kv_blocks} 块。"
                 f"当前池子：空闲 {len(self._free_block_indices())} 块、"
-                f"闲置缓存 {len(self._evictable_block_indices())} 块、"
-                f"他人已承诺 {self.promised_blocks} 块；命中的前缀块 "
-                f"{len(matched_block_ids)} 块（命中不减需求：命中的块同样占物理块）。"
+                f"闲置缓存 {len(self._evictable_block_indices())} 块；"
+                f"命中的前缀块 {len(matched_block_ids)} 块"
+                f"（命中不减需求：命中的块同样占物理块）。"
                 f"请调大 num_kv_blocks，或调小这条请求的 max_new_tokens")
-        if not self.over_subscribe and required_new_blocks > self._available_blocks(
-                exclude=set(matched_block_ids)):
-            return None
 
         return AdmissionPlan(matched_block_ids, matched_hashes, required_new_blocks)
 
@@ -292,10 +276,6 @@ class KVCachePool:
         seq.block_hashes = list(plan.matched_hashes)
         # 到这里才真的借到
         seq.reused_tokens += len(plan.matched_block_ids) * self.block_size
-        if not self.over_subscribe:
-            # 超卖模式下什么都不锁：未来容量靠抢占腾，不靠账面预留
-            seq.promised_blocks = plan.required_new_blocks
-            self.promised_blocks += plan.required_new_blocks
 
     # ---- 本轮补块：先计划、后提交 ----
 
@@ -322,17 +302,11 @@ class KVCachePool:
         闲置缓存块，那些在提交阶段就地清掉 hash。
 
         **绝不为了「试一试」先淘汰**：计划阶段只读，不改链表、不删 hash、不动引用。
-        承诺式下容量不足仍然报记账错误（承诺保证这个分支不可达）；超卖模式返回 None。
+        不够就返回 None，让调度器决定谁让路。
         """
         block_ids = self._peek_allocatable(num_missing_blocks)
         if len(block_ids) < num_missing_blocks:
-            if self.over_subscribe:
-                return None
-            raise RuntimeError(
-                f"请求 {seq.request_id!r} 想补 {num_missing_blocks} 块但链上只有 "
-                f"{len(block_ids)} 个可分配块；它承诺了 {seq.promised_blocks} 块，"
-                f"池子 {self.num_kv_blocks} 块，全局已承诺 {self.promised_blocks} 块"
-                f"——准入记账出错了")
+            return None
         return BlockGrowthPlan(block_ids)
 
     def _commit_block_growth(self, seq: SequenceConfig, plan: BlockGrowthPlan):
@@ -344,13 +318,6 @@ class KVCachePool:
             self._evict_hash_if_cached(block_idx)
             self.block_usage[block_idx] = 1
         seq.cache.block_table.extend(plan.new_block_ids)
-        if not self.over_subscribe:
-            # 承诺式：「已承诺额度」在这里换成真实块，两个计数同步递减。
-            # 超卖模式准入时根本没承诺过，这里减 num_missing_blocks 会把账本减成
-            # 负数——结束时减去负数恰好回到 0，所以只有逐步检查才发现得了。
-            num_committed = len(plan.new_block_ids)
-            seq.promised_blocks -= num_committed
-            self.promised_blocks -= num_committed
 
     def can_grow(self, seq: SequenceConfig, num_new_tokens: int):
         """只读地问一句：现在能不能补出这么多块。**不改任何状态**。
@@ -391,16 +358,11 @@ class KVCachePool:
 
     def deallocate_block(self, seq: SequenceConfig):
         # 只释放本请求持有的全部活动引用；已登记的缓存条目继续保留为闲置缓存
-        # 还没用掉的承诺额度也要一并还回去，否则池子会被账面占满
-
         for block_idx in seq.cache.block_table:
             self.block_usage[block_idx] -= 1
             if self.block_usage[block_idx] == 0:
                 # 引用降到 0：无 hash 的放队首（优先复用），带 hash 的放队尾（后淘汰）
                 self._release_block(block_idx)
-        # 还没用掉的承诺额度一并还回去。超卖模式下它恒为 0，这里是空操作。
-        self.promised_blocks -= seq.promised_blocks
-        seq.promised_blocks = 0
 
     def publish_computed_blocks(self, seq: SequenceConfig):
         """把「已经算完、KV 确实写进了物理块」的完整块登记为可复用。

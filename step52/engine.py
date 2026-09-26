@@ -25,41 +25,27 @@ MODEL_TYPE = native.MODEL_TYPE
 MODEL_DTYPE = native.MODEL_DTYPE
 
 
-PREEMPTION_MODES = (None, "recompute")
 SCHEDULING_POLICIES = ("fcfs", "priority")
 SPECULATIVE_MODES = (None, "ngram")
 
 
-def _check_preemption_mode(preemption_mode):
-    # 只认两种模式；写法错误在构造阶段就报出来，不要等到运行时才变成怪行为。
-    #
-    # 第四十六关起不再限制「recompute 必须配 enable_prefix_caching=False」：
-    # 恢复时可以先复用仍然在缓存里的完整块，只重算剩下的历史，两者不再冲突。
-    # 所以这里只校验模式本身，组合交给各层按自己的开关工作。
-    if preemption_mode not in PREEMPTION_MODES:
-        raise ValueError(f"未知的 preemption_mode: {preemption_mode!r}，"
-                         f"可选 None（承诺式）或 'recompute'")
-
-
-def _check_scheduling_policy(scheduling_policy, preemption_mode):
+def _check_scheduling_policy(scheduling_policy):
     if scheduling_policy not in SCHEDULING_POLICIES:
         raise ValueError(f"未知的 scheduling_policy: {scheduling_policy!r}，"
                          f"可选 {list(SCHEDULING_POLICIES)}")
-    if scheduling_policy == "priority" and preemption_mode != "recompute":
-        # 承诺式容量策略不支持强制让位：准入时按最坏情况锁了未来的块，
-        # 高优先级请求顶掉别人会把那份承诺作废。明确报错，不静默降级成 fcfs。
-        raise ValueError("scheduling_policy='priority' 只支持 preemption_mode='recompute'；"
-                         f"当前 preemption_mode={preemption_mode!r}")
 
 
 def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
-                       max_num_seqs, scheduling_policy, preemption_mode,
-                       enable_prefix_caching, attention_backend, use_cuda_graph):
+                       max_num_seqs, scheduling_policy, enable_prefix_caching,
+                       attention_backend, use_cuda_graph):
     """投机解码的开关与组合校验。
 
     第五十二关把 n-gram 模式**明确限制**在最小闭环需要的那组配置上：单请求、
-    FCFS、不抢占、无前缀缓存、Torch attention、无 CUDA Graph。不支持的组合
-    直接报错，不悄悄退化成普通解码——那会让人以为自己在测投机。
+    FCFS、无前缀缓存、Torch attention、无 CUDA Graph。不支持的组合直接报错，
+    不悄悄退化成普通解码——那会让人以为自己在测投机。
+
+    （`max_num_seqs=1` 已经蕴含不会发生抢占：running 里只有一条请求，既没有更
+    靠后的犠牲者可选，fcfs 下也不存在「顶掉名额」。所以不需要再单独限制抢占。）
     """
     if speculative_mode not in SPECULATIVE_MODES:
         raise ValueError(f"未知的 speculative_mode: {speculative_mode!r}，"
@@ -73,7 +59,6 @@ def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n
     unsupported = [
         (max_num_seqs != 1, f"max_num_seqs 必须是 1（本关只做单请求），当前 {max_num_seqs}"),
         (scheduling_policy != "fcfs", f"scheduling_policy 只能是 'fcfs'，当前 {scheduling_policy!r}"),
-        (preemption_mode is not None, f"preemption_mode 必须是 None（本关不做抢占），当前 {preemption_mode!r}"),
         (enable_prefix_caching, "enable_prefix_caching 必须关闭"),
         (attention_backend != "torch", f"attention_backend 只能是 'torch'，当前 {attention_backend!r}"),
         (use_cuda_graph, "use_cuda_graph 必须关闭"),
@@ -157,15 +142,14 @@ class Engine:
                  num_layers=2, intermediate_size=64, rms_norm_eps=1e-6, rope_theta=10000.0,
                  head_dim=None, use_qk_norm=False, eos_token_ids=None, dtype=torch.float32,
                  norm_backend="torch", rope_backend="torch", model=None, *, on_token=None,
-                 preemption_mode=None, scheduling_policy="fcfs",
+                 scheduling_policy="fcfs",
                  speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
         # on_token 是 keyword-only：它放在**所有旧参数之后**，旧的位置参数一个都没挪位。
         # 插在中间会让 Engine(..., None, False) 里的 False 从 enable_prefix_caching
         # 变成 on_token —— Python 按位置配对，不会知道调用者的原意。
         # model 给定时用它，不再按上面的维度参数随机初始化（加载路径走这里）
         # 后端与 Graph 开关也以模型上的为准，避免两边不一致
-        _check_preemption_mode(preemption_mode)
-        _check_scheduling_policy(scheduling_policy, preemption_mode)
+        _check_scheduling_policy(scheduling_policy)
         if model is None:
             device = _resolve_device(device)
             _check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend,
@@ -182,12 +166,12 @@ class Engine:
                                  rope_backend=rope_backend)
 
         self._init_runtime(model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
-                           on_finished, enable_prefix_caching, on_token, preemption_mode,
+                           on_finished, enable_prefix_caching, on_token,
                            scheduling_policy, speculative_mode, num_speculative_tokens,
                            prompt_lookup_n)
 
     def _init_runtime(self, model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
-                      on_finished, enable_prefix_caching, on_token=None, preemption_mode=None,
+                      on_finished, enable_prefix_caching, on_token=None,
                       scheduling_policy="fcfs", speculative_mode=None,
                       num_speculative_tokens=2, prompt_lookup_n=2):
         # 模型已经就位（随机初始化或从目录加载），这里只装运行时：元数据、KV 池、调度器
@@ -196,7 +180,7 @@ class Engine:
                        model.norm_backend, model.rope_backend)
         # 组合校验放在这里：模型已经就位，attention 后端与 Graph 开关都以它为准
         _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
-                           max_num_seqs, scheduling_policy, preemption_mode,
+                           max_num_seqs, scheduling_policy,
                            enable_prefix_caching, model.attention_backend, model.use_cuda_graph)
 
         self.model = model
@@ -206,7 +190,6 @@ class Engine:
         self.device = device
         self.attention_backend = model.attention_backend
         self.enable_prefix_caching = enable_prefix_caching
-        self.preemption_mode = preemption_mode
         self.scheduling_policy = scheduling_policy
         self.speculative_mode = speculative_mode
 
@@ -221,14 +204,10 @@ class Engine:
 
         self.kv_cache_pool = KVCachePool(block_size, num_kv_blocks, model.num_kv_heads,
                                          model.head_dim, device, self.enable_prefix_caching,
-                                         num_layers=model.num_layers, dtype=model.dtype,
-                                         # recompute 模式允许超卖：准入不锁未来块，
-                                         # 不够时由 Scheduler 选犠牲者腾地方
-                                         over_subscribe=(preemption_mode == "recompute"))
+                                         num_layers=model.num_layers, dtype=model.dtype)
         # 增量输出回调。不传就是 None —— 那时 _sample 里连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
-                          preemption_mode=preemption_mode,
                           scheduling_policy=scheduling_policy,
                           speculative_mode=speculative_mode,
                           num_speculative_tokens=num_speculative_tokens,
@@ -241,12 +220,11 @@ class Engine:
                        max_num_seqs=1, max_num_batched_tokens=4, block_size=4, num_kv_blocks=8,
                        on_finished=None, enable_prefix_caching=True, dtype=torch.float32,
                        norm_backend="torch", rope_backend="torch", *, on_token=None,
-                       preemption_mode=None, scheduling_policy="fcfs",
+                       scheduling_policy="fcfs",
                        speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
         # 外部配置只读一次：适配器选出来之后，配置和权重都交给它翻译。
-        _check_preemption_mode(preemption_mode)
-        _check_scheduling_policy(scheduling_policy, preemption_mode)
+        _check_scheduling_policy(scheduling_policy)
         adapter, raw, generation = read_raw_config(model_dir)
         config = adapter.to_internal_config(raw, generation)
 
@@ -261,7 +239,7 @@ class Engine:
                    max_num_batched_tokens=max_num_batched_tokens, block_size=block_size,
                    num_kv_blocks=num_kv_blocks, on_finished=on_finished, on_token=on_token,
                    enable_prefix_caching=enable_prefix_caching,
-                   preemption_mode=preemption_mode, scheduling_policy=scheduling_policy,
+                   scheduling_policy=scheduling_policy,
                    speculative_mode=speculative_mode,
                    num_speculative_tokens=num_speculative_tokens,
                    prompt_lookup_n=prompt_lookup_n)

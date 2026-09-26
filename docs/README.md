@@ -51,4 +51,4 @@
 | [step49_free_block_queue.md](step49_free_block_queue.md) | `step49/`（包） | 空闲 KV 块改队列增量维护：真正空闲路径不再随池子线性扫描 |
 | [step50_idle_lru_index.md](step50_idle_lru_index.md) | `step50/`（包） | 闲置缓存改 vLLM 式单链表 LRU 索引：淘汰不再扫全池，8192 块从 491 μs 降到 0.66 μs |
 | [step51_incremental_history.md](step51_incremental_history.md) | `step51/`（包） | 增量维护完整 token 历史：`_plan_tokens` 13×、发布 32×，并把 prefix 登记时机与 preemption_mode 解耦 |
-| [step52_ngram_speculative.md](step52_ngram_speculative.md) | `step52/`（包） | 单请求贪心 n-gram 投机解码：草稿 → 一次 forward 验证 K+1 行 → 只提交认可的 → 回滚 KV |
+| [step52_ngram_speculative.md](step52_ngram_speculative.md) | `step52/`（包） | 单请求贪心 n-gram 投机解码：草稿 → 一次 forward 验证 K+1 行 → 只提交认可的 → 回滚 KV；抢占改无条件（对齐 vLLM V1） |

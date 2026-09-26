@@ -31,8 +31,25 @@ self._commit_tokens(seq, result.committed_ids, notify)    # 再逐枚提交
 ## 明确限制（不支持的组合直接报错，不静默退化）
 
 `speculative_mode="ngram"` 只支持：`max_num_seqs=1`、`scheduling_policy="fcfs"`、
-`preemption_mode=None`、`enable_prefix_caching=False`、`attention_backend="torch"`、
-`use_cuda_graph=False`，请求必须是贪心且无惩罚项。CPU 与 CUDA/Torch 都可以。
+`enable_prefix_caching=False`、`attention_backend="torch"`、`use_cuda_graph=False`，
+请求必须是贪心且无惩罚项。CPU 与 CUDA/Torch 都可以。
+
+（`max_num_seqs=1` 已经蕴含不会发生抢占：running 里只有一条请求，fcfs 下既没有
+更靠后的犠牲者可选，也不存在「顶掉名额」。）
+
+## 抢占不再有模式开关
+
+删掉了 `preemption_mode` 与 `KVCachePool.over_subscribe`：**抢占是无条件的**，和 vLLM V1
+一致（0.28 全包 `grep preemption_mode` 零命中）。准入只判「这条请求单独跑装不装得下」，
+不再按最坏情况锁未来容量；不够时 `ensure_blocks()` 返回 False，由调度器从尾部选犧牲者
+（priority 模式按 `(priority, arrival_order)`）。
+
+顺带发现：`Scheduler.preemption_mode` 本来就是**死状态**——写了从来没人读，真正的开关
+一直是池子的 `over_subscribe`。
+
+代价与收益（默认配置、fcfs）：池子 6 块、两条各要 4 块的请求，旧默认让 B 一直等到 A
+跑完（12 次目标 forward），新默许两条并行、B 被抢占一次（10 次），**输出逐 token 相同**。
+288 组配置里输出/完成序/结束态全部一致；90 组步数汇总里新默认更少 18、相同 72、更多 0。
 
 ## 顺带：请求内容的入口校验
 
@@ -56,7 +73,7 @@ self._commit_tokens(seq, result.committed_ids, notify)    # 再逐枚提交
 |---|---|
 | `benchmarks/check_step52_speculative.py`：纯函数 + 回滚 + 配置校验 | **53 项全通过** |
 | `benchmarks/check_step52_engine.py`：脚本模型定点用例 + 真模型等价性 + 回滚不变量 + 入口校验 | **40 项全通过** |
-| `benchmarks/diff_step51_step52.py`：不开投机时与 step51 逐步对照 | **88 项全通过**（11 场景 × 2 seed） |
+| `benchmarks/diff_step51_step52.py`：与 step51 的重算模式逐步对照 | **88 项全通过**（11 场景 × 2 seed，未放宽任何字段） |
 | CPU FP32 / CUDA FP32 / CUDA BF16 | 三者输出一致，投机 8 步 vs 普通 14 步 |
 
 关键用例（脚本模型固定目标输出，KV 与位置仍由真实现推进）：

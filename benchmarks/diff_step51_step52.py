@@ -36,9 +36,11 @@ DIMS = dict(vocab_size=64, d_model=16, max_seq_len=64, num_q_heads=2, num_kv_hea
 def build(cls, seed, **kw):
     torch.manual_seed(seed)
     cfg = dict(max_num_seqs=2, max_num_batched_tokens=8, block_size=4, num_kv_blocks=8,
-               enable_prefix_caching=False, preemption_mode="recompute",
-               scheduling_policy="fcfs")
+               enable_prefix_caching=False, scheduling_policy="fcfs")
     cfg.update(kw)
+    if cls is Engine51:
+        # step51 需要显式打开抢占；step52 起抢占是无条件的，不接受这个参数
+        cfg.setdefault("preemption_mode", "recompute")
     return cls(device="cpu", **cfg, **DIMS)
 
 
@@ -110,7 +112,7 @@ def _alloc_chain(pool):
 def summarize(e):
     s = e.scheduler
     return {
-        "promised_pool": s.kv_cache_pool.promised_blocks,
+
         "usage_zero": all(u == 0 for u in s.kv_cache_pool.block_usage),
         "hash_consistent": all(s.kv_cache_pool.block_to_hash.get(b) == h
                                for h, b in s.kv_cache_pool.hash_to_block.items())
@@ -148,8 +150,7 @@ SCENARIOS = [
                                  num_kv_blocks=16), {0: REQS, 2: [HIGH]}),
     ("priority / max_num_seqs=1", dict(scheduling_policy="priority", max_num_seqs=1,
                                        num_kv_blocks=8), {0: REQS, 3: [HIGH]}),
-    ("fcfs / 承诺式 + prefix 开", dict(preemption_mode=None, num_kv_blocks=8,
-                                      enable_prefix_caching=True), {0: REQS}),
+    ("fcfs / prefix 开 + 抢占", dict(num_kv_blocks=5, enable_prefix_caching=True), {0: REQS}),
 ]
 
 for label, kw, plan in SCENARIOS:
@@ -166,8 +167,8 @@ for label, kw, plan in SCENARIOS:
         s51, s52 = summarize(engines[0]), summarize(engines[1])
         check(f"{label}（seed={seed}）：结束时状态一致", s51 == s52,
               "" if s51 == s52 else f"\n  51={s51}\n  52={s52}")
-        check(f"{label}（seed={seed}）：引用与承诺归零、可分配链与真实空闲一致",
-              s52["promised_pool"] == 0 and s52["usage_zero"] and s52["hash_consistent"]
+        check(f"{label}（seed={seed}）：引用归零、可分配链与真实空闲一致",
+              s52["usage_zero"] and s52["hash_consistent"]
               and s52["running_empty"]
               and set(_alloc_chain(engines[1].kv_cache_pool))
               == set(engines[1].kv_cache_pool._allocatable_block_indices()), str(s52))

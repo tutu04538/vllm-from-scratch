@@ -85,8 +85,6 @@ class SequenceConfig:
         self.cache = CacheConfig()
         self.block_size = block_size  # Size of each block in the KV cache
         self.block_hashes = []  # 本请求已确定的前缀块 hash 链，命中时从缓存里的前缀接上
-        # 准入时按最坏情况承诺、还没分配出去的块数；随 ensure_blocks 递减、随释放归还
-        self.promised_blocks = 0
         # 采样参数与状态跟着请求走，不跟着 batch 行号走
         self.sampling_params = sampling_params
         self.sampling_state = sampling_state

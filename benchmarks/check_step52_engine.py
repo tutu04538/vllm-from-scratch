@@ -64,7 +64,7 @@ class ScriptedModel:
 def build(pkg, seed, script, **cfg):
     """同一个 seed 造出同一个内层模型，外面套脚本模型。"""
     base = dict(max_num_seqs=1, max_num_batched_tokens=8, block_size=4, num_kv_blocks=16,
-                enable_prefix_caching=False, preemption_mode=None, scheduling_policy="fcfs")
+                enable_prefix_caching=False, scheduling_policy="fcfs")
     base.update(cfg)
     torch.manual_seed(seed)
     inner = pkg.TinyCausalLM(device="cpu", attention_backend="torch",
@@ -117,7 +117,7 @@ def pool_ok(pool):
     return (len(out) == len(set(out)) and set(out) == set(pool._allocatable_block_indices())
             and pool.num_allocatable == len(out)
             and all(u == 0 for u in pool.block_usage)
-            and not pool.hash_to_block and pool.promised_blocks == 0)
+            and not pool.hash_to_block)
 
 
 SPEC = dict(speculative_mode="ngram", num_speculative_tokens=2, prompt_lookup_n=2)
@@ -229,7 +229,7 @@ check("上下文将满：输出仍然正确（被压短的只是草稿）",
 REAL_PROMPT = [3, 1, 4, 1, 5, 9, 2, 6] * 3     # 重复片段多，n-gram 更容易命中
 REAL_REQUEST = {"request_id": "R", "prompt_ids": REAL_PROMPT, "max_new_tokens": 12}
 REAL_CFG = dict(max_num_seqs=1, max_num_batched_tokens=8, block_size=4, num_kv_blocks=16,
-                enable_prefix_caching=False, preemption_mode=None, scheduling_policy="fcfs")
+                enable_prefix_caching=False, scheduling_policy="fcfs")
 
 
 def real_run(pkg, seed, **cfg):

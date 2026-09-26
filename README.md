@@ -81,7 +81,7 @@ step42/          说明该关结论与数据位置（实测数据仍在 benchmar
 | 49 | `step49/`（包，入口 `step49/step49.py`） | 空闲 KV 块改队列增量维护：补块不再扫全池，`_plan_block_growth` 与池子大小无关 |
 | 50 | `step50/`（包，入口 `step50/step50.py`） | 闲置缓存改 vLLM 式单链表 LRU 索引：淘汰不再扫全池，8192 块 491 μs → 0.66 μs |
 | 51 | `step51/`（包，入口 `step51/step51.py`） | 增量维护完整 token 历史：只读视图 + 单一写入点；prefix 登记时机与 `preemption_mode` 解耦 |
-| 52 | `step52/`（包，入口 `step52/step52.py`） | 单请求贪心 n-gram 投机解码：草稿只进本轮计划，目标模型一次 forward 验 K+1 行，拒绝的 KV 撤回 |
+| 52 | `step52/`（包，入口 `step52/step52.py`） | 单请求贪心 n-gram 投机解码：草稿只进本轮计划，目标模型一次 forward 验 K+1 行，拒绝的 KV 撤回；抢占改无条件，删掉 `preemption_mode` / `over_subscribe` |
 
 大致的推进脉络：
 

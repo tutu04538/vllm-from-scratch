@@ -96,10 +96,9 @@ check("行数与草稿数不匹配要报错",
 # ------------------------------------------------ 3. truncate / can_grow
 
 
-def make_pool(num_kv_blocks=8, enable_prefix_caching=False, over_subscribe=False):
+def make_pool(num_kv_blocks=8, enable_prefix_caching=False):
     return KVCachePool(4, num_kv_blocks, 1, 8, torch.device("cpu"),
-                       enable_prefix_caching=enable_prefix_caching, num_layers=1,
-                       over_subscribe=over_subscribe)
+                       enable_prefix_caching=enable_prefix_caching, num_layers=1)
 
 
 def chain_of(pool):
@@ -173,7 +172,7 @@ check("被回滚的整块（从未发布过，因此没有 hash）以「真正�
       and p2.block_usage[released] == 0 and released not in p2.block_to_hash)
 
 # can_grow：只读
-p3 = make_pool(num_kv_blocks=4, over_subscribe=True)
+p3 = make_pool(num_kv_blocks=4)
 s3 = SequenceConfig("G", [1, 2, 3, 4], 8, 4)
 assert p3.allocate_block(s3) and p3.ensure_blocks(s3, 4)
 s3.cache.length = 4
@@ -193,7 +192,7 @@ DIMS = dict(vocab_size=64, d_model=16, max_seq_len=64, num_q_heads=2, num_kv_hea
             num_layers=2, intermediate_size=32, head_dim=8, eos_token_ids=[63])
 BASE = dict(device="cpu", max_num_seqs=1, max_num_batched_tokens=8, block_size=4,
             num_kv_blocks=16, enable_prefix_caching=False, attention_backend="torch",
-            preemption_mode=None, scheduling_policy="fcfs", speculative_mode="ngram",
+            scheduling_policy="fcfs", speculative_mode="ngram",
             **DIMS)
 
 ok_engine = Engine(**BASE)
@@ -201,8 +200,7 @@ check("最小合法组合能构造出来", ok_engine.speculative_mode == "ngram"
 
 for label, override, expect in [
     ("max_num_seqs=2", dict(max_num_seqs=2), "max_num_seqs"),
-    ("priority 调度", dict(scheduling_policy="priority", preemption_mode="recompute"), "scheduling_policy"),
-    ("recompute 抢占", dict(preemption_mode="recompute"), "preemption_mode"),
+    ("priority 调度", dict(scheduling_policy="priority"), "scheduling_policy"),
     ("开前缀缓存", dict(enable_prefix_caching=True), "enable_prefix_caching"),
     ("未知模式", dict(speculative_mode="eagle"), "speculative_mode"),
     ("num_speculative_tokens=0", dict(num_speculative_tokens=0), "num_speculative_tokens"),
@@ -216,8 +214,7 @@ for label, override, expect in [
 
 # 关闭投机时，这些组合仍然是合法的（不影响旧行为）
 for label, override in [("max_num_seqs=2", dict(max_num_seqs=2)),
-                        ("priority + recompute", dict(scheduling_policy="priority",
-                                                      preemption_mode="recompute")),
+                        ("priority 调度", dict(scheduling_policy="priority")),
                         ("开前缀缓存", dict(enable_prefix_caching=True))]:
     cfg = dict(BASE)
     cfg.update(override, speculative_mode=None)

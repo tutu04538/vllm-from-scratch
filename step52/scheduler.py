@@ -61,7 +61,7 @@ def _check_request_ids(request, vocab_size):
 
 class Scheduler:
 
-    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, preemption_mode=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None):
+    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None):
 
         if max_num_batched_tokens <= 0:
             # 一步都排不出 token 的配置没有意义，构造时就明确拒绝，
@@ -75,8 +75,6 @@ class Scheduler:
         # 本轮有没有明确结束/拒绝过请求，给零进展守卫用
         self._failed_this_step = 0
         self.enable_prefix_caching = enable_prefix_caching
-        # None = 承诺式（第四十三关行为）；"recompute" = 允许超卖 + 尾部犠牲者抢占
-        self.preemption_mode = preemption_mode
         # "fcfs"（默认，忽略优先级）或 "priority"（按 (priority, arrival_order) 排序）
         self.scheduling_policy = scheduling_policy
         # 到达序：内部递增整数，抢占与恢复都不改它，只由 add_request 发一次
@@ -364,7 +362,7 @@ class Scheduler:
                 f"调度没有任何进展：running={len(self.running)} waiting={len(self.waiting)}，"
                 f"本轮没有排出任何 token，也没有明确结束或拒绝任何请求。"
                 f"Pool: {len(self.kv_cache_pool._free_block_indices())} 空闲 / "
-                f"{self.kv_cache_pool.promised_blocks} 已承诺 / "
+                f"{len(self.kv_cache_pool._evictable_block_indices())} 闲置缓存 / "
                 f"{self.kv_cache_pool.num_kv_blocks} 总块")
 
     def _budget_groups(self):
@@ -449,9 +447,8 @@ class Scheduler:
 
         阻塞者结束或明确失败后关系立即失效，并顺手清掉引用，不留残余。
 
-        只对 recompute 模式有意义：`resume_blocker` 只在 `_preempt()` 里被赋值，
-        而 `_preempt()` 只能从 `_make_room()` 到达，后者只在超卖模式（`ensure_blocks()`
-        返回 False）下被调用。承诺式路径不会经过这里，行为与第四十四关一致。
+        `resume_blocker` 只在 `_preempt()` 里被赋值，所以只有被抢占过的请求才可能
+        被拦住——没被抢占过的请求这里恒为 False，与第四十四关之前的行为一致。
         """
         blocker = seq.resume_blocker
         if blocker is None:
@@ -527,9 +524,7 @@ class Scheduler:
         写进 KV 的进度，而采样 append 发生在这之前，所以刚采样、还没进模型的 token
         绝不会被登记。每步都做（而不是只在抢占/完成前），被抢占时它的进度才早就在
         缓存里，恢复时才有东西可复用。
-        **和 preemption_mode 无关**：什么时候更新 prefix cache、和「准入时要不要按最坏
-        情况承诺未来块」是两件不相干的事。两种模式都在这里每步登记。
-        （第四十六关曾把它限制在 recompute 下，理由是「旧模式行为不变」——那是一条
+        （第四十六关曾把它限制在「重算模式」下，理由是「旧模式行为不变」——那是一条
         范围约束，不是正确性约束；第五十一关按这个解耦改掉，行为差异见文档。）
         """
         if not self.kv_cache_pool.enable_prefix_caching:
