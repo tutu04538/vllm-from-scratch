@@ -359,3 +359,20 @@ vLLM 的命名是「模块名 = 类名的 snake_case」（`sampler.py` -> `Sampl
 - 随机压测 500 + 500 组、验收方的 `review_step53.py` 重跑一致；
 - `Engine` 上不再有采样内部方法（`_sample` / `_sample_plan` / `_sample_rows` /
   `_commit_tokens` / `_commit_drafts`），只剩五个方法。
+
+### 8.8 `apply_penalties()` 上那句过期的注解
+
+`sampling.py` 里 `apply_penalties(row, params: SamplingParams, state: SamplingState)`
+的 `state` 注解是**第 53 关**加 `d1f5ec3` 加的，那时它确实永远收到真的 `SamplingState`。
+第 54 关的随机投机给每一行喂「真实生成 + 前 j 枚草稿」的**临时历史**，传进去的是
+`sample_runtime.py` 里那个 `SimpleNamespace` ——它只有 `prompt_token_ids` 与
+`generated_counts`，没有 `generator`、也没有 `note_output_token()`。注解从那一刻起就
+不准了，而同一个 `state` 参数在第 54 关新写的 `row_distribution()` 里是留白的。
+
+现在统一成留白，并把「为什么是鸭子类型」写进 docstring。本仓库没有类型检查器
+（也没有 mypy/ruff 配置），所以这个注解不会报错，只会误导读者——它暗示可以在这里
+拿到 `state.generator`，而投机路径上那么写就会 `AttributeError`。
+
+`TorchSampler.select()` 上的 `state: SamplingState` **保留**：那条路（
+`sample_runtime.py` 的普通采样路径）传的确实是 `seq.sampling_state`，而且它真的要
+`state.generator`。

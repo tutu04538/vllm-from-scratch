@@ -118,8 +118,14 @@ class SamplingState:
         self.generated_total += 1
 
 
-def apply_penalties(row, params: SamplingParams, state: SamplingState):
+def apply_penalties(row, params: SamplingParams, state):
     """在 FP32 工作副本上施加三种惩罚，返回新张量。
+
+    `state` 是**鸭子类型**，故意不标 `SamplingState`：这里只读 `prompt_token_ids`
+    与 `generated_counts` 两个属性，随机投机那条路传进来的是一份逐行的临时历史
+    （`sample_runtime.py` 里的 `SimpleNamespace`，见 §2），它不是 `SamplingState`。
+    第 53 关写这句时 `state` 真的永远是 `SamplingState`，注解是那时加的；第 54 关
+    引入临时历史之后那个注解就不准了，所以去掉，与 `row_distribution()` 保持一致。
 
     **不原地改输入**：模型给的 logits 可能是 Graph 复用的缓冲（每次 replay 覆写），
     调用方**不一定**传副本进来，所以这里只用 out-of-place 的操作——没有惩罚项时返回
