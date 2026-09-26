@@ -34,12 +34,28 @@ self._commit_tokens(seq, result.committed_ids, notify)    # 再逐枚提交
 `preemption_mode=None`、`enable_prefix_caching=False`、`attention_backend="torch"`、
 `use_cuda_graph=False`，请求必须是贪心且无惩罚项。CPU 与 CUDA/Torch 都可以。
 
+## 顺带：请求内容的入口校验
+
+`add_request()` 以前只校验字段名、`priority` 类型、采样参数范围，`prompt_ids` 的内容
+和 `max_new_tokens` 的符号没人管。补上之后，这几种坏输入在**入队、分配 KV 之前**就报错：
+
+| 输入 | 以前 | 现在 |
+|---|---|---|
+| `max_new_tokens = -1` | 请求**静默消失**（被 waiting 的过滤器滤掉，不回调不报错） | `ValueError` |
+| `prompt_ids` 里有浮点 | **静默截断**成整数（hash 按 2.5 算、模型看到 2） | `ValueError` |
+| `prompt_ids` 越界 / 为负 | embedding 里抛 `IndexError` | `ValueError` |
+| `prompt_ids = []` | 调度器排不出 token，靠零进展守卫兜底 | `ValueError` |
+| `max_new_tokens = 0` | 合法（只算 prompt、不生成） | 不变 |
+
+随之删掉 `_plan_tokens()` 里的 `num_uncomputed == 0` 半句兜底——那个状态只有空 prompt
+能造出来，入口拒绝之后它是死代码，而且是会**吞掉零进展报错**的死代码。
+
 ## 怎么证明它是对的
 
 | 检查 | 结果 |
 |---|---|
 | `benchmarks/check_step52_speculative.py`：纯函数 + 回滚 + 配置校验 | **53 项全通过** |
-| `benchmarks/check_step52_engine.py`：脚本模型定点用例 + 真模型等价性 + 回滚不变量 | **28 项全通过** |
+| `benchmarks/check_step52_engine.py`：脚本模型定点用例 + 真模型等价性 + 回滚不变量 + 入口校验 | **40 项全通过** |
 | `benchmarks/diff_step51_step52.py`：不开投机时与 step51 逐步对照 | **88 项全通过**（11 场景 × 2 seed） |
 | CPU FP32 / CUDA FP32 / CUDA BF16 | 三者输出一致，投机 8 步 vs 普通 14 步 |
 

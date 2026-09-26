@@ -1,14 +1,14 @@
 # step52：单请求贪心 n-gram 投机解码
 
 - 对应代码：`step52/`（新增，从 `step51/` 复制，入口改名 `step52.py`）
-- 包摘要 SHA256：`dc9ff7ea4da56f58…`（16 个 .py / 3739 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`13fe989556deedcc…`（16 个 .py / 3790 行，验收方 `source_digest()` 口径）
 - 基线：`step51/`，指纹 `7115f26936cf9472…`（15 个 .py / 3425 行），原样保留未改
 - **改动 5 个文件 + 新增 1 个**：
 
 | 文件 | 改动 |
 |---|---|
 | `speculative.py`（新增，130 行） | 两个纯函数：`propose_ngram()` 提议、`verify_drafts()` 验证 + `DraftVerification` |
-| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点 |
+| `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**，并删掉 `_plan_tokens()` 里已成死代码的 `num_uncomputed == 0` 兜底（§1.8） |
 | `cache.py` | 新增 `truncate()`（回滚 KV）与 `can_grow()`（只读容量查询） |
 | `engine.py` | 投机配置与组合校验；`_sample_plan()` 改为「每个请求取几行」；`_commit_tokens()` / `_commit_drafts()` 拆出提交点 |
 | `__init__.py`、`step52.py` | 包说明、入口改名 |
@@ -203,6 +203,41 @@ seq.high_water = max(seq.high_water, end)
 端到端用例直接盯这一点：首枚拒绝的那一步进了 3 个 token、只保留 1 个，
 `recomputed_tokens` 必须是 0（按旧公式会是 2）。
 
+### 1.8 顺带：请求内容的入口校验，以及随之删掉的一句兜底
+
+`add_request()` 一直只校验三样东西：**请求字典里的字段名**、**priority 是不是整数**、
+**采样参数的范围**。`prompt_ids` 的内容与 `max_new_tokens` 的符号没人查过，于是坏输入
+会一路走到很深的地方才炸——或者更糟，静默算错：
+
+| 输入 | 补校验之前 | 补校验之后 |
+|---|---|---|
+| `max_new_tokens = -1` | **请求静默消失**：`_finish_zero_budget_waiting()` 只给 `== 0` 补 `on_finished` 记录，紧接着的过滤器写的却是 `max_new_tokens > 0`，负数被从 waiting 里直接滤掉，既不回调也不报错 | `ValueError`：「不能为负；0 表示只算 prompt、不生成」 |
+| `prompt_ids` 里有浮点 | **静默截断**：`seq.prompt_ids` 保留 `2.5`（prefix hash 按它算），`torch.tensor(..., dtype=torch.long)` 交给模型的是 `2`。跑得完、有输出、零提示 | `ValueError`：「prompt_ids[1] 必须是整数（bool 不算），收到 2.5」 |
+| `prompt_ids` 越界 / 为负 | `IndexError: index out of range in self`，从 embedding 里冒出来 | `ValueError`：「超出词表范围 [0, vocab_size)」 |
+| `prompt_ids = []` | 调度器既排不出 token 也无法判停，靠零进展守卫兜底报错 | `ValueError`：「不能为空：至少要有一个 token 才能预测下一个」 |
+| `max_new_tokens = 0` | 合法：只算 prompt、不生成（有专门路径） | **不变**，仍然合法 |
+
+校验放在 `add_request()` 里、和现有那三样同一处，所以在线程入队、分配 KV **之前**
+就报出来。空 `prompt_ids` 与 `max_new_tokens=0` 的组合也拒绝——空历史本身不合法，
+与「要不要生成」无关。
+
+**顺带删掉 `_plan_tokens()` 里的半句兜底**：
+
+```python
+if num_uncomputed == 0 or prefill_token_budget == 0:   # 改之前
+if prefill_token_budget == 0:                          # 改之后
+```
+
+`num_uncomputed == 0` 那一半是「历史已算完、却又不是 ready」这个状态的兜底，而那个
+状态**只有空 prompt 能造出来**（其余路径要么准入时只借到 `len(all)-1` 之前的块，
+要么本轮算到历史末尾就在同一步采样、历史立刻长回 1 个）。入口拒绝空 prompt 之后
+它就成了死代码——而且是个**有害**的死代码：万一哪天记账真错了，它会把「这条请求
+永远排不动」伪装成「本轮没额度」，把零进展守卫的报错一起吞掉。
+
+**这不是「防御性检查冗余所以删掉」，是「不变量现在由入口保证，兜底反而掩盖错误」。**
+删的同时留了注释说明为什么不变量成立，并加了回归用例：`max_num_batched_tokens=1/2`
+的预算压力下，计划里不允许出现 0 token 的项。
+
 ## 2. 不变量
 
 ```text
@@ -234,7 +269,7 @@ len(block_table) == ceil(cache.length / block_size)
 - 配置校验：6 种不支持的组合与 3 种非法采样参数都**明确报错**，
   关掉投机后这些组合仍然合法。
 
-### 3.2 端到端（`benchmarks/check_step52_engine.py`，28 项全通过）
+### 3.2 端到端（`benchmarks/check_step52_engine.py`，40 项全通过）
 
 **脚本模型**：包住真模型，KV、位置、块表照常由真实现推进，只把 logits 换成脚本
 给定的 token。于是「目标模型会输出什么」完全可控，能造出确定性的用例：
@@ -252,6 +287,8 @@ len(block_table) == ceil(cache.length / block_size)
 | 回滚不变量 | 跨块边界反复回滚时，块表长度始终等于 `ceil(cache.length/4)` |
 | 重算统计 | 首枚拒绝那一步 `recomputed_tokens == 0`、`high_water == start+1` |
 | 结束状态 | 活动引用归零、链表成员等于真实可分配集合、无残留 hash、承诺归零 |
+| 入口校验 | 空 prompt / 负 `max_new_tokens` / 浮点或越界 token / bool / 不可迭代 都**在 `add_request` 就报错**；`max_new_tokens=0` 仍合法 |
+| 幽灵计划项 | 预算压到 1 个 token 时，计划里没有 0 token 的项（§1.8 删掉的那半句兜底的回归） |
 
 **真模型等价性**：同一个随机小模型、同一个 prompt（重复片段多，n-gram 更容易命中），
 `speculative_mode="ngram"` 与 step51 的普通贪心**逐 token 相同**：
@@ -293,11 +330,18 @@ len(block_table) == ceil(cache.length / block_size)
 token 数（投机时是 `K+1`），不是「验证后留下的 token 数」——后者要看
 `cache.length - start_cache_length`。
 
-**行为变化**：只在 `speculative_mode="ngram"` 时发生，且该模式的合法组合被明确
-限定（见 §2 与 §4.2）。默认 `None` 时逐字节等同 step51（§3.3）。
+**行为变化**：分成两类。
+
+1. 只与投机有关的：只在 `speculative_mode="ngram"` 时发生，且该模式的合法组合被
+   明确限定（见 §2 与 §4.2）。默认 `None` 时逐字节等同 step51（§3.3）。
+2. **与投机无关、所有模式都生效**：`add_request()` 现在拒绝
+   `prompt_ids=[]`（含与 `max_new_tokens=0` 的组合）、`prompt_ids` 里的非整数
+   （bool 不算）或越界值、不可迭代的 `prompt_ids`、负的 `max_new_tokens`。
+   这几种输入以前分别是「静默消失 / 静默截断 / IndexError / 守卫兜底报错」，
+   见 §1.8 的对照表。`max_new_tokens=0` 仍然合法。
 
 **未改**：默认模式下的调度与优先级、KV 准入与淘汰、prefix hash 算法与命中规则、
-采样结果、模型；`shrink_draft` 之外没有新的分配路径。
+采样结果、模型；`_shrink_draft()` 之外没有新的分配路径。
 
 ### 4.2 遗留
 

@@ -14,6 +14,51 @@ SAMPLING_KEYS = ("temperature", "top_k", "top_p", "repetition_penalty",
 REQUEST_KEYS = ("request_id", "prompt_ids", "max_new_tokens", "priority") + SAMPLING_KEYS
 
 
+def _check_request_ids(request, vocab_size):
+    """请求**内容**本身的校验：`prompt_ids` 与 `max_new_tokens`。
+
+    字段名（不认识的键）、priority 的类型、采样参数的范围各有各的校验，这里补上
+    最基础的两样，位置和它们一样——**在入队、分配 KV 之前**。
+
+    这两种坏输入以前没人查，后果不一样但都不能接受：
+
+    - `max_new_tokens` 为负：`_finish_zero_budget_waiting()` 只给 `== 0` 补
+      `on_finished` 记录，紧接着的过滤器却写的是 `max_new_tokens > 0`，负数会被
+      直接从 waiting 里滤掉——请求**静默消失**，调用方永远等不到结果；
+    - `prompt_ids` 里有非整数：`torch.tensor(..., dtype=torch.long)` 会**静默截断**
+      （2.5 → 2），跑得完、有输出、没有任何提示；越界或负数则是在 embedding 里
+      抛一句 `IndexError: index out of range in self`。
+
+    空 `prompt_ids` 单列一条：解码器至少要有一个 token 才能预测下一个。放进来会
+    一路走到调度器，那里既排不出 token（`num_uncomputed == 0`）、也不能判停。
+    在入口拒绝之后，调度器里那句 `num_uncomputed == 0` 的兜底判断就是死代码了。
+    """
+    request_id = request.get("request_id")
+    try:
+        prompt_ids = list(request["prompt_ids"])
+    except TypeError:
+        raise ValueError(f"请求 {request_id!r} 的 prompt_ids 必须是可迭代的 token id 序列，"
+                         f"收到 {request['prompt_ids']!r}")
+    if not prompt_ids:
+        raise ValueError(f"请求 {request_id!r} 的 prompt_ids 不能为空："
+                         f"至少要有一个 token 才能预测下一个")
+    for index, token_id in enumerate(prompt_ids):
+        if isinstance(token_id, bool) or not isinstance(token_id, int):
+            raise ValueError(f"请求 {request_id!r} 的 prompt_ids[{index}] 必须是整数"
+                             f"（bool 不算），收到 {token_id!r}")
+        if vocab_size is not None and not 0 <= token_id < vocab_size:
+            raise ValueError(f"请求 {request_id!r} 的 prompt_ids[{index}]={token_id} "
+                             f"超出词表范围 [0, {vocab_size})")
+
+    max_new_tokens = request["max_new_tokens"]
+    if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int):
+        raise ValueError(f"请求 {request_id!r} 的 max_new_tokens 必须是整数（bool 不算），"
+                         f"收到 {max_new_tokens!r}")
+    if max_new_tokens < 0:
+        raise ValueError(f"请求 {request_id!r} 的 max_new_tokens 不能为负，收到 {max_new_tokens}；"
+                         f"0 表示只算 prompt、不生成")
+
+
 class Scheduler:
 
     def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, preemption_mode=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None):
@@ -66,6 +111,7 @@ class Scheduler:
         if isinstance(priority, bool) or not isinstance(priority, int):
             # bool 是 int 的子类，但 true/false 不是优先级，明确拒绝
             raise ValueError(f"priority 必须是整数（bool 不算），收到 {priority!r}")
+        _check_request_ids(request, self.vocab_size)
         params = SamplingParams(vocab_size=self.vocab_size,
                                 **{k: request[k] for k in SAMPLING_KEYS if k in request})
         if self.speculative_mode is not None and (not params.is_greedy or params.has_penalty):
@@ -205,8 +251,13 @@ class Scheduler:
                     prefill_token_budget -= len(draft_ids)
                     num_scheduled_tokens = num_real + len(draft_ids)
                 else:
+                    # 这里**不再**判 num_uncomputed == 0：那一半靠入口校验已经不可能成立
+                    # ——prompt 非空（add_request 拒绝空 prompt），而 running 里的请求
+                    # 要么准入时只借到 len(all)-1 之前的块，要么本轮算到历史末尾就在同一步
+                    # 采样（历史立刻长回 1 个），所以「已经算完但又不是 ready」这个状态
+                    # 构造不出来。留着它反而会掩盖真正的记账错误。
                     num_uncomputed = seq.num_uncomputed_tokens
-                    if num_uncomputed == 0 or prefill_token_budget == 0:
+                    if prefill_token_budget == 0:
                         continue
                     num_scheduled_tokens = min(num_uncomputed, prefill_token_budget)
                     prefill_token_budget -= num_scheduled_tokens

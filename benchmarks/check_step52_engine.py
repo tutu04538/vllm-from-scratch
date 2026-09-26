@@ -285,6 +285,50 @@ check("跨块边界反复回滚：每一步的块表长度都与当时的 cache.
           for slot in per_step for it in slot["items"]))
 check("跨块边界反复回滚：结束后池子干净", pool_ok(engine.kv_cache_pool))
 
+# ------------------------------------------------ 4. 请求内容校验（入口就报错）
+
+
+def reject(**overrides):
+    """新引擎上试着入队一条请求，返回错误信息（没报错就返回 None）。"""
+    engine = build(step52, 11, [1, 2, 3, 4, 5, 6], **SPEC)
+    request = {"request_id": "X", "prompt_ids": [1, 2, 3], "max_new_tokens": 4}
+    request.update(overrides)
+    try:
+        engine.add_request(request)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+check("空 prompt：入口直接拒绝（不再靠零进展守卫兜底）",
+      "不能为空" in (reject(prompt_ids=[]) or ""), reject(prompt_ids=[]))
+check("空 prompt + max_new_tokens=0 也拒绝：空历史本身就不合法",
+      reject(prompt_ids=[], max_new_tokens=0) is not None)
+check("max_new_tokens 为负：入口直接拒绝（以前会静默丢掉这条请求）",
+      "不能为负" in (reject(max_new_tokens=-1) or ""), reject(max_new_tokens=-1))
+check("max_new_tokens=0 仍然合法：只算 prompt、不生成",
+      reject(max_new_tokens=0) is None)
+check("prompt 里有浮点：拒绝，不再静默截断成整数",
+      "必须是整数" in (reject(prompt_ids=[1, 2.5, 3]) or ""), reject(prompt_ids=[1, 2.5, 3]))
+check("prompt 越界：拒绝（以前是 embedding 里的 IndexError）",
+      "超出词表范围" in (reject(prompt_ids=[1, 5, 999]) or ""), reject(prompt_ids=[1, 5, 999]))
+check("prompt 里有负数：拒绝",
+      "超出词表范围" in (reject(prompt_ids=[1, -5]) or ""), reject(prompt_ids=[1, -5]))
+check("bool 不是 token id，也不是 max_new_tokens",
+      reject(prompt_ids=[True, 2]) is not None and reject(max_new_tokens=True) is not None)
+check("prompt_ids 不可迭代：拒绝（以前是 TypeError）",
+      reject(prompt_ids=None) is not None and reject(prompt_ids=5) is not None)
+check("字符串 prompt_ids 按元素类型拦下（'abc' 不是三个 token）",
+      reject(prompt_ids="abc") is not None, reject(prompt_ids="abc"))
+
+# 删掉 num_uncomputed == 0 那一半之后：预算再紧也不能排出 0 token 的幽灵计划项，
+# 否则 _check_progress 会把它当成「本轮有进展」，零进展守卫就废了。
+for budget in (1, 2):
+    ghost_engine = build(step52, 11, [1, 2, 3, 4, 5, 6], **dict(SPEC, max_num_batched_tokens=budget))
+    ghost, _, _ = run(ghost_engine, [dict(REQUEST, max_new_tokens=4)])
+    check(f"预算={budget}：没有 0 token 的计划项（num_uncomputed==0 的兜底已可省）",
+          all(it["num_scheduled_tokens"] >= 1 for slot in ghost for it in slot["items"]))
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)
