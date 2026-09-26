@@ -104,9 +104,13 @@ def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
         committed_ids.append(token_id)
         if token_id in eos_token_ids:
             stopped = True
-            if index < num_accepted:
-                # 终止的就是草稿本身：它不必再作为下一轮的输入，留它前面的那些
-                kept_drafts = index
+            # 终止 token 的 KV 不必留作下一轮输入，保留它**之前**那些——要留几枚
+            # 恰好就是 index。这里的两种情况都不用另写分支：
+            #   index <  num_accepted：终止的是草稿 d_index，它的 KV 要退掉；
+            #   index == num_accepted：终止的是 bonus（模型自己给的那枚），它从来
+            #     没作为输入行进过模型，压根没有 KV 可退——而这时 index 正好就等于
+            #     初值 num_accepted。
+            kept_drafts = index
             break
     # 本轮输入恒以最后一个真实 token x 开头，它一定还要用
     return DraftVerification(num_accepted, committed_ids, 1 + kept_drafts, stopped)
