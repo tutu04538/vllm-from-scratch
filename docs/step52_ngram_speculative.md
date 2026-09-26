@@ -1,13 +1,13 @@
 # step52：单请求贪心 n-gram 投机解码
 
 - 对应代码：`step52/`（新增，从 `step51/` 复制，入口改名 `step52.py`）
-- 包摘要 SHA256：`f9a035a32f7a651e…`（16 个 .py / 3731 行，验收方 `source_digest()` 口径）
+- 包摘要 SHA256：`a104e65f512950ea…`（16 个 .py / 3747 行，验收方 `source_digest()` 口径）
 - 基线：`step51/`，指纹 `7115f26936cf9472…`（15 个 .py / 3425 行），原样保留未改
 - **改动 5 个文件 + 新增 1 个**：
 
 | 文件 | 改动 |
 |---|---|
-| `speculative.py`（新增，130 行） | 两个纯函数：`propose_ngram()` 提议、`verify_drafts()` 验证 + `DraftVerification` |
+| `speculative.py`（新增） | 两个纯函数：`propose_ngram()` 提议、`verify_drafts()` 验证 + `DraftVerification` |
 | `scheduler.py` | `_plan_drafts()` 按四个上限缩短 K；`_reserve_blocks()` 容量不够时逐枚缩草稿；计划项新增 `draft_ids` / `start_cache_length`；重算统计改按真实起点；**新增 `_check_request_ids()` 入口校验**（§1.8）；**删掉 `preemption_mode` 参数、`num_uncomputed == 0` 兜底与 `running_snapshot`**（§1.8~§1.10） |
 | `cache.py` | 新增 `truncate()`（回滚 KV）与 `can_grow()`（只读容量查询）；**删掉 `over_subscribe`、`_available_blocks()` 与承诺额度记账**（§1.9） |
 | `engine.py` | 投机配置与组合校验；`_sample_plan()` 改为「每个请求取几行」；`_commit_tokens()` / `_commit_drafts()` 拆出提交点；**删掉 `preemption_mode` 与相关的两条组合校验**（§1.9） |
@@ -69,24 +69,59 @@ def propose_ngram(token_ids, n, k):
 @dataclass
 class DraftVerification:
     num_accepted: int      # 前几枚草稿与目标贪心相同
-    committed_ids: list    # 真正要提交的输出（已按 EOS / 输出上限截断）
+    committed_ids: list    # 真正要提交的输出（遇到 EOS 就到此为止）
     kept_inputs: int       # 本轮输入的 KV 要保留几个
-    stopped: bool          # 是否因 EOS 或输出上限提前停下
+    stopped: bool          # 是否因 EOS 提前停下
 ```
 
 四条规则，逐条对应需求 §1 与 §3.D：
 
 1. 逐枚比较 `greedy_ids[i] == draft_ids[i]`，第一个不同就停；
-2. 候选 = `draft_ids[:accepted] + [greedy_ids[accepted]]`——全部接受时最后那枚就是 bonus；
-3. 逐枚提交，**遇 EOS 或输出上限立即停**，后面的草稿与 bonus 都不提交；
+2. 候选 = `draft_ids[:accepted] + [greedy_ids[accepted]]`；
+3. 逐枚提交，**遇 EOS 立即停**，后面的草稿与 bonus 都不提交；
 4. 保留的输入 = `1 + 还需要当下一轮输入的草稿数`：
    - 被拒绝的草稿一律不留（就是需求表里的「保留哪些 KV」）；
-   - bonus 永远不留（它还没进过模型）；
    - **被接受的草稿本身若是终止 token，它也不留**——它结束了这条请求，
      不会再作为下一轮输入，所以要留的是它**之前**那些草稿（`kept_drafts = index`）。
 
 `kept_inputs` 是「回滚到哪儿」的唯一依据，所以把它算成一个显式的返回值，而不是
 在提交循环里边走边推。
+
+#### 1.2.1 `greedy_ids[a]` 不是「两种情况」
+
+第 2 条那个式子，全部接受（`a == K`）与部分接受（`a < K`）走的是**同一行代码**。
+别读成「全接受时多给一枚 bonus、部分接受时换成纠正 token」两条分支——`greedy_ids[a]`
+两种情况是同一枚东西：目标模型对位置 `p+a+1` 的预测，而且**都还没进过模型**
+（`a == K` 时那个位置压根没有输入行；`a < K` 时那个位置是刚被否掉的 `d_a`，
+它的 KV 马上要被回滚）。两者都会成为下一轮的「最后一个真实 token」。
+
+要分情况的是**回滚到哪儿**：
+
+| | 位置 `p+a+1` 上有没有输入行 | 回滚 |
+|---|---|---|
+| `a == K` | 没有（模型没被问过那里） | 不用回滚，`kept_inputs = 1+K`，整段输入都留 |
+| `a < K` | 有，就是 `d_a`（KV 已经写好了） | 从 `d_a` 起丢掉，`kept_inputs = 1+a` |
+
+「bonus」这个词只描述全接受那一支，代码里没有对应的分支。
+
+#### 1.2.2 输出上限是前置条件，不是截断阈值
+
+函数要求 `K <= R-1`（`R = remaining_outputs`，`_plan_drafts()` 正是这么缩 K 的），
+**不满足直接 `ValueError`**。之前这里写的是「提交到 R 枚就停」的截断分支，
+但它是**死代码**：`K+1 <= R` 是构造保证的，循环最多提交 `K+1 <= R` 枚，
+永远够不到那个阈值（实测引擎路径 400 组 + 引擎测试 11 次调用，触发 0 次）。
+
+删掉它而不是留着，是因为那段截断产出的状态**自相矛盾**：`kept_inputs` 按接受的
+草稿数算，会比实际提交的 token 数还多，于是 `cache.length` 要么超过
+`len(all_token_ids)`（KV 进度比历史还长），要么正好相等（就是「历史已算完却还不是
+ready」那个状态，§1.8 刚把它的兜底删掉）。与其默默产出这种状态，不如把前置条件
+钉死、直接报错。
+
+顺带一说，**草稿里是可以出现 EOS 的**：草稿来自 `all_token_ids` = prompt + 已生成，
+已生成的 EOS 不可能出现（有 EOS 请求当场就结束了），但 **prompt 里可以有**——
+Qwen3 的 chat template 每一轮用户消息都以 `<|im_end|>` 结尾，而它就是
+`eos_token_ids` 里的一员（实测单轮 prompt 出现 1 次、三轮 3 次）。所以规则 4 里
+最后那条「被接受的草稿本身是 EOS」不是构造出来的边角情况，实际跑得到。
 
 ### 1.3 草稿是临时计划，不是已提交历史
 
@@ -372,7 +407,8 @@ len(block_table) == ceil(cache.length / block_size)
 - `propose_ngram`：找不到 / 找到 1 个 / 找到 2 个 / **多个匹配取最近** / `k` 截断 /
   `n=1` / 不自己匹配自己 / 直接吃只读视图；8192 长历史不复制整段；
 - `verify_drafts`：三种验证结果 + 无草稿 + bonus 是 EOS + **草稿本身是 EOS** +
-  第二枚草稿是 EOS + 输出上限截断 + 行数不匹配报错；
+  第二枚草稿是 EOS + **输出上限不够时报错（不截断）** + 卡在 `K+1 == R` 边界仍正常
+  + 行数不匹配报错；
 - `truncate`：回滚到块边界 / 块内 / 0；非法目标报错；**不动已发布的完整块与其
   hash 双向索引**；被退掉的整块确实以「真正空闲」回队首；
 - `can_grow`：只读（问完池子与请求状态一个字节没变）、判断与可分配链一致、不摘链；

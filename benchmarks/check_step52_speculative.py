@@ -2,7 +2,7 @@
 
 分四块，都不跑模型：
   1. propose_ngram：找不到 / 找到 1 个 / 找到 2 个 / 多个匹配取最近 / 只读视图；
-  2. verify_drafts：首枚拒绝 / 部分接受 / 全部接受 / 无草稿 / EOS / 输出上限；
+  2. verify_drafts：首枚拒绝 / 部分接受 / 全部接受 / 无草稿 / EOS / 输出上限前置条件；
   3. KVCachePool.truncate 与 can_grow：跨块回滚、块表与引用、链表不变量；
   4. 配置组合校验：不支持的组合与非法采样参数都要**明确报错**，不静默退化。
 """
@@ -87,9 +87,14 @@ check("**草稿本身**是 EOS：只提交它，它之前的草稿才留 KV（�
 d = verify_drafts([5, 63, 8], [5, 63, 9, 1], EOS, remaining_outputs=8)
 check("第二枚草稿是 EOS：留第一枚的 KV，第三枚根本不提交",
       (d.num_accepted, d.committed_ids, d.kept_inputs, d.stopped) == (2, [5, 63], 2, True))
-d = verify_drafts([5, 6], [5, 6, 7], EOS, remaining_outputs=1)
-check("输出上限只剩 1 个：只提交第一枚就停",
-      (d.num_accepted, d.committed_ids, d.stopped) == (2, [5], True))
+# 输出上限是**前置条件**（K <= R-1），不是截断阈值：_plan_drafts() 保证它成立，
+# 传进来不满足就直接报错——截断会让 kept_inputs 超过实际提交的 token 数。
+check("输出上限不够（K+1 > R）：报错，不默默截断",
+      raises(verify_drafts, [5, 6], [5, 6, 7], EOS, 1) is not None
+      and raises(verify_drafts, [5, 6], [5, 6, 7], EOS, 0) is not None)
+check("刚好卡在边界（K+1 == R）时正常接受",
+      verify_drafts([5, 6], [5, 6, 7], EOS, remaining_outputs=3).committed_ids == [5, 6, 7]
+      and verify_drafts([5, 6], [5, 9, 7], EOS, remaining_outputs=3).committed_ids == [5, 9])
 check("行数与草稿数不匹配要报错",
       raises(verify_drafts, [5, 6], [5, 6], EOS, 8) is not None)
 

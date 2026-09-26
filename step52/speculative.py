@@ -44,9 +44,9 @@ class DraftVerification:
     """一次投机验证的结论：全是「提交之前」就能定下来的量。
 
     - `num_accepted`：前几枚草稿与目标模型的贪心结果逐个相同；
-    - `committed_ids`：真正要提交的输出 token，已按 EOS / 输出上限截断；
+    - `committed_ids`：真正要提交的输出 token（遇到 EOS 就到此为止）；
     - `kept_inputs`：本轮输入的 KV 要保留多少个（其余是必须回滚的拒绝部分）；
-    - `stopped`：是否因为 EOS 或输出上限提前停下（后面不再提交草稿/bonus）。
+    - `stopped`：是否因为 EOS 提前停下（后面不再提交草稿/bonus）。
     """
     num_accepted: int
     committed_ids: list
@@ -63,28 +63,44 @@ def verify_drafts(draft_ids, greedy_ids, eos_token_ids, remaining_outputs):
         t0 == d0, t1 != d1  提交 [d0, t1]        输入留 [x, d0]
         全部接受            提交 [d0.., tK]       输入留 [x, d0..]
 
-    最后一枚 `tK` 是全部接受时的 bonus token——它**还没进过模型**，所以永远
-    不在「要保留的输入」里；同理，被拒绝的草稿的 KV 必须回滚。
+    三种情况在代码里是**同一个式子**：提交 `draft_ids[:a] + [greedy_ids[a]]`，
+    `a` 是逐枚比对下来接受了几枚。别把它读成「全接受时多给一枚 bonus、部分接受时
+    换成纠正 token」两条分支——`greedy_ids[a]` 两种情况是同一枚东西：目标模型对
+    位置 `p+a+1` 的预测，而且**都还没进过模型**（`a == K` 时那个位置压根没有输入行；
+    `a < K` 时那个位置是刚被否掉的 `d_a`，它的 KV 马上要被回滚）。两种情况它都会
+    成为下一轮的「最后一个真实 token」`x`。
+
+    要分情况的是**回滚到哪儿**，也就是「本轮输入里还有哪些要留」：
+
+    - `a == K`：整段输入都留，`kept_inputs = 1+K`——模型没被问过的位置无需回滚；
+    - `a < K`：从 `d_a` 起的输入行连同它们的 KV 一起丢掉，`kept_inputs = 1+a`。
 
     被接受的草稿本身若是终止 token（EOS），它**之前的**草稿才需要留作下一轮
     输入：终止 token 结束这条请求，不会再进模型。
+
+    `remaining_outputs`（这条请求还能再提交几个 token）是**前置条件**，不是截断阈值：
+    函数要求 `K <= R-1`（`_plan_drafts()` 正是这么缩 K 的）。这里不做截断，
+    因为截断出来的状态自相矛盾——`kept_inputs` 按接受的草稿数算，会比实际提交的
+    token 数还多，于是 `cache.length` 要么**超过** `len(all_token_ids)`（KV 进度
+    比历史还长），要么**正好相等**（就是「历史已算完却还不是 ready」那个状态，
+    §1.8 刚把它的兜底删掉）。与其默默产出这种状态，不如直接报错。
     """
     num_drafts = len(draft_ids)
     if len(greedy_ids) != num_drafts + 1:
         raise ValueError(f"验证需要 {num_drafts + 1} 行贪心结果（K 枚草稿 + 1 枚 bonus），"
                          f"收到 {len(greedy_ids)} 行")
+    if num_drafts > remaining_outputs - 1:
+        raise ValueError(
+            f"{num_drafts} 枚草稿要占 {num_drafts + 1} 个输出额度，但只剩 {remaining_outputs} 个；"
+            f"调用方必须保证 K <= R-1（_plan_drafts() 就是这么缩的）")
 
     num_accepted = 0
     while num_accepted < num_drafts and greedy_ids[num_accepted] == draft_ids[num_accepted]:
         num_accepted += 1
-    # 全部接受时 greedy_ids[num_accepted] 就是 bonus
     candidates = list(draft_ids[:num_accepted]) + [greedy_ids[num_accepted]]
 
     committed_ids, stopped, kept_drafts = [], False, num_accepted
     for index, token_id in enumerate(candidates):
-        if len(committed_ids) >= remaining_outputs:
-            stopped = True
-            break
         committed_ids.append(token_id)
         if token_id in eos_token_ids:
             stopped = True
