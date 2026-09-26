@@ -1,8 +1,8 @@
 # step53：批量投机验证与抢占恢复
 
 - 对应代码：`step53/`（新增，从 `step52/` 复制，入口改名 `step53.py`）
-- 包摘要 SHA256：`45c4a962f430dab1…`（16 个 .py / 3809 行，验收方 `source_digest()` 口径）
-- 基线：`step52/`，指纹 `45c4a962f430dab1…`（16 个 .py / 3809 行），原样保留未改
+- 包摘要 SHA256：`730d18f7587c06ab…`（16 个 .py / 3820 行，验收方 `source_digest()` 口径）
+- 基线：`step52/`，指纹 `730d18f7587c06ab…`（16 个 .py / 3820 行），原样保留未改
 - **改动 4 个文件**：
 
 | 文件 | 改动 |
@@ -166,6 +166,15 @@ for item in picked:
    > 又写成「BF16 的格点步长会把小惩罚抹掉」（也错——`row.index_select(...) - delta`
    > 里 `delta` 是 FP32，减法被提升到 FP32 精确算完；是回写那一步先崩了）。
    > 现在的结论是照着真实报错写的。
+   >
+   > 同一处的 `.to(torch.float32, copy=True)` 里那个 `copy` **已经删掉**——它防的是
+   > 「Graph 的输出缓冲被下次 replay 覆盖」，前提成立（实测同一 graph key 每次 replay
+   > 的 `data_ptr` 相同），但这一步踩不到：logits 只在本轮 `step()` 内被消费，
+   > `apply_penalties()` 只读输入（惩罚走 `index_put` 的非原地版本，实测入参张量一个
+   > 字节没变），`_filter_and_probs()` 全是新张量；而且只有 dtype 本来就匹配（FP32 模型）
+   > 时 `copy=True` 才有区别。五种 device/后端/精度组合（含 triton + Graph）去掉 `copy`
+   > 之后输出指纹完全相同——不过**如果以后把采样挪进异步调度、要跨步持有 logits，
+   > 这里就得改回来**。
 
 3. **提交顺序严格按 `picked`**。第五十二关是「先提交所有 plain、再提交 drafts」，
    单请求时看不出差别；批量下那会打乱本轮的事件顺序，所以改成一条循环走到底。

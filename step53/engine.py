@@ -334,11 +334,22 @@ class Engine:
         （只有 repetition 那条分支能过，因为它全程在同一精度里算）。顺带的好处是
         softmax / top-k / top-p 也都在 FP32 上算，数值质量更好。
 
-        `copy=True` 是必须的：模型给的 logits 可能落在 Graph 复用的缓冲上，
-        而 FP32 张量的 `.to(torch.float32)` 不产生副本（同 dtype 直接返回自身）。
+        **这里不复制**（`.to(torch.float32)` 不带 `copy=True`）。Graph 的输出缓冲确实
+        会被下次 replay 覆盖（实测同一个 graph key 每次 replay 的 `data_ptr` 都一样），
+        但这一步踩不到它：
+
+        - logits 只在本轮 `step()` 内被消费——`apply_penalties` / `select_batch` 跑完
+          就没人再引用，下一次 replay 发生在下一个 `step()`；
+        - `apply_penalties()` 只读输入（惩罚走 `index_put` 的非原地版本，实测入参张量
+          一个字节没变），`_filter_and_probs()` 全是新张量；
+        - 而且只有 dtype 本来就匹配（FP32 模型）时 `copy=True` 才有区别，
+          BF16 的 dtype 转换本来就会分配新张量。
+
+        所以那次整行复制是白搭的。**如果以后要跨步持有 logits（比如把采样挪进异步
+        调度），这里就得改回来**——那时缓冲会在采样之前被下一次 replay 覆盖。
         """
         seqs = [item["request"] for item in picked]
-        rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32, copy=True),
+        rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32),
                                 seq.sampling_params, seq.sampling_state)
                 for item, seq in zip(picked, seqs)]
         tokens = self.sampler.select_batch(

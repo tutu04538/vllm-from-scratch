@@ -121,9 +121,9 @@ class SamplingState:
 def apply_penalties(row, params: SamplingParams, state: SamplingState):
     """在 FP32 工作副本上施加三种惩罚，返回新张量。
 
-    **不原地改输入**：模型给的 logits 可能是 Graph 复用的缓冲，
-    而且 FP32 张量的 `.float()` 并不产生副本。调用方已经传进来一份副本，
-    这里仍然只用 out-of-place 的操作。
+    **不原地改输入**：模型给的 logits 可能是 Graph 复用的缓冲（每次 replay 覆写），
+    调用方**不一定**传副本进来，所以这里只用 out-of-place 的操作——没有惩罚项时返回
+    入参本身，有惩罚项时返回新张量。
     """
     if not params.has_penalty:
         return row
