@@ -1,144 +1,30 @@
-"""Engine：模型 + 运行时（元数据、KV 池、调度器）+ 目录加载入口。
+"""Engine：把模型与运行时装起来，并按一轮一轮地推进。
 
-加载按「外部目录 -> 内部配置与权重 -> 模型 -> 运行时」四步走，
-格式差异全在 formats/ 里消化掉，这里只认内部那套字段名。
+前向编排只有三步（见 `step()`）：调度器排出本轮计划 → 模型一次 forward → 采样。
+采样那一层的实现在 `sample_loop.py`，配置校验在 `validation.py`，
+模型装配与目录加载在 `loading.py`——这里只做装配与编排。
+
+下面这些名字是从那几个模块**重导出**的，老 import 路径继续可用
+（`from step54.engine import load_model_config` 之类）。
+调用点写的是**裸名字**：打桩 `step54.engine._check_speculative = ...` 因此仍然生效。
 """
 
 import math
-from types import SimpleNamespace
 
 import torch
 
 from .attention import AttentionMetadata
 from .cache import KVCachePool
-from .formats import (CONFIG_NAME as MODEL_CONFIG_NAME,
-                      WEIGHTS_NAME as MODEL_WEIGHTS_NAME,
-                      native, read_raw_config, read_raw_weights)
+from .formats import CONFIG_NAME as MODEL_CONFIG_NAME
+from .formats import WEIGHTS_NAME as MODEL_WEIGHTS_NAME
+from .loading import (COMPATIBLE_FORMAT_VERSIONS, FORMAT_VERSION, MODEL_DTYPE, MODEL_TYPE,
+                      build_model_from_config, load_model_config, load_model_weights)
 from .model import TinyCausalLM
-from .sampling import TorchSampler, apply_penalties, row_distribution
+from .sample_loop import SampleRuntime
+from .sampling import TorchSampler
 from .scheduler import Scheduler
-from .speculative import verify_drafts, verify_drafts_random
-
-# 自定义格式的公开常量，保持与之前一致
-FORMAT_VERSION = native.FORMAT_VERSION
-COMPATIBLE_FORMAT_VERSIONS = native.COMPATIBLE_FORMAT_VERSIONS
-MODEL_TYPE = native.MODEL_TYPE
-MODEL_DTYPE = native.MODEL_DTYPE
-
-
-SCHEDULING_POLICIES = ("fcfs", "priority")
-SPECULATIVE_MODES = (None, "ngram")
-
-
-def _check_scheduling_policy(scheduling_policy):
-    if scheduling_policy not in SCHEDULING_POLICIES:
-        raise ValueError(f"未知的 scheduling_policy: {scheduling_policy!r}，"
-                         f"可选 {list(SCHEDULING_POLICIES)}")
-
-
-def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n,
-                       scheduling_policy, enable_prefix_caching,
-                       attention_backend, use_cuda_graph):
-    """投机解码的开关与组合校验。
-
-    只剩两条硬约束，都是**实现方式**决定的，不是「懒得验」：
-
-    - `attention_backend="torch"`：拒绝采样现在是逐请求的 Torch 参考循环，
-      没有 Triton rejection kernel（需求明确不做）；
-    - `use_cuda_graph=False`：采样要在图**外**按请求逐行做设备同步，图里做不到。
-
-    其余组合都放开并验过：`max_num_seqs` 从第五十三关起不限；`scheduling_policy`
-    与 `enable_prefix_caching` 从第五十四关起不限（见
-    benchmarks/check_step54_combinations.py）。放开抢占那一条尤其值得说明：抢占
-    发生在 `schedule()` 里、forward **之前**，被抢占的项整个作废、走不到采样与回调，
-    所以「投机 + 抢占」不需要额外机制；前缀缓存那一条靠的是「被回滚的整块从来没被
-    发布过」（回滚目标 >= 本轮起点 + 1，而发布的块严格在起点之前）。
-    """
-    if speculative_mode not in SPECULATIVE_MODES:
-        raise ValueError(f"未知的 speculative_mode: {speculative_mode!r}，"
-                         f"可选 None（关）或 'ngram'")
-    for name, value in (("num_speculative_tokens", num_speculative_tokens),
-                        ("prompt_lookup_n", prompt_lookup_n)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} 必须是 >=1 的整数，收到 {value!r}")
-    if speculative_mode is None:
-        return
-    unsupported = [
-        (attention_backend != "torch", f"attention_backend 只能是 'torch'，当前 {attention_backend!r}"),
-        (use_cuda_graph, "use_cuda_graph 必须关闭"),
-    ]
-    problems = [message for bad, message in unsupported if bad]
-    if problems:
-        raise ValueError("speculative_mode='ngram' 不支持的组合：" + "；".join(problems))
-
-
-def _resolve_device(device):
-    return torch.device(device) if device is not None else \
-        torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _check_runtime(device, attention_backend, use_cuda_graph, dtype=torch.float32,
-                   norm_backend="torch", rope_backend="torch"):
-    # 后端、设备与精度的组合校验；随机初始化和从目录加载两条路都走这里
-    if attention_backend not in ("torch", "triton"):
-        raise ValueError(f"未知的 attention_backend: {attention_backend!r}，可选 'torch' 或 'triton'")
-    if attention_backend == "triton" and device.type != "cuda":
-        raise ValueError(f"attention_backend='triton' 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 'torch'")
-    if use_cuda_graph and (device.type != "cuda" or attention_backend != "triton"):
-        raise ValueError(f"use_cuda_graph=True 只支持 CUDA + Triton，当前 device={device.type}、"
-                         f"attention_backend={attention_backend!r}")
-    if dtype not in (torch.float32, torch.bfloat16):
-        raise ValueError(f"不支持的 dtype: {dtype}，本实现只支持 torch.float32 或 torch.bfloat16")
-    if dtype == torch.bfloat16 and device.type != "cuda":
-        raise ValueError(f"dtype=torch.bfloat16 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 float32")
-    # norm 后端与 attention 后端是两件独立的事，可以自由组合做 A/B
-    if norm_backend not in ("torch", "triton"):
-        raise ValueError(f"未知的 norm_backend: {norm_backend!r}，可选 'torch' 或 'triton'")
-    if norm_backend == "triton" and device.type != "cuda":
-        raise ValueError(f"norm_backend='triton' 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 'torch'")
-    # rope 后端同样与 attention / norm 独立，可以自由组合做 A/B
-    if rope_backend not in ("torch", "triton"):
-        raise ValueError(f"未知的 rope_backend: {rope_backend!r}，可选 'torch' 或 'triton'")
-    if rope_backend == "triton" and device.type != "cuda":
-        raise ValueError(f"rope_backend='triton' 需要 CUDA 设备，当前是 {device.type}；CPU 上请用 'torch'")
-
-
-def build_model_from_config(config, device, attention_backend, max_num_batched_tokens, use_cuda_graph,
-                            dtype=torch.float32, norm_backend="torch", rope_backend="torch"):
-    # 按内部配置构造模型；维度合法性由 TinyCausalLM 的校验负责（缺字段、非法维度都会明确报错）
-    return TinyCausalLM(
-        vocab_size=config["vocab_size"], d_model=config["d_model"], max_seq_len=config["max_seq_len"],
-        num_q_heads=config["num_q_heads"], num_kv_heads=config["num_kv_heads"],
-        num_layers=config["num_layers"], intermediate_size=config["intermediate_size"],
-        rms_norm_eps=config["rms_norm_eps"], rope_theta=config["rope_theta"],
-        head_dim=config["head_dim"], use_qk_norm=config["use_qk_norm"],
-        eos_token_ids=config["eos_token_ids"], dtype=dtype, norm_backend=norm_backend,
-        rope_backend=rope_backend,
-        device=device, attention_backend=attention_backend,
-        max_num_query_tokens=max_num_batched_tokens, use_cuda_graph=use_cuda_graph)
-
-
-def load_model_config(model_dir):
-    # 读目录里的外部配置，翻译成内部字段；支持哪些来源由 formats/ 按 model_type 分派
-    adapter, raw, generation = read_raw_config(model_dir)
-    return adapter.to_internal_config(raw, generation)
-
-
-def _load_weights_into(adapter, model_dir, raw, model):
-    # 适配器把外部参数名翻成内部参数名，再严格装入已经建在目标设备上的模型。
-    # 装入前显式转成模型的运行精度：FP32 文件进 BF16 模型就在这里舍入一次，
-    # BF16 文件进 FP32 模型是精确扩宽（不恢复文件里本来就没有的信息）。
-    # strict=True：缺参数、多参数、shape 不符都会抛，不会留下混着随机参数的模型
-    weights = read_raw_weights(model_dir, adapter.WEIGHT_DTYPES)
-    mapped = adapter.to_internal_weights(weights, raw)
-    model.load_state_dict({name: t.to(model.dtype) for name, t in mapped.items()}, strict=True)
-    return model
-
-
-def load_model_weights(model_dir, model):
-    adapter, raw, _ = read_raw_config(model_dir)
-    return _load_weights_into(adapter, model_dir, raw, model)
-
+from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, _check_runtime,
+                         _check_scheduling_policy, _check_speculative, _resolve_device)
 
 class Engine:
 
@@ -209,7 +95,10 @@ class Engine:
         self.kv_cache_pool = KVCachePool(block_size, num_kv_blocks, model.num_kv_heads,
                                          model.head_dim, device, self.enable_prefix_caching,
                                          num_layers=model.num_layers, dtype=model.dtype)
-        # 增量输出回调。不传就是 None —— 那时 _sample 里连事件字典都不建
+        # 采样执行层：只拿**稳定的**依赖（KV 池、停止 token）；每轮把 sampler /
+        # on_token / _commit_tokens 现取着传进去（见 _sample 的说明）。
+        self.sample_runtime = SampleRuntime(self.kv_cache_pool, model.eos_token_ids)
+        # 增量输出回调。不传就是 None —— 那时采样层连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
                           scheduling_policy=scheduling_policy,
@@ -254,159 +143,28 @@ class Engine:
     def has_unfinished_requests(self):
         return self.scheduler.has_unfinished_requests()
 
-    @staticmethod
-    def _sample_plan(scheduled_items):
-        # 把「哪些请求就绪、各取哪几行」整理一次，产出两样东西：
-        #   rows   —— 传给模型的**原始输入行号**（模型只认行号，不需要认识请求对象）
-        #   picked —— 要采样的那些 item，采样结果按同一顺序写回去
-        #
-        # 这里有两个坐标系，不能混用：
-        #   * 原始输入行号：本轮全部输入 token 拼成一维后的下标（中间 prefill 也占位置）
-        #   * 筛选后偏移  ：模型返回的 logits 只包含选中的行，行内下标从 0 开始
-        # 所以每个 picked 项都记下自己的 `num_sample_rows` 与 `sample_offset`，
-        # 后者在下面的 `_sample()` 里直接用来切 Python 列表。
-        #
-        # 普通项只取「片段末行」；投机项取整段输入的行——前 K 行验证草稿，最后一行
-        # 给 bonus。中间 prefill（`can_sample` 为假）不取行，但它的 token 照样占
-        # 原始输入位置，所以 `offset` 对**每个** item 都要累加。
-        rows = []
-        picked = []
-        offset = 0
-        for item in scheduled_items:
-            offset += item["num_scheduled_tokens"]
-            if not item["can_sample"]:
-                continue
-            item["sample_offset"] = len(rows)          # 在筛选后 logits 里的起点
-            if item["draft_ids"]:
-                item["num_sample_rows"] = item["num_scheduled_tokens"]
-                rows.extend(range(offset - item["num_scheduled_tokens"], offset))
-            else:
-                item["num_sample_rows"] = 1
-                rows.append(offset - 1)
-            picked.append(item)
-        return rows, picked
+    # 采样执行层在 sample_loop.py；这里保留两个**薄的转发**，既有调用形状不变。
+
+    _sample_plan = staticmethod(SampleRuntime.plan_sample_rows)   # 既有脚本在类上调用它
 
     def _sample(self, logits, picked):
-        # logits 已经是「需要采样的那几行」，行序与 picked 一致，不再按原始行号二次索引
-        if not picked:
-            return None
-        expected = sum(item["num_sample_rows"] for item in picked)
-        if logits.shape[0] != expected:
-            raise RuntimeError(f"模型返回 {logits.shape[0]} 行 logits，但本轮需要 {expected} 行")
+        """本轮采样 —— 实现在 `SampleRuntime.run()`，这里只做转发。
 
-        notify = self.on_token
-
-        # 1) 没有草稿的项：走采样后端（随机采样、惩罚项、按行独立的历史都在那条路上）。
-        #    整批一次 select_batch + 一次 .tolist()，先把 token 算好，**提交留到下面按
-        #    picked 顺序做**——在这里就提交的话，事件顺序会变成「先普通后投机」。
-        plain = [item for item in picked if not item["draft_ids"]]
-        plain_tokens = {}
-        if plain:
-            for item, token in zip(plain, self._sample_rows(logits, plain)):
-                plain_tokens[id(item)] = token
-
-        # 2) 贪心且无惩罚的投机项：保留第五十三关的整批 argmax 快路径（一次回传）。
-        #    带惩罚项的贪心**不能**走这条：每一行看到的生成历史不同，argmax 必须在
-        #    逐行施加惩罚之后再取。
-        any_fast = any(item["draft_ids"] and self._is_greedy_without_penalty(item["request"])
-                       for item in picked)
-        greedy = torch.argmax(logits, dim=-1).tolist() if any_fast else None
-
-        # 3) 严格按 picked 顺序提交：同一请求内按 token 顺序，跨请求按本轮采样顺序
-        for item in picked:
-            seq = item["request"]
-            start, nrows = item["sample_offset"], item["num_sample_rows"]
-            if not item["draft_ids"]:
-                self._commit_tokens(seq, [plain_tokens[id(item)]], notify)
-            elif greedy is not None and self._is_greedy_without_penalty(seq):
-                self._commit_drafts(item, greedy[start:start + nrows], notify)
-            else:
-                self._commit_drafts_random(item, logits[start:start + nrows], notify)
-        return None
-
-    @staticmethod
-    def _is_greedy_without_penalty(seq):
-        """能不能走「整批 argmax」快路径：贪心，而且没有任何惩罚项。
-
-        有惩罚项时每行看到的生成历史都不同（需求 §3），必须先逐行施加惩罚再取
-        argmax——那时 one-hot 才是**该行**的目标分布。
+        `sampler` / `on_token` / `_commit_tokens` **在调用点现取**：它们是实例属性，
+        测试会在构造之后替换（`e.on_token = ...`、`engine._commit_tokens = spy`），
+        提前捕获引用会让替换失效。
         """
-        params = seq.sampling_params
-        return params.is_greedy and not params.has_penalty
-
-    def _sample_rows(self, logits, items):
-        """按每项自己的采样参数与惩罚项抽一枚 token，返回与 items 同序的 Python 列表。
-
-        整批一次 `select_batch`、一次 `.tolist()`，不逐请求 `.item()`。
-        **这里必须把 logits 转成 FP32**，和投机那条路不同：`apply_penalties()` 算
-        presence / frequency 惩罚时惩罚量是 FP32，回写要 `index_put` 进 logits 那一行，
-        dtype 不匹配会直接抛（BF16 模型 + 这两种惩罚，不转 FP32 就跑不起来）。
-
-        **不复制**（不带 `copy=True`）：Graph 的输出缓冲确实会被下次 replay 覆盖，
-        但 logits 只在本轮 `step()` 内被消费，`apply_penalties()` 也只读输入。
-        **如果以后把采样挪进异步调度、要跨步持有 logits，这里就得改回来。**
-        """
-        seqs = [item["request"] for item in items]
-        rows = [apply_penalties(logits[item["sample_offset"]].to(torch.float32),
-                                seq.sampling_params, seq.sampling_state)
-                for item, seq in zip(items, seqs)]
-        tokens = self.sampler.select_batch(
-            rows, [s_.sampling_params for s_ in seqs], [s_.sampling_state for s_ in seqs])
-        # token id 整批回传，不逐请求 .item()
-        return torch.stack(tokens).tolist()
-
-    def _commit_drafts_random(self, item, rows, notify):
-        """投机项（随机采样，或带惩罚项的贪心）：逐行构造目标分布做拒绝采样。
-
-        **每一行的惩罚历史不同**（需求 §3）：行 j 预测的是「真实历史 + 前 j 枚草稿」
-        之后那个 token。所以这里用的是一份**临时计数**——从真实计数复制一份，接受
-        一枚草稿就往里加一枚；真实 `sampling_state` 与 `all_token_ids` 在
-        `_commit_tokens()` 之前一个字都不动。
-
-        行的分布按「全都接受」构造：拒绝点之后的行根本不会被读到（`verify_drafts_random`
-        首次拒绝就停），而拒绝点之前的行历史恰好就是「前 j 枚都被接受」。
-        """
-        seq = item["request"]
-        params, state = seq.sampling_params, seq.sampling_state
-        draft_ids = item["draft_ids"]
-
-        # 只复制计数，不复制整段 token 历史；与真实状态不共享底层字典
-        temp = SimpleNamespace(prompt_token_ids=state.prompt_token_ids,
-                               generated_counts=dict(state.generated_counts))
-        row_probs = []
-        for index in range(len(draft_ids) + 1):
-            row_probs.append(row_distribution(rows[index].to(torch.float32), params, temp))
-            if index < len(draft_ids):
-                token = draft_ids[index]
-                temp.generated_counts[token] = temp.generated_counts.get(token, 0) + 1
-
-        if params.is_greedy:
-            # 贪心请求没有 generator（第五十二关起只给随机采样建），这里也确实不需要：
-            # 目标分布是 one-hot，`p[d]` 非 0 即 1，接受与否由 `verify_drafts_random()`
-            # 直接判定、一次 uniform 都不抽；纠正与 bonus 就是该行分布的 argmax。
-            def draw_uniform():
-                raise AssertionError("贪心路径不该抽接受随机数")
-            draw_token = lambda probs: int(torch.argmax(probs))
-        else:
-            def draw_uniform():
-                return float(torch.rand((), generator=state.generator,
-                                        device=state.generator.device))
-            draw_token = lambda probs: torch.multinomial(probs, num_samples=1,
-                                                         generator=state.generator)
-
-        remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
-        result = verify_drafts_random(draft_ids, row_probs, self.model.eos_token_ids,
-                                      remaining_outputs, draw_uniform, draw_token)
-
-        # 先回滚（被拒草稿的 KV 已经随本轮输入写进物理块），再走唯一提交入口
-        self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
-        self._commit_tokens(seq, result.committed_ids, notify)
+        return self.sample_runtime.run(logits, picked, self.sampler,
+                                       self.on_token, self._commit_tokens)
 
     def _commit_tokens(self, seq, token_ids, notify):
         """把 token 提交进请求状态：已提交历史、惩罚计数、回调**同进同退**。
 
-        这里是唯一的提交点，普通路径与投机路径共用。只有真正被接受的 token 才
-        会走到这儿——草稿在验证通过之前一个都不进来。
+        这里是唯一的提交点，普通路径与投机路径共用（采样层通过 `commit=` 回调它）。
+        只有真正被接受的 token 才会走到这儿——草稿在验证通过之前一个都不进来。
+
+        它**留在 Engine**（没有搬到 sample_loop.py）有两个原因：请求状态归 Engine 管；
+        而且它是可替换的缝——`engine._commit_tokens = spy` 这种打桩必须继续生效。
 
         回调顺序沿用 `picked` —— 也就是本轮采样的顺序，不等于 `running` 列表的顺序。
         """
@@ -422,27 +180,6 @@ class Engine:
                 # 都不会碰到引擎状态。不传 SequenceConfig，也不传内部列表。
                 notify({"request_id": seq.request_id, "token_id": token_id,
                         "output_index": index})
-
-    def _commit_drafts(self, item, greedy_ids, notify):
-        """投机项：用目标模型一次 forward 的 K+1 行验证草稿，回滚 KV，再逐枚提交。
-
-        顺序不能换：**回滚必须在 `scheduler.post_step()` 之前**。被拒绝草稿的 KV
-        已经随本轮输入写进了物理块，先把 `cache.length` 退回去，post_step 里的
-        发布与判停读到的才是真实进度。
-
-        `greedy_ids` 是**调用方整批算好、切好**的 K+1 枚目标模型贪心结果（见
-        `_sample()`）。这里不再自己 argmax：批量下每个请求各做一次 argmax 会多付
-        一次设备同步，而且会把「一次 forward 一次回传」拆散。
-        """
-        seq = item["request"]
-        remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
-        result = verify_drafts(item["draft_ids"], greedy_ids, self.model.eos_token_ids,
-                               remaining_outputs)
-
-        # 1) 先回滚：本轮输入 [x, d0..] 里只有 x 和「被接受且还要当下一轮输入」的草稿要留
-        self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
-        # 2) 再提交：逐枚走和普通路径同一个入口，事件序号自然连续
-        self._commit_tokens(seq, result.committed_ids, notify)
 
     def step(self):
 

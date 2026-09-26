@@ -1,11 +1,11 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`b512beb151e53b32…`（16 个 .py / 3986 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`962f07b392c2f6c8…`（19 个 .py / 4087 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
-- **改动 5 个文件**：
+- **改动 5 个文件 + 新增 3 个模块**（后者的拆分见 §8）：
 
 | 文件 | 改动 |
 |---|---|
@@ -14,6 +14,9 @@
 | `engine.py` | `_sample()` 拆成「无草稿项走采样后端 / 贪心无惩罚走批量快路径 / 其余走随机验证」三条；新增 `_commit_drafts_random()`（逐行历史 + 临时计数）；`_sample_with_sampler()` 改名 `_sample_rows()` 并改为**只算 token、不提交**（提交统一按 picked 顺序） |
 | `scheduler.py` | 删掉「投机只支持贪心且无惩罚项」的限制；顺带修掉 `request_id = request.get(...)` 写了两遍（验收方指出的） |
 | `__init__.py`、`step54.py` | 包说明、入口改名 |
+| `sample_loop.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚，从 `engine.py` 搬出 |
+| `validation.py`（新增，§8） | 配置与后端的组合校验，从 `engine.py` 搬出 |
+| `loading.py`（新增，§8） | 模型装配与目录加载，从 `engine.py` 搬出 |
 
 `cache.py`、`request.py`、`model.py`、`attention.py`、`norm.py`、`rope.py`、`sampler.py`、
 `formats/` 未改。
@@ -216,6 +219,10 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 **内部签名变化**：`Engine._sample_with_sampler()` → `Engine._sample_rows()`，改为返回 token
 列表而不提交（提交统一按 `picked` 顺序在 `_sample()` 里做）。
 
+**再往后（§8）**：采样执行的实现搬进了 `sample_loop.py`（`SampleRuntime`），
+`Engine._sample` 只剩一行转发；`Engine._sample_plan` 变成对
+`SampleRuntime.plan_sample_rows` 的 `staticmethod` 绑定。**外部可见的调用形状没变。**
+
 ### 7.2 遗留
 
 1. **一般 draft model 不做**：`q` 是确定性的，所以接受概率就是 `p[d]`，不需要整张 q 矩阵与
@@ -231,3 +238,57 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 6. **`p[d]` 的浮点边界**：`p[d]=0/1` 的判定用的是 `torch` 算出来的概率张量，理论上
    `softmax` 的结果可能落在 0/1 附近而不是精确的端点上；那时会走「抽 uniform」那条正常
    路径，结果仍然正确（只是多消耗一个随机数）。
+
+## 8. 顺带：把 engine.py 里的三块拆出去
+
+`engine.py` 一度 473 行，塞了三类互不相干的东西。这次拆成「Engine 只做装配与编排」：
+
+| 新模块 | 装什么 | 为什么能拆 |
+|---|---|---|
+| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与回滚 | 一轮的数据流，不认识 Engine 这个类型 |
+| `validation.py` | `SCHEDULING_POLICIES` / `SPECULATIVE_MODES` / `_check_runtime` / `_check_speculative` / `_check_scheduling_policy` / `_resolve_device` | 纯校验，不碰实例 |
+| `loading.py` | `build_model_from_config` / `load_model_config` / `load_model_weights` | 纯装配，不认识运行时 |
+
+拆完 `engine.py` **210 行**（473 → 210）：装运行时 + `step()` 编排 + 唯一提交入口
+`_commit_tokens()`。
+
+### 8.1 为什么是**组合**而不是继承
+
+依据是 vLLM 自己的做法（在本机 `vllm 0.28.0` 里核过）：
+
+- `vllm/v1/sample/sampler.py:21 class Sampler(nn.Module)`、
+  `vllm/v1/sample/rejection_sampler.py:38 class RejectionSampler(nn.Module)` —— 都是独立的类；
+- 它们被**持有为属性**：`v1/worker/gpu_model_runner.py:594 self.sampler = Sampler(...)`、
+  `:705 self.rejection_sampler = RejectionSampler(self.sampler, self.speculative_config, self.device)`
+  —— 典型的组合，而且构造参数正是「它需要的稳定依赖 + 配置」；
+- vLLM 里确实有 mixin（`v1/engine/core.py:2482` 的 `EngineCoreActorMixin`），但只用在
+  进程/actor 这类基础设施上；采样与调度两层都是组合。
+
+本仓库第 48 关那次行为不变重构也写了「不为优雅引入继承结构」，方向一致。
+
+### 8.2 拆的时候有**四条缝**不能碰断
+
+抽取不是「搬完就完」——既有脚本会伸进 Engine 内部，这些缝必须保持可打桩：
+
+| 缝 | 谁在用 | 怎么保住 |
+|---|---|---|
+| `Engine._sample_plan(items)` 在**类上**调用 | `check_step54_batch.py:144` | `_sample_plan = staticmethod(SampleRuntime.plan_sample_rows)` |
+| `engine._commit_tokens = spy` **实例替换** | `check_step54_random.py:173-179` | `_commit_tokens` 留在 Engine，采样层通过 `commit=` 回调它（每次现取） |
+| `e.on_token = ...` / `e.sampler` 构造后赋值 | 十几个脚本 | `on_token` / `sampler` 按参数逐轮传，不在构造时捕获 |
+| `step54.engine._check_speculative = ...` | 验收方的 `probe_step53_combinations.py:15-20` | `engine.py` 重导出这些名字，调用点写**裸名字**（模块全局查找） |
+
+最后一条最容易被忽略：`from .validation import _check_speculative` 之后，只要
+`_init_runtime()` 里写的还是裸名字 `_check_speculative(...)`，替换
+`step54.engine._check_speculative` 就仍然生效——Python 每次调用都去模块全局里查一次。
+
+### 8.3 验证
+
+- **七个脚本一个字都没改，全部原样通过**（53 / 35 / 32 / 21 / 51 / 17 / 88 项）。
+  其中 `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，
+  是行为不变的主要证据；其余六份正好覆盖上面那四条缝；
+- 四条缝另写了一次性探针直接验：打桩 `engine._check_speculative` 后
+  「priority + 前缀缓存 + 投机」能构造出来、`Engine._sample_plan` 类上可调、
+  实例替换的 `_commit_tokens` 被走到；
+- 公开 import 路径：`from step54 import Engine, load_model_config, SampleRuntime` 与
+  `from step54.engine import load_model_config` 都能导入；
+- 随机压测 500 + 500 组、验收方的 `review_step53.py` 重跑一致。

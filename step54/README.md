@@ -31,6 +31,21 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 3. **快路径不能被破坏**：贪心且无惩罚的投机项仍走第五十三关的整批 argmax；只有带惩罚的
    贪心与随机采样才走逐行分布。
 
+## 模块划分
+
+`engine.py` 只做装配与编排（210 行）：装运行时、`step()` 走「调度 → 一次 forward → 采样」、
+以及唯一提交入口 `_commit_tokens()`。三块内容各归一个模块：
+
+| 模块 | 装什么 |
+|---|---|
+| `sample_loop.py` | `SampleRuntime`：行映射、三条采样路径、验证与 KV 回滚 |
+| `validation.py` | 配置与后端的组合校验（构造阶段报错） |
+| `loading.py` | 模型装配与目录加载 |
+
+用**组合**不用继承——依据是 vLLM（`Sampler` / `RejectionSampler` 都是独立类、被
+`gpu_model_runner` 持有为属性）。详见
+[`docs/step54_random_speculative.md`](../docs/step54_random_speculative.md) §8。
+
 ## 明确限制
 
 `speculative_mode="ngram"` 只剩两条**实现方式**决定的硬约束：`attention_backend="torch"`
