@@ -17,7 +17,8 @@ from .cache import KVCachePool
 from .formats import CONFIG_NAME as MODEL_CONFIG_NAME
 from .formats import WEIGHTS_NAME as MODEL_WEIGHTS_NAME
 from .loading import (COMPATIBLE_FORMAT_VERSIONS, FORMAT_VERSION, MODEL_DTYPE, MODEL_TYPE,
-                      build_model_from_config, load_model_config, load_model_weights)
+                      build_model_from_config, load_model_config, load_model_from_dir,
+                      load_model_weights)
 from .model import TinyCausalLM
 from .sample_loop import SampleRuntime
 from .sampling import TorchSampler
@@ -116,18 +117,13 @@ class Engine:
                        scheduling_policy="fcfs",
                        speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
-        # 外部配置只读一次：适配器选出来之后，配置和权重都交给它翻译。
         check_scheduling_policy(scheduling_policy)
-        adapter, raw, generation = read_raw_config(model_dir)
-        config = adapter.to_internal_config(raw, generation)
-
         device = resolve_device(device)
         check_runtime(device, attention_backend, use_cuda_graph, dtype, norm_backend, rope_backend)
-        model = build_model_from_config(config, device, attention_backend,
-                                        max_num_batched_tokens, use_cuda_graph, dtype, norm_backend,
-                                        rope_backend)
-        _load_weights_into(adapter, model_dir, raw, model)
-
+        # 「读配置 -> 建模型 -> 装权重」整条流程在 loading.py
+        model = load_model_from_dir(model_dir, device, attention_backend,
+                                    max_num_batched_tokens, use_cuda_graph,
+                                    dtype, norm_backend, rope_backend)
         return cls(model=model, max_num_seqs=max_num_seqs,
                    max_num_batched_tokens=max_num_batched_tokens, block_size=block_size,
                    num_kv_blocks=num_kv_blocks, on_finished=on_finished, on_token=on_token,

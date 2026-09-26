@@ -427,6 +427,60 @@ if torch.cuda.is_available():
               f"（提出草稿 {cuda_rounds} 轮）",
               cuda_spec == cuda_plain, f"\n  普通={cuda_plain}\n  投机={cuda_spec}")
 
+# ------------------------------------------------ 6. 目录加载入口
+
+# 这一节是补的：把加载流程从 engine.py 搬到 loading.py 时，`from_model_dir()` 里
+# 还留着一处 `read_raw_config(...)` / `_load_weights_into(...)` 的调用没跟着改，
+# 而当时所有 step54 脚本都是 `Engine(model=...)` 随机初始化，**没有一条走到过
+# `from_model_dir`**，所以谁都没发现。补上这条端到端加载，以后就漏不掉了。
+import tempfile
+
+from step54.formats.native import save_model
+
+tmpdir = tempfile.mkdtemp(prefix="step54_load_")
+torch.manual_seed(7)
+scratch = step54.TinyCausalLM(device="cpu", attention_backend="torch",
+                              max_num_query_tokens=8, **DIMS)
+save_model(scratch, tmpdir)
+
+loaded = step54.Engine.from_model_dir(tmpdir, device="cpu", max_num_seqs=2,
+                                 max_num_batched_tokens=16, block_size=4, num_kv_blocks=32,
+                                 enable_prefix_caching=False, **SPEC)
+loaded_out = []
+loaded.scheduler.on_finished = lambda rec: loaded_out.extend(rec["output_ids"])
+loaded.add_request({"request_id": "L", "prompt_ids": [1, 2, 3, 4, 1, 2, 3, 4],
+                    "max_new_tokens": 6})
+loaded_step = 0
+while loaded.has_unfinished_requests():
+    loaded.step()
+    loaded_step += 1
+    assert loaded_step < 60
+check("from_model_dir：目录加载 + 投机跑通（这条能抓到加载流程搬家的漏改）",
+      len(loaded_out) == 6 and loaded_step > 0, str(loaded_out))
+
+# 同权重随机初始化的引擎应当给出同一串输出（加载没有悄悄改模型）
+torch.manual_seed(7)
+plain_same = step54.Engine(device="cpu", attention_backend="torch", max_num_seqs=2,
+                      max_num_batched_tokens=16, block_size=4, num_kv_blocks=32,
+                      enable_prefix_caching=False, **SPEC, **DIMS)
+plain_out = []
+plain_same.scheduler.on_finished = lambda rec: plain_out.extend(rec["output_ids"])
+plain_same.add_request({"request_id": "L", "prompt_ids": [1, 2, 3, 4, 1, 2, 3, 4],
+                        "max_new_tokens": 6})
+while plain_same.has_unfinished_requests():
+    plain_same.step()
+check("from_model_dir：读回来的权重与保存前一致（输出逐 token 相同）",
+      loaded_out == plain_out, f"\n  加载={loaded_out}\n  同权重={plain_out}")
+
+from step54 import load_model_config, load_model_weights          # 公开导出
+from step54.engine import load_model_config as engine_load        # 老 import 路径
+from step54.loading import load_model_from_dir
+check("加载入口的公开 import 路径都在（包级 + engine 重导出）",
+      callable(load_model_config) and callable(load_model_weights)
+      and callable(engine_load) and callable(load_model_from_dir))
+check("load_model_config 读得出内部配置",
+      load_model_config(tmpdir)["vocab_size"] == DIMS["vocab_size"])
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

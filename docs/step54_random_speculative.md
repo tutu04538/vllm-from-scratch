@@ -1,7 +1,7 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`00df4cb05625fb90…`（19 个 .py / 4068 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`09265fb7fe4cd678…`（19 个 .py / 4080 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
@@ -16,7 +16,7 @@
 | `__init__.py`、`step54.py` | 包说明、入口改名 |
 | `sample_loop.py`（新增，§8） | 采样执行层 `SampleRuntime`：行映射、三条路径的分派、验证与 KV 回滚、唯一提交入口，从 `engine.py` 搬出 |
 | `validation.py`（新增，§8） | 配置与后端的组合校验，从 `engine.py` 搬出 |
-| `loading.py`（新增，§8） | 模型装配与目录加载，从 `engine.py` 搬出 |
+| `loading.py`（新增，§8） | 模型装配、目录加载与「读配置→建模型→装权重」整条流程，从 `engine.py` 搬出 |
 
 `cache.py`、`request.py`、`model.py`、`attention.py`、`norm.py`、`rope.py`、`sampler.py`、
 `formats/` 未改。
@@ -289,6 +289,7 @@ class SampleRuntime:
 |---|---|
 | `benchmarks/check_step54_batch.py:145` | `Engine53._sample_plan(manual)` → `SampleRuntime.plan_sample_rows(manual)` |
 | `benchmarks/check_step54_random.py:173,179` | `engine._commit_tokens` → `engine.sample_runtime._commit_tokens` |
+| `benchmarks/check_step54_engine.py`（新增一节「目录加载入口」） | 见下：这条是**补的漏测** |
 
 其余测试一个字没动：`e.on_token = ...`、`e.sampler`、`e.kv_cache_pool` 这些**公开属性**
 都还在 Engine 上，采样层每轮现取着用。
@@ -297,9 +298,27 @@ class SampleRuntime:
 step53 没动、不受影响；将来若要写 step54 的同类探针，打桩点变成
 `step54.validation.check_speculative`。
 
-### 8.4 验证
+### 8.4 补一条漏测：`from_model_dir()` 当时根本没被跑到
 
-- 七个脚本全部通过（53 / 35 / 32 / 21 / 51 / 17 / 88 项）；其中
+搬家时 `engine.py` 的 `from_model_dir()` 里还留着一处 `read_raw_config(...)` 与
+`_load_weights_into(...)` 的调用没跟着改（两个名字已经搬进 `loading.py`），
+**调用 `from_model_dir()` 会直接 `NameError`**。
+
+当时七个脚本一条都没发现——因为 step54 的测试全是 `Engine(model=...)` 随机初始化，
+**没有一条走过目录加载**。现在把整条流程收进 `loading.load_model_from_dir()`，
+并在 `check_step54_engine.py` 补了一节端到端的「保存到临时目录 → `from_model_dir` 读回来
+→ 投机跑通 → 与同权重的随机初始化引擎逐 token 相同」，外加公开 import 路径的检查
+（51 → 55 项）。
+
+**这条用例做过反证**：把漏改放回去，它立刻以 `NameError: name 'read_raw_config' is not defined`
+失败——不是「跑过了就算数」。
+
+顺带用一遍 AST 扫了 `step54/` 全体模块的「用到但没定义也没 import」的名字，
+除了上面这处（已修）只剩 `step54.py` 里的 `__file__`（误报）。
+
+### 8.5 验证
+
+- 七个脚本全部通过（53 / 35 / 32 / **55** / 21 / 17 / 88 项）；其中
   `diff_step53_step54.py` 的 88 项是「投机关闭时与 step53 逐步逐字节一致」，
   是行为不变的主要证据；
 - 公开 import 路径不变：`from step54.engine import load_model_config`、

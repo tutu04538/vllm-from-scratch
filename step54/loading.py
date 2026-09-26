@@ -36,6 +36,22 @@ def load_model_config(model_dir):
     return adapter.to_internal_config(raw, generation)
 
 
+def load_model_from_dir(model_dir, device, attention_backend, max_num_batched_tokens,
+                        use_cuda_graph, dtype=torch.float32,
+                        norm_backend="torch", rope_backend="torch"):
+    """把一个模型目录变成装好权重的模型：读配置 -> 建模型 -> 装权重。
+
+    Engine 的 `from_model_dir()` 走这里；它只管模型本身，运行时（KV 池、调度器）
+    还是由 Engine 装。外部配置只读一次：适配器选出来之后，配置和权重都交给它翻译。
+    """
+    adapter, raw, generation = read_raw_config(model_dir)
+    config = adapter.to_internal_config(raw, generation)
+    model = build_model_from_config(config, device, attention_backend,
+                                    max_num_batched_tokens, use_cuda_graph,
+                                    dtype, norm_backend, rope_backend)
+    return _load_weights_into(adapter, model_dir, raw, model)
+
+
 def _load_weights_into(adapter, model_dir, raw, model):
     # 适配器把外部参数名翻成内部参数名，再严格装入已经建在目标设备上的模型。
     # 装入前显式转成模型的运行精度：FP32 文件进 BF16 模型就在这里舍入一次，
