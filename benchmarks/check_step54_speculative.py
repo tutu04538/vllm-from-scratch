@@ -213,8 +213,6 @@ check("max_num_seqs 不再受限：2 / 4 / 8 都能构造",
       all(raises(Engine, **dict(BASE, max_num_seqs=n)) is None for n in (2, 4, 8)))
 
 for label, override, expect in [
-    ("priority 调度", dict(scheduling_policy="priority"), "scheduling_policy"),
-    ("开前缀缓存", dict(enable_prefix_caching=True), "enable_prefix_caching"),
     ("未知模式", dict(speculative_mode="eagle"), "speculative_mode"),
     ("num_speculative_tokens=0", dict(num_speculative_tokens=0), "num_speculative_tokens"),
     ("prompt_lookup_n=0", dict(prompt_lookup_n=0), "prompt_lookup_n"),
@@ -225,11 +223,16 @@ for label, override, expect in [
     check(f"{label}：明确报错（提到 {expect}）",
           message is not None and expect in message, message or "没有报错")
 
-# 关闭投机时，这些组合仍然是合法的（不影响旧行为）
+# 第五十四关起 priority / 前缀缓存与投机一起放开（组合验证见
+# benchmarks/check_step54_combinations.py）；只剩两条实现层面的硬约束
 for label, override in [("priority 调度", dict(scheduling_policy="priority")),
-                        ("开前缀缓存", dict(enable_prefix_caching=True))]:
+                        ("开前缀缓存", dict(enable_prefix_caching=True)),
+                        ("priority + 前缀缓存 + 投机", dict(scheduling_policy="priority",
+                                                          enable_prefix_caching=True))]:
     cfg = dict(BASE)
-    cfg.update(override, speculative_mode=None)
+    cfg.update(override)
+    check(f"{label}：可以构造（本关起放开）", raises(Engine, **cfg) is None)
+    cfg.update(speculative_mode=None)
     check(f"speculative_mode=None 时 {label} 仍然合法", raises(Engine, **cfg) is None)
 
 # 采样参数：第五十四关起投机**支持**随机采样与惩罚项（限制在上一关被删掉了）

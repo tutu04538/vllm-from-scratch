@@ -41,16 +41,18 @@ def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n
                        attention_backend, use_cuda_graph):
     """投机解码的开关与组合校验。
 
-    n-gram 模式**明确限制**在一组配置上：FCFS、无前缀缓存、Torch attention、
-    无 CUDA Graph。不支持的组合直接报错，不悄悄退化成普通解码——那会让人以为
-    自己在测投机。
+    只剩两条硬约束，都是**实现方式**决定的，不是「懒得验」：
 
-    第五十四关放开了 `max_num_seqs=1`：一个 batch 里可以同时有多个投机请求、
-    普通 decode 和中间 prefill。随之失去的是第五十二关那条「不会发生抢占」的
-    推论——running 里不止一条请求，`_make_room()` 就有犠牲者可选了。这不影响
-    正确性（`_preempt()` 发生在 forward **之前**，被抢占的项整个作废、走不到
-    采样与回调），但「投机下不做抢占」不再是无条件成立的，见
-    docs/step54_batched_speculative.md。
+    - `attention_backend="torch"`：拒绝采样现在是逐请求的 Torch 参考循环，
+      没有 Triton rejection kernel（需求明确不做）；
+    - `use_cuda_graph=False`：采样要在图**外**按请求逐行做设备同步，图里做不到。
+
+    其余组合都放开并验过：`max_num_seqs` 从第五十三关起不限；`scheduling_policy`
+    与 `enable_prefix_caching` 从第五十四关起不限（见
+    benchmarks/check_step54_combinations.py）。放开抢占那一条尤其值得说明：抢占
+    发生在 `schedule()` 里、forward **之前**，被抢占的项整个作废、走不到采样与回调，
+    所以「投机 + 抢占」不需要额外机制；前缀缓存那一条靠的是「被回滚的整块从来没被
+    发布过」（回滚目标 >= 本轮起点 + 1，而发布的块严格在起点之前）。
     """
     if speculative_mode not in SPECULATIVE_MODES:
         raise ValueError(f"未知的 speculative_mode: {speculative_mode!r}，"
@@ -62,8 +64,6 @@ def _check_speculative(speculative_mode, num_speculative_tokens, prompt_lookup_n
     if speculative_mode is None:
         return
     unsupported = [
-        (scheduling_policy != "fcfs", f"scheduling_policy 只能是 'fcfs'，当前 {scheduling_policy!r}"),
-        (enable_prefix_caching, "enable_prefix_caching 必须关闭"),
         (attention_backend != "torch", f"attention_backend 只能是 'torch'，当前 {attention_backend!r}"),
         (use_cuda_graph, "use_cuda_graph 必须关闭"),
     ]

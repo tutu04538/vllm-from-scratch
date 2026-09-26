@@ -33,8 +33,13 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 
 ## 明确限制
 
-`speculative_mode="ngram"` 仍只支持：`fcfs`、关前缀缓存、Torch attention、关 CUDA Graph。
-**采样参数不再受限**（本关放开的）。
+`speculative_mode="ngram"` 只剩两条**实现方式**决定的硬约束：`attention_backend="torch"`
+（拒绝采样是逐请求的 Torch 参考循环，不做 Triton kernel）、`use_cuda_graph=False`
+（采样要在图外逐行做设备同步）。
+
+其余都放开并验过：`max_num_seqs`（第五十三关）、采样参数 / `priority` / 前缀缓存（本关）。
+`check_step54_combinations.py` 专门验组合：priority 下的名额抢占与容量抢占、前缀缓存下的
+命中与**已发布块 KV 不被回滚污染**、以及三条一起跑。
 
 ## 怎么证明它是对的
 
@@ -44,6 +49,7 @@ n-gram 是确定性提议，所以 `q(d)=1`、接受概率就是 `p[d]`：
 | `benchmarks/check_step54_random.py`：引擎状态（临时计数、RNG、重算计数、混批） | **21 项全通过** |
 | `benchmarks/check_step54_speculative.py` / `check_step54_batch.py` / `check_step54_engine.py` | 53 / 35 / 51 项全过（第五十二、五十三关整套用例） |
 | `benchmarks/diff_step53_step54.py`：投机关闭时与 step53 逐步对照 | **88 项全通过**（未放宽字段） |
+| `benchmarks/check_step54_combinations.py`：priority / 前缀缓存与投机组合 | **17 项全通过** |
 | 随机压测 500 组（随机/惩罚/不同 K、紧池子、动态到达） | 0 崩溃 0 活锁，计数与输出始终一致 |
 | CUDA FP32 / BF16 | 同批随机投机 + 带惩罚的贪心都能跑完 |
 

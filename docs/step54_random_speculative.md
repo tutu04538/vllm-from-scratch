@@ -1,7 +1,7 @@
 # step54：随机采样投机解码与拒绝修正
 
 - 对应代码：`step54/`（新增，从 `step53/` 复制，入口改名 `step54.py`）
-- 包摘要 SHA256：`007ea0f7fc676819…`（16 个 .py / 3977 行，本仓库 `source_digest()` 口径
+- 包摘要 SHA256：`7a91140a767aefdb…`（16 个 .py / 3977 行，本仓库 `source_digest()` 口径
   ——`name\0hash\n` 拼起来再 sha256；验收方 `review_step53.py` 用的是另一种拼法，
   同一份代码两个数字不同，比对时先确认口径）
 - 基线：`step53/`（验收方记录 `6f4f362f04bbd3d0…`），原样保留未改
@@ -165,7 +165,21 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 - 贪心 + 三种惩罚：投机与普通路径**逐 token 相同**；逐行历史有判别性用例（见 §2）；
 - CUDA FP32 / BF16 冒烟。
 
-### 6.3 旧路径与回归
+### 6.3 组合验证（`benchmarks/check_step54_combinations.py`，17 项全通过）
+
+| 检查 | 结果 |
+|---|---|
+| priority + 投机：容量抢占与**名额抢占**都发生，被抢占的那一步执行计划里不含它 | 抢占 2~3 次（名额 1） |
+| priority + 投机：每步预算、池子自洽、无 0-token 项、四条请求序号连续 | ✓ |
+| prefix + 投机：确实命中、确实投机、**开关前缀缓存不改变输出** | reused 8 / 草稿 2 轮 / 两组输出逐 token 相同 |
+| prefix + 投机：**已发布块的 KV 在后续（含回滚）步骤里一字未改** | 快照 6 个块逐字节相同 |
+| prefix + 投机：hash 双向索引一致、结束引用归零 | ✓ |
+| priority + prefix + 投机（含随机与惩罚项）：抢占 1 / 命中 16 / 草稿 5 轮，三条请求都正常完成 | ✓ |
+
+「已发布块的 KV 不被改」这条**做过反证**：故意往一个已发布块里写脏数据，这条断言立刻 FAIL
+——不是「跑过了就算数」。
+
+### 6.4 旧路径与回归
 
 | 脚本 | 结果 |
 |---|---|
@@ -174,6 +188,7 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 | `check_step54_engine.py`（单请求与多请求等价性） | 51 项全过 |
 | `diff_step53_step54.py`（投机关闭时与 step53 逐步对照，未放宽字段） | 88 项全过 |
 | 随机压测 500 组（2~4 条请求、随机/惩罚/不同 K、预算 1~12、池子 2~24 块、动态到达） | 0 崩溃 0 活锁、0 个 0-token 计划项、计数与输出始终一致、引用归零 |
+| 随机压测 500 组（priority / 前缀缓存随机组合 + 随机采样 + 惩罚项） | 同上，外加 hash 双向索引一致 |
 
 ## 7. 接口变化与遗留
 
@@ -182,13 +197,19 @@ generated_total == len(output_ids)                惩罚计数恰好等于已提
 **新增**：`speculative.verify_drafts_random()`、`speculative.residual_probs()`、
 `sampling.row_distribution()`；`Engine._commit_drafts_random()`。
 
-**放开**：`speculative_mode="ngram"` 不再要求「贪心且无惩罚项」——随机采样、top-k/top-p、
-三种惩罚项都可以。仍然明确拒绝：`priority`、开前缀缓存、非 Torch attention、CUDA Graph。
+**放开**：`speculative_mode="ngram"` 现在只拒绝两条**实现方式**决定的组合：
 
-> 后面那四项属于「没验证过的组合」，不是「已知不行」。验收方用
-> `probe_step53_combinations.py` 绕过检查实测过 prefix/priority 与贪心投机能跑（96 组 CPU +
-> 8 组 CUDA 全一致），但那是**别人的验证**、而且只覆盖了贪心；本关没有把随机投机与
-> prefix/priority 的组合纳入范围，所以限制先留着，不在文档里假装已经验过。
+- `attention_backend != "torch"`：拒绝采样是逐请求的 Torch 参考循环，没有 Triton
+  rejection kernel（需求明确不做）；
+- `use_cuda_graph=True`：采样要在图**外**按请求逐行做设备同步，图里做不到。
+
+除此之外都放开并验过：`max_num_seqs`（第五十三关）、采样参数（本关）、
+`priority` 与 `enable_prefix_caching`（本关，见
+`benchmarks/check_step54_combinations.py`）。
+
+**放开抢占那条**不需要额外机制：抢占发生在 `schedule()` 里、forward **之前**，被抢占的
+项整个作废、走不到采样与回调；**放开前缀缓存那条**靠的是「被回滚的整块从来没被发布过」
+——回滚目标 ≥ 本轮起点 + 1，而发布的块严格在起点之前，两者不相交。
 
 **内部签名变化**：`Engine._sample_with_sampler()` → `Engine._sample_rows()`，改为返回 token
 列表而不提交（提交统一按 `picked` 顺序在 `_sample()` 里做）。
