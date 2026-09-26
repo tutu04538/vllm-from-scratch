@@ -277,6 +277,47 @@ check("逐行惩罚与「普通单步采样」的参考实现逐行一致",
           for j, counts in enumerate([{}, {2: 1}, {2: 2}])))
 
 
+# 贪心路径**一次 uniform 都不该抽**——引擎里那句 `draw_uniform` 就是写成
+# 「被调用就抛 AssertionError」的。它成立的前提是：贪心分布是**精确**的 one-hot。
+# 这里把这条前提与后果一起钉住（两边用的是同一份实现，交叉验证）。
+greedy_params = SamplingParams(vocab_size=4, repetition_penalty=1.4, presence_penalty=0.5,
+                               frequency_penalty=0.3)
+greedy_state = SamplingState(greedy_params, [1, 2], torch.device("cpu"))
+greedy_state.generated_counts = {2: 1}
+not_onehot = []
+for trial in range(2000):
+    row = torch.randn(4) * (10 ** (trial % 4))
+    dist = row_distribution(row, greedy_params,
+                            hist(greedy_state, dict(greedy_state.generated_counts)))
+    if not set(dist.tolist()) <= {0.0, 1.0}:
+        not_onehot.append(dist.tolist())
+check("贪心分布是**精确**的 one-hot（每一项只能是 0.0 或 1.0，2000 组随机行）",
+      not not_onehot, str(not_onehot[:2]))
+
+
+def exploding_uniform():
+    raise AssertionError("贪心路径不该抽接受随机数")
+
+
+# 这一行的 argmax：token2 被三惩罚压到 -0.8，token3 是 3.0 -> 草稿取 3（p[d]=1 -> 必接受）
+greedy_rows = [row_distribution(probs(0.0, 0.0, 4.0, 3.0), greedy_params,
+                                hist(greedy_state, {2: 1})) for _ in range(2)]
+r = verify_drafts_random([3], greedy_rows, EOS, 8, exploding_uniform,
+                         lambda pr: int(torch.argmax(pr)))
+check("贪心分布喂进验证函数：一次都不会去抽 uniform（会抛的那个没被调用）",
+      r.num_accepted == 1 and r.committed_ids == [3, 3],
+      f"num_accepted={r.num_accepted} committed={r.committed_ids}")
+
+# 反面对照：随机分布（非 one-hot）**必须**抽 uniform，否则接受判定就是假的
+random_params = SamplingParams(vocab_size=4, temperature=0.8, seed=1)
+random_state = SamplingState(random_params, [1, 2], torch.device("cpu"))
+random_rows = [row_distribution(probs(0.0, 1.0, 3.0, 3.0), random_params, random_state)
+               for _ in range(2)]
+d = Draws(uniforms=[0.5], tokens=[2])
+r = verify_drafts_random([1], random_rows, EOS, 8, d.uniform, d.token)
+check("随机分布（非 one-hot）确实会抽 uniform——两个回调的选择是配套的",
+      d.n_uniform == 1 and r.num_accepted + 1 == len(r.committed_ids))
+
 # 贪心 + 惩罚：分布是 one-hot，且落在「施加惩罚之后」的 argmax 上
 st, params = state_for(repetition_penalty=4.0)
 temp = hist(st, {2: 1})
