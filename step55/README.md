@@ -42,7 +42,7 @@ python step55/step55.py --model-dir models/Qwen3-1.7B \
 
 | 检查 | 结果 |
 |---|---|
-| `benchmarks/check_step55_draft_kv.py`：双 KV 轨迹 / 对齐 / 边界 / 回退 / 抢占 / 前缀命中 / 惩罚一致性 / CUDA 冒烟 | **47 项全通过** |
+| `benchmarks/check_step55_draft_kv.py`：双 KV 轨迹 / 对齐 / 边界 / 回退 / 抢占 / 前缀命中 / 惩罚一致性 / CUDA 冒烟 | **49 项全通过** |
 | `benchmarks/check_step55_rejection.py`：一般 p/q 拒绝采样（含统计检验） | **50 项全通过** |
 | `benchmarks/check_step55_loading.py`：分片权重 + 双目录加载 | **12 项全通过** |
 | `benchmarks/check_step55_real_qwen3.py`：真实 1.7B + 0.6B 端到端 | **9 项全通过** |

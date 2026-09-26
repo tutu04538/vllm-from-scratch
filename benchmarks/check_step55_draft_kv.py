@@ -392,6 +392,26 @@ pre_trace = steps(pre, [
     {"request_id": "B", "prompt_ids": list(PRE), "max_new_tokens": 8, "priority": 0}])
 check("抢占：构造出来了（容量压力下真的抢占过）",
       pre.scheduler.num_preemptions > 0, f"抢占 {pre.scheduler.num_preemptions} 次")
+
+# priority + **动态到达**：一条严格更高优先级的请求中途插进来，应当顶掉低优先级的
+# 名额（名额抢占），并且被顶掉那条的两套 KV 都要释放、之后能重新恢复
+prio = build(19, shift, shift, num_kv_blocks=32, draft_num_kv_blocks=16,
+             num_speculative_tokens=2, max_num_seqs=1, scheduling_policy="priority",
+             max_num_batched_tokens=16)
+prio_trace = steps(prio, [{"request_id": "low", "prompt_ids": PROMPT, "max_new_tokens": 10,
+                           "priority": 0}],
+                   arrivals={2: [{"request_id": "high", "prompt_ids": [7, 8, 7, 8],
+                                  "max_new_tokens": 4, "priority": -1}]})
+check("priority 动态到达：高优先级中途插进来，发生了**名额抢占**",
+      prio.scheduler.num_priority_preemptions > 0,
+      f"名额抢占 {prio.scheduler.num_priority_preemptions} 次")
+check("priority 动态到达：两条请求都跑完、序号连续、两套池子归零",
+      prio.scheduler.has_unfinished_requests() is False
+      and len(final_output(prio_trace, "low")) == 10
+      and len(final_output(prio_trace, "high")) == 4
+      and all(u == 0 for u in prio.kv_cache_pool.block_usage)
+      and all(u == 0 for u in prio.draft_kv_pool.block_usage),
+      f"low={len(final_output(prio_trace, 'low'))} high={len(final_output(prio_trace, 'high'))}")
 check("抢占：被抢占的请求两套 KV 都失效（draft 长度回到 0 并重新补算）",
       pre.draft_proposer.num_catchup_tokens > len(PRE),
       f"累计补算 {pre.draft_proposer.num_catchup_tokens} 个 token（> prompt 长度说明"
