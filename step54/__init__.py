@@ -31,10 +31,12 @@ from .model import (DEFAULT_EOS_TOKEN_IDS, DecoderLayer, DummyModel, RMSNorm, Ro
                     TinyCausalLM, _rotate_half)
 from .norm import rms_norm
 from .rope import rope
-from .sampling import SamplingParams, SamplingState, TorchSampler, apply_penalties
+from .sampling import (SamplingParams, SamplingState, TorchSampler, apply_penalties,
+                       row_distribution)
 from .sampler import Sampler
 from .scheduler import Scheduler
-from .speculative import DraftVerification, propose_ngram, verify_drafts
+from .speculative import (DraftVerification, propose_ngram, residual_probs,
+                          verify_drafts, verify_drafts_random)
 
 __all__ = [
     "Engine", "TinyCausalLM", "DecoderLayer", "RMSNorm", "RotaryEmbedding", "DummyModel",
@@ -42,8 +44,9 @@ __all__ = [
     "Sampler", "Scheduler", "save_model", "load_model_config", "load_model_weights",
     "build_model_from_config", "native_format", "qwen3_format",
     "DEFAULT_EOS_TOKEN_IDS", "GENERATION_CONFIG_NAME", "rms_norm", "rope",
-    "SamplingParams", "SamplingState", "TorchSampler", "apply_penalties",
-    "propose_ngram", "verify_drafts", "DraftVerification",
+    "SamplingParams", "SamplingState", "TorchSampler", "apply_penalties", "row_distribution",
+    "propose_ngram", "verify_drafts", "verify_drafts_random", "residual_probs",
+    "DraftVerification",
     "FORMAT_VERSION", "COMPATIBLE_FORMAT_VERSIONS", "MODEL_TYPE", "MODEL_DTYPE",
     "MODEL_CONFIG_NAME", "MODEL_WEIGHTS_NAME",
 ]
