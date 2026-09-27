@@ -304,13 +304,19 @@ class Scheduler:
                 start = seq.cache.length
                 input_ids = seq.all_token_ids[start:start + num_real]
                 if draft_ids:
-                    # 草稿只是**临时计划**：它绝不进 seq 的历史，只作为本轮输入
-                    input_ids = input_ids + list(draft_ids)
+                    # 草稿只是**临时计划**：它绝不进 seq 的历史，只作为本轮输入。
+                    # 两个 list 直接相加即可：`propose_ngram()` 返回的是切片出来的新
+                    # list（`ReadOnlyTokenList` 的切片落到 `_backing[slice]`），
+                    # draft_model 那条路是字面量 `[]`，都不是视图、不需要再复制一层。
+                    input_ids = input_ids + draft_ids
                 planned.append({
                     "request": seq,
                     "input_ids": input_ids,
                     "num_scheduled_tokens": num_scheduled_tokens,
-                    "draft_ids": list(draft_ids),        # 已知草稿（ngram 计划期就填，draft_model 提议后填）
+                    # 已知草稿（ngram 计划期就填，draft_model 提议后填整个 list 引用即可：
+                    # 之后只有「整段重新赋值」——`_shrink_draft()` 砍一枚、`_fill_item()`
+                    # 换成实际草稿——没有任何地方就地改这个 list）
+                    "draft_ids": draft_ids,
                     # 本轮为草稿**预留的名额**：还不知道实际能提几枚（要跑过 draft
                     # 才知道），先按上限占住 token 预算与两个池子的块。提议之后
                     # `draft_ids` 填上实际草稿、`num_scheduled_tokens` 改成 1+实际，

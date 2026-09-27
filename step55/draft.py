@@ -264,6 +264,12 @@ class DraftModelProposer:
     def _fill_item(item):
         """把草稿写进本轮计划：输入行、计数、以及给验证层用的 q。
 
+        这里的 `list(...)` 是**跨对象**的复制：计划项比提议结果活得久（提议对象下一行就被
+        `pop` 掉、循环结束就没人引用），把引用留过去等于让计划项的状态取决于别人的写法。
+        与 `cache.py` 里 `block_table = list(plan.matched_block_ids)` 同一条规矩：**计划项
+        自己持有一份**。（`_plan_tokens()` 里那两个 `list()` 不一样——那里是同一个对象自己
+        复制自己，已经删掉了。）
+
         计划里预留的 `num_reserved_drafts` 与实际草稿数可能不一致（前者是名额、后者是
         跑出来的结果）。实际更少时**不在这里
         还块**：多预留的 target 块由验证之后的回滚（`truncate` 到保留长度）自然还回
