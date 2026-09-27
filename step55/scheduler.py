@@ -271,17 +271,17 @@ class Scheduler:
                     #
                     # ngram 的草稿是**纯函数直接算出来的**（确定性提议）；
                     # draft_model 的草稿要跑过 draft 才知道，这里只放一个**预留额度**
-                    # `max_draft_k`，草稿由 Engine 在 target forward 之前填进来
+                    # `num_reserved_drafts`，草稿由 Engine 在 target forward 之前填进来
                     # （第五十五关）。两者都记进 `num_scheduled_tokens`：本轮的 token
                     # 预算与物理块按最坏情况先占住，实际用不到的由验证后的回滚还回。
                     if self.speculative_mode == "draft_model":
-                        max_draft_k = self._plan_draft_budget(seq, prefill_token_budget)
+                        num_reserved_drafts = self._plan_draft_budget(seq, prefill_token_budget)
                         draft_ids = []
                         num_real = 1
-                        prefill_token_budget -= max_draft_k
-                        num_scheduled_tokens = num_real + max_draft_k
+                        prefill_token_budget -= num_reserved_drafts
+                        num_scheduled_tokens = num_real + num_reserved_drafts
                     else:
-                        max_draft_k = 0
+                        num_reserved_drafts = 0
                         draft_ids = self._plan_drafts(seq, prefill_token_budget)
                         num_real = 1
                         prefill_token_budget -= len(draft_ids)
@@ -299,7 +299,7 @@ class Scheduler:
                     prefill_token_budget -= num_scheduled_tokens
                     num_real = num_scheduled_tokens
                     draft_ids = []
-                    max_draft_k = 0        # prefill / 重算 chunk 都不投机
+                    num_reserved_drafts = 0        # prefill / 重算 chunk 都不投机
 
                 start = seq.cache.length
                 input_ids = seq.all_token_ids[start:start + num_real]
@@ -310,10 +310,15 @@ class Scheduler:
                     "request": seq,
                     "input_ids": input_ids,
                     "num_scheduled_tokens": num_scheduled_tokens,
-                    "draft_ids": list(draft_ids),
-                    # 草稿的预留上限（draft_model 用；ngram 这里是 0——它的草稿已经
-                    # 由 `draft_ids` 表示，不需要第二个计数）
-                    "max_draft_k": max_draft_k,
+                    "draft_ids": list(draft_ids),        # 已知草稿（ngram 计划期就填，draft_model 提议后填）
+                    # 本轮为草稿**预留的名额**：还不知道实际能提几枚（要跑过 draft
+                    # 才知道），先按上限占住 token 预算与两个池子的块。提议之后
+                    # `draft_ids` 填上实际草稿、`num_scheduled_tokens` 改成 1+实际，
+                    # 而这个名额**保持原值**（它记的是「当初批了多少」，缩草稿、
+                    # 以及测试判断「预留了但一枚都没提出来」都要看它）。
+                    # ngram 不需要它：草稿是纯函数直接算出来的，`draft_ids` 计划阶段
+                    # 就已经填好，所以这里恒为 0。
+                    "num_reserved_drafts": num_reserved_drafts,
                     "draft_probs": [],
                     # 回滚与重算统计都要「本轮从哪儿开始算」；用 end - num_scheduled_tokens
                     # 反推在投机下是错的——那个 end 是回滚后的长度。
@@ -388,16 +393,16 @@ class Scheduler:
             seq = item["request"]
             if seq not in self.running:
                 continue        # 本轮被选成犠牲者，计划作废
-            if item["draft_ids"] or item["max_draft_k"]:
+            if item["draft_ids"] or item["num_reserved_drafts"]:
                 # 草稿是**可选**的加速：容量不够就逐枚缩短，最终退回普通 1-token 路径。
                 # 缩短只改这一轮进模型几个 token，不动任何已提交状态。
                 # 只读地问（can_grow / fits 都不摘链），真正补块仍然只有 ensure_blocks 一处。
                 # **两个池子都要问**：target 池放不下整段输入、或 draft 池放不下
                 # 「补算缺口 + 草稿」，任一不满足都砍一枚。draft 池不够时只缩草稿，
                 # 绝不为可选草稿去抢占 target 的其他请求。
-                while (item["draft_ids"] or item["max_draft_k"]) and (
+                while (item["draft_ids"] or item["num_reserved_drafts"]) and (
                         not self.kv_cache_pool.can_grow(seq, item["num_scheduled_tokens"])
-                        or not self._draft_fits(seq, item["max_draft_k"])):
+                        or not self._draft_fits(seq, item["num_reserved_drafts"])):
                     self._shrink_draft(item)
             if self.kv_cache_pool.ensure_blocks(seq, item["num_scheduled_tokens"]):
                 committed_items.append(item)
@@ -413,8 +418,8 @@ class Scheduler:
         """把计划里的草稿砍掉最后一枚。
 
         ngram 砍的是**已知草稿**（`draft_ids`，输入行跟着变短）；draft_model 砍的是
-        **预留额度**（草稿还没提，要跑过 draft 才知道）。两者都只改这一轮的临时计划，
-        不动任何已提交状态。
+        **预留名额**（`num_reserved_drafts`——草稿还没提，要跑过 draft 才知道）。
+        两者都只改这一轮的临时计划，不动任何已提交状态。
 
         `_plan_tokens()` 已经把 token 预算按原长度发下去了，砍短之后多出来的额度
         **不回收**——留给同一个请求反而更简单，本关也不做「缩 K 后重发预算」。
@@ -423,7 +428,7 @@ class Scheduler:
             item["draft_ids"] = item["draft_ids"][:-1]
             item["input_ids"] = item["input_ids"][:-1]
         else:
-            item["max_draft_k"] -= 1
+            item["num_reserved_drafts"] -= 1
         item["num_scheduled_tokens"] -= 1
 
     def _check_progress(self):

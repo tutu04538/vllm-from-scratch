@@ -380,7 +380,7 @@ if 全部接受:
 一轮的顺序（实现在 `engine.py:step()` 与 `draft.py:run_round()`）：
 
 ```text
-Scheduler.schedule()      真实 token 预算 + max_draft_k 预留 + 两池只读容量检查
+Scheduler.schedule()      真实 token 预算 + 草稿名额预留（num_reserved_drafts）+ 两池只读容量检查
   → DraftModelProposer.run_round()
         补算：把已提交历史补进 draft 的 KV（按 chunk，受 draft 自己的预算限制）
         提议：第 j 步把「还想要第 j 枚」的请求合成一个 batch 跑一次 draft
@@ -504,7 +504,9 @@ $0.30$ vs 标准规则的 $0.60$；$p=q$（draft 完全靠谱）时更狠：标�
 
 ## 5. 双池容量与失败原子性
 
-- 计划阶段（`Scheduler._plan_tokens`）只给 `max_draft_k` 预留，草稿要跑过 draft 才知道；
+- 计划阶段（`Scheduler._plan_tokens`）只发**草稿名额**（`num_reserved_drafts`），草稿要跑过
+  draft 才知道，写在实际草稿 `draft_ids` 里；名额与实际枚数可以不一致（实际更少），
+  缩草稿缩的是名额；
 - `_reserve_blocks()` 缩草稿时**两个池子都问**：`can_grow(seq, num_scheduled_tokens)`
   与 `draft.fits(seq, k)`，任一不满足就砍一枚，砍到 0 就是普通的 1-token 路径；
 - 所有池操作都是**先计划后提交**（`ensure_blocks_for` 失败时一个字节都不改），

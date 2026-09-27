@@ -170,13 +170,14 @@ class DraftModelProposer:
     def run_round(self, items):
         """一轮的全部 draft 工作，把草稿写回 item。**在 target forward 之前调用**。
 
-        `item["max_draft_k"]` 是调度器给的预留上限（已按两个池子的容量缩过）。
-        实际草稿数可能更少：draft 提出终止 token、池子中途不够、预算用尽。
+        `item["num_reserved_drafts"]` 是调度器给的**预留名额**（已按两个池子的容量缩过），
+        不是「实际草稿数」——那个要跑完提议才知道，写进 `item["draft_ids"]`。
+        实际枚数可以比名额少：draft 提出终止 token、池子中途不够、预算用尽。
         """
         budget = self.max_num_batched_tokens
         ready = []
         for item in items:
-            if item["max_draft_k"] <= 0:
+            if item["num_reserved_drafts"] <= 0:
                 continue
             done, used = self.catch_up(item["request"], budget)
             budget -= used
@@ -185,7 +186,7 @@ class DraftModelProposer:
         if ready:
             self._propose_batch(ready, budget)
         for item in items:
-            if item["max_draft_k"] > 0:
+            if item["num_reserved_drafts"] > 0:
                 self._fill_item(item)
 
     def _propose_batch(self, items, budget):
@@ -197,10 +198,10 @@ class DraftModelProposer:
         """
         drafts = {id(item): ([], []) for item in items}      # 每请求：草稿 id 与 q
         stopped = set()                                      # 本轮不再提议的请求
-        max_steps = max(item["max_draft_k"] for item in items)
+        max_steps = max(item["num_reserved_drafts"] for item in items)
         for step in range(max_steps):
             active = [it for it in items
-                      if id(it) not in stopped and it["max_draft_k"] > step]
+                      if id(it) not in stopped and it["num_reserved_drafts"] > step]
             if not active or budget <= 0:
                 break
             batch = active[:budget]
@@ -263,7 +264,8 @@ class DraftModelProposer:
     def _fill_item(item):
         """把草稿写进本轮计划：输入行、计数、以及给验证层用的 q。
 
-        计划里预留的 `max_draft_k` 与实际草稿数可能不一致。实际更少时**不在这里
+        计划里预留的 `num_reserved_drafts` 与实际草稿数可能不一致（前者是名额、后者是
+        跑出来的结果）。实际更少时**不在这里
         还块**：多预留的 target 块由验证之后的回滚（`truncate` 到保留长度）自然还回
         池子，draft 那边由 `align()` 夹回边界——两个池子各有一条归还路径，不重复还。
         """

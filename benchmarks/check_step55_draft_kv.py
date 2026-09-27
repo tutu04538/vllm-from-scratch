@@ -138,7 +138,7 @@ def steps(engine, requests, arrivals=None, limit=40):
         trace.append({
             "step": step,
             "plans": [(it["num_scheduled_tokens"], list(it["input_ids"]),
-                       list(it["draft_ids"]), it["max_draft_k"])
+                       list(it["draft_ids"]), it["num_reserved_drafts"])
                       for it in engine.scheduler.scheduled_items],
             "blocks": {seq.request_id: (len(seq.cache.block_table or []),
                                         len(seq.draft_cache.block_table or []))
