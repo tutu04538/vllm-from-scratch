@@ -265,11 +265,10 @@ class DraftModelProposer:
     def _fill_item(item):
         """把草稿写进本轮计划：输入行、计数、以及给验证层用的 q。
 
-        这里的 `list(...)` 是**跨对象**的复制：计划项比提议结果活得久（提议对象下一行就被
-        `pop` 掉、循环结束就没人引用），把引用留过去等于让计划项的状态取决于别人的写法。
-        与 `cache.py` 里 `block_table = list(plan.matched_block_ids)` 同一条规矩：**计划项
-        自己持有一份**。（`_plan_tokens()` 里那两个 `list()` 不一样——那里是同一个对象自己
-        复制自己，已经删掉了。）
+        `draft_ids` / `draft_probs` 直接把提议结果的 list **交引用**，不再复制一层：
+        `_proposal` 在下一行就被 `pop` 掉、本轮结束即无人引用，而这两个 list 之后只会被
+        「整段重新赋值」（`_shrink_draft()` 砍一枚），没有任何地方就地改它们。
+        **将来若有人要留住 `proposal`**（例如记录每轮提议做统计），这里就得改成复制一份。
 
         计划项里此刻的 `input_ids` **恰好是 `[x]` 一个真实 token**：`_fill_item()` 只被
         `num_reserved_drafts > 0` 的项走到，而那是 draft_model 分支，它在计划阶段只放
@@ -283,10 +282,12 @@ class DraftModelProposer:
         """
         proposal = item.pop("_proposal", None) or DraftProposal([], [])
         real_tokens = item["input_ids"]              # 计划阶段只放了 [x]，草稿还没提出来
-        item["draft_ids"] = list(proposal.draft_ids)
-        item["draft_probs"] = list(proposal.draft_probs)
-        item["input_ids"] = real_tokens + list(proposal.draft_ids)
-        item["num_scheduled_tokens"] = len(real_tokens) + len(proposal.draft_ids)
+        item["draft_ids"] = proposal.draft_ids
+        item["draft_probs"] = proposal.draft_probs
+        # `+` 产生新 list：输入行比草稿多一个真实 token，两者是两个对象，
+        # 后面都只会被「整段重新赋值」（`_shrink_draft()`），从不就地改
+        item["input_ids"] = real_tokens + item["draft_ids"]
+        item["num_scheduled_tokens"] = len(real_tokens) + len(item["draft_ids"])
 
     # -------- 3) 验证之后：对齐 --------
 
