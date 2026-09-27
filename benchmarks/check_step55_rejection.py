@@ -246,6 +246,80 @@ check("一般 q 的部分接受：第一枚接受、第二枚拒绝，纠正 tok
 check("一般 q 的部分接受：纠正分布 = normalize([0.1, 0, 0, 0.2])",
       abs(residual_probs(P_GQ2[1], Q_GQ2[1], 2)[3].item() - 2 / 3) < 1e-6)
 
+# ------------------------------------------------ 1c. 变体对照：把草稿「当确定性提议」会怎样
+
+# 一个自然的问题：draft model 的草稿也是**抽出来的一枚 id**，那能不能干脆把它当成
+# 确定性提议（像 n-gram 那样），用「接受概率 = p(d)、纠正分布 = 挖掉 d」这套？
+#
+# 结论：**它同样是无偏的**（下面实测首 token 分布回到 p），但**接受率白白砍掉一半**：
+#   标准：接受率 = Σ_y q(y)·min(1, p(y)/q(y)) = Σ_y min(p(y), q(y))
+#   变体：接受率 = Σ_y q(y)·p(y)              = ⟨p, q⟩
+# 而 min(p,q) ≥ p·q 对每个 token 都成立（概率都 ≤ 1），所以标准那条**恒不差于**变体。
+# 更要命的是 p == q 的情形：标准规则下完美 draft 是 100% 全接受，变体只接受 Σ p²。
+#
+# 第三种写法（接受仍用 min(1,p/q)、纠正却挖掉 d）才是**真的错**——它有偏。
+
+def _residual_standard(p, q, token_id):
+    residual = (p - q).clamp(min=0)
+    return residual / residual.sum()
+
+
+def _residual_dig_out(p, q, token_id):
+    residual = p.clone()
+    residual[token_id] = 0
+    return residual / residual.sum()
+
+
+def variant_empirical(p, q, accept_rule, residual_rule, n, seed):
+    """跑 n 轮单枚草稿的接受/拒绝，返回 (首 token 经验分布, 接受率)。"""
+    gen = torch.Generator(device="cpu").manual_seed(seed)
+    counts = torch.zeros(len(p))
+    accepted = 0
+    for _ in range(n):
+        draft = int(torch.multinomial(q, 1, generator=gen))
+        probability = float(p[draft]) if accept_rule == "p_draft" else (
+            min(1.0, float(p[draft]) / float(q[draft])) if float(q[draft]) > 0 else 0.0)
+        if float(torch.rand((), generator=gen)) < probability:
+            counts[draft] += 1
+            accepted += 1
+        else:
+            residual = (residual_rule(p, q, draft)
+                        if residual_rule is _residual_standard
+                        else _residual_dig_out(p, q, draft))
+            counts[int(torch.multinomial(residual, 1, generator=gen))] += 1
+    return counts / n, accepted / n
+
+
+VARIANT_N, VARIANT_SEED = 120000, 4242
+P_V, Q_V = probs(0.6, 0.3, 0.1), probs(0.2, 0.5, 0.3)
+got_standard, rate_standard = variant_empirical(P_V, Q_V, "min_ratio", _residual_standard,
+                                                VARIANT_N, VARIANT_SEED)
+got_variant, rate_variant = variant_empirical(P_V, Q_V, "p_draft", _residual_dig_out,
+                                              VARIANT_N, VARIANT_SEED)
+sigma_v = [math.sqrt(p * (1 - p) / VARIANT_N) for p in (0.6, 0.3, 0.1)]
+check("变体（当确定性提议）**确实也是无偏的**：首 token 分布仍回到 p",
+      all(abs(got_variant[i] - [0.6, 0.3, 0.1][i]) < 5 * sigma_v[i] for i in range(3)),
+      f"变体 {[round(v, 4) for v in got_variant.tolist()]}；"
+      f"标准 {[round(v, 4) for v in got_standard.tolist()]}")
+check("但接受率只有标准的一半：Σ q·p vs Σ min(p,q)（理论 0.3 vs 0.6）",
+      abs(rate_variant - 0.3) < 0.01 and abs(rate_standard - 0.6) < 0.01
+      and rate_standard > rate_variant * 1.9,
+      f"标准 {rate_standard:.4f}、变体 {rate_variant:.4f}")
+check("逐 token 的不等式 min(p,q) >= p·q 恒成立（这就是标准规则不会更差的原因）",
+      all(min(float(P_V[i]), float(Q_V[i])) >= float(P_V[i]) * float(Q_V[i])
+          for i in range(3)))
+
+# p == q 是最能说明问题的一格：完美 draft 模型下标准规则 100% 全接受，
+# 变体只接受 Σ p²（这里 0.46），等于把「draft 完全猜对」这件事浪费掉一半
+P_SAME = probs(0.6, 0.3, 0.1)
+_, rate_same_standard = variant_empirical(P_SAME, P_SAME, "min_ratio", _residual_standard,
+                                          20000, VARIANT_SEED + 1)
+_, rate_same_variant = variant_empirical(P_SAME, P_SAME, "p_draft", _residual_dig_out,
+                                         20000, VARIANT_SEED + 1)
+check("p == q：标准规则 100% 全接受，变体只接受 Σ p² = 0.46（完美 draft 也白搭）",
+      rate_same_standard > 0.999 and abs(rate_same_variant - 0.46) < 0.02,
+      f"标准 {rate_same_standard:.4f}、变体 {rate_same_variant:.4f}")
+
 # ------------------------------------------------ 2. 分布正确性
 
 def empirical(draft_id, target, n, seed):
