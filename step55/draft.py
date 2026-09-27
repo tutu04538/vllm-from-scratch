@@ -271,16 +271,22 @@ class DraftModelProposer:
         自己持有一份**。（`_plan_tokens()` 里那两个 `list()` 不一样——那里是同一个对象自己
         复制自己，已经删掉了。）
 
+        计划项里此刻的 `input_ids` **恰好是 `[x]` 一个真实 token**：`_fill_item()` 只被
+        `num_reserved_drafts > 0` 的项走到，而那是 draft_model 分支，它在计划阶段只放
+        `num_real = 1`、草稿留空（ngram 的草稿在计划阶段就填好了，不走这里）。所以
+        「本轮输入 = 真实 token + 草稿」，计数与输入行同源，不写死那个 `1`。
+
         计划里预留的 `num_reserved_drafts` 与实际草稿数可能不一致（前者是名额、后者是
         跑出来的结果）。实际更少时**不在这里
         还块**：多预留的 target 块由验证之后的回滚（`truncate` 到保留长度）自然还回
         池子，draft 那边由 `align()` 夹回边界——两个池子各有一条归还路径，不重复还。
         """
         proposal = item.pop("_proposal", None) or DraftProposal([], [])
+        real_tokens = item["input_ids"]              # 计划阶段只放了 [x]，草稿还没提出来
         item["draft_ids"] = list(proposal.draft_ids)
         item["draft_probs"] = list(proposal.draft_probs)
-        item["input_ids"] = item["input_ids"][:1] + list(proposal.draft_ids)
-        item["num_scheduled_tokens"] = 1 + len(proposal.draft_ids)
+        item["input_ids"] = real_tokens + list(proposal.draft_ids)
+        item["num_scheduled_tokens"] = len(real_tokens) + len(proposal.draft_ids)
 
     # -------- 3) 验证之后：对齐 --------
 
