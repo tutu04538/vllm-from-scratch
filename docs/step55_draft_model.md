@@ -548,6 +548,12 @@ target 路径）与**运行时**才不够（两条请求的计划都通过了只
   可复现（种子由它稳定派生，与全局状态无关）；没写 `seed=` 则要调用方先播种全局源
   （测试里就是 `build()` 开头的 `torch.manual_seed(seed)`），再加上「同工作序列」。
   一个没播种的新进程，全局源在进程启动时就是随机的（实测三个进程三个不同的值）。
+- **为什么 PyTorch 不像 C 的 `rand()` 那样「不播种就每次同一个序列」**：现代库的取向是
+  「可复现必须显式 opt-in」——不播种就真的不可预测（Python 的 `random`、NumPy 的新
+  `Generator` API 都一样，C 的「等价于 `srand(1)`」被普遍当成历史包袱）。反过来，
+  **新建的 `torch.Generator()` 反而是定值**（实测跨进程都是 `67280421310721`），
+  这正是 `SamplingState` / `make_draft_generator()` 必须显式 `manual_seed()` 的原因：
+  不播的话所有没写 seed 的请求会共读同一条流。
 - 上界写 `2**63 - 1` 而不是 `2**63`：后者超出 int64 的范围，`torch.randint` 会直接抛
   `Overflow when unpacking long long`。这条路径（**随机采样 + 不写 seed**）一度没有被
   任何用例覆盖——draft_model 的测试要么贪心（`make_draft_generator()` 提前返回）、
