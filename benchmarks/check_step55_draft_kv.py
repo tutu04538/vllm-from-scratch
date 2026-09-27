@@ -16,7 +16,9 @@
 3. **边界**：草稿 EOS、跨块回滚、多请求不同 K、draft 池紧张后退回 target 路径。
 """
 
+import math
 import sys
+from collections import Counter
 
 import torch
 
@@ -96,6 +98,44 @@ def build(seed, target_f, draft_f, **cfg):
     return Engine(model=Scripted(target, target_f), **draft_arg, **base)
 
 
+def pool_ok(pool, requests, attr):
+    """池子自洽：引用计数 == 真实持有的块数，可分配链 == 真正空闲的块。"""
+    refs = Counter(b for seq in requests for b in (getattr(seq, attr).block_table or []))
+    if [refs[b] for b in range(pool.num_kv_blocks)] != list(pool.block_usage):
+        return False
+    chain, cur = [], pool.block_next[pool._SENTINEL_HEAD]
+    while cur != pool._SENTINEL_TAIL:
+        chain.append(cur)
+        cur = pool.block_next[cur]
+    return (len(chain) == len(set(chain)) and pool.num_allocatable == len(chain)
+            and set(chain) == set(pool._allocatable_block_indices()))
+
+
+def check_round_invariants(engine):
+    """每个 step 收尾后必须成立的两条不变量（验收报告 §5 补测第 4 条）。
+
+    **持块数恰好等于「已算到的整块数」**：计划阶段可能按 `1 + num_reserved_drafts`
+    预留了整块，而实际一枚草稿都没提出来——那时多占的块必须在本轮归还，不能挂着
+    「等请求结束再归零」。这条以前没查，所以验收方用「零草稿回退」抓出了漏网的路径。
+    """
+    running = engine.scheduler.running
+    # draft_model 才有第二个池子；None/ngram 两种模式下 `draft_kv_pool` 根本不存在
+    table_of = {"cache": engine.kv_cache_pool,
+                "draft_cache": getattr(engine, "draft_kv_pool", None)}
+    for attr, pool in table_of.items():
+        if pool is None:
+            continue
+        if attr == "draft_cache" and engine.draft_proposer is None:
+            continue
+        assert pool_ok(pool, running, attr), f"{attr} 池子不自洽（引用/链表对不上）"
+        for seq in running:
+            held = len(getattr(seq, attr).block_table or [])
+            expected = math.ceil(getattr(seq, attr).length / pool.block_size)
+            assert held == expected, (
+                f"{seq.request_id}: {attr} 持块 {held} != ceil(length "
+                f"{getattr(seq, attr).length} / {pool.block_size}) = {expected}")
+
+
 def copy_mode(token, position):
     """复制模式：模型预测它刚吃进去的那个 token。draft 提什么、target 就同意什么。"""
     return token
@@ -133,6 +173,7 @@ def steps(engine, requests, arrivals=None, limit=40):
         engine.step()
         step += 1
         assert step < limit, "疑似活锁"
+        check_round_invariants(engine)
         for request in arrivals.get(step, []):
             engine.add_request(dict(request))
         trace.append({
@@ -630,6 +671,53 @@ check("随机采样 + 没写 seed：两条请求拿到不同的 draft 流（不�
 check("随机采样 + 没写 seed：draft 真的提了草稿（不是悄悄退化成普通路径）",
       unseeded_engine.draft_proposer.num_proposed_tokens > 0,
       f"提议 {unseeded_engine.draft_proposer.num_proposed_tokens} 枚")
+
+# ------------------------------------------------ 13. 预留了却没提出来：块必须当轮归还
+
+# 验收报告 §3 的最小场景：draft 预算被补算吃光 -> 批准 K=2、实际 K=0。
+# 计划阶段按 1+2 占块，target 实际只算 [x]；多占的整块必须在本轮结束前还回去。
+# 上面的 `steps()` 每步都查「持块数 == ceil(cache.length/块大小)」与两池自洽，
+# 所以这里只要证明**这个场景真的发生了**（否则那条不变量是空转的）。
+zero_draft = build(23, shift, shift, draft_max_num_batched_tokens=1, num_speculative_tokens=2,
+                   num_kv_blocks=8, draft_num_kv_blocks=8, max_num_seqs=1,
+                   max_num_batched_tokens=16)
+zero_trace = steps(zero_draft, [{"request_id": "A",
+                                 "prompt_ids": [1, 2, 3, 4, 5, 6, 7], "max_new_tokens": 8}])
+approved_but_empty = [slot for slot in zero_trace
+                      if any(plan[3] > 0 and not plan[2] for plan in slot["plans"])]
+check("预算吃光的回退：出现「批准了草稿、一枚都没提出来」，且每步持块数都对得上",
+      len(approved_but_empty) > 0 and zero_draft.draft_proposer.num_proposed_tokens == 0,
+      f"{len(approved_but_empty)} 步；提议 {zero_draft.draft_proposer.num_proposed_tokens} 枚")
+check("预算吃光的回退：请求照常跑完、输出 8 个 token、两池结束后归零",
+      len(final_output(zero_trace, "A")) == 8
+      and all(u == 0 for u in zero_draft.kv_cache_pool.block_usage)
+      and all(u == 0 for u in zero_draft.draft_kv_pool.block_usage),
+      f"输出 {len(final_output(zero_trace, 'A'))} 枚")
+
+# 实际 K 小于预留、但仍非零：走的是**有草稿**的验证路径（会 truncate），
+# 多预留的块同样当轮归还，且不能重复释放（两池自洽由每步不变量盯着）
+PROMPT7 = [1, 2, 3, 4, 5, 6, 7]
+# prompt 长 7：prefill 的末行预测位置 7（这里让 target 给 9，成为这一轮的 x），
+# 第 1 枚草稿预测的是位置 8 —— 让它提终止 token，提议就此打住（K 实际 1、预留 2）；
+# target 在位置 8 上给 10，与草稿不同 -> 拒绝 -> 纠正 token = 10，请求继续
+# （target 的脚本也要 `% 64`：它算满 K+1 行，bonus 那一行喂的正是那枚 EOS 草稿）
+partial = build(24, lambda token, position: 9 if position == 7 else (token + 1) % 64,
+                lambda token, position: 63 if position == 8 else (token + 1) % 64,
+                num_speculative_tokens=2, num_kv_blocks=8, draft_num_kv_blocks=8,
+                max_num_seqs=1, max_num_batched_tokens=16)
+partial_trace = steps(partial, [{"request_id": "A", "prompt_ids": PROMPT7,
+                                 "max_new_tokens": 6}])
+first_partial = spec_rounds(partial_trace)[0]
+check("实际 K=1 < 预留 K=2（草稿在第 1 枚就提了终止 token）：计划仍然按 2 预留",
+      first_partial["plans"][0][3] == 2 and len(first_partial["plans"][0][2]) == 1
+      and first_partial["plans"][0][1] == [9, 63],
+      str(first_partial["plans"]))
+check("实际 K < 预留：走有草稿的路径，块被验证后的 truncate 归还、请求继续跑",
+      partial.scheduler.has_unfinished_requests() is False
+      and len(final_output(partial_trace, "A")) == 6
+      and all(u == 0 for u in partial.kv_cache_pool.block_usage)
+      and all(u == 0 for u in partial.draft_kv_pool.block_usage),
+      f"输出 {final_output(partial_trace, 'A')}")
 
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")

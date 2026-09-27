@@ -14,6 +14,7 @@
 self.device)`），构造参数正好是「它需要的稳定依赖 + 配置」。
 """
 
+import math
 from types import SimpleNamespace
 
 import torch
@@ -36,6 +37,10 @@ class SampleRuntime:
         # 第五十五关：draft model 那一层（None 表示不投机或 ngram）。
         # 采样层只用一个入口 `align()`——验证之后两套 KV 的回滚/对齐在同一个地方做。
         self.draft_proposer = draft_proposer
+        # 累计接受了多少枚草稿（跨请求、跨轮）。投机的收益全在接受率上，所以这个数
+        # 要能被外面看见——验收报告指出过「只看提议数 > 0 不是接受链路的证据」。
+        # 与提议侧 `DraftModelProposer.num_proposed_tokens` 配套看。
+        self.num_accepted_drafts = 0
 
     def _align_draft(self, seq):
         """验证之后把 draft 的 KV 夹回 target 的真实计算边界。
@@ -116,7 +121,35 @@ class SampleRuntime:
                 self._commit_drafts(item, greedy[start:start + nrows], on_token)
             else:
                 self._commit_drafts_random(item, logits[start:start + nrows], on_token)
+
+        # 4) 本轮收尾：把**预留了却没算到**的整块还给池子
+        #    （有草稿的两条路径在验证时就还过了，这里对它们是空操作）
+        for item in picked:
+            self._release_unused_blocks(item["request"])
         return None
+
+    def _release_unused_blocks(self, seq):
+        """把本轮**预留了但没算到**的整块还给池子。
+
+        计划阶段按 `1 + num_reserved_drafts` 占块——draft_model 在草稿提出来之前就得把
+        target 的块先占住，而实际可能一枚草稿都没提出来（补算吃光预算、draft 池运行时
+        不够）。那时 target 只算了 `[x]` 一个位置，多占的整块如果不还，会一直挂在这条
+        请求名下挤占别人的容量：**不是永久泄漏**（请求结束时引用照样归零），而是运行中
+        白占。
+
+        **有草稿的两条路径不需要它**：验证之后已经 `truncate` 到真正保留的长度，多预留的
+        部分当场就还了。这里对它们是空操作——块表本来就等于 `ceil(cache.length / block_size)`。
+        所以这一步可以无脑对每个 item 调：它同时把「块表长度 == 已算到的整块数」这条
+        不变量**执行**了一遍，而不只是写在文档里。
+
+        不动有效 KV 内容、不重新抽样、也不会重复释放（长度没变时 `truncate` 一个块都不动）。
+        """
+        pool = self.kv_cache_pool
+        if seq.cache is None or not seq.cache.block_table:
+            return
+        used_blocks = math.ceil(seq.cache.length / pool.block_size)
+        if len(seq.cache.block_table) > used_blocks:
+            pool.truncate(seq, seq.cache.length)
 
     @staticmethod
     def _is_greedy_without_penalty(seq):
@@ -188,6 +221,7 @@ class SampleRuntime:
         remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
         result = verify_drafts(item["draft_ids"], greedy_ids, self.eos_token_ids,
                                remaining_outputs)
+        self.num_accepted_drafts += result.num_accepted
 
         # 1) 先回滚：本轮输入 [x, d0..] 里只有 x 和「被接受且还要当下一轮输入」的草稿要留
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
@@ -240,6 +274,7 @@ class SampleRuntime:
         result = verify_drafts_random(draft_ids, row_probs, self.eos_token_ids,
                                       remaining_outputs, draw_uniform, draw_token,
                                       draft_probs=item["draft_probs"] or None)
+        self.num_accepted_drafts += result.num_accepted
 
         # 先回滚两套 KV（被拒草稿的 KV 已经随本轮输入写进各自的物理块），
         # 再走唯一提交入口

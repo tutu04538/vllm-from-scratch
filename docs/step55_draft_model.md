@@ -522,6 +522,15 @@ $0.30$ vs 标准规则的 $0.60$；$p=q$（draft 完全靠谱）时更狠：标�
 - draft 池不够时**只缩草稿**，绝不为可选草稿去抢占 target 的其他请求；
 - 实际草稿比预留少时，多预留的 **target** 块由验证后的回滚（`truncate` 到保留长度）
   还回，draft 那边由 `align()` 夹回边界——两个池子各有一条归还路径，不重复还；
+- **一枚草稿都没提出来时（fallback）也要还**：这条最初漏了——「多预留的块由验证后的回滚
+  自然归还」只对**实际草稿非空**成立（普通采样路径根本不 truncate）。于是「批准 K=2、
+  实际 K=0」时 target 会一直挂着 1 个用不到的整块（不是永久泄漏——请求结束时引用照样
+  归零——但运行中白占，会挤占别的请求的容量；只查「最后池子归零」发现不了）。
+  现在 `SampleRuntime.run()` 结尾有一个**统一的收尾**：对本轮每个 item 检查
+  「块表长度 > `ceil(cache.length / block_size)`」就把尾巴还给池子。它对有草稿的路径是
+  空操作（已经 truncate 过），对普通路径也通常是空操作——但正是它**执行**了三条不变量中的
+  「持块数 == 已算到的整块数」，而不只是写在文档里。第五十五关复验就是这么抓出来的
+  （`benchmarks/review_step55_fallback_blocks.py`）。
 - 请求完成 / 失败 / 被抢占：两套活动 KV 一起释放（`_preempt` / `_finish_completed_requests`
   / `_fail` 三处），真实历史、优先级、两条随机流全部保留。
 
@@ -599,7 +608,7 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 
 ## 9. 验证
 
-### 9.1 脚本清单（全部通过，共 320 项）
+### 9.1 脚本清单（全部通过，共 326 项）
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
@@ -609,10 +618,10 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | `check_step55_random.py` | 22 | 第五十四关的引擎状态（临时计数、RNG、重算、混批） |
 | `check_step55_engine.py` | 55 | 单/多请求等价性、目录加载入口 |
 | `check_step55_combinations.py` | 17 | priority / 前缀缓存与投机的组合 |
-| `check_step55_draft_kv.py` | 59 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、
+| `check_step55_draft_kv.py` | 64 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、
   补算 chunk 与预算共享、draft 随机流、CUDA 冒烟） |
 | `check_step55_loading.py` | 12 | 分片权重 + 双目录加载 |
-| `check_step55_real_qwen3.py` | 9 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
+| `check_step55_real_qwen3.py` | 10 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
 | `diff_step54_step55.py` | 88 | `speculative_mode=None` 下与 step54 **逐步逐字节一致** |
 
 ### 9.2 有判别力的几条
@@ -632,6 +641,11 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 - **真实模型 greedy 逐 token 相同**：1.7B target + 0.6B draft，两条请求各 16 个 token，
   与不开投机的贪心**逐个 ID 相等**。贪心时目标分布是 one-hot，投机只能改「怎么算」。
 - **target 每轮最多一次 forward**（16 次 / 16 步）、提议是批量的（1.46 枚/次）。
+- **每步收尾后两套池子的三条不变量**（`check_step55_draft_kv.py` 的
+  `check_round_invariants()`）：持块数 == `ceil(cache.length / block_size)`、
+  引用计数 == 真实持有数、可分配链 == 真正空闲的块。第三条以前没有，验收方用
+  「零草稿回退」抓出了漏网的路径；**反证**：去掉收尾这一步，它立刻报
+  `cache 持块 3 != ceil(length 7 / 4) = 2`。
 - **带三种惩罚项的 greedy 与普通路径逐 token 相同**：惩罚让每一行的历史都不同
   （真实生成 + 前 i 枚草稿），两个模型的提议与验证都按这条规则喂历史。
 - **CUDA FP32 / BF16 冒烟**：draft_model / ngram / 关 三种模式各跑一遍，两条请求
@@ -646,6 +660,11 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | 两套 KV 与重算一致 | 故意改坏一个位置 → 差 5e-1 立刻 FAIL |
 | 双 KV 对齐（draft ≤ target） | 每一步的提交时刻都断言 `draft.length <= target.length` |
 | 分片加载的错误处理 | 五种坏索引逐个造出来，确认每一种都报错 |
+| 零草稿回退的块归还 | 去掉收尾 → `check_step55_draft_kv.py` 的每步不变量立刻失败
+  （`cache 持块 3 != ceil(7/4) = 2`），验收方的 `review_step55_fallback_blocks.py`
+  也从 FAIL 变 PASS |
+| 「草稿被接受过」这条断言 | 旧写法只看「提议数 > 0 且生成满 16 枚」，草稿全被拒也成立
+  ✗；现在看采样层记的**实际接受枚数**（真实模型：贪心 10/19、随机 10/27） |
 | 「当确定性提议」这一变体 | 实测两件事：它的首 token 分布**也**回到 $p$（无偏），但接受率
   $0.30$ vs 标准的 $0.60$；$p=q$ 时更是 $1.00$ vs $0.46$——证明标准规则是「同样的无偏性、
   更高的接受率」的选择（§1.5） |
@@ -659,7 +678,8 @@ draft_max_num_batched_tokens=)`（全部 keyword-only，旧位置参数一个都
 `Engine.from_model_dir(..., draft_model_dir=...)`；`draft.DraftModelProposer` /
 `DraftProposal` / `derive_draft_seed()` / `make_draft_generator()`；
 `speculative.verify_drafts_random(..., draft_probs=)`；`residual_probs(p, q, token_id)`；
-`sampling.TorchSampler.draw()`；`KVCachePool` 的四个 `*_for` / `*_cache` 方法；
+`sampling.TorchSampler.draw()`；`SampleRuntime.num_accepted_drafts`（累计接受的草稿枚数，
+与提议侧的 `DraftModelProposer.num_proposed_tokens` 配套）；`KVCachePool` 的四个 `*_for` / `*_cache` 方法；
 `SequenceConfig.draft_cache` / `draft_generator` / `draft_seed`。
 
 **不变**：`speculative_mode=None` 与 `"ngram"` 的行为（`diff_step54_step55.py` 88 项

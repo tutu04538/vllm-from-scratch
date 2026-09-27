@@ -168,9 +168,18 @@ check("真实双模型（随机采样）：跑得完、序号连续、长度在 
       and all([i for r, _, i in random_events if r == rid] == list(range(random_lengths[rid]))
               for rid in ("q0", "q1")),
       str(random_lengths))
-check("真实双模型（随机采样）：草稿被接受过（接受链路真的通了）",
-      random.draft_proposer.num_proposed_tokens > 0
-      and len(random_out["q0"]) == 16)
+# 验收报告 §6 指出过这里：只看「提议数 > 0 且生成满 16 枚」**不是接受链路的证据**
+# ——草稿全被拒也照样能生成 16 枚。改成看采样层记的**实际接受枚数**。
+accepted_drafts = random.sample_runtime.num_accepted_drafts
+proposed_drafts = random.draft_proposer.num_proposed_tokens
+check("真实双模型（随机采样）：草稿真的被接受过（看实际接受枚数，不看提议数）",
+      accepted_drafts > 0 and proposed_drafts > 0,
+      f"提议 {proposed_drafts} 枚、接受 {accepted_drafts} 枚"
+      f"（接受率 {accepted_drafts / max(proposed_drafts, 1):.0%}）")
+check("真实双模型（随机采样）：贪心那条也统计到了接受（同一批里两条路径都跑过）",
+      spec.sample_runtime.num_accepted_drafts > 0,
+      f"贪心批接受 {spec.sample_runtime.num_accepted_drafts} 枚 / "
+      f"提议 {spec.draft_proposer.num_proposed_tokens} 枚")
 check("真实双模型（随机采样）：两套池子结束后引用归零",
       all(u == 0 for u in random.kv_cache_pool.block_usage)
       and all(u == 0 for u in random.draft_kv_pool.block_usage))
