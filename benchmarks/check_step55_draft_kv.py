@@ -576,6 +576,61 @@ check("draft 预算太小：输出与纯 target 逐 token 相同（降级只影�
       final_output(tiny_trace, "A") == final_output(plain_trace, "A"),
       f"{final_output(tiny_trace, 'A')} vs {final_output(plain_trace, 'A')}")
 
+# ------------------------------------------------ 12. draft 的随机流
+
+# 这条路以前**没测到**：draft_model 的用例要么贪心（`make_draft_generator()` 提前返回
+# `(None, None)`）、要么显式给了 seed，于是「随机采样 + 没写 seed」那条分支里的
+# `torch.randint(0, 2**63, ...)` 越界（int64 装不下 2**63）一直没暴露出来。
+def random_params(seed=None):
+    return step55.SamplingParams(vocab_size=64, temperature=0.8, seed=seed)
+
+
+def derived_seed(seed):
+    """显式 seed 派生出的 draft 种子。"""
+    return step55.make_draft_generator(random_params(seed), torch.device("cpu"))[1]
+
+
+def unseeded_draft_seeds(n=4):
+    """不写 seed 时连建 n 个 draft 生成器，返回从全局随机源取到的种子。"""
+    return [step55.make_draft_generator(random_params(), torch.device("cpu"))[1]
+            for _ in range(n)]
+
+
+torch.manual_seed(1)
+first = derived_seed(11)
+torch.manual_seed(999)                                  # 推进/重播全局源都不该影响它
+check("显式 seed：draft 种子由它稳定派生，与全局随机源的状态无关，也和 target 的同名函数无关",
+      first == derived_seed(11) == step55.derive_draft_seed(11)
+      and first != derived_seed(12),
+      f"seed=11 -> {first}、seed=12 -> {derived_seed(12)}")
+
+unseeded = unseeded_draft_seeds(4)
+check("没写 seed：能建出 draft 随机流（曾经在这里抛 Overflow），且每个请求一条独立的流",
+      len(unseeded) == 4 and len(set(unseeded)) == 4, str(unseeded))
+torch.manual_seed(2024)
+repeat = unseeded_draft_seeds(4)
+torch.manual_seed(2024)
+check("没写 seed：同 `torch.manual_seed` + 同工作序列可以复现（这就是「同工作序列」的含义）",
+      repeat == unseeded_draft_seeds(4))
+
+# 引擎路径：随机采样 + 两条都不写 seed，必须跑完、必须真的提草稿、两条流不同
+unseeded_engine = build(22, shift, shift, num_speculative_tokens=2, num_kv_blocks=32)
+for request_id in ("A", "B"):
+    unseeded_engine.add_request({"request_id": request_id, "prompt_ids": PROMPT,
+                                 "max_new_tokens": 6, "temperature": 0.8, "top_k": 20})
+engine_seeds = {seq.request_id: seq.draft_seed for seq in unseeded_engine.scheduler.waiting}
+unseeded_trace = steps(unseeded_engine, [])
+check("随机采样 + 没写 seed：引擎跑得完、两条请求各 6 个 token",
+      unseeded_engine.scheduler.has_unfinished_requests() is False
+      and len(final_output(unseeded_trace, "A")) == 6
+      and len(final_output(unseeded_trace, "B")) == 6,
+      f"A={len(final_output(unseeded_trace, 'A'))} B={len(final_output(unseeded_trace, 'B'))}")
+check("随机采样 + 没写 seed：两条请求拿到不同的 draft 流（不能共读一条）",
+      len(engine_seeds) == 2 and len(set(engine_seeds.values())) == 2, str(engine_seeds))
+check("随机采样 + 没写 seed：draft 真的提了草稿（不是悄悄退化成普通路径）",
+      unseeded_engine.draft_proposer.num_proposed_tokens > 0,
+      f"提议 {unseeded_engine.draft_proposer.num_proposed_tokens} 枚")
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

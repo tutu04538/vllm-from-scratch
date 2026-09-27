@@ -534,9 +534,18 @@ target 路径）与**运行时**才不够（两条请求的计划都通过了只
 - **两条独立的流**：draft 抽提议用 `seq.draft_generator`，target 抽接受/纠正/bonus 用
   `seq.sampling_state.generator`。
 - draft 的种子由请求的 `seed` **稳定派生**（`derive_draft_seed()`：一次线性同余混合，
-  常数写在代码里）。**不用 Python `hash()`**——它被 PYTHONHASHSEED 打乱，会让
-  「同 seed 同工作序列可复现」失效。`seed=None` 时从全局随机源取一个（和 target 侧一致，
-  那时本来就不承诺复现）。
+  常数写在代码里）。**不用 Python `hash()`**——字符串的 hash 被 PYTHONHASHSEED 打乱，
+  拿它派生会让「同 seed 同工作序列可复现」失效。
+- `seed=None`（调用方没要求复现）时从**全局随机源**取一个：就是 PyTorch 的默认生成器
+  `torch.default_generator`（**CPU 上的那一个**，由 `torch.manual_seed()` 播种；不传
+  `generator=` 的 `torch.randint` 用的正是它，与 CUDA 的默认生成器是两个）。它是
+  **进程级共享**的，所以只在**请求创建时**碰一次、绝不在 `step()` 里抽——这样别的请求
+  的推进不会扰动已存在请求的随机流。「同 seed 同工作序列可复现」里的**同工作序列**
+  就是这个意思：全局源推进到哪儿取决于之前建过多少条请求。
+- 上界写 `2**63 - 1` 而不是 `2**63`：后者超出 int64 的范围，`torch.randint` 会直接抛
+  `Overflow when unpacking long long`。这条路径（**随机采样 + 不写 seed**）一度没有被
+  任何用例覆盖——draft_model 的测试要么贪心（`make_draft_generator()` 提前返回）、
+  要么显式给了 seed——现在 §9 有专门的用例盯着。
 - 抢占、重算、缩草稿、fallback 都**不重置也不消耗**任何一条流。
 - 草稿被拒后**不回退** draft 的随机流：KV 回滚与 RNG 回滚是两件事。
 - 同 seed 同工作序列可复现；不要求与「普通随机解码」的文本相同（两条流的抽样次数不同）。
@@ -578,7 +587,7 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 
 ## 9. 验证
 
-### 9.1 脚本清单（全部通过，共 315 项）
+### 9.1 脚本清单（全部通过，共 320 项）
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
@@ -588,8 +597,8 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | `check_step55_random.py` | 22 | 第五十四关的引擎状态（临时计数、RNG、重算、混批） |
 | `check_step55_engine.py` | 55 | 单/多请求等价性、目录加载入口 |
 | `check_step55_combinations.py` | 17 | priority / 前缀缓存与投机的组合 |
-| `check_step55_draft_kv.py` | 54 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、
-  补算 chunk 与预算共享、CUDA 冒烟） |
+| `check_step55_draft_kv.py` | 59 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、
+  补算 chunk 与预算共享、draft 随机流、CUDA 冒烟） |
 | `check_step55_loading.py` | 12 | 分片权重 + 双目录加载 |
 | `check_step55_real_qwen3.py` | 9 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
 | `diff_step54_step55.py` | 88 | `speculative_mode=None` 下与 step54 **逐步逐字节一致** |

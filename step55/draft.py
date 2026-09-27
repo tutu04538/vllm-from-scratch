@@ -69,12 +69,20 @@ def make_draft_generator(params, device):
 
     **必须在请求创建时建一次**：抢占、重算、被缩草稿都不重置它，否则同一个请求的
     随机流会在中途换一条，同 seed 复现就无从谈起。
+
+    `params.seed is None`（调用方没要求复现）时从**全局随机源**取一个种子：就是
+    PyTorch 的默认生成器 `torch.default_generator`（CPU 上的那一个，由
+    `torch.manual_seed()` 播种）——不传 `generator=` 的 `torch.randint` 用的正是它。
+    注意它是**进程级共享**的：所以只在请求创建时碰它一次，绝不在 `step()` 里抽，
+    这样别的请求的推进不会扰动已存在请求的随机流。上界取 `2**63 - 1` 而不是
+    `2**63`：后者超出 int64 能表示的范围，`torch.randint` 会直接抛
+    「Overflow when unpacking long long」。
     """
     if params.is_greedy:
         return None, None
     seed = derive_draft_seed(params.seed)
     if seed is None:
-        seed = int(torch.randint(0, DRAFT_SEED_MODULUS, (1,)).item())
+        seed = int(torch.randint(0, DRAFT_SEED_MODULUS - 1, (1,)).item())
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     return generator, seed
