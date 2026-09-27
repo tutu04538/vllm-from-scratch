@@ -195,6 +195,12 @@ def verify_drafts_random(draft_ids, row_probs, eos_token_ids, remaining_outputs,
     `p == q` 时每一枚都落在「必接受」上：整轮全接受、不抽接受随机数，也不会走到
     residual。这正是「同结构同权重的 draft 模型」那条用例。
 
+    **这两个式子是一对，不能只改一个。**把接受概率换成 `p[d]`、纠正分布换成「挖掉 d」
+    同样无偏（那是 n-gram 那套公式用在不是 one-hot 的 q 上），但接受率恒不更优：
+    `min(p,q) >= p*q` 逐 token 成立，需求 §4 的例子 0.30 vs 0.60、`p == q` 时 0.46 vs 1.00。
+    推导与三行对照表见 docs/step55_draft_model.md §1.5，常驻用例见
+    benchmarks/check_step55_rejection.py 的「变体对照」一节。
+
     提议分布必须**真的**是抽出草稿的那一个：`q_i[d_i] == 0` 是非法输入（从 q 里
     抽不出一个 q 质量为零的 token），这里明确报错，不除零、也不默默当成必接受。
 
