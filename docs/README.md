@@ -55,3 +55,4 @@
 | [step53_batched_speculative.md](step53_batched_speculative.md) | `step53/`（包） | 批量投机验证与抢占恢复：行映射两个坐标系、真实 token 优先的预算、先缩草稿再抢占 |
 | [step54_random_speculative.md](step54_random_speculative.md) | `step54/`（包） | 随机采样投机解码：拒绝采样 + 纠正分布 + 逐行惩罚历史 + 随机数归请求 |
 | [step55_draft_model.md](step55_draft_model.md) | `step55/`（包） | draft model 双 KV：一般 p/q 拒绝采样 + 独立提议层 + 双池容量与对齐 + 分片加载 |
+| [step56_gpu_rejection.md](step56_gpu_rejection.md) | `step56/`（包） | GPU 批量拒绝采样：counter-based RNG、两个内核、一张结果张量一次回传；与 CPU oracle 逐位对照 |

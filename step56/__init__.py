@@ -1,4 +1,4 @@
-"""第 54 关：随机采样投机解码与拒绝修正。
+"""第 56 关：GPU 批量拒绝采样与单次结果回传。
 
 代码按模块拆开，依赖方向是单向的：
 
@@ -11,6 +11,9 @@
     model      RoPE / RMSNorm / DecoderLayer（QKV 与 gate/up 各一次 GEMM）/ TinyCausalLM
     sampling   采样原语与后端：参数/状态/三种惩罚/温度与 top-k,p，TorchSampler 出分布与 token
     speculative  投机解码的纯函数：n-gram 提议 + 贪心/随机两种验证
+    rejection  拒绝验证的批量执行层：prepare -> verify -> materialize 三个入口（后端二选一）
+    rejection_rng    请求级 counter-based 随机流（Philox-4x32-10 的 CPU 参考 + 事件编号）
+    rejection_triton Triton 内核：事件随机数 / 接受前缀 / 词表分块的指数竞赛抽样
     validation 配置与后端的组合校验（构造阶段就报错）
     loading    模型装配与目录加载
     draft      draft model 提议层：补算真实历史 -> 批量提议 -> 对齐 -> 释放（第二套 KV）
@@ -39,6 +42,9 @@ from .norm import rms_norm
 from .rope import rope
 from .draft import (DraftModelProposer, DraftProposal, derive_draft_seed,
                     make_draft_generator)
+from .rejection import (BACKENDS as REJECTION_BACKENDS, BatchedRejectionSampler,
+                        ItemResult, PackedResult, RejectionItem)
+from .rejection_rng import derive_rejection_seed, make_rejection_seed
 from .sampling import SamplingParams, SamplingState, TorchSampler, apply_penalties
 from .sample_runtime import SampleRuntime
 from .scheduler import Scheduler
@@ -55,6 +61,8 @@ __all__ = [
     "DraftModelProposer", "DraftProposal", "derive_draft_seed", "make_draft_generator",
     "propose_ngram", "verify_drafts", "verify_drafts_random", "residual_probs",
     "DraftVerification",
+    "BatchedRejectionSampler", "RejectionItem", "ItemResult", "PackedResult",
+    "REJECTION_BACKENDS", "derive_rejection_seed", "make_rejection_seed",
     "FORMAT_VERSION", "COMPATIBLE_FORMAT_VERSIONS", "MODEL_TYPE", "MODEL_DTYPE",
     "MODEL_CONFIG_NAME", "MODEL_WEIGHTS_NAME",
 ]

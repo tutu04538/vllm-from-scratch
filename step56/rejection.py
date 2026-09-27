@@ -35,16 +35,22 @@ from .speculative import verify_drafts, verify_drafts_random
 
 TORCH = "torch"
 TRITON = "triton"
-# 已经**验证通过**的后端。triton 的内核（counter RNG / 接受前缀 / 分块抽样）已经写好，
-# 但还没通过「与 CPU oracle 逐位对照」那一关（现在跑会触发 CUDA device-side assert），
-# 所以先不放进这里：构造时就明确拒绝，绝不留一条能走到但坏掉的路径。
-# 对照测试在 benchmarks/check_step56_gpu_rejection.py，调通后把它加回来。
-BACKENDS = (TORCH,)
+# 已经**验证通过**的后端：两个都在。triton 与 CPU oracle 的逐位对照见
+# benchmarks/check_step56_gpu_rejection.py（确定性对照 + 分布/随机流 + 定向观测）。
+BACKENDS = (TORCH, TRITON)
 
 # 结果张量每一行几个字段：output_ids 占前 KMAX+1 列，后面是长度、接受数、保留输入数、
 # 消费的随机事件数、错误码。字段名固定，CPU 侧按名取值。
 PACKED_FIELDS = ("output_lengths", "num_accepted", "kept_inputs", "rng_consumed", "error_code")
 SENTINEL_TOKEN = -1
+
+# 错误码（triton 后端把「非法输入」编码进结果张量，`SampleRuntime` 整批检查后统一报错）
+ERR_INVALID_PROPOSAL = 1       # q[d] = 0：从 q 里抽不出一个 q 质量为零的 token
+ERR_NO_RESIDUAL_MASS = 2       # 纠正/bonus 的权重整行为零，抽不出 token
+ERROR_MESSAGES = {
+    ERR_INVALID_PROPOSAL: "非法提议：草稿的 q[d] = 0（提议必须真的从 q 抽样）",
+    ERR_NO_RESIDUAL_MASS: "纠正/bonus 的权重整行为零，抽不出 token",
+}
 
 
 @dataclass
@@ -202,12 +208,16 @@ class BatchedRejectionSampler:
                 row, columns = host[index], outcome.columns
                 length = int(row[columns["length"]])
                 code = int(row[columns["error"]])
+                self.num_rng_events += int(row[columns["consumed"]])
+                # 报错项返回**空结论**：非法输入不进任何状态，调用方必须整批检查后
+                # 才提交（`SampleRuntime.run()` 就是这么做的），空的 committed_ids
+                # 让「有没有被误提交」在事后也查得出来。
                 results.append(ItemResult(
-                    committed_ids=[int(t) for t in row[:length]],
-                    num_accepted=int(row[columns["accepted"]]),
-                    kept_inputs=int(row[columns["kept"]]),
+                    committed_ids=[] if code else [int(t) for t in row[:length]],
+                    num_accepted=0 if code else int(row[columns["accepted"]]),
+                    kept_inputs=0 if code else int(row[columns["kept"]]),
                     rng_consumed=int(row[columns["consumed"]]),
-                    error=None if code == 0 else f"拒绝验证错误码 {code}"))
+                    error=None if code == 0 else ERROR_MESSAGES.get(code, f"拒绝验证错误码 {code}")))
             return results
         return outcome
 
@@ -216,70 +226,62 @@ class BatchedRejectionSampler:
     def _triton_backend(self, batch):
         """一次批量验证：两个内核 + 向量化打包，**全程没有逐请求标量读取、没有 D2H**。
 
-        数据流：
+        数据流（每一段都只碰整批张量，没有一项一项的循环）：
 
-            prepare（Torch，设备上）：每位置的 ratio / eos / invalid、每请求的 seed 与 counter
-            → verify_prefix_kernel：接受前缀 / 停止类型 / 消费了几个接受事件
-            → 按停止类型取**权重行**（Torch 高级索引，设备上）
-            → sample_token_kernel：词表分块指数竞赛，一次抽一个 token
-            → 向量化打包成一张张量，仍留在 GPU 上（`materialize_results` 才回传）
+            `_row_layout()`（CPU 侧元数据，只算整数）
+              行坐标系：每项 K+1 行（K 枚草稿行 + 收尾行）首尾相接
+              位置坐标系：只覆盖草稿位置（P = ΣK）
+            → gather：每位置一个 `p[d]` / `q[d]` / `ratio` / `eos` / `invalid`
+            → `verify_prefix_kernel`：接受前缀 / 停止类型 / 消费了几个接受事件
+            → `_weight_rows()`：按停止类型取权重行（一次高级索引）
+            → `sample_token_kernel`：词表分块指数竞赛，抽纠正 / bonus token
+            → `_pack()`：打包成一张张量，仍留在 GPU 上
+              （`materialize_results()` 才做唯一一次回传）
+
+        **不做数据依赖的形状**：不按 `kind` 去筛子集（`mask[bool_mask]` 会把形状从
+        设备拷回主机，是一次隐式同步），所以接受终止的项也照常参与抽样，结论随后丢掉。
         """
         import triton
 
         from . import rejection_triton as rt
         from .rejection_rng import PHILOX_ROUNDS
 
-        num_items = len(batch)
         device = self.device
+        num_items = len(batch)
+        if num_items == 0:
+            return PackedResult(tensor=torch.zeros((0, 1), dtype=torch.int64, device=device),
+                                batch=[], columns=PackedResult.columns_for(1))
+        lay = _row_layout(batch, device)
         eos_ids = torch.tensor(sorted(self.eos_token_ids), dtype=torch.long, device=device)
-        kmax = max((len(entry.draft_ids) for entry in batch), default=0)
 
-        # ---- 逐位置：ratio / eos / invalid（拼成扁平张量，不逐项读标量）----
-        row_offsets, draft_tokens, row_index, position_kinds = [], [], [], []
-        position = 0
-        for entry in batch:
-            row_offsets.append(position)
-            for index, token in enumerate(entry.draft_ids):
-                draft_tokens.append(token)
-                row_index.append(index)                 # 第 i 枚草稿用第 i 行
-                position_kinds.append(1 if entry.draft_probs is not None else 0)
-                position += 1
-        row_offsets.append(position)                    # 收尾哨兵，方便切片
-
-        if position:
-            # 把每项的 K 行拼成 (total_positions, V) 再一次性 gather：
-            # 这样 p[d]、q[d] 都是**一次** GPU 操作，没有 per-request 标量
-            # q 一律拼成整张（ngram 的位置放 1.0 = 「q 是 d 上的 one-hot」）：
-            # 这样 p[d]、q[d] 各是一次 gather，没有按项分支、也没有 GPU 标量读取
-            # 摊平成「一行一位置」：K 枚草稿就用前 K 行，K=0 的项不贡献行
-            rows_p = torch.stack([row for entry in batch
-                                  for row in entry.row_probs[:len(entry.draft_ids)]]).to(torch.float32)
-            rows_q = torch.stack([
-                row for entry in batch
-                for row in (entry.draft_probs if entry.draft_probs is not None
-                            else [torch.ones_like(entry.row_probs[0])] * len(entry.draft_ids))
-            ]).to(torch.float32)
-            tokens_t = torch.tensor(draft_tokens, dtype=torch.long, device=device)
-            p_d = rows_p.gather(1, tokens_t.unsqueeze(1)).squeeze(1)
-            q_d = rows_q.gather(1, tokens_t.unsqueeze(1)).squeeze(1)
+        # ---- 位置坐标系：p[d]、q[d]、ratio、eos、invalid（各算一次，不逐项读标量）----
+        if lay.positions:
+            p_d = lay.rows_all[lay.draft_rows, lay.tokens]     # 每位置一个标量
+            if lay.rows_q is None:
+                # ngram：q 是 d 上的 one-hot，`q[d]` 就是 1，不必物化整行
+                q_d = torch.ones_like(p_d)
+            else:
+                q_d = torch.where(lay.has_q, lay.rows_q[lay.q_map, lay.tokens],
+                                  torch.ones_like(p_d))
+            # 非法提议（q[d] = 0）不进除法：ratio 填 p[d]，错误由内核单独标记
             invalid = q_d <= 0
             ratio = torch.where(invalid, p_d,
                                 p_d / torch.where(q_d > 0, q_d, torch.ones_like(q_d)))
-            eoses = torch.isin(tokens_t, eos_ids).to(torch.int32)
+            eoses = torch.isin(lay.tokens, eos_ids).to(torch.int32)
         else:
-            rows_p = rows_q = torch.zeros(0, 0, device=device)
             ratio = torch.zeros(0, dtype=torch.float32, device=device)
             eoses = torch.zeros(0, dtype=torch.int32, device=device)
             invalid = torch.zeros(0, dtype=torch.bool, device=device)
 
-        ks = [len(entry.draft_ids) for entry in batch]
         seeds = [int(entry.plan["request"].rejection_seed or 0) for entry in batch]
         counters = [int(entry.plan["request"].rejection_rng_counter) for entry in batch]
-        start_t = torch.tensor(row_offsets[:-1], dtype=torch.int32, device=device)
-        k_t = torch.tensor(ks, dtype=torch.int32, device=device)
-        seed_lo = torch.tensor([v & 0xFFFFFFFF for v in seeds], dtype=torch.int64, device=device)
-        seed_hi = torch.tensor([v >> 32 for v in seeds], dtype=torch.int64, device=device)
+        greedy_flags = [entry.plan["request"].sampling_params.is_greedy for entry in batch]
+        seed_lo = torch.tensor([value & 0xFFFFFFFF for value in seeds], dtype=torch.int64,
+                               device=device)
+        seed_hi = torch.tensor([value >> 32 for value in seeds], dtype=torch.int64,
+                               device=device)
         counter_t = torch.tensor(counters, dtype=torch.int64, device=device)
+        greedy_t = torch.tensor(greedy_flags, dtype=torch.bool, device=device)
 
         accepted = torch.zeros(num_items, dtype=torch.int32, device=device)
         kind = torch.zeros(num_items, dtype=torch.int32, device=device)
@@ -287,74 +289,71 @@ class BatchedRejectionSampler:
         errors = torch.zeros(num_items, dtype=torch.int32, device=device)
         rt.verify_prefix_kernel[(num_items,)](
             ratio.contiguous(), eoses.contiguous(), invalid.to(torch.int32).contiguous(),
-            start_t, k_t, seed_lo, seed_hi, counter_t, accepted, kind, consumed, errors,
-            KMAX=max(kmax, 1), ROUNDS=PHILOX_ROUNDS)
+            greedy_t.to(torch.int32).contiguous(), lay.pos_offsets, lay.k_t,
+            seed_lo, seed_hi, counter_t, accepted, kind, consumed, errors,
+            KMAX=max(lay.kmax, 1), ROUNDS=PHILOX_ROUNDS)
 
-        # ---- 抽样：纠正（kind==1）用 max(p-q,0)/挖掉 d，bonus（kind==0）用最后一行 ----
-        # greedy 项不做随机抽样：纠正/bonus 就是该行权重的 argmax（并列取小下标），
-        # 也**不消费 categorical 事件**——这与 CPU 参考路径的 `draw_token = argmax` 一致。
-        greedy = torch.tensor([entry.plan["request"].sampling_params.is_greedy
-                               for entry in batch], dtype=torch.bool, device=device)
-        drawn = torch.zeros(num_items, dtype=torch.int64, device=device)
-        if position:
-            row_is_ngram = torch.tensor([kind_code == 0 for kind_code in position_kinds],
-                                       dtype=torch.bool, device=device)
-            weights = self._weight_rows(batch, rows_p, rows_q, row_is_ngram, tokens_t, ks,
-                                        accepted, kind)
-            if weights is not None:
-                draw_rows, draw_index = weights
-                draw_greedy = greedy[draw_index]
-                if draw_greedy.all():
-                    tokens = draw_rows.argmax(dim=1).to(torch.int64)
-                    errs = torch.zeros(len(draw_index), dtype=torch.int32, device=device)
-                else:
-                    tokens, errs = self._sample(
-                        rt, draw_rows, seed_lo[draw_index], seed_hi[draw_index],
-                        counter_t[draw_index] + consumed[draw_index].to(torch.int64))
-                    if draw_greedy.any():
-                        tokens = torch.where(draw_greedy, draw_rows.argmax(dim=1), tokens)
-                drawn.index_copy_(0, draw_index, tokens)
-                errors.index_copy_(0, draw_index, errs)
+        # ---- 抽样：纠正（kind==1）用 max(p-q,0) / 挖掉 d，bonus（kind==0）用收尾行 ----
+        weights = self._weight_rows(lay, kind, accepted, device)
+        # 贪心项不抽随机数：纠正/bonus 就是该行权重的 argmax（并列取小下标），
+        # 也不消费 categorical 事件——与 torch 参考路径的 `draw_token = argmax` 一致。
+        # 整批是否贪心是**CPU 侧就知道**的（`sampling_params`），拿它做分支不会同步。
+        if all(greedy_flags):
+            sampled, draw_errors = _greedy_draw(weights)
+        else:
+            sampled, draw_errors = self._sample(
+                rt, weights, seed_lo, seed_hi, counter_t + consumed.to(torch.int64))
+            if any(greedy_flags):
+                greedy_draw, greedy_errors = _greedy_draw(weights)
+                sampled = torch.where(greedy_t, greedy_draw, sampled)
+                draw_errors = torch.where(greedy_t, greedy_errors, draw_errors)
+        # 接受终止 token 的项**不抽样**：上面为整批算出来的结论对它没有意义，整段丢掉
+        # （那一列会被长度掩码盖成哨兵）。不丢的话，一条 EOS 正常结束的请求会被
+        # 「它的收尾行恰好没质量」这种与它无关的理由判成非法。
+        # `kind == 2` 与接受内核的错误码 1 互斥（循环在任一个上都会停），所以这里
+        # 覆盖 errors 不会吃掉真正的非法输入。
+        drawn = torch.where(kind == 2, torch.zeros_like(sampled), sampled)
+        draw_errors = torch.where(kind == 2, torch.zeros_like(draw_errors), draw_errors)
+        errors = torch.where(errors != 0, errors, draw_errors)
 
-        packed = self._pack(batch, kmax, accepted, kind, consumed, drawn, errors, greedy, device)
+        packed = self._pack(batch, lay.kmax, accepted, kind, consumed, drawn, errors,
+                            greedy_t, device)
         return PackedResult(tensor=packed, batch=batch,
-                            columns=PackedResult.columns_for(max(kmax, 1)))
+                            columns=PackedResult.columns_for(max(lay.kmax, 1)))
 
-    def _weight_rows(self, batch, rows_p, rows_q, row_is_ngram, tokens_t, ks, accepted, kind):
+    def _weight_rows(self, lay, kind, accepted, device):
         """按停止类型取抽样用的权重行——**全向量化**，不逐项读 `kind` / `accepted`。
 
-        行偏移在 CPU 侧算（都是 Python 整数，不是 GPU 标量），取行用一次高级索引。
-        返回 `(权重张量, 需要抽样的项下标)`；没有要抽的项时返回 None。
+        行下标在设备上算（`accepted` 本身就在设备上，读它就要同步）：
+        纠正用第 `num_accepted` 行（拒绝点那一行），bonus 用第 K 行（收尾行）。
+        两者都在 `rows_all` 里，一次高级索引取整行。
         """
-        offsets = []
-        cursor = 0
-        for size in ks:
-            offsets.append(cursor)
-            cursor += size
-        device = accepted.device
-        index = torch.arange(len(batch), device=device)
-        rows_of_item = torch.tensor(offsets, dtype=torch.long, device=device)
         accepted_l = accepted.to(torch.long)
-        # 纠正用的行：第 num_accepted 行（拒绝点）；bonus 用的行：第 K 行（最后一行）
-        chosen = torch.where(kind == 0,
-                             rows_of_item + torch.tensor(ks, dtype=torch.long, device=device),
-                             rows_of_item + accepted_l)
-        draws = (kind != 2)
-        picked = chosen.clamp(min=0)
-        # 被拒的那枚草稿：从扁平 token 张量里 gather（不让 Python 去索引 GPU 标量）
-        rejected_tokens = tokens_t[picked]
-        weight = rows_p[picked]
-        # 纠正分布：一般 q 用 max(p-q,0)，ngram 用「挖掉被拒 token」（数值等价，
-        # 但不物化 one-hot）。**两者都用向量化的 where 选**，不按项分支、不读标量。
+        # 收尾行的下标 = 本项起点 + K；两个分支都落在本项的行区间内
+        chosen = lay.row_offsets + torch.where(kind == 0, lay.k_t.to(torch.long), accepted_l)
+        weight = lay.rows_all[chosen]
+        # 被拒的那枚草稿：位置 = 本项起点 + num_accepted。`kind != 1` 时这个位置读到的是
+        # 别人的草稿（全接受的项 `num_accepted == K`，正好越过本项），**必须夹住**：
+        # 越界下标喂给下面的 `scatter_` 会直接触发 CUDA device-side assert。
+        # 夹住之后读到的是一个合法 token id，而这条分支马上被 `kind == 1` 的 where 丢掉。
+        if lay.positions:
+            rejected_pos = (lay.pos_offsets.to(torch.long) + accepted_l).clamp(
+                max=lay.positions - 1)
+            rejected = lay.tokens[rejected_pos]
+        else:
+            rejected_pos, rejected = accepted_l, torch.zeros_like(accepted_l)
+        # 纠正分布：ngram 用「挖掉被拒 token」，一般 q 用 `max(p-q,0)`（数值等价于
+        # 挖掉 d 再归一化，但不物化 one-hot）。**两者都算、用 where 选**，不按项分支。
         dig_out = weight.clone()
-        dig_out.scatter_(1, rejected_tokens.unsqueeze(1), 0)
-        deltas = torch.where(row_is_ngram.unsqueeze(1), dig_out,
-                             (weight - rows_q[picked]).clamp(min=0))
-        weight = torch.where((kind == 1).unsqueeze(1), deltas, weight)
-        draw_index = index[draws]
-        if draw_index.numel() == 0:
-            return None
-        return weight[draws].contiguous(), draw_index
+        dig_out.scatter_(1, rejected.unsqueeze(1), 0.0)
+        if lay.rows_q is None:
+            deltas = dig_out
+        else:
+            # 被拒草稿自己的 q 行；没有 q 的项读到的是夹过的别处（随即被丢掉）
+            q_rejected = lay.rows_q[lay.q_map[rejected_pos]]
+            deltas = torch.where(lay.has_q_item.unsqueeze(1),
+                                 (weight - q_rejected).clamp(min=0.0), dig_out)
+        return torch.where((kind == 1).unsqueeze(1), deltas, weight)
 
     def _sample(self, rt, rows, seed_lo, seed_hi, event_index):
         from .rejection_rng import PHILOX_ROUNDS
@@ -372,7 +371,10 @@ class BatchedRejectionSampler:
         ——接受 EOS 的项不抽样，那一列超出长度、会被哨兵盖掉——最后按长度掩码。
         """
         num_items = len(batch)
-        max_len = kmax + 1
+        # 输出列数按 `max(kmax, 1)` 算（与 `columns_for()` 同一套口径）：整批 K 全为 0
+        # 时也要留一个哨兵列，否则字段列的下标会和 `columns` 对不上。
+        pad = max(kmax, 1)
+        max_len = pad + 1
         drafts = torch.full((num_items, max_len), SENTINEL_TOKEN, dtype=torch.int64,
                             device=device)
         if kmax:
@@ -389,7 +391,10 @@ class BatchedRejectionSampler:
         rows = torch.arange(max_len, device=device).unsqueeze(0)
         out = torch.where(rows < lengths.unsqueeze(1), out, SENTINEL_TOKEN)
         kept = 1 + accepted.to(torch.int64) - (kind == 2).to(torch.int64)
-        rng = consumed.to(torch.int64) + ((kind != 2) & ~greedy).to(torch.int64)
+        # 消费的随机事件数：接受事件（`consumed`，内核数的）+ 一次 categorical
+        # （真的要抽纠正/bonus 时才有一个）——贪心两项都不加，**报错的项**也不加
+        # categorical：它没有产出 token，报的必须是「真的抽掉的那几个接受事件」。
+        rng = consumed.to(torch.int64) + ((kind != 2) & ~greedy & (errors == 0)).to(torch.int64)
         fields = torch.stack([lengths, accepted.to(torch.int64), kept, rng,
                               errors.to(torch.int64)], dim=1)
         return torch.cat([out, fields], dim=1).to(torch.int64)
@@ -434,6 +439,72 @@ def _row_history(seq):
     state = seq.sampling_state
     return SimpleNamespace(prompt_token_ids=state.prompt_token_ids,
                            generated_counts=dict(state.generated_counts))
+
+
+def _row_layout(batch, device):
+    """把一批项摊平成两个坐标系——全部是 CPU 侧整数，**不读任何 GPU 标量**。
+
+    * **行坐标系**：每项 `K+1` 行（K 枚草稿行 + 收尾行）首尾相接，`row_offsets[i]`
+      是第 i 项的起始行。收尾行必须留在这里：`kind == 0`（全部接受）时 bonus 就是
+      从它抽的，取样权重时也要按下标取到它。`rows_all` 一次 stack 出来，之后只做
+      高级索引、不再复制。
+    * **位置坐标系**：只覆盖**草稿位置**（P = ΣK），`pos_offsets[i]` 是第 i 项的起始
+      位置。`ratio` / `eos` / `invalid` 与接受前缀内核都按它排。
+
+    q 那侧只收「真的有 q」的项：ngram 的提议是确定性的，`q` 是 d 上的 one-hot，
+    不必物化整行。`q_map[j]` 是位置 j 的 q 行号（没有 q 的位置填 0，靠 `has_q`
+    区分），`has_q_item[i]` 表示第 i 项走的是不是一般 q。
+    """
+    row_offsets, pos_offsets, ks, has_q_item = [], [], [], []
+    rows_all, tokens, draft_rows, q_rows, q_row_of_position = [], [], [], [], []
+    cursor_rows = cursor_positions = 0
+    for entry in batch:
+        k = len(entry.draft_ids)
+        if len(entry.row_probs) != k + 1:
+            raise ValueError(f"triton 后端需要每项 {k + 1} 行目标分布（K 枚草稿 + 1 枚 "
+                             f"收尾行），收到 {len(entry.row_probs)} 行")
+        row_offsets.append(cursor_rows)
+        pos_offsets.append(cursor_positions)
+        ks.append(k)
+        has_q_item.append(entry.draft_probs is not None)
+        rows_all.extend(entry.row_probs)
+        for index, token in enumerate(entry.draft_ids):
+            tokens.append(token)
+            draft_rows.append(cursor_rows + index)
+            if entry.draft_probs is None:
+                q_row_of_position.append(-1)
+            else:
+                q_row_of_position.append(len(q_rows))
+                q_rows.append(entry.draft_probs[index])
+        cursor_rows += k + 1
+        cursor_positions += k
+    long = lambda values: torch.tensor(values, dtype=torch.long, device=device)   # noqa: E731
+    return SimpleNamespace(
+        kmax=max(ks, default=0), ks=ks, positions=cursor_positions,
+        # `rows_all` / `rows_q` 显式搬到设备：调用方给的 p/q 可能还在 CPU 上
+        # （测试与工具脚本就这么干），在这里一次搬完，后面全是设备上的运算
+        rows_all=torch.stack(rows_all).to(device=device, dtype=torch.float32),
+        row_offsets=long(row_offsets),
+        pos_offsets=torch.tensor(pos_offsets, dtype=torch.int32, device=device),
+        k_t=torch.tensor(ks, dtype=torch.int32, device=device),
+        tokens=long(tokens), draft_rows=long(draft_rows),
+        rows_q=(torch.stack(q_rows).to(device=device, dtype=torch.float32)
+                if q_rows else None),
+        q_map=long([max(value, 0) for value in q_row_of_position]),
+        has_q=torch.tensor([value >= 0 for value in q_row_of_position],
+                           dtype=torch.bool, device=device),
+        has_q_item=torch.tensor(has_q_item, dtype=torch.bool, device=device))
+
+
+def _greedy_draw(weights):
+    """贪心的纠正 / bonus：逐行 argmax（并列取最小下标），不抽任何随机数。
+
+    `argmax` 返回**第一个**最大值，正好是下标最小的那个，与 CPU 侧的
+    `weights.index(max(weights))` 一致。整行权重全为零时报错（与随机路径的
+    「无剩余质量」同一个错误码），不返回一个 token 0 冒充结论。
+    """
+    return (weights.argmax(dim=1).to(torch.int64),
+            (weights.max(dim=1).values <= 0).to(torch.int32))
 
 
 def is_greedy_without_penalty(seq):

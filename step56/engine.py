@@ -131,11 +131,11 @@ class Engine:
         # 采样执行层：组合一个 SampleRuntime，把采样后端、KV 池、停止 token 交给它
         # （draft 那一层也交给它：验证之后两套 KV 的回滚/对齐要在同一时刻做；
         #  拒绝验证的后端也在这里固定，见 rejection.BatchedRejectionSampler）
-        check_rejection_backend(rejection_backend, device)
+        check_rejection_backend(rejection_backend, device, speculative_mode)
         self.rejection_backend = rejection_backend
         self.sample_runtime = SampleRuntime(self.sampler, self.kv_cache_pool,
                                             model.eos_token_ids, self.draft_proposer,
-                                            rejection_backend)
+                                            rejection_backend, device)
         # 增量输出回调。不传就是 None —— 那时采样层连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
@@ -145,7 +145,8 @@ class Engine:
                           prompt_lookup_n=prompt_lookup_n,
                           max_seq_len=model.max_seq_len,
                           vocab_size=model.vocab_size,
-                          draft_proposer=self.draft_proposer)
+                          draft_proposer=self.draft_proposer,
+                          rejection_backend=rejection_backend)
 
     @classmethod
     def from_model_dir(cls, model_dir, device=None, attention_backend="torch", use_cuda_graph=False,

@@ -116,12 +116,16 @@ def resolve_device(device):
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def check_rejection_backend(rejection_backend, device):
+def check_rejection_backend(rejection_backend, device, speculative_mode=None):
     """拒绝验证后端的合法性（第五十六关）。
 
-    `triton` 是 CUDA 批量路径：需要 CUDA（内核与 counter RNG 都在 GPU 上），
-    并且沿用「Torch attention + 关图」这两条既有约束（与投机模式本身的要求一致）。
+    `triton` 是 CUDA 批量路径：需要 CUDA（内核与 counter RNG 都在 GPU 上）。
     不支持的组合在这里明确拒绝，**绝不悄悄退回参考循环还报告 GPU 路径成功**。
+
+    `speculative_mode is None`（不投机）时也拒绝 triton：那时没有任何一项需要验证，
+    triton 会**什么也不做**——而用户以为自己开的是 GPU 路径。普通采样的随机流不归
+    它管（那是 `sampling_state.generator` 的事），这一点必须在构造时说清楚，
+    不能留一个「看起来开了、实际空转」的组合。
     """
     if rejection_backend not in REJECTION_BACKENDS:
         raise ValueError(f"未知的 rejection_backend: {rejection_backend!r}，"
@@ -129,6 +133,10 @@ def check_rejection_backend(rejection_backend, device):
     if rejection_backend == "triton" and device.type != "cuda":
         raise ValueError(f"rejection_backend='triton' 需要 CUDA 设备，当前是 {device.type}；"
                          f"CPU 上请用 'torch'")
+    if rejection_backend == "triton" and speculative_mode is None:
+        raise ValueError("rejection_backend='triton' 只在投机验证里有意义：不投机时"
+                         "没有任何一项需要验证，它会空转；普通采样的随机流也不归它管。"
+                         "要么打开 speculative_mode，要么用默认的 'torch'")
 
 
 def check_runtime(device, attention_backend, use_cuda_graph, dtype=torch.float32,

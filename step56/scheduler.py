@@ -6,6 +6,7 @@
 from .cache import CacheConfig, InfeasibleRequest, KVCachePool, SequenceConfig
 from .draft import make_draft_generator
 from .model import DEFAULT_EOS_TOKEN_IDS
+from .rejection_rng import make_rejection_seed
 from .sampling import SamplingParams, SamplingState
 from .speculative import propose_ngram
 
@@ -68,7 +69,7 @@ def _check_request_ids(request, vocab_size):
 
 class Scheduler:
 
-    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None, draft_proposer=None):
+    def __init__(self, max_num_seqs=1, max_num_batched_tokens=4, block_size=4, enable_prefix_caching=True, on_finished=None, kv_cache_pool: KVCachePool=None, eos_token_ids=None, vocab_size=None, scheduling_policy="fcfs", speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2, max_seq_len=None, draft_proposer=None, rejection_backend="torch"):
 
         if max_num_batched_tokens <= 0:
             # 一步都排不出 token 的配置没有意义，构造时就明确拒绝，
@@ -105,6 +106,11 @@ class Scheduler:
         # 剩余上下文长度的上限来源。草稿会让本轮多算几个位置，必须提前卡住，
         # 不能等到模型准备输入时才报「超出 max_seq_len」。
         self.max_seq_len = max_seq_len
+        # 第五十六关：拒绝验证的后端（"torch" 参考路径 / "triton" GPU 批量）。
+        # 调度器只关心一件事：triton 后端用**请求级 counter RNG**，所以请求创建时
+        # 要给它派生一个种子（见 add_request）。torch 后端沿用第五十五关的
+        # `sampling_state.generator`，那个字段保持 None，行为一字不改。
+        self.rejection_backend = rejection_backend
         # 第五十五关：draft model 的提议层（持有 draft 模型与**第二个** KV 池）。
         # 调度器只用它做三件事：只读地问 draft 池放不放得下、把草稿写进计划、
         # 以及抢占/完成/失败时释放那一套 KV。真正的前向与采样在这一层之外。
@@ -134,6 +140,12 @@ class Scheduler:
         self._arrival_counter += 1
         seq.sampling_params = params
         seq.sampling_state = SamplingState(params, seq.prompt_ids, self.kv_cache_pool.device)
+        if self.rejection_backend == "triton":
+            # 拒绝验证的请求级随机流：counter-based，只需一个种子（不需要 generator）。
+            # **只在这个后端下设**：torch 路径不看这个字段，留成 None 才能保证
+            # 「换后端不改变原有随机流」——否则白抽一次全局随机源，未播种请求的
+            # draft 流会跟着变。
+            seq.rejection_seed = make_rejection_seed(params)
         if self.speculative_mode == "draft_model":
             # draft 的随机流与 target 的那条**相互独立**：draft 抽提议、target 抽
             # 接受/纠正/bonus。种子的派生规则见 draft.derive_draft_seed()。

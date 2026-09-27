@@ -32,7 +32,7 @@ class SampleRuntime:
     """
 
     def __init__(self, sampler, kv_cache_pool, eos_token_ids, draft_proposer=None,
-                 rejection_backend="torch"):
+                 rejection_backend="torch", device=None):
         self.sampler = sampler
         self.kv_cache_pool = kv_cache_pool
         self.eos_token_ids = eos_token_ids
@@ -45,8 +45,11 @@ class SampleRuntime:
         self.num_accepted_drafts = 0
         # 第五十六关：拒绝验证的批量执行层。**验证**（产生结论）搬进它，
         # **回滚 / 对齐 / 提交 / 收尾**仍然留在这里，且严格按 picked 顺序。
+        # 设备在这里**显式**传进去（不从 sampler 猜）：triton 后端要把元数据建在
+        # 与 logits 同一个设备上，猜错的表现是内核直接报
+        # 「Pointer argument cannot be accessed from Triton (cpu tensor?)」。
         self.rejection_sampler = BatchedRejectionSampler(
-            rejection_backend, eos_token_ids, sampler)
+            rejection_backend, eos_token_ids, sampler, device)
 
     def _align_draft(self, seq):
         """验证之后把 draft 的 KV 夹回 target 的真实计算边界。

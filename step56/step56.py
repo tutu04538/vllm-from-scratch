@@ -76,6 +76,9 @@ def main(argv=None):
     parser.add_argument("--draft-max-num-batched-tokens", type=int, default=None,
                         help="draft 每个 chunk 的 token 预算（默认与 target 相同，分开计数）")
     parser.add_argument("--num-speculative-tokens", type=int, default=2, help="每轮最多提几枚草稿")
+    parser.add_argument("--rejection-backend", choices=("torch", "triton"), default="torch",
+                        help="拒绝验证后端：torch = 逐请求参考路径，triton = GPU 批量验证"
+                             "（需要 CUDA 且必须开投机）")
     args = parser.parse_args(argv)
     questions = args.questions or DEFAULT_QUESTIONS
 
@@ -117,6 +120,7 @@ def main(argv=None):
         draft_model_dir=args.draft_model_dir,
         draft_num_kv_blocks=args.draft_num_kv_blocks,
         draft_max_num_batched_tokens=args.draft_max_num_batched_tokens,
+        rejection_backend=args.rejection_backend,
     )
     load_seconds = time.perf_counter() - started
 

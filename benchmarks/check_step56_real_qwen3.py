@@ -185,6 +185,59 @@ check("真实双模型（随机采样）：两套池子结束后引用归零",
       and all(u == 0 for u in random.draft_kv_pool.block_usage))
 print(f"  随机采样：{tokenizer.decode(random_out['q0'], skip_special_tokens=True)[:60]!r}")
 
+# ------------------------------------------------ 3. GPU 批量拒绝验证（triton 后端）
+
+# 端到端的等价判据只有一条是硬的：**贪心**。两个后端在贪心下都不抽随机数
+# （接受判断是纯比较、纠正/bonus 取 argmax），所以同样的输入必须给出逐 token
+# 相同的输出——这能证明「判定逻辑 + 行布局 + 打包」在真实模型上没有错位。
+# 随机采样下两条路径的随机流本来就不同（counter RNG vs 每条请求的 torch
+# generator），不能逐 token 比，只能比「跑得完、真的接受了、池子干净」。
+triton, triton_counter = build("draft_model", rejection_backend="triton")
+triton_out, triton_events, triton_steps = run(triton, prompts, max_new_tokens=16)
+check("真实双模型（triton 后端）：greedy 下与普通 greedy 的输出**逐 token 相同**",
+      plain_out == triton_out,
+      f"\n  普通  {[plain_out[f'q{i}'] for i in range(2)]}"
+      f"\n  triton {[triton_out[f'q{i}'] for i in range(2)]}")
+check("真实双模型（triton 后端）：后端确实是 triton，且真跑过批（不是悄悄退回参考路径）",
+      triton.sample_runtime.rejection_sampler.backend == "triton"
+      and triton.sample_runtime.rejection_sampler.num_items > 0
+      and triton.sample_runtime.num_accepted_drafts > 0,
+      f"批数 {triton.sample_runtime.rejection_sampler.num_batches}、"
+      f"项数 {triton.sample_runtime.rejection_sampler.num_items}、"
+      f"接受草稿 {triton.sample_runtime.num_accepted_drafts} 枚、"
+      f"消费随机事件 {triton.sample_runtime.rejection_sampler.num_rng_events} 个")
+check("真实双模型（triton 后端）：两套池子结束后引用归零",
+      all(u == 0 for u in triton.kv_cache_pool.block_usage)
+      and all(u == 0 for u in triton.draft_kv_pool.block_usage))
+
+# 同 seed 复现：counter RNG 的全部状态就是（seed, 事件编号），两条随机流
+# （target 的 generator / draft 与拒绝验证的派生 seed）都由请求 seed 唯一决定，
+# 所以同一个请求跑两遍必须**逐 token 相同**。
+replay_a, _ = build("draft_model", num_speculative_tokens=3, rejection_backend="triton")
+replay_out_a, _, _ = run(replay_a, prompts, max_new_tokens=16,
+                         sampling=dict(temperature=0.8, top_k=20, top_p=0.9, seed=7))
+replay_b, _ = build("draft_model", num_speculative_tokens=3, rejection_backend="triton")
+replay_out_b, _, _ = run(replay_b, prompts, max_new_tokens=16,
+                         sampling=dict(temperature=0.8, top_k=20, top_p=0.9, seed=7))
+check("真实双模型（triton 后端）：同 seed 两次运行逐 token 相同（counter RNG 可复现）",
+      replay_out_a == replay_out_b,
+      f"\n  A {replay_out_a['q0']}\n  B {replay_out_b['q0']}")
+random_triton, _ = build("draft_model", num_speculative_tokens=3, rejection_backend="triton")
+random_triton_out, random_triton_events, _ = run(
+    random_triton, prompts, max_new_tokens=16,
+    sampling=dict(temperature=0.8, top_k=20, top_p=0.9, seed=7))
+triton_lengths = {rid: len(random_triton_out[rid]) for rid in ("q0", "q1")}
+check("真实双模型（triton 后端，随机采样）：跑得完、序号连续、草稿真被接受过",
+      all(1 <= n <= 16 for n in triton_lengths.values())
+      and all([i for r, _, i in random_triton_events if r == rid]
+              == list(range(triton_lengths[rid])) for rid in ("q0", "q1"))
+      and random_triton.sample_runtime.num_accepted_drafts > 0
+      and all(u == 0 for u in random_triton.kv_cache_pool.block_usage)
+      and all(u == 0 for u in random_triton.draft_kv_pool.block_usage),
+      f"长度 {triton_lengths}、接受 {random_triton.sample_runtime.num_accepted_drafts} 枚")
+print(f"  triton 随机采样："
+      f"{tokenizer.decode(random_triton_out['q0'], skip_special_tokens=True)[:60]!r}")
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

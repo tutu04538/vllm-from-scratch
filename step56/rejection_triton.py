@@ -38,9 +38,9 @@ def _uniform_from(out_word):
 
 
 @triton.jit
-def _event_uniform(seed_lo, seed_hi, event_index, event_type, token_index,
-                   ROUNDS: tl.constexpr):
-    """一个逻辑事件的 uniform：Philox-4x32-10，计数器 = (事件编号, 类型, token, 0)。
+def _event_word(seed_lo, seed_hi, event_index, event_type, token_index,
+                ROUNDS: tl.constexpr):
+    """一个逻辑事件的**原始 32 位随机字**（Philox 输出的第一个字）。
 
     入口先把三个计数器字 `tl.to_tensor()`：调用点常常直接传 Python 字面量
     （比如接受事件的 token 下标恒为 0），不转成张量的话 Triton 会在编译期炸在 `.to()` 上。
@@ -51,7 +51,15 @@ def _event_uniform(seed_lo, seed_hi, event_index, event_type, token_index,
     c2 = tl.to_tensor(token_index).to(tl.uint32)
     c3 = tl.zeros_like(c0)
     out0, _, _, _ = tl.philox(seed, c0, c1, c2, c3, n_rounds=ROUNDS)
-    return _uniform_from(tl.to_tensor(out0))
+    return tl.to_tensor(out0)
+
+
+@triton.jit
+def _event_uniform(seed_lo, seed_hi, event_index, event_type, token_index,
+                   ROUNDS: tl.constexpr):
+    """一个逻辑事件的 uniform（[0,1)，取高 24 位，与 CPU 参考逐位一致）。"""
+    return _uniform_from(_event_word(seed_lo, seed_hi, event_index, event_type, token_index,
+                                     ROUNDS))
 
 
 @triton.jit
@@ -86,7 +94,7 @@ def event_uniforms(seed, event_index, event_type, token_index):
 
 
 @triton.jit
-def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, pos_start_ptr, k_ptr,
+def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_ptr, k_ptr,
                          seed_lo_ptr, seed_hi_ptr, counter_ptr,
                          accepted_ptr, kind_ptr, consumed_ptr, error_ptr,
                          KMAX: tl.constexpr, ROUNDS: tl.constexpr):
@@ -96,10 +104,17 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, pos_start_ptr, k_ptr,
     `kind`：0 = 全接受、1 = 首拒绝、2 = 接受的草稿是终止 token。
     `consumed` 只数**真的抽了 uniform** 的那些位置（0 < ratio < 1），
     必接受 / 必拒绝都不消费——这样计数器的增量与 CPU 参考路径逐条对得上。
+
+    `greedy`（每项一个标志）：贪心的目标分布是 one-hot，`ratio` 只能取 `1/q[d] >= 1`
+    或 `0`，**永远落不进 (0,1) 那个分支**；真落进去（目标分布不是 one-hot 时才会）
+    就按必拒处理，绝不抽随机数——「贪心不消费随机事件」是需求 §4 的硬规则，
+    torch 参考路径在那条分支上直接抛异常（`draw_uniform` 是打桩的），两条后端
+    在**可达**区域里的行为一致。错误码：1 = 非法提议，2 = 无剩余质量（见抽样内核）。
     """
     b = tl.program_id(0)
     start = tl.load(pos_start_ptr + b)
     k = tl.load(k_ptr + b)
+    is_greedy = tl.load(greedy_ptr + b) != 0
     seed_lo = tl.load(seed_lo_ptr + b).to(tl.int64)
     seed_hi = tl.load(seed_hi_ptr + b).to(tl.int64)
     base = tl.load(counter_ptr + b).to(tl.int64)
@@ -120,6 +135,8 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, pos_start_ptr, k_ptr,
                     kind = 2
             elif ratio <= 0.0:
                 kind = 1                       # 必拒绝：同样不消费
+            elif is_greedy:
+                kind = 1                       # 贪心：纯比较，不消费（见上面的说明）
             else:
                 u = _event_uniform(seed_lo, seed_hi, base + consumed, _ACCEPT, 0, ROUNDS)
                 consumed += 1
@@ -149,20 +166,25 @@ def sample_token_kernel(weight_ptr, seed_lo_ptr, seed_hi_ptr, event_index_ptr,
     - `u = (x + 0.5) · 2**-32` 在 FP64 里算：保证落在 (0,1) 开区间内（不会出现
       `log(0)` 或 `log(1)` 那种边界），偏差是 2**-32 量级；
     - 并列时取**较小下标**，与 CPU oracle 的 `argmin` 行为对齐。
+
+    归约状态显式声明 dtype：`best_e` 必须是 FP64（Python 的 `float("inf")` 会被当成
+    FP32，循环里再赋 FP64 的值就是「循环携带变量换类型」，Triton 在编译期直接拒绝）。
     """
     d = tl.program_id(0)
     seed_lo = tl.load(seed_lo_ptr + d).to(tl.int64)
     seed_hi = tl.load(seed_hi_ptr + d).to(tl.int64)
     event_index = tl.load(event_index_ptr + d).to(tl.int64)
 
-    best_e = float("inf")
-    best_i = 0
+    best_e = tl.full([], float("inf"), tl.float64)
+    best_i = tl.full([], 0, tl.int32)
     for tile in range(0, tl.cdiv(VOCAB, BLOCK_V)):
         offs = tile * BLOCK_V + tl.arange(0, BLOCK_V)
         mask = offs < VOCAB
         weight = tl.load(weight_ptr + d * VOCAB + offs, mask=mask, other=0.0).to(tl.float64)
-        word = _event_uniform(seed_lo, seed_hi, event_index, _CATEGORICAL, offs, ROUNDS)
-        u = (word.to(tl.uint32).to(tl.float64) + 0.5) * (1.0 / 4294967296.0)
+        # 用**原始 32 位字**（不是 `_event_uniform()` 那个 [0,1) float：把它再转回
+        # uint32 只剩高 8 位，u 会恒等于 0，`-log(u)` 变成垃圾）
+        word = _event_word(seed_lo, seed_hi, event_index, _CATEGORICAL, offs, ROUNDS)
+        u = (word.to(tl.float64) + 0.5) * (1.0 / 4294967296.0)
         race = tl.where(weight > 0.0, -tl.math.log(u) / weight, float("inf"))
         race = tl.where(mask, race, float("inf"))
         tile_min = tl.min(race, axis=0)
@@ -172,4 +194,7 @@ def sample_token_kernel(weight_ptr, seed_lo_ptr, seed_hi_ptr, event_index_ptr,
         best_i = tl.where(better, tile_index, best_i)
 
     tl.store(out_token_ptr + d, best_i)
-    tl.store(out_error_ptr + d, tl.where(best_e == float("inf"), 1, 0))
+    # 错误码 2（与接受前缀内核的 1 区分）：整行权重全为零，抽不出 token。真实的目标
+    # 分布不该出现，但纠正分布 `max(p-q,0)` 在极端输入下可能是全零——报错而不是
+    # 悄悄返回一个 token 0。
+    tl.store(out_error_ptr + d, tl.where(best_e == float("inf"), 2, 0))

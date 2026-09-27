@@ -120,7 +120,7 @@ def exponential_race(seed, event_index, weights):
 def derive_rejection_seed(seed):
     """由请求的 `seed` 稳定派生拒绝验证的种子（与 draft 侧同样的规则：线性同余混合）。
 
-    `seed=None` 时返回 None，由 `Scheduler.add_request()` 从全局随机源取一个
+    `seed=None` 时返回 None，由 `make_rejection_seed()` 从全局随机源取一个
     （与 target/draft 两侧一致：那时本来就不承诺复现）。
     """
     from .draft import DRAFT_SEED_INCREMENT, DRAFT_SEED_MULTIPLIER, DRAFT_SEED_MODULUS
@@ -128,3 +128,26 @@ def derive_rejection_seed(seed):
         return None
     # 换一组常数：同一个请求的 draft 流与拒绝验证流不能是同一个种子
     return (seed * DRAFT_SEED_MULTIPLIER + DRAFT_SEED_INCREMENT * 3 + 1) % DRAFT_SEED_MODULUS
+
+
+def make_rejection_seed(params):
+    """请求级的拒绝验证种子：有 `seed` 就派生，没有就从**全局随机源**取一个。
+
+    与 draft 侧 `draft.make_draft_generator()` 同一套规则：`seed=None`（调用方没要求
+    复现）时用不传 `generator=` 的 `torch.randint`，也就是 PyTorch 的默认生成器；
+    **本包从不播种它**，只在请求创建时碰一次，绝不在 `step()` 里抽——否则别的请求
+    的推进会扰动已有请求的随机流。上界取 `2**63 - 1`（`2**63` 超出 int64，会抛
+    「Overflow when unpacking long long」）。
+
+    **为什么不干脆退化成 0**：那样所有未播种的请求会共用同一条随机流——同一个事件
+    编号拿到同一个随机数，它们的接受/拒绝会完全相关。那比「不可复现」坏得多。
+
+    贪心请求不抽随机数（接受判断是纯比较），照样给个种子：后端只认字段，不在
+    「要不要建这个字段」上分叉；它也确实用不到。
+    """
+    from .draft import DRAFT_SEED_MODULUS
+    import torch
+    seed = derive_rejection_seed(params.seed)
+    if seed is None:
+        seed = int(torch.randint(0, DRAFT_SEED_MODULUS - 1, (1,)).item())
+    return seed
