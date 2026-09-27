@@ -17,7 +17,180 @@
 
 不承诺加速：本关只把机制做完整、做对。
 
-## 1. 一轮到底发生了什么
+下面 §1 先讲**算法本身的原理**（为什么要这样接受、这样纠正，为什么它是无偏的），
+§2 起讲本关怎么把它落到两个模型、两套 KV 上。只需要看实现的话可以从 §2 开始。
+
+## 1. 算法原理
+
+### 1.1 它想省的是什么
+
+自回归解码每步一次 forward 只出一个 token，瓶颈是**显存带宽**（权重与 KV 每步都要重读一遍）
+而不是算力——batch 小的时候算力大量闲置。投机解码的出发点是**让一次 target forward 多验几个位置**：
+
+1. 用便宜的小模型（draft）自回归地猜 K 枚草稿 `d_0..d_{K-1}`；
+2. target **一次** forward 就能并行算出这 K+1 个位置各自的分布——因果 attention 保证
+   第 i 个位置不依赖它后面的 token，所以草稿可以直接当输入喂进去；
+3. 验证之后一般能接受好几枚，于是一次 target forward 产出多个 token。
+
+代价是 draft 的 K 次前向（同轮多请求可以合成一个 batch，见 §4）。所以能不能赚，取决于
+**接受率**与**两个模型的成本比**——本关只做机制，不做这个矩阵。
+
+### 1.2 难点：草稿是「另一个分布」抽出来的
+
+draft 从它自己的分布 q 抽草稿，而我们要的是 target 的分布 p。直接接受草稿 = 输出分布变成 q，
+质量掉到小模型的水平；直接拒绝 = 退化成普通解码，白算。所以要一套**无偏**（unbiased）的
+接受/拒绝规则：**输出分布必须严格等于 p**。
+
+### 1.3 单枚草稿：规则与无偏性证明
+
+K=1，草稿 `d ~ q`。规则：
+
+```text
+以 min(1, p(d) / q(d)) 的概率接受 d；
+否则从纠正分布 r = normalize(max(p - q, 0)) 抽一枚作为本轮的 token。
+```
+
+证明「输出的 token 服从 p」。设输出为 y，两条互斥的路径：
+
+```text
+路径 A（草稿就是 y 且被接受）：
+    q(y) · min(1, p(y)/q(y)) = min(q(y), p(y))
+
+路径 B（草稿被拒，纠正抽到 y）：
+    拒绝质量 = Σ_x q(x)·(1 - min(1, p(x)/q(x)))
+             = Σ_x (q(x) - min(q(x), p(x))) = 1 - Σ_x min(q(x), p(x))
+    r(y)     = max(p(y) - q(y), 0) / Σ_z max(p(z) - q(z), 0)
+
+    而 Σ_z max(p(z)-q(z), 0) = 1 - Σ_z min(p(z), q(z))   （因为 Σp = Σq = 1）
+    所以 路径 B = max(p(y) - q(y), 0)
+
+合计 = min(q(y), p(y)) + max(p(y) - q(y), 0) = p(y)      ← 恒等式 min(a,b) + max(a-b,0) = a
+```
+
+两个 min/max 刚好互补，这就是 `max(p-q, 0)` 的来历。直觉上：
+
+- draft 与 target 都看好的 token：`min(q,p)` 那一项就够了，draft 本来就是对的；
+- **target 比 draft 更看好**的 token（`p > q`）：draft 抽得不够多，多出来的质量
+  `max(p-q,0)` 完全由「拒绝 + 纠正」补上；
+- **draft 比 target 更看好**的 token（`q > p`）：被拒掉的那部分质量 `q - min(q,p)`
+  正好等于别人需要补的质量（两边都等于 `1 - Σmin`），一分不多一分不少。
+
+所以纠正分布**不能**写成别的样子：第 52~54 关的 n-gram 是确定性提议（q 是 token 上的
+one-hot），那时 `max(p-q,0)` 退化成「把该 token 挖掉再归一化」；对一般 q 继续只挖掉一个
+token，等式就断了（需求 §4 的例子：正确纠正分布是 `[1,0,0]`，只挖 token 1 会得到 `[6/7,0,1/7]`）。
+
+### 1.4 多枚草稿为什么仍然无偏
+
+对 K 归纳。第一枚提交的 token 服从 p（上一节）。分两种情形：
+
+- **第一枚被接受**：它成为新的历史；接下来第 2 枚的验证，就是「在历史已经加上这个 token 的
+  条件下」重复同一个论证——每个位置的 `p_i / q_i` 本来就是**以该行历史为条件**的分布
+  （这也是「逐行临时惩罚历史」必须对的原因，见 §4 与 §3）；
+- **第一枚被拒**：本轮以纠正 token 结束（首次拒绝即停），而纠正分布按 §1.3 恰好补回 p。
+
+bonus 是「全部接受之后从最后一行的 p 抽一枚」，也是同一个采样器的一步。于是**整条输出序列**
+与「直接按 p 逐步采样」同分布——这就是「投机只改变怎么算，不改变算什么」的确切含义。
+
+K=2 的联合分布可以写成显式公式（`check_step55_rejection.py` 就是拿它对的）：
+
+```text
+P(提交 (y, z))  = q_y · min(1, p_y/q_y) · p_row1[z]          接受了草稿 y，z 是 bonus
+P(提交 (c,))    = Σ_y [q_y - q_y·min(1, p_y/q_y)] · r_y(c)    草稿 y 被拒，c 是纠正
+```
+
+注意纠正分布 `r_y` 与拒绝质量都是**逐枚草稿**的：草稿不同，`r` 不同、接受概率也不同。
+
+### 1.5 四个特例（代码里都能找到对应的分支）
+
+| 情形 | 提议分布 q | 接受概率 | 纠正分布 | 代码 |
+|---|---|---|---|---|
+| draft 与 target 同结构同权重（`p == q`） | p | 恒为 1 → **整轮全接受**，一次随机数都不抽 | 用不到 | `accept_prob >= 1` |
+| n-gram 确定性提议 | d 上的 one-hot | `p[d]` | 挖掉 d 再归一化（`max(p-q,0)` 的退化） | `draft_probs=None` |
+| 贪心 target + 贪心 draft | 两边都是 one-hot | `p[d] ∈ {0,1}`，即「argmax 是否相同」 | target 的 argmax | `_is_greedy_without_penalty` 的整批 argmax 快路径 |
+| 草稿被 top-k/top-p 过滤掉（`p[d]=0`） | — | 0 → **必拒且不抽随机数** | `r = p`（挖掉的本就是零质量） | `accept_prob <= 0` |
+
+第二行说明了为什么第 52~54 关的代码在第五十五关一行没改还能用：n-gram 只是 q 的一个特例。
+
+### 1.6 为什么「提议必须真的从 q 抽」
+
+证明里的 `q(y)` 是**草稿等于 y 的概率**。如果提议用 argmax、验证却拿 softmax 出来的 q，
+那么实际的提议分布是一个 one-hot（记作 q_eff），而验证用的是另一个分布——接受概率
+`min(1, p/q)` 算的不是真值，输出就有偏了。同理 `q_i[d_i] = 0` 直接报错：从 q 里根本抽不出
+一个质量为零的 token，出现这种输入一定是调用方算错了。
+
+### 1.7 为什么会「差一个位置」（两套 KV 的形状从哪来）
+
+要提 K 枚草稿，draft 需要喂 K 个 token：`x, d_0, …, d_{K-2}`（第 j 枚草稿是「喂了前 j 个
+token」之后预测出来的），所以它只写了 K 个位置，**最后一枚 `d_{K-1}` 还没进过 draft**；
+而 target 一次吃 `[x, d_0, …, d_{K-1}]`，写 K+1 个位置。全接受时 draft 天然落后 1，
+下一轮提议前必须先补算那一枚（§2 的轨迹）。
+
+反方向也要对齐：被拒的草稿在两边都得回滚。target 上它属于「本轮算过、但不属于真实前缀」
+的部分；draft 上它更糟——那是**用错的 token 算出来的 KV**。KV 是因果的，只有真实前缀的 KV
+才有意义，错 token 的 KV 会把后面所有位置带偏，所以既不能留、也不能拿去接着提议。
+
+### 1.8 加速比长什么样（以及为什么本关不承诺加速）
+
+逐枚接受概率记 `α_i`。K 枚草稿里期望被接受
+
+```text
+E[接受数] = Σ_{i=1..K} Π_{j≤i} α_j          （K=1 时就是 α_1）
+```
+
+一轮的产出 ≈ `1 + E[接受数]`，成本 ≈ 1 次 target forward + K 次 draft forward。若 draft
+比 target 便宜 c 倍：
+
+```text
+加速比 ≈ (1 + E[接受数]) / (1 + c·K)
+```
+
+`α` 高、`c` 小才赚；小 batch、短输出、draft 与 target 差距不大时完全可能亏。接受率低**不是**
+实现错误（随机初始化的玩具模型接受率必然低），本关的判据始终是「输出分布对不对、两套 KV
+对不对」，不是快不快。
+
+### 1.9 一遍数值例子
+
+需求 §4 的例子：`p = [0.6, 0.3, 0.1]`、`q = [0.2, 0.5, 0.3]`，草稿 `d = 1`。
+
+```text
+接受概率 = p[1]/q[1] = 0.3/0.5 = 0.6
+纠正分布 = normalize(max(p - q, 0)) = normalize([0.4, 0, 0]) = [1, 0, 0]
+```
+
+验算无偏性（三枚 token 的概率都要回到 p）：
+
+```text
+P(y=0) = q_0·min(1, p_0/q_0) + 拒绝质量·r(0) = 0.2·1    + 0.4·1 = 0.6 ✓
+P(y=1) = q_1·min(1, p_1/q_1) + 拒绝质量·r(1) = 0.5·0.6  + 0.4·0 = 0.3 ✓
+P(y=2) = q_2·min(1, p_2/q_2) + 拒绝质量·r(2) = 0.3·(1/3) + 0.4·0 = 0.1 ✓
+拒绝质量 = 1 - (0.2 + 0.3 + 0.1) = 0.4
+```
+
+读法：draft 偏爱 token 1（q=0.5）而 target 没那么喜欢（p=0.3），于是 token 1 的最终概率被
+「削」到 0.3；多出来的 0.4 通过「拒绝 + 纠正」一分不少地还给了 token 0（target 更偏爱的那个）。
+
+### 1.10 一轮的伪代码
+
+```python
+# 提议（draft 模型，同一轮多请求在同一个 batch 里逐位置进行）
+for j in range(K):
+    token = x if j == 0 else drafts[j - 1]          # 第 0 枚喂 pending x
+    q_j = distribution(draft_model(token), params, 历史=真实生成 + 前 j 枚草稿)
+    drafts.append(sample(q_j, draft_generator))     # 必须从 q 抽
+
+# 验证（target 一次 forward 出 K+1 行）
+for j in range(K):
+    ratio = p_j[drafts[j]] / q_j[drafts[j]]         # q 缺省时就是 p_j[drafts[j]]
+    if ratio >= 1 or (ratio > 0 and uniform() < ratio):
+        接受，继续
+    else:
+        提交 已接受的草稿 + sample(normalize(max(p_j - q_j, 0)))，本轮结束
+if 全部接受:
+    提交 所有草稿 + sample(p_K)                      # bonus 来自最后一行
+两套 KV 各自回滚到真实前缀                            # target: 保留长度; draft: 夹到同一条边界
+```
+
+## 2. 一轮到底发生了什么
 
 一轮的顺序（实现在 `engine.py:step()` 与 `draft.py:run_round()`）：
 
@@ -78,7 +251,7 @@ target：一次输入 [4,5,6]，写 KV 到 9
 落后 1——**「落后 → 补算 → 提议」就是稳态**。每一步提交时刻都断言
 `draft.length <= target.length`（draft 绝不领先于真实历史）。
 
-## 2. 一般 p/q 拒绝采样
+## 3. 一般 p/q 拒绝采样
 
 ```
 接受概率 = min(1, p_i[d_i] / q_i[d_i])
@@ -107,7 +280,7 @@ target：一次输入 [4,5,6]，写 KV 到 9
 - 接受的草稿若是终止 token：**在接受的当下就停**（第五十四关复验的结论，见
   `docs/step54_random_speculative.md` §8.10），后面的草稿不验证、bonus 不抽。
 
-## 3. 提议层（`draft.py`）
+## 4. 提议层（`draft.py`）
 
 `DraftModelProposer` 持有 draft 模型、**第二个** KV 池、采样后端与 draft 自己的 token 预算。
 它不认识 `Engine`，也不认识 `Scheduler`。五个入口：
@@ -137,7 +310,7 @@ target：一次输入 [4,5,6]，写 KV 到 9
 补算的 chunk 与提议的位置都从这里扣，报告里 `num_catchup_forwards` / `num_proposal_forwards`
 分开统计——小模型的前向不能偷偷记成 0。
 
-## 4. 双池容量与失败原子性
+## 5. 双池容量与失败原子性
 
 - 计划阶段（`Scheduler._plan_tokens`）只给 `max_draft_k` 预留，草稿要跑过 draft 才知道；
 - `_reserve_blocks()` 缩草稿时**两个池子都问**：`can_grow(seq, num_scheduled_tokens)`
@@ -154,7 +327,7 @@ target：一次输入 [4,5,6]，写 KV 到 9
 target 路径）与**运行时**才不够（两条请求的计划都通过了只读检查，第一条补算+提议吃掉
 大部分池子，第二条当场补不动）。两种情况下 target 的输出都与「不开投机」逐 token 相同。
 
-## 5. RNG 与 seed 派生
+## 6. RNG 与 seed 派生
 
 - **两条独立的流**：draft 抽提议用 `seq.draft_generator`，target 抽接受/纠正/bonus 用
   `seq.sampling_state.generator`。
@@ -166,7 +339,7 @@ target 路径）与**运行时**才不够（两条请求的计划都通过了只
 - 草稿被拒后**不回退** draft 的随机流：KV 回滚与 RNG 回滚是两件事。
 - 同 seed 同工作序列可复现；不要求与「普通随机解码」的文本相同（两条流的抽样次数不同）。
 
-## 6. 加载：分片 safetensors 与双目录
+## 7. 加载：分片 safetensors 与双目录
 
 - `formats.read_raw_weights()` 现在同时支持单文件与分片目录：按
   `model.safetensors.index.json` 的 `weight_map` 读，每个唯一分片只 `load_file` 一次，
@@ -180,7 +353,7 @@ target 路径）与**运行时**才不够（两条请求的计划都通过了只
   不短于 target、输入缓冲不小于 draft 预算、必须显式给 `draft_num_kv_blocks`。
   词表大小相同不等于 tokenizer 相同——本关只接受调用方提供的同词表模型，不做转换。
 
-## 7. 模块划分
+## 8. 模块划分
 
 ```text
 speculative.py  算法层（纯函数）：n-gram 提议 + 一般拒绝采样（p/q）+ 纠正分布
@@ -201,9 +374,9 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 同一份块管理，不复制第二份），`TorchSampler.draw()`（「分布 → token」的唯一实现，
 提议与采样共用）。
 
-## 8. 验证
+## 9. 验证
 
-### 8.1 脚本清单（全部通过，共 306 项）
+### 9.1 脚本清单（全部通过，共 306 项）
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
@@ -218,7 +391,7 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | `check_step55_real_qwen3.py` | 9 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
 | `diff_step54_step55.py` | 88 | `speculative_mode=None` 下与 step54 **逐步逐字节一致** |
 
-### 8.2 有判别力的几条
+### 9.2 有判别力的几条
 
 - **一般 q 的统计检验**：草稿每次从 q 抽，最终首 token 的经验分布回到 p
   （`[0.5998, 0.2998, 0.1004]`，20 万次，5σ 内）；条件两 token 的联合分布与「接受部分
@@ -240,7 +413,7 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 - **CUDA FP32 / BF16 冒烟**：draft_model / ngram / 关 三种模式各跑一遍，两条请求
   都完成、两套池子归零。
 
-### 8.3 反证清单
+### 9.3 反证清单
 
 | 断言 | 怎么反证的 |
 |---|---|
@@ -250,9 +423,9 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | 双 KV 对齐（draft ≤ target） | 每一步的提交时刻都断言 `draft.length <= target.length` |
 | 分片加载的错误处理 | 五种坏索引逐个造出来，确认每一种都报错 |
 
-## 9. 接口变化与遗留
+## 10. 接口变化与遗留
 
-### 9.1 接口变化
+### 10.1 接口变化
 
 **新增**：`speculative_mode="draft_model"`；`Engine(..., draft_model=, draft_num_kv_blocks=,
 draft_max_num_batched_tokens=)`（全部 keyword-only，旧位置参数一个都没挪）；
@@ -265,7 +438,7 @@ draft_max_num_batched_tokens=)`（全部 keyword-only，旧位置参数一个都
 **不变**：`speculative_mode=None` 与 `"ngram"` 的行为（`diff_step54_step55.py` 88 项
 逐步逐字节一致）；旧包的 import 路径；`TorchSampler.select()` 的语义（仍收**原始**行）。
 
-### 9.2 遗留
+### 10.2 遗留
 
 1. **不做 GPU rejection kernel**：验证仍是逐请求的 Torch 循环，允许必要的设备同步
    （与第五十四关同一条约束）。
