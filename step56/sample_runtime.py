@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import torch
 
+from .rejection import BatchedRejectionSampler, is_greedy_without_penalty
 from .speculative import verify_drafts, verify_drafts_random
 
 
@@ -30,7 +31,8 @@ class SampleRuntime:
     （`engine.on_token` 是公开参数，用户可能在任何时候设置它），所以走 `run()` 的参数。
     """
 
-    def __init__(self, sampler, kv_cache_pool, eos_token_ids, draft_proposer=None):
+    def __init__(self, sampler, kv_cache_pool, eos_token_ids, draft_proposer=None,
+                 rejection_backend="torch"):
         self.sampler = sampler
         self.kv_cache_pool = kv_cache_pool
         self.eos_token_ids = eos_token_ids
@@ -41,6 +43,10 @@ class SampleRuntime:
         # 要能被外面看见——验收报告指出过「只看提议数 > 0 不是接受链路的证据」。
         # 与提议侧 `DraftModelProposer.num_proposed_tokens` 配套看。
         self.num_accepted_drafts = 0
+        # 第五十六关：拒绝验证的批量执行层。**验证**（产生结论）搬进它，
+        # **回滚 / 对齐 / 提交 / 收尾**仍然留在这里，且严格按 picked 顺序。
+        self.rejection_sampler = BatchedRejectionSampler(
+            rejection_backend, eos_token_ids, sampler)
 
     def _align_draft(self, seq):
         """验证之后把 draft 的 KV 夹回 target 的真实计算边界。
@@ -107,22 +113,37 @@ class SampleRuntime:
         # 2) 贪心且无惩罚的投机项：保留第五十三关的整批 argmax 快路径（一次回传）。
         #    带惩罚项的贪心**不能**走这条：每一行看到的生成历史不同，argmax 必须在
         #    逐行施加惩罚之后再取。
-        any_fast = any(item["draft_ids"] and self._is_greedy_without_penalty(item["request"])
+        any_fast = any(item["draft_ids"] and is_greedy_without_penalty(item["request"])
                        for item in picked)
         greedy = torch.argmax(logits, dim=-1).tolist() if any_fast else None
 
-        # 3) 严格按 picked 顺序提交：同一请求内按 token 顺序，跨请求按本轮采样顺序
+        # 3) 投机项：交给批量验证层**先把结论算好**（triton 后端在这里做一次 GPU 批量
+        #    计算 + 一次集中回传；torch 后端就是原来的逐请求参考路径）。提交留到下面，
+        #    与普通项的 token 一样，按 picked 顺序走。
+        #    `verify_batch` 里不碰任何请求状态：回滚、对齐、提交都在提交循环里。
+        spec = [item for item in picked if self._needs_verification(item)]
+        results = {}
+        if spec:
+            outcome = self.rejection_sampler.verify_batch(
+                self.rejection_sampler.prepare_batch(logits, spec, greedy))
+            item_results = self.rejection_sampler.materialize_results(outcome)
+            # **整批先检查再提交**：任何一项非法都不允许「已经提交了半批」。
+            errors = [f"{item['request'].request_id}: {r.error}"
+                      for item, r in zip(spec, item_results) if r.error]
+            if errors:
+                raise ValueError("拒绝验证发现非法输入：" + "；".join(errors))
+            results = {id(item): r for item, r in zip(spec, item_results)}
+
+        # 4) 严格按 picked 顺序提交：同一请求内按 token 顺序，跨请求按本轮采样顺序
         for item in picked:
             seq = item["request"]
-            start, nrows = item["sample_offset"], item["num_sample_rows"]
-            if not item["draft_ids"]:
+            if not self._needs_verification(item):
                 self._commit_tokens(seq, [plain_tokens[id(item)]], on_token)
-            elif greedy is not None and self._is_greedy_without_penalty(seq):
-                self._commit_drafts(item, greedy[start:start + nrows], on_token)
-            else:
-                self._commit_drafts_random(item, logits[start:start + nrows], on_token)
+                continue
+            result = results[id(item)]
+            self._commit_verified(item, result, on_token)
 
-        # 4) 本轮收尾：把**预留了却没算到**的整块还给池子
+        # 5) 本轮收尾：把**预留了却没算到**的整块还给池子
         #    （有草稿的两条路径在验证时就还过了，这里对它们是空操作）
         for item in picked:
             self._release_unused_blocks(item["request"])
@@ -150,16 +171,6 @@ class SampleRuntime:
         used_blocks = math.ceil(seq.cache.length / pool.block_size)
         if len(seq.cache.block_table) > used_blocks:
             pool.truncate(seq, seq.cache.length)
-
-    @staticmethod
-    def _is_greedy_without_penalty(seq):
-        """能不能走「整批 argmax」快路径：贪心，而且没有任何惩罚项。
-
-        有惩罚项时每行看到的生成历史都不同（需求 §3），必须先逐行施加惩罚再取
-        argmax——那时 one-hot 才是**该行**的目标分布。
-        """
-        params = seq.sampling_params
-        return params.is_greedy and not params.has_penalty
 
     def _sampler_tokens(self, logits, items):
         """按每项自己的采样参数与惩罚项抽一枚 token，返回与 items 同序的 Python 列表。
@@ -206,78 +217,30 @@ class SampleRuntime:
 
     # -------- 4) 验证与回滚 --------
 
-    def _commit_drafts(self, item, greedy_ids, on_token):
-        """投机项（贪心快路径）：用目标模型一次 forward 的 K+1 行验证草稿，回滚 KV，再提交。
+    def _needs_verification(self, item):
+        """这一项要不要走**批量拒绝验证**。
 
-        顺序不能换：**回滚必须在 `scheduler.post_step()` 之前**。被拒绝草稿的 KV
-        已经随本轮输入写进了物理块，先把 `cache.length` 退回去，post_step 里的
-        发布与判停读到的才是真实进度。
+        torch 后端：有草稿的项才走（与第五十五关完全一致）。
+        triton 后端：`num_reserved_drafts > 0` 的项也要走——那是「计划要投机、实际
+        K=0」的回退项，它必须用**同一套 counter RNG** 采样，不能临时切回 target 的
+        torch generator（否则这条请求的随机流会中途换一条）。
+        """
+        if item["draft_ids"]:
+            return True
+        return (self.rejection_sampler.backend != "torch"
+                and item["num_reserved_drafts"] > 0)
 
-        `greedy_ids` 是**调用方整批算好、切好**的 K+1 枚目标模型贪心结果（见 `run()`）。
-        这里不再自己 argmax：批量下每个请求各做一次 argmax 会多付一次设备同步，
-        而且会把「一次 forward 一次回传」拆散。
+    def _commit_verified(self, item, result, on_token):
+        """把一条验证结论落到实处：回滚两套 KV → 记账 → 经唯一入口提交。
+
+        顺序不能换：**回滚必须在 `scheduler.post_step()` 之前**。被拒绝草稿的 KV 已经
+        随本轮输入写进了各自的物理块，先把 `cache.length` 退回去，post_step 里的发布与
+        判停读到的才是真实进度；draft 那边在同一时刻夹回同一条边界。
         """
         seq = item["request"]
-        remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
-        result = verify_drafts(item["draft_ids"], greedy_ids, self.eos_token_ids,
-                               remaining_outputs)
-        self.num_accepted_drafts += result.num_accepted
-
-        # 1) 先回滚：本轮输入 [x, d0..] 里只有 x 和「被接受且还要当下一轮输入」的草稿要留
         self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
         self._align_draft(seq)
-        # 2) 再提交：逐枚走和普通路径同一个入口，事件序号自然连续
-        self._commit_tokens(seq, result.committed_ids, on_token)
-
-    def _commit_drafts_random(self, item, rows, on_token):
-        """投机项（随机采样，或带惩罚项的贪心）：逐行构造目标分布做拒绝采样。
-
-        **每一行的惩罚历史不同**（需求 §3）：行 j 预测的是「真实历史 + 前 j 枚草稿」
-        之后那个 token。所以这里用的是一份**临时计数**——从真实计数复制一份，接受
-        一枚草稿就往里加一枚；真实 `sampling_state` 与 `all_token_ids` 在
-        `_commit_tokens()` 之前一个字都不动。
-
-        行的分布按「全都接受」构造：拒绝点之后的行根本不会被读到（`verify_drafts_random`
-        首次拒绝就停），而拒绝点之前的行历史恰好就是「前 j 枚都被接受」。
-        """
-        seq = item["request"]
-        params, state = seq.sampling_params, seq.sampling_state
-        draft_ids = item["draft_ids"]
-
-        # 只复制计数，不复制整段 token 历史；与真实状态不共享底层字典
-        temp = SimpleNamespace(prompt_token_ids=state.prompt_token_ids,
-                               generated_counts=dict(state.generated_counts))
-        row_probs = []
-        for index in range(len(draft_ids) + 1):
-            row_probs.append(self.sampler.distribution(rows[index].to(torch.float32), params, temp))
-            if index < len(draft_ids):
-                token = draft_ids[index]
-                temp.generated_counts[token] = temp.generated_counts.get(token, 0) + 1
-
-        if params.is_greedy:
-            # 贪心请求没有 generator（第五十二关起只给随机采样建），这里也确实不需要：
-            # 目标分布是 one-hot，`p[d]` 非 0 即 1，接受与否由 `verify_drafts_random()`
-            # 直接判定、一次 uniform 都不抽；纠正与 bonus 就是该行分布的 argmax。
-            def draw_uniform():
-                raise AssertionError("贪心路径不该抽接受随机数")
-            draw_token = lambda probs: int(torch.argmax(probs))
-        else:
-            def draw_uniform():
-                return float(torch.rand((), generator=state.generator,
-                                        device=state.generator.device))
-            draw_token = lambda probs: torch.multinomial(probs, num_samples=1,
-                                                         generator=state.generator)
-
-        remaining_outputs = seq.max_new_tokens - len(seq.output_ids)
-        # `draft_probs` 是 draft_model 每枚草稿的**实际**提议分布 q（ngram 时为空：
-        # 确定性提议的 q 是 one-hot，验证层内部退化成 p[d] 与「挖掉 d」）
-        result = verify_drafts_random(draft_ids, row_probs, self.eos_token_ids,
-                                      remaining_outputs, draw_uniform, draw_token,
-                                      draft_probs=item["draft_probs"] or None)
         self.num_accepted_drafts += result.num_accepted
-
-        # 先回滚两套 KV（被拒草稿的 KV 已经随本轮输入写进各自的物理块），
-        # 再走唯一提交入口
-        self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
-        self._align_draft(seq)
+        seq.rejection_rng_counter += result.rng_consumed
         self._commit_tokens(seq, result.committed_ids, on_token)
+

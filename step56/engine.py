@@ -24,9 +24,9 @@ from .model import TinyCausalLM
 from .sample_runtime import SampleRuntime
 from .sampling import TorchSampler
 from .scheduler import Scheduler
-from .validation import (SCHEDULING_POLICIES, SPECULATIVE_MODES, check_draft_model,
-                         check_runtime, check_scheduling_policy, check_speculative,
-                         resolve_device)
+from .validation import (REJECTION_BACKENDS, SCHEDULING_POLICIES, SPECULATIVE_MODES,
+                         check_draft_model, check_rejection_backend, check_runtime,
+                         check_scheduling_policy, check_speculative, resolve_device)
 
 
 class Engine:
@@ -38,7 +38,7 @@ class Engine:
                  scheduling_policy="fcfs",
                  speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2,
                  draft_model=None, draft_num_kv_blocks=None,
-                 draft_max_num_batched_tokens=None):
+                 draft_max_num_batched_tokens=None, rejection_backend="torch"):
         # on_token 是 keyword-only：它放在**所有旧参数之后**，旧的位置参数一个都没挪位。
         # 插在中间会让 Engine(..., None, False) 里的 False 从 enable_prefix_caching
         # 变成 on_token —— Python 按位置配对，不会知道调用者的原意。
@@ -64,13 +64,14 @@ class Engine:
                            on_finished, enable_prefix_caching, on_token,
                            scheduling_policy, speculative_mode, num_speculative_tokens,
                            prompt_lookup_n, draft_model, draft_num_kv_blocks,
-                           draft_max_num_batched_tokens)
+                           draft_max_num_batched_tokens, rejection_backend)
 
     def _init_runtime(self, model, max_num_seqs, max_num_batched_tokens, block_size, num_kv_blocks,
                       on_finished, enable_prefix_caching, on_token=None,
                       scheduling_policy="fcfs", speculative_mode=None,
                       num_speculative_tokens=2, prompt_lookup_n=2, draft_model=None,
-                      draft_num_kv_blocks=None, draft_max_num_batched_tokens=None):
+                      draft_num_kv_blocks=None, draft_max_num_batched_tokens=None,
+                      rejection_backend="torch"):
         # 模型已经就位（随机初始化或从目录加载），这里只装运行时：元数据、KV 池、调度器
         device = model.device
         check_runtime(device, model.attention_backend, model.use_cuda_graph, model.dtype,
@@ -128,9 +129,13 @@ class Engine:
                 draft_max_num_batched_tokens)
 
         # 采样执行层：组合一个 SampleRuntime，把采样后端、KV 池、停止 token 交给它
-        # （draft 那一层也交给它：验证之后两套 KV 的回滚/对齐要在同一时刻做）
+        # （draft 那一层也交给它：验证之后两套 KV 的回滚/对齐要在同一时刻做；
+        #  拒绝验证的后端也在这里固定，见 rejection.BatchedRejectionSampler）
+        check_rejection_backend(rejection_backend, device)
+        self.rejection_backend = rejection_backend
         self.sample_runtime = SampleRuntime(self.sampler, self.kv_cache_pool,
-                                            model.eos_token_ids, self.draft_proposer)
+                                            model.eos_token_ids, self.draft_proposer,
+                                            rejection_backend)
         # 增量输出回调。不传就是 None —— 那时采样层连事件字典都不建
         self.on_token = on_token
         self.scheduler = Scheduler(max_num_seqs=max_num_seqs, max_num_batched_tokens=max_num_batched_tokens, block_size=block_size, enable_prefix_caching=enable_prefix_caching, on_finished=on_finished, kv_cache_pool=self.kv_cache_pool, eos_token_ids=model.eos_token_ids,
@@ -150,7 +155,7 @@ class Engine:
                        scheduling_policy="fcfs",
                        speculative_mode=None, num_speculative_tokens=2, prompt_lookup_n=2,
                        draft_model_dir=None, draft_num_kv_blocks=None,
-                       draft_max_num_batched_tokens=None):
+                       draft_max_num_batched_tokens=None, rejection_backend="torch"):
         # 只给目录和运行选项，模型结构全部来自目录；失败时不会交出半个 Engine。
         check_scheduling_policy(scheduling_policy)
         device = resolve_device(device)
@@ -170,6 +175,7 @@ class Engine:
                                               dtype, norm_backend, rope_backend)
         return cls(model=model, draft_model=draft_model,
                    draft_num_kv_blocks=draft_num_kv_blocks,
+                   rejection_backend=rejection_backend,
                    draft_max_num_batched_tokens=draft_max_num_batched_tokens,
                    max_num_seqs=max_num_seqs,
                    max_num_batched_tokens=max_num_batched_tokens, block_size=block_size,

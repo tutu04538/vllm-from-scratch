@@ -93,6 +93,11 @@ class SequenceConfig:
         # 重算也不重置它。贪心请求不需要它（`draw()` 走 argmax），为 None。
         self.draft_generator = None
         self.draft_seed = None
+        # 拒绝验证的请求级随机流（第五十六关，**只有 triton 后端用**）：counter-based
+        # RNG，事件编号即 `rejection_rng_counter`，只有真正发生的逻辑事件才推进它。
+        # torch 后端保留第五十五关的行为，用 `sampling_state.generator`，这里不动。
+        self.rejection_seed = None
+        self.rejection_rng_counter = 0
         self.block_size = block_size  # Size of each block in the KV cache
         self.block_hashes = []  # 本请求已确定的前缀块 hash 链，命中时从缓存里的前缀接上
         # 采样参数与状态跟着请求走，不跟着 batch 行号走

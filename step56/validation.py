@@ -9,6 +9,9 @@ Engine 在 `_init_runtime()` 里调它们，`check_runtime` 在两条构造路�
 import torch
 
 SCHEDULING_POLICIES = ("fcfs", "priority")
+# 拒绝验证的后端：torch 是参考路径（CPU 也能跑），triton 是 CUDA 批量路径。
+# 引擎创建时固定，运行中不切换。
+REJECTION_BACKENDS = ("torch", "triton")
 SPECULATIVE_MODES = (None, "ngram", "draft_model")
 
 
@@ -111,6 +114,21 @@ def check_draft_model(target_model, draft_model, draft_num_kv_blocks,
 def resolve_device(device):
     return torch.device(device) if device is not None else \
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def check_rejection_backend(rejection_backend, device):
+    """拒绝验证后端的合法性（第五十六关）。
+
+    `triton` 是 CUDA 批量路径：需要 CUDA（内核与 counter RNG 都在 GPU 上），
+    并且沿用「Torch attention + 关图」这两条既有约束（与投机模式本身的要求一致）。
+    不支持的组合在这里明确拒绝，**绝不悄悄退回参考循环还报告 GPU 路径成功**。
+    """
+    if rejection_backend not in REJECTION_BACKENDS:
+        raise ValueError(f"未知的 rejection_backend: {rejection_backend!r}，"
+                         f"可选 {list(REJECTION_BACKENDS)}")
+    if rejection_backend == "triton" and device.type != "cuda":
+        raise ValueError(f"rejection_backend='triton' 需要 CUDA 设备，当前是 {device.type}；"
+                         f"CPU 上请用 'torch'")
 
 
 def check_runtime(device, attention_backend, use_cuda_graph, dtype=torch.float32,
