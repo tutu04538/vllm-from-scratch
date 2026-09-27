@@ -481,7 +481,10 @@ $0.30$ vs 标准规则的 $0.60$；$p=q$（draft 完全靠谱）时更狠：标�
 |---|---|
 | `backlog(seq)` | draft 还差多少个 token 才追上 target 的已计算前缀 |
 | `fits(seq, k)` | 只读地问：draft 池容不容得下「补算缺口 + k 枚草稿」（给计划阶段用） |
-| `catch_up(seq, budget)` | 把已提交历史 `[draft.length, target.length)` 按 chunk 补进 draft 的 KV |
+| `catch_up(seq, budget)` | 把已提交历史 `[draft.length, target.length)` 补进 draft 的 KV。
+  **一轮只做一个 chunk**（取「还差多少」与「本轮剩余预算」里小的那个）：补不满就返回
+  False、这一轮不提议，缺口下一轮继续——`backlog()` 每轮重算，所以「补到哪儿了」只有
+  `draft_cache.length` 一处状态 |
 | `run_round(items)` | 补算 + 逐位置批量提议，把草稿写回本轮计划（含 q） |
 | `align(seq)` / `release(seq)` | 验证后夹回边界 / 抢占、完成、失败时释放 |
 
@@ -499,8 +502,13 @@ $0.30$ vs 标准规则的 $0.60$；$p=q$（draft 完全靠谱）时更狠：标�
 后面的草稿永远读不到。
 
 **预算分开计数**：`draft_max_num_batched_tokens` 是 draft 自己的预算（默认与 target 相同），
-补算的 chunk 与提议的位置都从这里扣，报告里 `num_catchup_forwards` / `num_proposal_forwards`
-分开统计——小模型的前向不能偷偷记成 0。
+补算的 chunk 与提议的位置都从**同一个**预算里扣，报告里 `num_catchup_forwards` /
+`num_proposal_forwards` 分开统计——小模型的前向不能偷偷记成 0。
+
+两者共享预算是刻意的、也有代价：预算小到「补算就吃光」时，这条请求**一直**走普通 target
+路径（实测 `draft_max_num_batched_tokens=2`、prompt 长 6 时提议 0 枚），而 backlog 每轮还
+随 target 前进长 1。这条降级路径有测试盯着：输出必须与不开投机**逐 token 相同**——
+草稿是可选加速，降级只能影响速度，不能影响结果。
 
 ## 5. 双池容量与失败原子性
 
@@ -570,7 +578,7 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 
 ## 9. 验证
 
-### 9.1 脚本清单（全部通过，共 310 项）
+### 9.1 脚本清单（全部通过，共 315 项）
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
@@ -580,7 +588,8 @@ truncate_cache / release_cache`（按显式 `CacheConfig` 操作，target 池与
 | `check_step55_random.py` | 22 | 第五十四关的引擎状态（临时计数、RNG、重算、混批） |
 | `check_step55_engine.py` | 55 | 单/多请求等价性、目录加载入口 |
 | `check_step55_combinations.py` | 17 | priority / 前缀缓存与投机的组合 |
-| `check_step55_draft_kv.py` | 49 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、CUDA 冒烟） |
+| `check_step55_draft_kv.py` | 54 | **本关的双 KV**（轨迹、对齐、边界、回退、抢占、priority 动态到达、前缀命中、惩罚一致性、
+  补算 chunk 与预算共享、CUDA 冒烟） |
 | `check_step55_loading.py` | 12 | 分片权重 + 双目录加载 |
 | `check_step55_real_qwen3.py` | 9 | 真实 1.7B + 0.6B 端到端（CUDA BF16） |
 | `diff_step54_step55.py` | 88 | `speculative_mode=None` 下与 step54 **逐步逐字节一致** |

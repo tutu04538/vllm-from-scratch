@@ -534,6 +534,48 @@ if torch.cuda.is_available():
 else:
     print("SKIP  CUDA 冒烟（本机没有 CUDA）")
 
+# ------------------------------------------------ 11. 补算按 chunk 分摊、与提议共享预算
+
+# `catch_up()` 一轮只做一个 chunk（上限是 draft 自己的预算），缺口靠 `backlog()` 每轮重算。
+# 预算 4、prompt 长 6：第 2 步补 4、第 3 步补 2 追平，剩下 2 的预算轮得到提议。
+budgeted = build(20, shift, shift, draft_max_num_batched_tokens=4, num_speculative_tokens=1,
+                 num_kv_blocks=32, draft_num_kv_blocks=16)
+budgeted.add_request({"request_id": "A", "prompt_ids": PROMPT, "max_new_tokens": 6})
+per_step = []
+while budgeted.has_unfinished_requests():
+    before_catch, before_prop = (budgeted.draft_proposer.num_catchup_tokens,
+                                 budgeted.draft_proposer.num_proposed_tokens)
+    budgeted.step()
+    per_step.append((budgeted.draft_proposer.num_catchup_tokens - before_catch,
+                     budgeted.draft_proposer.num_proposed_tokens - before_prop))
+check("补算一轮最多一个 chunk：预算 4 时每步最多补 4 个 token",
+      all(catch <= 4 for catch, _ in per_step), str(per_step))
+check("补不满就不提议：前一两轮只补历史、一枚草稿都不提，追平之后才开始提",
+      per_step[1][1] == 0 and any(prop > 0 for _, prop in per_step[2:]),
+      f"每步 (补算, 提议) = {per_step}")
+check("补算量正好是「prompt + 已提交历史」，没有重复补",
+      budgeted.draft_proposer.num_catchup_tokens - len(PROMPT)
+      <= sum(prop for _, prop in per_step) + 1,
+      f"累计补算 {budgeted.draft_proposer.num_catchup_tokens}、"
+      f"累计提议 {budgeted.draft_proposer.num_proposed_tokens}")
+
+# 预算小到「补算就吃光」时：这条请求**一直**走普通 target 路径（草稿是可选加速），
+# 但输出必须与不开投机逐 token 相同——降级只能影响速度，不能影响结果
+tiny_budget = build(21, shift, shift, draft_max_num_batched_tokens=2, num_speculative_tokens=1,
+                    num_kv_blocks=32, draft_num_kv_blocks=16)
+tiny_trace = steps(tiny_budget, [{"request_id": "A", "prompt_ids": PROMPT, "max_new_tokens": 6}])
+plain_budget = build(21, shift, shift, speculative_mode=None, num_kv_blocks=32, with_draft=False)
+plain_trace = steps(plain_budget, [{"request_id": "A", "prompt_ids": PROMPT,
+                                    "max_new_tokens": 6}])
+check("draft 预算太小：草稿一枚都没提（补算把预算吃光了），但请求照常跑完",
+      tiny_budget.draft_proposer.num_proposed_tokens == 0
+      and tiny_budget.scheduler.has_unfinished_requests() is False,
+      f"提议 {tiny_budget.draft_proposer.num_proposed_tokens} 枚、"
+      f"补算 {tiny_budget.draft_proposer.num_catchup_tokens} 个 token")
+check("draft 预算太小：输出与纯 target 逐 token 相同（降级只影响速度，不影响结果）",
+      final_output(tiny_trace, "A") == final_output(plain_trace, "A"),
+      f"{final_output(tiny_trace, 'A')} vs {final_output(plain_trace, 'A')}")
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

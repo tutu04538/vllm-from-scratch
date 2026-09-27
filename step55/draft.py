@@ -145,25 +145,26 @@ class DraftModelProposer:
         草稿池不够或走了 fallback。三种情形走同一条路径，不维护第二份可分叉的
         真实 token 列表。
 
-        chunk 大小受 `budget` 限制，追不平就返回 False：**这一轮不提议**，请求照常
-        走普通 target 路径（草稿是可选加速）。绝不为了草稿去抢占 target 的其他请求。
+        **一轮最多补一个 chunk**（上限取「还差多少」与「本轮剩下多少 draft 预算」
+        里小的那个），补不完就返回 False：这一轮不提议，请求照常走普通 target 路径
+        （草稿是可选加速）。剩下的缺口下一轮继续——`backlog()` 每轮重新算，所以
+        「补到哪儿了」这个状态只有 `draft_cache.length` 一处，不需要在这里连补。
+        绝不为了草稿去抢占 target 的其他请求。
         """
-        used = 0
-        while True:
-            remaining = self.backlog(seq)
-            if remaining <= 0:
-                return True, used
-            chunk = min(remaining, budget - used)
-            if chunk <= 0:
-                return False, used
-            # 池子不够：一个字节都不改（池子自己是计划/提交分离的），本轮不提议
-            if not self.kv_cache_pool.ensure_blocks_for(seq.draft_cache, chunk):
-                return False, used
-            start = seq.draft_cache.length
-            self._run(seq.all_token_ids[start:start + chunk], [chunk], [seq.draft_cache],
-                      sample_rows=[])
-            used += chunk
-            self.num_catchup_tokens += chunk
+        remaining = self.backlog(seq)
+        if remaining <= 0:
+            return True, 0
+        chunk = min(remaining, budget)
+        if chunk <= 0:
+            return False, 0
+        # 池子不够：一个字节都不改（池子自己是计划/提交分离的），本轮不提议
+        if not self.kv_cache_pool.ensure_blocks_for(seq.draft_cache, chunk):
+            return False, 0
+        start = seq.draft_cache.length
+        self._run(seq.all_token_ids[start:start + chunk], [chunk], [seq.draft_cache],
+                  sample_rows=[])
+        self.num_catchup_tokens += chunk
+        return chunk >= remaining, chunk
 
     # -------- 2) 提议：逐位置、跨请求合成一个 batch --------
 
