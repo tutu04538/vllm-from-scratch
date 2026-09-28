@@ -65,7 +65,9 @@
 - [step56_triton_kernel_design.md](step56_triton_kernel_design.md)：设计思路（原来差在哪、
   内核担什么责任、要备哪些输入、易错点与代价），开头先把 counter RNG 与指数竞赛两个名词讲清；
 - [step56_state_space.md](step56_state_space.md)：**状态空间地图**——这一关有哪些轴、哪些
-  组合不可能出现（不变量）、每个函数实际要同时装几个量、哪些轴容易混。读代码前先看这页。
+  组合不可能出现（不变量）、每个函数实际要同时装几个量、哪些轴容易混。读代码前先看这页；
+- [step56_vs_vllm_rejection.md](step56_vs_vllm_rejection.md)：与 vLLM 0.28 的逐项对照——
+  同一件事的两种取舍，以及「我们为什么看起来更绕」（哪些轴是需求逼出来的）。
 
 ## 1. 数据流：三个入口与一轮的顺序
 
