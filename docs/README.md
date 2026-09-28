@@ -57,3 +57,4 @@
 | [step55_draft_model.md](step55_draft_model.md) | `step55/`（包） | draft model 双 KV：一般 p/q 拒绝采样 + 独立提议层 + 双池容量与对齐 + 分片加载 |
 | [step56_gpu_rejection.md](step56_gpu_rejection.md) | `step56/`（包） | GPU 批量拒绝采样：counter-based RNG、两个内核、一张结果张量一次回传；与 CPU oracle 逐位对照 |
 | [step56_triton_kernel_design.md](step56_triton_kernel_design.md) | `step56/`（附篇，无代码改动） | 把验证搬进 kernel 的设计思路：先讲清 counter RNG 与指数竞赛两个名词，再讲原做法差在哪、内核担什么、要备哪些输入、易错点与代价 |
+| [step56_state_space.md](step56_state_space.md) | `step56/`（附篇，无代码改动） | 这一关的状态空间地图：五层轴、把不可能组合删掉的不变量、每个函数实际要装几个量、容易混的轴 |
