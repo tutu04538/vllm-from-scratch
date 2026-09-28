@@ -245,6 +245,22 @@ for case in CASES:
               f" vs oracle {expected['committed']}/{expected['accepted']}/{expected['kept']}"
               f"/{expected['consumed']}")
 
+# `_weight_rows()` 取权重行时不带 where（`起点 + accepted` 一个式子同时覆盖收尾行
+# 与拒绝点那一行），这依赖一条不变量：**停在「全接受」时 accepted 一定等于 K**。
+# 内核里只有「没被拒、也没遇到 EOS」才会停在 KIND_ALL_ACCEPTED，每一趟循环都 accepted += 1；
+# K=0 时一趟没跑，0 == 0 同样成立。这条用例把它钉住——不变量一破，上面那个简化就错了。
+broken = []
+for case in CASES:
+    for counter in (0, 5):
+        got_case = oracle_verify(case["draft_ids"], case["row_probs"],
+                                 case.get("draft_probs"), case.get("seed", 11), counter, EOS,
+                                 greedy=case["params"].is_greedy)
+        if (got_case["error"] is None and got_case["kind"] == KIND_ALL_ACCEPTED
+                and got_case["accepted"] != len(case["draft_ids"])):
+            broken.append(case["name"])
+check("不变量：停在「全接受」时 accepted 一定等于 K（`_weight_rows()` 的写法依赖它）",
+      not broken, str(broken))
+
 # 非法输入：q[d] = 0 -> 错误标志，且**整批先检查再提交**
 # 草稿 token 是 2，而它的提议分布给 token 2 的质量是 0 —— 「从 q 里抽不出一个
 # q 质量为零的 token」，这是调用方的错，必须报错而不是除零、也不是当成必接受

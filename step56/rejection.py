@@ -355,9 +355,12 @@ class BatchedRejectionSampler:
         两者都在 `rows_all` 里，一次高级索引取整行。
         """
         accepted_l = accepted.to(torch.long)
-        # 收尾行的下标 = 本项起点 + K；两个分支都落在本项的行区间内
-        chosen = lay.row_offsets + torch.where(kind == KIND_ALL_ACCEPTED,
-                                               lay.k_t.to(torch.long), accepted_l)
+        # 取哪一行：**收尾行**（全接受时用，= 起点 + K）或**拒绝点那一行**（首拒绝时用，
+        # = 起点 + num_accepted）。这两个下标其实是**同一个表达式**——内核只在「没被拒、
+        # 没遇到 EOS」时才停在 KIND_ALL_ACCEPTED，那时 `accepted == K`（K=0 时 0 == 0 也
+        # 成立），所以 `起点 + accepted` 正好就是收尾行。因此这里不写 where：不变量由内核
+        # 保证（有用例钉着），写出来反而像是在说「它可能是别的值」。
+        chosen = lay.row_offsets + accepted_l
         weight = lay.rows_all[chosen]
         # 被拒的那枚草稿：位置 = 本项起点 + num_accepted。不是首拒绝时这个位置读到的是
         # 别人的草稿（全接受的项 `num_accepted == K`，正好越过本项），**必须夹住**：
