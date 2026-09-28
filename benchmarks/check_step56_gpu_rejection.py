@@ -501,16 +501,20 @@ check("组合：未知后端名在构造时明确拒绝",
 # torch 后端保持第五十五关的行为（没有草稿就不走验证）。
 triton_runtime = SampleRuntime(TorchSampler(), None, {3}, None, "triton")
 torch_runtime = SampleRuntime(TorchSampler(), None, {3}, None, "torch")
-check("K=0 回退项：triton 后端把它纳入验证批（用同一套 counter RNG）",
-      triton_runtime._needs_verification({"draft_ids": [], "num_reserved_drafts": 2})
-      and not torch_runtime._needs_verification({"draft_ids": [], "num_reserved_drafts": 2})
-      and not triton_runtime._needs_verification({"draft_ids": [],
-                                                 "num_reserved_drafts": 0}),
-      f"triton 有草稿 {triton_runtime._needs_verification({'draft_ids': [1], 'num_reserved_drafts': 2})}、"
-      f"triton 无草稿有预留 "
-      f"{triton_runtime._needs_verification({'draft_ids': [], 'num_reserved_drafts': 2})}、"
-      f"torch 无草稿有预留 "
-      f"{torch_runtime._needs_verification({'draft_ids': [], 'num_reserved_drafts': 2})}")
+# 四种形状都要问一遍。**第三种是关键**：ngram 的草稿在计划阶段就填好了，而
+# `num_reserved_drafts` 恒为 0——只看预留名额的写法会把 ngram 漏掉（也就漏掉了它的验证）。
+cases = [("有草稿 + 有预留", {"draft_ids": [1], "num_reserved_drafts": 2}),
+         ("无草稿 + 有预留（K=0 回退项）", {"draft_ids": [], "num_reserved_drafts": 2}),
+         ("有草稿 + 无预留（ngram）", {"draft_ids": [1], "num_reserved_drafts": 0}),
+         ("无草稿 + 无预留（真·普通项）", {"draft_ids": [], "num_reserved_drafts": 0})]
+expect_triton = [True, True, True, False]
+expect_torch = [True, False, True, False]
+got_triton = [triton_runtime._needs_verification(case) for _, case in cases]
+got_torch = [torch_runtime._needs_verification(case) for _, case in cases]
+check("走不走验证的判据：triton 看「是不是投机项」，torch 只看「有没有草稿」",
+      got_triton == expect_triton and got_torch == expect_torch,
+      "；".join(f"{name}: triton={a} torch={b}"
+                for (name, _), a, b in zip(cases, got_triton, got_torch)))
 
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")

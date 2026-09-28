@@ -1,7 +1,7 @@
 # step56：GPU 批量拒绝采样与单次结果回传
 
 - 对应代码：`step56/`（从 `step55/` 复制，入口改名 `step56.py`；旧包不改）
-- 包摘要 SHA256：`328db84f8504d345…`（22 个 .py / 5804 行；口径 = 包内 `*.py` 按相对路径
+- 包摘要 SHA256：`ac0432751237f1d6…`（22 个 .py / 5848 行；口径 = 包内 `*.py` 按相对路径
   排序，每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 基线：`step55/` 的投手机制**行为逐字节不变**（`benchmarks/diff_step55_step56.py` 88 项，
   默认的 `rejection_backend="torch"` 就是第五十五关那条参考路径）
@@ -253,8 +253,13 @@ rng     = consumed + (kind != 2) & ~greedy & (errors == 0)
 草稿本身就是空的）在两个后端里的归属不同，这是有意的：
 
 - `torch` 后端：没有草稿就不走验证（第五十五关的行为）；
-- `triton` 后端：`num_reserved_drafts > 0` 就纳入验证批。它的采样必须用**同一套 counter
-  RNG**，中途切回 target 的 `torch.Generator` 会让这条请求的随机流换一条。
+- `triton` 后端：**本轮是投机项的**都纳入验证批——有草稿的（ngram 的草稿在计划阶段就填好了，
+  而它的 `num_reserved_drafts` 恒为 0），或者计划过投机的（`num_reserved_drafts > 0`，实际
+  可能一枚都没提出来）。它的采样必须用**同一套 counter RNG**，中途切回 target 的
+  `torch.Generator` 会让这条请求的随机流换一条。
+- `run()` 里「走普通采样」与「走验证」两份名单**同源**（同一个 `_needs_verification` 判据），
+  互斥且完备：各写一个表达式的话，triton 后端的 K=0 回退项会同时落进两边——普通采样那份
+  算完被丢掉，但请求自己的 `torch.Generator` 白白前进了一格。
 
 **贪心**在两个后端里都不抽任何随机数：接受判断是纯比较（`ratio >= 1` 接受、否则拒绝），
 纠正/bonus 是逐行 argmax（并列取最小下标，与 CPU 侧 `weights.index(max(weights))` 一致）。

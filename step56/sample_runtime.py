@@ -23,6 +23,21 @@ from .rejection import BatchedRejectionSampler, is_greedy_without_penalty
 from .speculative import verify_drafts, verify_drafts_random
 
 
+def is_speculative_item(item):
+    """这一项本轮是不是**投机项**——有草稿，或者计划过投机。
+
+    两种提议路径在这里形状不同，**别只看一个**：
+
+    - ngram：草稿是计划阶段就用纯函数算好的（`draft_ids` 非空），而
+      `num_reserved_drafts` **恒为 0**（那个字段记的是「跑过 draft 才知道要几枚」的预留，
+      ngram 不需要）；
+    - draft_model：计划阶段只放一个预留名额，草稿要跑过 draft 才填；名额 > 0 而实际一枚
+      都没提出来时（补算吃光预算、draft 池不够、草稿本身为空）`draft_ids` 是空的——
+      那也是投机项。
+    """
+    return bool(item["draft_ids"]) or item["num_reserved_drafts"] > 0
+
+
 class SampleRuntime:
     """本轮采样的执行者：行映射 → 三条路径 → 验证与回滚 → 提交。
 
@@ -104,10 +119,17 @@ class SampleRuntime:
         if logits.shape[0] != expected:
             raise RuntimeError(f"模型返回 {logits.shape[0]} 行 logits，但本轮需要 {expected} 行")
 
-        # 1) 没有草稿的项：走采样后端（随机采样、惩罚项、按行独立的历史都在那条路上）。
+        # 路由：每一项**要么**走普通采样后端、**要么**走批量验证，互斥且完备。判据只算一次
+        # 且只有一份（`_needs_verification`）——两个列表各写一个表达式的话，条件一旦不
+        # 一致就会出现「既采样又验证」的项：triton 后端的 K=0 回退项曾经就是（普通采样
+        # 那份算完被丢掉，但请求自己的 `torch.Generator` 白白前进了一格，下次它走普通
+        # 路径时抽到的随机数就跟着漂了）。
+        verify = {id(item): self._needs_verification(item) for item in picked}
+
+        # 1) 不走验证的项：交给采样后端（随机采样、惩罚项、按行独立的历史都在那条路上）。
         #    整批一次 select_batch + 一次 .tolist()，先把 token 算好，**提交留到下面按
         #    picked 顺序做**——在这里就提交的话，事件顺序会变成「先普通后投机」。
-        plain = [item for item in picked if not item["draft_ids"]]
+        plain = [item for item in picked if not verify[id(item)]]
         plain_tokens = {}
         if plain:
             for item, token in zip(plain, self._sampler_tokens(logits, plain)):
@@ -124,7 +146,7 @@ class SampleRuntime:
         #    计算 + 一次集中回传；torch 后端就是原来的逐请求参考路径）。提交留到下面，
         #    与普通项的 token 一样，按 picked 顺序走。
         #    `verify_batch` 里不碰任何请求状态：回滚、对齐、提交都在提交循环里。
-        spec = [item for item in picked if self._needs_verification(item)]
+        spec = [item for item in picked if verify[id(item)]]
         results = {}
         if spec:
             outcome = self.rejection_sampler.verify_batch(
@@ -140,7 +162,7 @@ class SampleRuntime:
         # 4) 严格按 picked 顺序提交：同一请求内按 token 顺序，跨请求按本轮采样顺序
         for item in picked:
             seq = item["request"]
-            if not self._needs_verification(item):
+            if not verify[id(item)]:
                 self._commit_tokens(seq, [plain_tokens[id(item)]], on_token)
                 continue
             result = results[id(item)]
@@ -221,17 +243,20 @@ class SampleRuntime:
     # -------- 4) 验证与回滚 --------
 
     def _needs_verification(self, item):
-        """这一项要不要走**批量拒绝验证**。
+        """这一项要不要走**批量拒绝验证**（= 用不用 counter RNG 那条流）。
 
-        torch 后端：有草稿的项才走（与第五十五关完全一致）。
-        triton 后端：`num_reserved_drafts > 0` 的项也要走——那是「计划要投机、实际
-        K=0」的回退项，它必须用**同一套 counter RNG** 采样，不能临时切回 target 的
-        torch generator（否则这条请求的随机流会中途换一条）。
+        判据只看**配置**，不看这一轮草稿跑出来几枚；两个后端规则不同、理由也不同：
+
+        - triton 后端：本轮是投机项的都要走，**包括「计划要投机、实际 K=0」的回退项**。
+          它必须用同一套 counter RNG 采样——中途切回 target 的 `torch.Generator`，这条
+          请求的随机流就换了一条，「同 seed 逐 token 复现」也就不成立了。
+        - torch 后端：只有真有草稿的项才走（与第五十五关完全一致）。这个后端里「走不走
+          验证」不影响随机流——两条路抽随机数用的都是 `sampling_state.generator`，
+          所以 K=0 的项退回普通采样没有任何副作用。
         """
-        if item["draft_ids"]:
-            return True
-        return (self.rejection_sampler.backend != "torch"
-                and item["num_reserved_drafts"] > 0)
+        if self.rejection_sampler.uses_counter_rng:
+            return is_speculative_item(item)
+        return bool(item["draft_ids"])
 
     def _commit_verified(self, item, result, on_token):
         """把一条验证结论落到实处：回滚两套 KV → 记账 → 经唯一入口提交。

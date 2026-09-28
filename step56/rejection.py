@@ -144,6 +144,25 @@ class BatchedRejectionSampler:
         self.num_items = 0
         self.num_rng_events = 0
 
+    # -------- 后端的两条性质：写成具名属性，不在各处比较后端字符串 --------
+
+    @property
+    def uses_counter_rng(self):
+        """这个后端用不用 counter RNG（= triton）。
+
+        各处都写 `backend != "torch"` 的话，等于埋了一条「非 torch 即 counter」的隐式
+        假设：将来加第三个后端时它会**静默**走错分支。具名属性把每条判断的意图摊开。
+        """
+        return self.backend == TRITON
+
+    @property
+    def uses_greedy_fast_path(self):
+        """贪心且无惩罚的项走不走「整批一次 argmax」的快捷路径——只有 torch 后端走。
+
+        triton 后端要把目标分布按同一套布局备好（权重行、q 行都要用），所以走一般路径。
+        """
+        return self.backend == TORCH
+
     # -------- 1) 整理成批（两个后端共用；p/q 都是设备上的张量） --------
 
     def prepare_batch(self, logits, items, greedy):
@@ -158,7 +177,7 @@ class BatchedRejectionSampler:
             seq = plan["request"]
             draft_ids = list(plan["draft_ids"])
             remaining = seq.max_new_tokens - len(seq.output_ids)
-            if (draft_ids and self.backend != TRITON and greedy is not None
+            if (draft_ids and self.uses_greedy_fast_path and greedy is not None
                     and is_greedy_without_penalty(seq)):
                 start = plan["sample_offset"]
                 batch.append(RejectionItem(
