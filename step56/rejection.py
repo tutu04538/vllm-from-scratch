@@ -342,46 +342,31 @@ class BatchedRejectionSampler:
         weights = self._weight_rows(lay, kind, accepted)
         # 贪心项不抽随机数：纠正/bonus 就是该行权重的 argmax（并列取小下标），也不消费
         # categorical 事件——与 torch 参考路径的 `draw_token = argmax` 一致。
+        # 整批是否贪心是**CPU 侧就知道**的（`sampling_params`），拿它做分支不会同步。
         #
-        # **按主机侧的贪心标志把行分好再起内核**：哪些行要抽是 CPU 已知的元数据
-        # （`sampling_params`），所以可以只给需要抽的行起内核，而且形状在 launch 前就
-        # 定死（不会同步）。三种情形：
-        #   * 全随机（绝大多数批）：直通，不额外 gather；
-        #   * 全贪心：抽样整段跳过；
-        #   * 混合：非贪心的行按固定形状 gather 出来抽、贪心的行单独 argmax，**各算一次**
-        #     （原来写的是「整批都抽一遍、再用 where 把贪心行盖掉」，那些行是白算的）。
-        # 白算的量要说准：抽样内核**被单个 program 里 38 块串行循环的延迟卡住**，墙钟与行数
-        # 几乎无关（实测 1/2/4/8/16/32 行都是 ~1.45ms），所以省掉贪心行**买不到墙钟**
-        # （除非把随机行全省掉——那种全贪心的批上面已经整段跳过了）。这里图的是「每行只算
-        # 一次、没有覆盖」，外加批大到 64+ 行、内核开始受吞吐限制之后才会兑现的那点余量。
-        #
-        # 注意**不能**按 `kind` 筛（`KIND_ACCEPTED_EOS` 的行其实也不需要抽样）：那是内核
-        # 算出来的值，拿它筛会得到数据依赖的形状 = 一次隐式同步。好在那种行很少。
-        random_rows = [index for index, greedy in enumerate(greedy_flags) if not greedy]
-        drawn = torch.zeros(num_items, dtype=torch.int64, device=device)
-        draw_errors = torch.zeros(num_items, dtype=torch.int32, device=device)
-        if len(random_rows) == num_items:
-            drawn, draw_errors = self._sample(
+        # 混合批里贪心的那几行**也会跟着过一遍抽样内核**，结论随即被下面的 where 盖掉：
+        # 那几行是白算的，但**不为它做分行优化**——抽样内核被单个 program 里 38 块串行
+        # 循环的延迟卡住，墙钟与行数几乎无关（实测 1/2/4/8/16/32 行都是 ~1.45ms），
+        # 省掉那几行买不到墙钟（全贪心的批上面已经整段跳过了）。要压这个内核，该做的是
+        # 把那串行分块归约改掉，而不是省行数。
+        # 也**不能**按 `kind` 去筛行（`KIND_ACCEPTED_EOS` 的行不需要抽样）：那是内核算出来
+        # 的值，拿它筛会得到数据依赖的形状 = 一次隐式同步。
+        if all(greedy_flags):
+            sampled, draw_errors = _greedy_draw(weights)
+        else:
+            sampled, draw_errors = self._sample(
                 rt, weights, seed_lo, seed_hi, counter_t + consumed.to(torch.int64))
-        elif random_rows:
-            rows = torch.tensor(random_rows, dtype=torch.long, device=device)
-            tokens, errs = self._sample(rt, weights[rows], seed_lo[rows], seed_hi[rows],
-                                        (counter_t + consumed.to(torch.int64))[rows])
-            drawn.index_copy_(0, rows, tokens)
-            draw_errors.index_copy_(0, rows, errs)
-        if len(random_rows) < num_items:
-            rows = torch.tensor([index for index, greedy in enumerate(greedy_flags) if greedy],
-                                dtype=torch.long, device=device)
-            tokens, errs = _greedy_draw(weights[rows])
-            drawn.index_copy_(0, rows, tokens)
-            draw_errors.index_copy_(0, rows, errs)
+            if any(greedy_flags):
+                greedy_draw, greedy_errors = _greedy_draw(weights)
+                sampled = torch.where(greedy_t, greedy_draw, sampled)
+                draw_errors = torch.where(greedy_t, greedy_errors, draw_errors)
         # 接受终止 token 的项**不抽样**：上面为整批算出来的结论对它没有意义，整段丢掉
         # （那一列会被长度掩码盖成哨兵）。不丢的话，一条 EOS 正常结束的请求会被
         # 「它的收尾行恰好没质量」这种与它无关的理由判成非法。
         # `KIND_ACCEPTED_EOS` 与接受内核的错误码 1 互斥（循环在任一个上都会停），所以
         # 这里覆盖 errors 不会吃掉真正的非法输入。
         stopped = kind == KIND_ACCEPTED_EOS
-        drawn = torch.where(stopped, torch.zeros_like(drawn), drawn)
+        drawn = torch.where(stopped, torch.zeros_like(sampled), sampled)
         draw_errors = torch.where(stopped, torch.zeros_like(draw_errors), draw_errors)
         errors = torch.where(errors != 0, errors, draw_errors)
 
