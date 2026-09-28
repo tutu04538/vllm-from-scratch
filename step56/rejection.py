@@ -45,6 +45,17 @@ PACKED_FIELDS = ("output_lengths", "num_accepted", "kept_inputs", "rng_consumed"
 SENTINEL_TOKEN = -1
 
 # 错误码（triton 后端把「非法输入」编码进结果张量，`SampleRuntime` 整批检查后统一报错）
+# 「接受前缀为什么停下来」——`kind` 的三个取值（内核写、下面几处读）。
+# 与错误码是不同的命名空间：`kind == 1` 是「首拒绝」，`error == 1` 是「非法提议」。
+#
+#   0 KIND_ALL_ACCEPTED  K 枚全接受（K=0 也落在这一支）  -> 抽 bonus，权重取收尾行（第 K 行）
+#   1 KIND_FIRST_REJECT  第 num_accepted 枚被拒          -> 抽纠正，权重取第 num_accepted 行，
+#                                                          分布换 max(p-q,0) / 挖掉 d
+#   2 KIND_ACCEPTED_EOS  刚接受的那枚是终止 token        -> 不抽，committed = 前 num_accepted 枚
+KIND_ALL_ACCEPTED = 0
+KIND_FIRST_REJECT = 1
+KIND_ACCEPTED_EOS = 2
+
 ERR_INVALID_PROPOSAL = 1       # q[d] = 0：从 q 里抽不出一个 q 质量为零的 token
 ERR_NO_RESIDUAL_MASS = 2       # 纠正/bonus 的权重整行为零，抽不出 token
 ERR_GREEDY_RANDOM_BRANCH = 3   # 贪心落进了「要抽随机数才决定接受」那一支：前提被破坏了
@@ -293,7 +304,8 @@ class BatchedRejectionSampler:
         greedy_t = torch.tensor(greedy_flags, dtype=torch.bool, device=device)
 
         accepted = torch.zeros(num_items, dtype=torch.int32, device=device)
-        kind = torch.zeros(num_items, dtype=torch.int32, device=device)
+        kind = torch.full((num_items,), KIND_ALL_ACCEPTED, dtype=torch.int32,
+                           device=device)
         consumed = torch.zeros(num_items, dtype=torch.int32, device=device)
         errors = torch.zeros(num_items, dtype=torch.int32, device=device)
         rt.verify_prefix_kernel[(num_items,)](
@@ -305,7 +317,8 @@ class BatchedRejectionSampler:
             # 不一样**——那里必须 pad 到 1，否则字段列的下标会和 `columns` 对不上。
             KMAX=lay.kmax, ROUNDS=PHILOX_ROUNDS)
 
-        # ---- 抽样：纠正（kind==1）用 max(p-q,0) / 挖掉 d，bonus（kind==0）用收尾行 ----
+        # ---- 抽样：首拒绝（KIND_FIRST_REJECT）用 max(p-q,0) / 挖掉 d，
+        #      全接受（KIND_ALL_ACCEPTED）用收尾行 ----
         weights = self._weight_rows(lay, kind, accepted)
         # 贪心项不抽随机数：纠正/bonus 就是该行权重的 argmax（并列取小下标），
         # 也不消费 categorical 事件——与 torch 参考路径的 `draw_token = argmax` 一致。
@@ -322,10 +335,11 @@ class BatchedRejectionSampler:
         # 接受终止 token 的项**不抽样**：上面为整批算出来的结论对它没有意义，整段丢掉
         # （那一列会被长度掩码盖成哨兵）。不丢的话，一条 EOS 正常结束的请求会被
         # 「它的收尾行恰好没质量」这种与它无关的理由判成非法。
-        # `kind == 2` 与接受内核的错误码 1 互斥（循环在任一个上都会停），所以这里
-        # 覆盖 errors 不会吃掉真正的非法输入。
-        drawn = torch.where(kind == 2, torch.zeros_like(sampled), sampled)
-        draw_errors = torch.where(kind == 2, torch.zeros_like(draw_errors), draw_errors)
+        # `KIND_ACCEPTED_EOS` 与接受内核的错误码 1 互斥（循环在任一个上都会停），所以
+        # 这里覆盖 errors 不会吃掉真正的非法输入。
+        stopped = kind == KIND_ACCEPTED_EOS
+        drawn = torch.where(stopped, torch.zeros_like(sampled), sampled)
+        draw_errors = torch.where(stopped, torch.zeros_like(draw_errors), draw_errors)
         errors = torch.where(errors != 0, errors, draw_errors)
 
         packed = self._pack(batch, lay.kmax, accepted, kind, consumed, drawn, errors,
@@ -342,12 +356,13 @@ class BatchedRejectionSampler:
         """
         accepted_l = accepted.to(torch.long)
         # 收尾行的下标 = 本项起点 + K；两个分支都落在本项的行区间内
-        chosen = lay.row_offsets + torch.where(kind == 0, lay.k_t.to(torch.long), accepted_l)
+        chosen = lay.row_offsets + torch.where(kind == KIND_ALL_ACCEPTED,
+                                               lay.k_t.to(torch.long), accepted_l)
         weight = lay.rows_all[chosen]
-        # 被拒的那枚草稿：位置 = 本项起点 + num_accepted。`kind != 1` 时这个位置读到的是
+        # 被拒的那枚草稿：位置 = 本项起点 + num_accepted。不是首拒绝时这个位置读到的是
         # 别人的草稿（全接受的项 `num_accepted == K`，正好越过本项），**必须夹住**：
         # 越界下标喂给下面的 `scatter_` 会直接触发 CUDA device-side assert。
-        # 夹住之后读到的是一个合法 token id，而这条分支马上被 `kind == 1` 的 where 丢掉。
+        # 夹住之后读到的是一个合法 token id，而这条分支马上被 `KIND_FIRST_REJECT` 的 where 丢掉。
         if lay.positions:
             rejected_pos = (lay.pos_offsets.to(torch.long) + accepted_l).clamp(
                 max=lay.positions - 1)
@@ -367,7 +382,7 @@ class BatchedRejectionSampler:
             q_rejected = lay.rows_q[lay.q_map[rejected_pos].clamp(min=0)]
             deltas = torch.where(lay.has_q_item.unsqueeze(1),
                                  (weight - q_rejected).clamp(min=0.0), dig_out)
-        return torch.where((kind == 1).unsqueeze(1), deltas, weight)
+        return torch.where((kind == KIND_FIRST_REJECT).unsqueeze(1), deltas, weight)
 
     def _sample(self, rt, rows, seed_lo, seed_hi, event_index):
         from .rejection_rng import PHILOX_ROUNDS
@@ -399,16 +414,17 @@ class BatchedRejectionSampler:
                     < torch.tensor([len(e.draft_ids) for e in batch], dtype=torch.long,
                                    device=device).unsqueeze(1))
             drafts[:, :kmax] = torch.where(mask, matrix, SENTINEL_TOKEN)
-        lengths = accepted.to(torch.int64) + (kind != 2).to(torch.int64)
+        lengths = accepted.to(torch.int64) + (kind != KIND_ACCEPTED_EOS).to(torch.int64)
         out = drafts.scatter(1, accepted.to(torch.int64).unsqueeze(1).clamp(max=max_len - 1),
                              drawn.unsqueeze(1))
         rows = torch.arange(max_len, device=device).unsqueeze(0)
         out = torch.where(rows < lengths.unsqueeze(1), out, SENTINEL_TOKEN)
-        kept = 1 + accepted.to(torch.int64) - (kind == 2).to(torch.int64)
+        kept = 1 + accepted.to(torch.int64) - (kind == KIND_ACCEPTED_EOS).to(torch.int64)
         # 消费的随机事件数：接受事件（`consumed`，内核数的）+ 一次 categorical
         # （真的要抽纠正/bonus 时才有一个）——贪心两项都不加，**报错的项**也不加
         # categorical：它没有产出 token，报的必须是「真的抽掉的那几个接受事件」。
-        rng = consumed.to(torch.int64) + ((kind != 2) & ~greedy & (errors == 0)).to(torch.int64)
+        rng = consumed.to(torch.int64) + ((kind != KIND_ACCEPTED_EOS) & ~greedy
+                                          & (errors == 0)).to(torch.int64)
         fields = torch.stack([lengths, accepted.to(torch.int64), kept, rng,
                               errors.to(torch.int64)], dim=1)
         return torch.cat([out, fields], dim=1).to(torch.int64)

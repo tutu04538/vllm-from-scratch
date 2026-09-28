@@ -26,7 +26,8 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 from step56 import TinyCausalLM
 from step56 import rejection_triton as rt
-from step56.rejection import BACKENDS, TRITON, BatchedRejectionSampler
+from step56.rejection import (BACKENDS, KIND_ACCEPTED_EOS, KIND_ALL_ACCEPTED,
+                              KIND_FIRST_REJECT, TRITON, BatchedRejectionSampler)
 from step56.rejection_rng import event_uniform, event_word, exponential_race
 from step56.sample_runtime import SampleRuntime
 from step56.sampling import (SamplingParams, SamplingState, TorchSampler)
@@ -63,7 +64,7 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
     """
     consumed = 0
     accepted = 0
-    kind = 0                       # 0 全接受 / 1 首拒绝 / 2 接受终止 token
+    kind = KIND_ALL_ACCEPTED       # 取值表见 step56/rejection.py 顶部
     for index, token in enumerate(draft_ids):
         p_d = float(row_probs[index][token])
         q_d = float(draft_probs[index][token]) if draft_probs is not None else 1.0
@@ -74,7 +75,7 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
         if ratio >= 1.0:
             accepted += 1
         elif ratio <= 0.0:
-            kind = 1
+            kind = KIND_FIRST_REJECT
             break
         elif greedy:
             # 与内核同一条规则：贪心落进 (0,1) = 前提被破坏，报错而不是安静必拒
@@ -86,23 +87,23 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
             if uniform < ratio:
                 accepted += 1
             else:
-                kind = 1
+                kind = KIND_FIRST_REJECT
                 break
         if token in eos_ids:
-            kind = 2
+            kind = KIND_ACCEPTED_EOS
             break
 
-    if kind == 2:
+    if kind == KIND_ACCEPTED_EOS:
         committed = list(draft_ids[:accepted])
     else:
         last = len(draft_ids)
-        index = last if kind == 0 else accepted
+        index = last if kind == KIND_ALL_ACCEPTED else accepted
         row_p = row_probs[index]
         if draft_probs is None:
             weights = list(row_p)
-            if kind == 1:
+            if kind == KIND_FIRST_REJECT:
                 weights[draft_ids[accepted]] = 0.0
-        elif kind == 1:
+        elif kind == KIND_FIRST_REJECT:
             weights = [max(float(row_p[i]) - float(draft_probs[accepted][i]), 0.0)
                        for i in range(len(row_p))]
         else:
@@ -117,7 +118,7 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
         if error:
             return dict(error="无剩余质量", consumed=consumed, accepted=accepted, kind=kind,
                         committed=[], kept=0)
-    kept = 1 + accepted - (1 if kind == 2 else 0)
+    kept = 1 + accepted - (1 if kind == KIND_ACCEPTED_EOS else 0)
     return dict(error=None, consumed=consumed, accepted=accepted, kind=kind,
                 committed=committed, kept=kept)
 

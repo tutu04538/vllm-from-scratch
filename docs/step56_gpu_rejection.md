@@ -1,7 +1,7 @@
 # step56：GPU 批量拒绝采样与单次结果回传
 
 - 对应代码：`step56/`（从 `step55/` 复制，入口改名 `step56.py`；旧包不改）
-- 包摘要 SHA256：`c1b3b86d28471b23…`（22 个 .py / 5767 行；口径 = 包内 `*.py` 按相对路径
+- 包摘要 SHA256：`547d51c491b26078…`（22 个 .py / 5790 行；口径 = 包内 `*.py` 按相对路径
   排序，每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 基线：`step55/` 的投手机制**行为逐字节不变**（`benchmarks/diff_step55_step56.py` 88 项，
   默认的 `rejection_backend="torch"` 就是第五十五关那条参考路径）
@@ -212,6 +212,17 @@ counter-based 的规则是「事件的随机数只由它的编号决定」：没
 
 结果张量的每一行：前 `max(kmax,1)+1` 列是 `output_ids`（未使用的位置是哨兵 `-1`），
 之后依次是长度、接受数、保留输入数、消费的随机事件数、错误码。
+
+`kind` 是「接受前缀为什么停下来」，三个取值（`rejection.py` 顶部有同名常量，与错误码是
+**两个不同的命名空间**：`KIND_FIRST_REJECT == 1` 说的是首拒绝，`ERR_INVALID_PROPOSAL == 1`
+说的是非法提议）：
+
+| `kind` | 含义 | `accepted` | 抽不抽 | 权重取哪一行 |
+|---|---|---|---|---|
+| `KIND_ALL_ACCEPTED`(0) | K 枚全接受（K=0 也在这支） | `= K` | 抽 bonus | 收尾行（第 K 行） |
+| `KIND_FIRST_REJECT`(1) | 第 `accepted` 枚被拒 | `< K` | 抽纠正 | 第 `accepted` 行，分布换 `max(p-q,0)` / 挖掉 d |
+| `KIND_ACCEPTED_EOS`(2) | 刚接受的那枚是终止 token | `>= 1` | 不抽 | — |
+
 
 ```text
 lengths = accepted + (kind != 2)                 接受终止 token 时不算 bonus

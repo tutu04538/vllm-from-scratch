@@ -18,14 +18,20 @@ import triton
 import triton.language as tl
 
 # 与 rejection_rng.py 共用同一套常数与事件编号
+from .rejection import (KIND_ACCEPTED_EOS, KIND_ALL_ACCEPTED, KIND_FIRST_REJECT)
 from .rejection_rng import PHILOX_ROUNDS, UNIFORM_SCALE, UNIFORM_SHIFT
 
 BLOCK_V = 4096          # 词表分块大小（151936 词表 -> 38 块）
 SENTINEL = -1           # 未使用位置的哨兵
 
-# kernel 里要用的模块级常量必须是 tl.constexpr 实例（Triton 的硬要求）
+# kernel 里要用的模块级常量必须是 tl.constexpr 实例（Triton 的硬要求）——
+# 直接引用普通 Python 全局会报「Cannot access global variable ... from within
+# @jit'ed function」。真值定义在 rejection.py 顶部，这里只是包一层。
 _SHIFT = tl.constexpr(UNIFORM_SHIFT)
 _SCALE = tl.constexpr(UNIFORM_SCALE)
+_KIND_ALL_ACCEPTED = tl.constexpr(KIND_ALL_ACCEPTED)
+_KIND_FIRST_REJECT = tl.constexpr(KIND_FIRST_REJECT)
+_KIND_ACCEPTED_EOS = tl.constexpr(KIND_ACCEPTED_EOS)
 
 
 @triton.jit
@@ -97,7 +103,8 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     """一个 program 一条请求：沿 K 个位置推进接受前缀（需求 §3 的规则）。
 
     `ratio` 是预先在 GPU 上 gather 好的 `p[d]/q[d]`（ngram 时就是 `p[d]`）。
-    `kind`：0 = 全接受、1 = 首拒绝、2 = 接受的草稿是终止 token。
+    `kind` 取 `KIND_ALL_ACCEPTED`（全接受）/ `KIND_FIRST_REJECT`（首拒绝）/
+    `KIND_ACCEPTED_EOS`（接受的那枚是终止 token），取值表见 rejection.py 顶部。
     `consumed` 只数**真的抽了 uniform** 的那些位置（0 < ratio < 1），
     必接受 / 必拒绝都不消费——这样计数器的增量与 CPU 参考路径逐条对得上。
 
@@ -118,10 +125,10 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
 
     accepted = 0
     consumed = 0
-    kind = 0
+    kind = _KIND_ALL_ACCEPTED
     error = 0
     for i in tl.static_range(KMAX):
-        if (i < k) and (kind == 0) and (error == 0):
+        if (i < k) and (kind == _KIND_ALL_ACCEPTED) and (error == 0):
             pos = start + i
             ratio = tl.load(ratio_ptr + pos)
             if tl.load(invalid_ptr + pos) != 0:
@@ -129,9 +136,9 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
             elif ratio >= 1.0:
                 accepted += 1                  # 必接受：不消费随机事件
                 if tl.load(eos_ptr + pos) != 0:
-                    kind = 2
+                    kind = _KIND_ACCEPTED_EOS
             elif ratio <= 0.0:
-                kind = 1                       # 必拒绝：同样不消费
+                kind = _KIND_FIRST_REJECT       # 必拒绝：同样不消费
             elif is_greedy:
                 # 不可达（见 docstring）：真落进来就是前提被破坏了，报错误码 3。
                 # `error != 0` 会让循环当场停下来，所以后面既不抽随机数、也不继续
@@ -143,9 +150,9 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
                 if u < ratio:
                     accepted += 1
                     if tl.load(eos_ptr + pos) != 0:
-                        kind = 2
+                        kind = _KIND_ACCEPTED_EOS
                 else:
-                    kind = 1
+                    kind = _KIND_FIRST_REJECT
     tl.store(accepted_ptr + b, accepted)
     tl.store(kind_ptr + b, kind)
     tl.store(consumed_ptr + b, consumed)
