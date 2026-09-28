@@ -1,7 +1,7 @@
 # step56：GPU 批量拒绝采样与单次结果回传
 
 - 对应代码：`step56/`（从 `step55/` 复制，入口改名 `step56.py`；旧包不改）
-- 包摘要 SHA256：`02a59d7280e774a2…`（22 个 .py / 5757 行；口径 = 包内 `*.py` 按相对路径
+- 包摘要 SHA256：`fd0c0f6870850acd…`（22 个 .py / 5766 行；口径 = 包内 `*.py` 按相对路径
   排序，每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 基线：`step55/` 的投手机制**行为逐字节不变**（`benchmarks/diff_step55_step56.py` 88 项，
   默认的 `rejection_backend="torch"` 就是第五十五关那条参考路径）
@@ -14,7 +14,7 @@
 | `rejection.py`（新增） | 批量执行层 `BatchedRejectionSampler`：`prepare_batch()`（逐行目标分布 + 提议分布）、`verify_batch()`（后端分派）、`materialize_results()`（唯一一次回传）；`_torch_backend()` 逐请求调既有验证函数（行为与第五十五关一字不改）；后端常量与错误码；模块级 `_row_layout()`（两个坐标系）与 `_greedy_draw()` |
 | `rejection_rng.py`（新增） | counter RNG 的 CPU 参考：`philox4x32_10()`、`event_words()` / `event_word()` / `event_uniform()`、`exponential_race()`、`derive_rejection_seed()`；**本次新增 `make_rejection_seed()`**（`seed=None` 时从全局随机源取一个） |
 | `rejection_triton.py`（新增） | 三个内核：`event_uniform_kernel()`、`verify_prefix_kernel()`、`sample_token_kernel()`。**本次**：`_event_word()` 从 `_event_uniform()` 里拆出来（抽样要原始 32 位字，不能拿 `[0,1)` 的 float 再转回去）；`verify_prefix_kernel()` 多 `greedy_ptr` 与贪心分支（贪心不消费随机数）；`sample_token_kernel()` 的 `best_e` 显式声明 FP64、错误码改 2 |
-| `rejection.py` 的 triton 段（**本次**） | `_triton_backend()` 整体重写（两个坐标系 + 贪心 + 错误合并 + 不做数据依赖形状）、`_weight_rows()` 重写（收尾行、被拒位置夹住、按项的 `has_q_item`）、`_pack()`（列布局按 `max(kmax, 1)`、报错项不算 categorical）、`materialize_results()`（报错项返回空结论 + `num_rng_events` 统计）、`BACKENDS` 放开 triton、新增错误码常量 |
+| `rejection.py` 的 triton 段（**本次**） | `_triton_backend()` 整体重写（两个坐标系 + 贪心 + 错误合并 + 不做数据依赖形状）、`_weight_rows()` 重写（收尾行、被拒位置夹住、按项的 `has_q_item`；`q_map` 保留 -1 哨兵、不再另存 `has_q`）、`_pack()`（列布局按 `max(kmax, 1)`、报错项不算 categorical）、`materialize_results()`（报错项返回空结论 + `num_rng_events` 统计）、`BACKENDS` 放开 triton、新增错误码常量 |
 | `sample_runtime.py` | `__init__` 多 `rejection_backend` / `device` 两个参数并转给验证层；`run()` 的第 3/4 步重排（**先整批验证并检查错误，再按 `picked` 顺序提交**）；删 `_commit_drafts()` / `_commit_drafts_random()`（搬进 `rejection.py` 的参考后端），新增 `_needs_verification()` / `_commit_verified()`；`_is_greedy_without_penalty()` 移到 `rejection.py` 成模块级函数 |
 | `scheduler.py` | `Scheduler.__init__` 多 `rejection_backend="torch"`；**本次**在 `add_request()` 里为 triton 后端派生 `seq.rejection_seed`（**只在这个后端下**，否则换后端会动到原有随机流）；新增 `from .rejection_rng import make_rejection_seed` |
 | `engine.py` | `Engine.__init__` / `from_model_dir()` 多 `rejection_backend="torch"`；`_init_runtime()` 调 `check_rejection_backend(rejection_backend, device, speculative_mode)`，并把 `rejection_backend` 与 `device` 传给 `SampleRuntime` / `Scheduler` |

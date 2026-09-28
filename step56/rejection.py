@@ -267,7 +267,10 @@ class BatchedRejectionSampler:
                 # ngram：q 是 d 上的 one-hot，`q[d]` 就是 1，不必物化整行
                 q_d = torch.ones_like(p_d)
             else:
-                q_d = torch.where(lay.has_q, lay.rows_q[lay.q_map, lay.tokens],
+                # ngram 的位置 `q_map` 是 -1（哨兵）：夹成 0 读到的是一行合法的 q，
+                # 结果随即被 where 丢掉
+                q_d = torch.where(lay.q_map >= 0,
+                                  lay.rows_q[lay.q_map.clamp(min=0), lay.tokens],
                                   torch.ones_like(p_d))
             # 非法提议（q[d] = 0）不进除法：ratio 填 p[d]，错误由内核单独标记
             invalid = q_d <= 0
@@ -356,7 +359,9 @@ class BatchedRejectionSampler:
             deltas = dig_out
         else:
             # 被拒草稿自己的 q 行；没有 q 的项读到的是夹过的别处（随即被丢掉）
-            q_rejected = lay.rows_q[lay.q_map[rejected_pos]]
+            # `q_map` 里的 -1 是哨兵（这一项没有 q）：夹成 0 只为索引合法，
+            # 结果会被下面的 `has_q_item` 丢掉
+            q_rejected = lay.rows_q[lay.q_map[rejected_pos].clamp(min=0)]
             deltas = torch.where(lay.has_q_item.unsqueeze(1),
                                  (weight - q_rejected).clamp(min=0.0), dig_out)
         return torch.where((kind == 1).unsqueeze(1), deltas, weight)
@@ -460,8 +465,10 @@ def _row_layout(batch, device):
       位置。`ratio` / `eos` / `invalid` 与接受前缀内核都按它排。
 
     q 那侧只收「真的有 q」的项：ngram 的提议是确定性的，`q` 是 d 上的 one-hot，
-    不必物化整行。`q_map[j]` 是位置 j 的 q 行号（没有 q 的位置填 0，靠 `has_q`
-    区分），`has_q_item[i]` 表示第 i 项走的是不是一般 q。
+    不必物化整行。`q_map[j]` 是位置 j 的 q 行号，**没有 q 的位置是 -1**（哨兵，
+    用到的时候再 clamp）——所以「这个位置有没有 q」不必单独存一张表，`q_map >= 0`
+    就是它。`has_q_item[i]` 表示第 i 项走的是不是一般 q：这是**按项**的属性，
+    与位置级别的那一份是两个粒度，不能混用。
     """
     row_offsets, pos_offsets, ks, has_q_item = [], [], [], []
     rows_all, tokens, draft_rows, q_rows, q_row_of_position = [], [], [], [], []
@@ -498,9 +505,11 @@ def _row_layout(batch, device):
         tokens=long(tokens), draft_rows=long(draft_rows),
         rows_q=(torch.stack(q_rows).to(device=device, dtype=torch.float32)
                 if q_rows else None),
-        q_map=long([max(value, 0) for value in q_row_of_position]),
-        has_q=torch.tensor([value >= 0 for value in q_row_of_position],
-                           dtype=torch.bool, device=device),
+        # `q_map` **保留 -1 当哨兵**（用到的时候再 clamp）：这样「这个位置有没有 q」
+        # 不必再单独存一张表，`q_map >= 0` 就是它——两张表存同一个事实最容易走偏。
+        # `has_q_item` 是按项的那一份，仍然独立存着：它是唯一不依赖「夹过的下标」的、
+        # 无条件正确的标志（见 `_weight_rows()` 里那些越界位置的讨论）。
+        q_map=long(q_row_of_position),
         has_q_item=torch.tensor(has_q_item, dtype=torch.bool, device=device))
 
 
