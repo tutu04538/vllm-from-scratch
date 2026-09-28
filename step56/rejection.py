@@ -273,15 +273,15 @@ class BatchedRejectionSampler:
 
         # ---- 位置坐标系：p[d]、q[d]、ratio、eos、invalid（各算一次，不逐项读标量）----
         if lay.num_draft_positions:
-            p_d = lay.rows_all[lay.draft_rows, lay.tokens]     # 每位置一个标量
-            if lay.rows_q is None:
+            p_d = lay.target_rows[lay.draft_rows, lay.tokens]   # 每位置一个标量
+            if lay.proposal_rows is None:
                 # ngram：q 是 d 上的 one-hot，`q[d]` 就是 1，不必物化整行
                 q_d = torch.ones_like(p_d)
             else:
                 # ngram 的位置 `q_map` 是 -1（哨兵）：夹成 0 读到的是一行合法的 q，
                 # 结果随即被 where 丢掉
                 q_d = torch.where(lay.q_map >= 0,
-                                  lay.rows_q[lay.q_map.clamp(min=0), lay.tokens],
+                                  lay.proposal_rows[lay.q_map.clamp(min=0), lay.tokens],
                                   torch.ones_like(p_d))
             # 非法提议（q[d] = 0）不进除法：ratio 填 p[d]，错误由内核单独标记
             invalid = q_d <= 0
@@ -352,7 +352,7 @@ class BatchedRejectionSampler:
 
         行下标在设备上算（`accepted` 本身就在设备上，读它就要同步）：
         纠正用第 `num_accepted` 行（拒绝点那一行），bonus 用第 K 行（收尾行）。
-        两者都在 `rows_all` 里，一次高级索引取整行。
+        两者都在 `target_rows` 里，一次高级索引取整行。
         """
         accepted_l = accepted.to(torch.long)
         # 取哪一行：**收尾行**（全接受时用，= 起点 + K）或**拒绝点那一行**（首拒绝时用，
@@ -361,7 +361,7 @@ class BatchedRejectionSampler:
         # 成立），所以 `起点 + accepted` 正好就是收尾行。因此这里不写 where：不变量由内核
         # 保证（有用例钉着），写出来反而像是在说「它可能是别的值」。
         chosen = lay.row_offsets + accepted_l
-        weight = lay.rows_all[chosen]
+        weight = lay.target_rows[chosen]
         # 被拒的那枚草稿：位置 = 本项起点 + num_accepted。不是首拒绝时这个位置读到的是
         # 别人的草稿（全接受的项 `num_accepted == K`，正好越过本项），**必须夹住**：
         # 越界下标喂给下面的 `scatter_` 会直接触发 CUDA device-side assert。
@@ -376,13 +376,13 @@ class BatchedRejectionSampler:
         # 挖掉 d 再归一化，但不物化 one-hot）。**两者都算、用 where 选**，不按项分支。
         dig_out = weight.clone()
         dig_out.scatter_(1, rejected.unsqueeze(1), 0.0)
-        if lay.rows_q is None:
+        if lay.proposal_rows is None:
             deltas = dig_out
         else:
             # 被拒草稿自己的 q 行；没有 q 的项读到的是夹过的别处（随即被丢掉）
             # `q_map` 里的 -1 是哨兵（这一项没有 q）：夹成 0 只为索引合法，
             # 结果会被下面的 `has_q_item` 丢掉
-            q_rejected = lay.rows_q[lay.q_map[rejected_pos].clamp(min=0)]
+            q_rejected = lay.proposal_rows[lay.q_map[rejected_pos].clamp(min=0)]
             deltas = torch.where(lay.has_q_item.unsqueeze(1),
                                  (weight - q_rejected).clamp(min=0.0), dig_out)
         return torch.where((kind == KIND_FIRST_REJECT).unsqueeze(1), deltas, weight)
@@ -481,20 +481,22 @@ def _row_layout(batch, device):
 
     * **行坐标系**：每项 `K+1` 行（K 枚草稿行 + 收尾行）首尾相接，`row_offsets[i]`
       是第 i 项的起始行。收尾行必须留在这里：`kind == 0`（全部接受）时 bonus 就是
-      从它抽的，取样权重时也要按下标取到它。`rows_all` 一次 stack 出来，之后只做
-      高级索引、不再复制。
+      从它抽的，取样权重时也要按下标取到它。`target_rows` 就是这些行（**所有**项都有，
+      每项 `K+1` 行），一次 stack 出来，之后只做高级索引、不再复制。
     * **位置坐标系**：只覆盖**草稿位置**（P = ΣK），`pos_offsets[i]` 是第 i 项的起始
       位置，`num_draft_positions` 是它的总数（当下标上界用）。`ratio` / `eos` / `invalid`
       与接受前缀内核都按它排。
 
-    q 那侧只收「真的有 q」的项：ngram 的提议是确定性的，`q` 是 d 上的 one-hot，
-    不必物化整行。`q_map[j]` 是位置 j 的 q 行号，**没有 q 的位置是 -1**（哨兵，
+    `proposal_rows` 是 q 那侧的行，只收「真的有 q」的项（ngram 的提议是确定性的，`q` 是
+    d 上的 one-hot，不必物化整行）：所以它是 `(ΣK_有q, V)`，一项都没有 q 时是 `None`——
+    **不是**「所有行」，与 `target_rows` 的覆盖面不同。`q_map[j]` 是位置 j 在那张表里的
+    行号，**没有 q 的位置是 -1**（哨兵，
     用到的时候再 clamp）——所以「这个位置有没有 q」不必单独存一张表，`q_map >= 0`
     就是它。`has_q_item[i]` 表示第 i 项走的是不是一般 q：这是**按项**的属性，
     与位置级别的那一份是两个粒度，不能混用。
     """
     row_offsets, pos_offsets, ks, has_q_item = [], [], [], []
-    rows_all, tokens, draft_rows, q_rows, q_row_of_position = [], [], [], [], []
+    target_rows, tokens, draft_rows, proposal_rows, q_row_of_position = [], [], [], [], []
     cursor_rows = cursor_draft_positions = 0
     for entry in batch:
         k = len(entry.draft_ids)
@@ -505,15 +507,15 @@ def _row_layout(batch, device):
         pos_offsets.append(cursor_draft_positions)
         ks.append(k)
         has_q_item.append(entry.draft_probs is not None)
-        rows_all.extend(entry.row_probs)
+        target_rows.extend(entry.row_probs)
         for index, token in enumerate(entry.draft_ids):
             tokens.append(token)
             draft_rows.append(cursor_rows + index)
             if entry.draft_probs is None:
                 q_row_of_position.append(-1)
             else:
-                q_row_of_position.append(len(q_rows))
-                q_rows.append(entry.draft_probs[index])
+                q_row_of_position.append(len(proposal_rows))
+                proposal_rows.append(entry.draft_probs[index])
         cursor_rows += k + 1
         cursor_draft_positions += k
     long = lambda values: torch.tensor(values, dtype=torch.long, device=device)   # noqa: E731
@@ -522,15 +524,17 @@ def _row_layout(batch, device):
         # 整批的**草稿位置**总数（P = ΣK）——注意不是行数 Σ(K+1)：行坐标系每项多一个
         # 收尾行。也别和 RoPE 的 positions 混（那个是 token 的逻辑位置）。
         num_draft_positions=cursor_draft_positions,
-        # `rows_all` / `rows_q` 显式搬到设备：调用方给的 p/q 可能还在 CPU 上
+        # `target_rows` / `proposal_rows` 显式搬到设备：调用方给的 p/q 可能还在 CPU 上
         # （测试与工具脚本就这么干），在这里一次搬完，后面全是设备上的运算
-        rows_all=torch.stack(rows_all).to(device=device, dtype=torch.float32),
+        target_rows=torch.stack(target_rows).to(device=device, dtype=torch.float32),
         row_offsets=long(row_offsets),
         pos_offsets=torch.tensor(pos_offsets, dtype=torch.int32, device=device),
         k_t=torch.tensor(ks, dtype=torch.int32, device=device),
         tokens=long(tokens), draft_rows=long(draft_rows),
-        rows_q=(torch.stack(q_rows).to(device=device, dtype=torch.float32)
-                if q_rows else None),
+        # 只有「真的有 q」的项才有行；一项都没有时是 None（`_triton_backend` 与
+        # `_weight_rows()` 都按 `is None` 分岔，不要改成空张量）
+        proposal_rows=(torch.stack(proposal_rows).to(device=device, dtype=torch.float32)
+                       if proposal_rows else None),
         # `q_map` **保留 -1 当哨兵**（用到的时候再 clamp）：这样「这个位置有没有 q」
         # 不必再单独存一张表，`q_map >= 0` 就是它——两张表存同一个事实最容易走偏。
         # `has_q_item` 是按项的那一份，仍然独立存着：它是唯一不依赖「夹过的下标」的、
