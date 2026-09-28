@@ -50,6 +50,9 @@
 参考路径（`"torch"`）原样保留：CPU 能跑、行为与第五十五关一字不改，两个后端在引擎创建时
 **二选一固定**，运行中不切换。
 
+另有一篇附篇只讲设计思路（原来差在哪、内核担什么责任、要备哪些输入、易错点与代价），
+不贴代码：[step56_triton_kernel_design.md](step56_triton_kernel_design.md)。
+
 ## 1. 数据流：三个入口与一轮的顺序
 
 `rejection.py` 的 `BatchedRejectionSampler` 只负责**产生验证结论**，三件事分开：
