@@ -106,10 +106,11 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     必接受 / 必拒绝都不消费——这样计数器的增量与 CPU 参考路径逐条对得上。
 
     `greedy`（每项一个标志）：贪心的目标分布是 one-hot，`ratio` 只能取 `1/q[d] >= 1`
-    或 `0`，**永远落不进 (0,1) 那个分支**；真落进去（目标分布不是 one-hot 时才会）
-    就按必拒处理，绝不抽随机数——「贪心不消费随机事件」是需求 §4 的硬规则，
-    torch 参考路径在那条分支上直接抛异常（`draw_uniform` 是打桩的），两条后端
-    在**可达**区域里的行为一致。错误码：1 = 非法提议，2 = 无剩余质量（见抽样内核）。
+    或 `0`，**永远落不进 (0,1) 那个分支**；真落进去说明「目标分布是 one-hot」这个前提
+    被破坏了，于是报错误码 3——**不抽随机数、也不悄悄当成必拒绝**（静默拒绝会给出一个
+    看着合理、其实偏掉的分布）。torch 参考路径在那条分支上同样是直接抛异常
+    （`draw_uniform` 是打桩的），两条后端在**可达**区域里的行为一致。
+    错误码：1 = 非法提议，2 = 无剩余质量（见抽样内核），3 = 贪心落进随机分支。
     """
     b = tl.program_id(0)
     start = tl.load(pos_start_ptr + b)
@@ -136,7 +137,10 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
             elif ratio <= 0.0:
                 kind = 1                       # 必拒绝：同样不消费
             elif is_greedy:
-                kind = 1                       # 贪心：纯比较，不消费（见上面的说明）
+                # 不可达（见 docstring）：真落进来就是前提被破坏了，报错误码 3。
+                # `error != 0` 会让循环当场停下来，所以后面既不抽随机数、也不继续
+                # 验证——与「必拒绝」在消费行为上一样，区别只在**报不报出来**。
+                error = 3
             else:
                 u = _event_uniform(seed_lo, seed_hi, base + consumed, _ACCEPT, 0, ROUNDS)
                 consumed += 1

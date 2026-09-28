@@ -47,9 +47,15 @@ SENTINEL_TOKEN = -1
 # 错误码（triton 后端把「非法输入」编码进结果张量，`SampleRuntime` 整批检查后统一报错）
 ERR_INVALID_PROPOSAL = 1       # q[d] = 0：从 q 里抽不出一个 q 质量为零的 token
 ERR_NO_RESIDUAL_MASS = 2       # 纠正/bonus 的权重整行为零，抽不出 token
+ERR_GREEDY_RANDOM_BRANCH = 3   # 贪心落进了「要抽随机数才决定接受」那一支：前提被破坏了
 ERROR_MESSAGES = {
     ERR_INVALID_PROPOSAL: "非法提议：草稿的 q[d] = 0（提议必须真的从 q 抽样）",
     ERR_NO_RESIDUAL_MASS: "纠正/bonus 的权重整行为零，抽不出 token",
+    ERR_GREEDY_RANDOM_BRANCH: "贪心请求落进了需要抽随机数的接受分支：贪心的目标分布"
+                              "必须是 one-hot（ratio 只可能是 0 或 >= 1），"
+                              "出现 (0,1) 说明喂进来的目标分布不是 one-hot——"
+                              "拿不准就报错，不能悄悄当成必拒绝（那会给出一个看着合理、"
+                              "其实偏掉的分布）",
 }
 
 
@@ -204,7 +210,7 @@ class BatchedRejectionSampler:
             host = outcome.tensor.cpu().tolist()
             plan = outcome.batch
             results = []
-            for index, entry in enumerate(plan):
+            for index in range(len(plan)):
                 row, columns = host[index], outcome.columns
                 length = int(row[columns["length"]])
                 code = int(row[columns["error"]])
@@ -241,8 +247,8 @@ class BatchedRejectionSampler:
         **不做数据依赖的形状**：不按 `kind` 去筛子集（`mask[bool_mask]` 会把形状从
         设备拷回主机，是一次隐式同步），所以接受终止的项也照常参与抽样，结论随后丢掉。
         """
-        import triton
-
+        # triton 本身不需要在这里 import：下面这句会导入 rejection_triton，
+        # 缺 triton 时它自己就会失败（也更清楚地指出「是这个后端需要 triton」）
         from . import rejection_triton as rt
         from .rejection_rng import PHILOX_ROUNDS
 
@@ -294,7 +300,7 @@ class BatchedRejectionSampler:
             KMAX=max(lay.kmax, 1), ROUNDS=PHILOX_ROUNDS)
 
         # ---- 抽样：纠正（kind==1）用 max(p-q,0) / 挖掉 d，bonus（kind==0）用收尾行 ----
-        weights = self._weight_rows(lay, kind, accepted, device)
+        weights = self._weight_rows(lay, kind, accepted)
         # 贪心项不抽随机数：纠正/bonus 就是该行权重的 argmax（并列取小下标），
         # 也不消费 categorical 事件——与 torch 参考路径的 `draw_token = argmax` 一致。
         # 整批是否贪心是**CPU 侧就知道**的（`sampling_params`），拿它做分支不会同步。
@@ -321,7 +327,7 @@ class BatchedRejectionSampler:
         return PackedResult(tensor=packed, batch=batch,
                             columns=PackedResult.columns_for(max(lay.kmax, 1)))
 
-    def _weight_rows(self, lay, kind, accepted, device):
+    def _weight_rows(self, lay, kind, accepted):
         """按停止类型取抽样用的权重行——**全向量化**，不逐项读 `kind` / `accepted`。
 
         行下标在设备上算（`accepted` 本身就在设备上，读它就要同步）：

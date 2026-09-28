@@ -56,9 +56,10 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
 
     两处与内核**逐条对齐**的约定（都写在 rejection_triton.py 的 docstring 里）：
 
-    - 贪心不消费随机数：`ratio` 落进 (0,1) 时按必拒处理，不抽 uniform。贪心的目标
-      分布是 one-hot，`ratio` 只能取 `1/q[d] >= 1` 或 `0`，这个分支实际不可达——
-      torch 参考路径在那条分支上直接抛异常，三边在可达区域里行为一致。
+    - 贪心不消费随机数：`ratio` 落进 (0,1) 时报错（内核是错误码 3）。贪心的目标分布
+      是 one-hot，`ratio` 只能取 `1/q[d] >= 1` 或 `0`，这个分支实际不可达——真落进去
+      就是「目标分布不是 one-hot」这个前提被破坏了，两边都**报出来**而不是安静地
+      当成必拒绝。torch 参考路径在那条分支上同样是直接抛异常。
     - 报错项返回**空结论**（committed=[]、kept=0），与 `materialize_results()` 一致。
     """
     consumed = 0
@@ -77,8 +78,9 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
             kind = 1
             break
         elif greedy:
-            kind = 1
-            break
+            # 与内核同一条规则：贪心落进 (0,1) = 前提被破坏，报错而不是安静必拒
+            return dict(error="贪心落进随机分支", consumed=consumed, accepted=accepted,
+                        kind=kind, committed=[], kept=0)
         else:
             uniform = event_uniform(seed, counter + consumed, ACCEPT, 0)
             consumed += 1
@@ -253,6 +255,23 @@ results = gpu_verify([CASES[0], bad])
 check("非法 q[d]=0：返回错误标志（不是异常、也不是悄悄接受）",
       results[0].error is None and results[1].error is not None,
       f"第一条 error={results[0].error}、第二条 error={results[1].error}")
+
+# 贪心 + 非 one-hot 的目标分布：ratio 落进 (0,1)，这是「贪心不抽随机数」的前提被破坏。
+# 用例是**故意违约**的（脚本采样器可以喂任意分布），目的是证明这道闸门真的会响：
+# 报错误码 3，而不是安静地当成必拒绝（那样会给出一个看着合理、其实偏掉的分布）。
+bad_greedy = dict(CASES[2], name="贪心落进随机分支", params=GREEDY, draft_ids=[1],
+                  row_probs=[probs(0.5, 0.3, 0.2, 0), probs(0.4, 0.3, 0.3, 0)],
+                  draft_probs=[probs(0.2, 0.6, 0.2, 0)], counter=0)
+results = gpu_verify([bad_greedy])
+got = results[0]
+check("贪心落进随机分支：报错误码 3（不是安静地当成必拒绝）",
+      got.error is not None and "贪心" in got.error and got.rng_consumed == 0,
+      f"error={got.error}、rng_consumed={got.rng_consumed}")
+expected = oracle_verify(bad_greedy["draft_ids"], bad_greedy["row_probs"],
+                         bad_greedy["draft_probs"], 11, 0, EOS, greedy=True)
+check("贪心落进随机分支：与 CPU oracle 一致（两边都报错、都不消费随机事件）",
+      (got.error is None) == (expected["error"] is None) and got.rng_consumed == expected["consumed"],
+      f"GPU error={got.error} / oracle error={expected['error']}")
 
 # ragged 批：K 各不相同（2 / 0 / 2 / 1），混在一张批里逐项与 oracle 对齐。
 # 这条最容易出错的地方就是「按项的行区间」——收尾行的下标、被拒草稿的位置都在
