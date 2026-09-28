@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 import torch
 
+from .rejection_rng import check_event_index
 from .speculative import verify_drafts, verify_drafts_random
 
 TORCH = "torch"
@@ -59,9 +60,12 @@ KIND_ACCEPTED_EOS = 2
 ERR_INVALID_PROPOSAL = 1       # q[d] = 0：从 q 里抽不出一个 q 质量为零的 token
 ERR_NO_RESIDUAL_MASS = 2       # 纠正/bonus 的权重整行为零，抽不出 token
 ERR_GREEDY_RANDOM_BRANCH = 3   # 贪心落进了「要抽随机数才决定接受」那一支：前提被破坏了
+ERR_EVENT_INDEX_OVERFLOW = 4   # 本轮消费的事件编号跨过了 2**32（起始合法，抽着抽着越界）
 ERROR_MESSAGES = {
     ERR_INVALID_PROPOSAL: "非法提议：草稿的 q[d] = 0（提议必须真的从 q 抽样）",
     ERR_NO_RESIDUAL_MASS: "纠正/bonus 的权重整行为零，抽不出 token",
+    ERR_EVENT_INDEX_OVERFLOW: "本轮消费的事件编号跨过了 2**32 的上界：随机流到这里必须"
+                              "报错，不能静默回绕（回绕会让「第 2**32 个事件」复用事件 0 的随机数）",
     ERR_GREEDY_RANDOM_BRANCH: "贪心请求落进了需要抽随机数的接受分支：贪心的目标分布"
                               "必须是 one-hot（ratio 只可能是 0 或 >= 1），"
                               "出现 (0,1) 说明喂进来的目标分布不是 one-hot——"
@@ -314,7 +318,14 @@ class BatchedRejectionSampler:
             invalid = torch.zeros(0, dtype=torch.bool, device=device)
 
         seeds = [int(entry.plan["request"].rejection_seed or 0) for entry in batch]
-        counters = [int(entry.plan["request"].rejection_rng_counter) for entry in batch]
+        # 起始 counter 在**主机侧**校验（它是 CPU 已知的整数）：越界明确报错。本轮「抽着
+        # 抽着跨过边界」主机侧看不见，由内核自己数（错误码 4）。
+        counters = []
+        for entry in batch:
+            request = entry.plan["request"]
+            counter = int(request.rejection_rng_counter)
+            check_event_index(counter, where=f"{getattr(request, 'request_id', '?')}: ")
+            counters.append(counter)
         greedy_flags = [entry.plan["request"].sampling_params.is_greedy for entry in batch]
         seed_lo = torch.tensor([value & 0xFFFFFFFF for value in seeds], dtype=torch.int64,
                                device=device)

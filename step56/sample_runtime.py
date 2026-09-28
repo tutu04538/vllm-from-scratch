@@ -24,18 +24,23 @@ from .speculative import verify_drafts, verify_drafts_random
 
 
 def is_speculative_item(item):
-    """这一项本轮是不是**投机项**——有草稿，或者计划过投机。
+    """这一项本轮是不是**按投机计划排出的 decode 采样行**。
 
-    两种提议路径在这里形状不同，**别只看一个**：
+    判据是**调度时的计划**（`item["speculative"]`，由 scheduler 在 decode 分支上打），
+    **不看本轮实际跑出几枚草稿**。「有几枚草稿」是运行结果，「是不是投机行」是配置：
 
-    - ngram：草稿是计划阶段就用纯函数算好的（`draft_ids` 非空），而
-      `num_reserved_drafts` **恒为 0**（那个字段记的是「跑过 draft 才知道要几枚」的预留，
-      ngram 不需要）；
-    - draft_model：计划阶段只放一个预留名额，草稿要跑过 draft 才填；名额 > 0 而实际一枚
-      都没提出来时（补算吃光预算、draft 池不够、草稿本身为空）`draft_ids` 是空的——
-      那也是投机项。
+    - ngram：草稿在计划阶段就用纯函数算好了，而 `num_reserved_drafts` **恒为 0**——只看
+      预留名额会把它漏掉；
+    - draft_model：target 预算只够 pending token、draft 池不够、补算吃光预算…… 都会让
+      实际草稿数为 0，而 `num_reserved_drafts` 也可能是 0（预算阶段就被缩零了）。
+      这些行**仍然是投机请求的 decode 步**，随机流必须留在 counter 那套上；按「有没有
+      草稿」去判，它们就会切回请求自己的 `torch.Generator`——同一条请求中途用上两套随机
+      机制，输出还会随调度（池子紧不紧）漂移。
+
+    非投机行（prefill 与中间重算的 chunk）是 False：末块虽然也采样，但它的 `kept_inputs`
+    语义不同（要保留**整块**输入而不是 1 枚），不能套投机行的回滚公式。
     """
-    return bool(item["draft_ids"]) or item["num_reserved_drafts"] > 0
+    return bool(item["speculative"])
 
 
 class SampleRuntime:
@@ -138,8 +143,12 @@ class SampleRuntime:
         # 2) 贪心且无惩罚的投机项：保留第五十三关的整批 argmax 快路径（一次回传）。
         #    带惩罚项的贪心**不能**走这条：每一行看到的生成历史不同，argmax 必须在
         #    逐行施加惩罚之后再取。
-        any_fast = any(item["draft_ids"] and is_greedy_without_penalty(item["request"])
-                       for item in picked)
+        #    **只有真的会走这条快路径的后端才算它**：triton 后端在 `prepare_batch()` 里
+        #    一律走一般路径（它要那几行分布），这份 CPU 结果没人用——算了就是白回传一次
+        #    （`argmax(...).tolist()` 是一次 D2H），验收方在真实 tiny 双模型上数到过。
+        any_fast = (self.rejection_sampler.uses_greedy_fast_path
+                    and any(item["draft_ids"] and is_greedy_without_penalty(item["request"])
+                            for item in picked))
         greedy = torch.argmax(logits, dim=-1).tolist() if any_fast else None
 
         # 3) 投机项：交给批量验证层**先把结论算好**（triton 后端在这里做一次 GPU 批量
@@ -247,7 +256,8 @@ class SampleRuntime:
 
         判据只看**配置**，不看这一轮草稿跑出来几枚；两个后端规则不同、理由也不同：
 
-        - triton 后端：本轮是投机项的都要走，**包括「计划要投机、实际 K=0」的回退项**。
+        - triton 后端：**本轮所有投机采样行**都走，包括实际一枚草稿都没有的那些
+          （预算缩零、池子不够、ngram 无匹配）。
           它必须用同一套 counter RNG 采样——中途切回 target 的 `torch.Generator`，这条
           请求的随机流就换了一条，「同 seed 逐 token 复现」也就不成立了。
         - torch 后端：只有真有草稿的项才走（与第五十五关完全一致）。这个后端里「走不走

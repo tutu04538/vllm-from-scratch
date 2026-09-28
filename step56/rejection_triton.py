@@ -19,7 +19,7 @@ import triton.language as tl
 
 # 与 rejection_rng.py 共用同一套常数与事件编号
 from .rejection import (KIND_ACCEPTED_EOS, KIND_ALL_ACCEPTED, KIND_FIRST_REJECT)
-from .rejection_rng import PHILOX_ROUNDS, UNIFORM_SCALE, UNIFORM_SHIFT
+from .rejection_rng import EVENT_INDEX_LIMIT, PHILOX_ROUNDS, UNIFORM_SCALE, UNIFORM_SHIFT
 
 BLOCK_V = 4096          # 词表分块大小（151936 词表 -> 38 块）
 SENTINEL = -1           # 未使用位置的哨兵
@@ -29,6 +29,10 @@ SENTINEL = -1           # 未使用位置的哨兵
 # @jit'ed function」。真值定义在 rejection.py 顶部，这里只是包一层。
 _SHIFT = tl.constexpr(UNIFORM_SHIFT)
 _SCALE = tl.constexpr(UNIFORM_SCALE)
+# 事件编号的上界（c0 是 32 位）：`rejection_rng.EVENT_INDEX_LIMIT - 1`。内核里要当
+# tl.constexpr 用，所以在这里算一次。
+EVENT_INDEX_MAX = EVENT_INDEX_LIMIT - 1
+_EVENT_INDEX_MAX = tl.constexpr(EVENT_INDEX_MAX)
 _KIND_ALL_ACCEPTED = tl.constexpr(KIND_ALL_ACCEPTED)
 _KIND_FIRST_REJECT = tl.constexpr(KIND_FIRST_REJECT)
 _KIND_ACCEPTED_EOS = tl.constexpr(KIND_ACCEPTED_EOS)
@@ -105,6 +109,8 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     `ratio` 是预先在 GPU 上 gather 好的 `p[d]/q[d]`（ngram 时就是 `p[d]`）。
     `kind` 取 `KIND_ALL_ACCEPTED`（全接受）/ `KIND_FIRST_REJECT`（首拒绝）/
     `KIND_ACCEPTED_EOS`（接受的那枚是终止 token），取值表见 rejection.py 顶部。
+    错误码 4 = 本轮实际消费的事件编号跨过 2**32 上界（只报错，不作废已抽出的值：
+    报错的项整项作废，上层不会提交它）。
     `consumed` 只数**真的抽了 uniform** 的那些位置（0 < ratio < 1），
     必接受 / 必拒绝都不消费——这样计数器的增量与 CPU 参考路径逐条对得上。
 
@@ -153,6 +159,11 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
                         kind = _KIND_ACCEPTED_EOS
                 else:
                     kind = _KIND_FIRST_REJECT
+    # 事件编号只有 32 位：起始 counter 由主机侧校验（它是 CPU 已知的整数），但「本轮抽着
+    # 抽着跨过 2**32」只有内核数得清——不查就是**静默回绕**（第 2**32 个事件复用事件 0 的
+    # 随机数，输出看着完全正常）。这里只报错、不必纠正已经抽出来的值：报错的项整项作废。
+    if base + consumed > _EVENT_INDEX_MAX:
+        error = 4
     tl.store(accepted_ptr + b, accepted)
     tl.store(kind_ptr + b, kind)
     tl.store(consumed_ptr + b, consumed)

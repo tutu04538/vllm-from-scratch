@@ -278,6 +278,12 @@ class Scheduler:
                 # 本轮要算的永远是 all_token_ids 的一段：抢占后自然就从 cache.length
                 # 处重放 prompt + 旧 output，不需要为「重算」另写一条分支。
                 if id(seq) in ready_ids:
+                    # 这一项是**按投机计划**排出的 decode 采样行——**哪怕实际一枚草稿都没有**
+                    # （target 预算只够 pending token、draft 池不够、ngram 没匹配上）。
+                    # 随机流的路由看它，**不看本轮跑出几枚草稿**：见
+                    # sample_runtime.is_speculative_item()。非投机行（prefill 与中间重算
+                    # 的 chunk）是 False。
+                    speculative = self.speculative_mode is not None
                     # 真实历史只差最后一个 token，正好是投机的时机：
                     # 输入 = [x] + 草稿，num_real 记的是「真实历史那几个 token」。
                     #
@@ -312,6 +318,10 @@ class Scheduler:
                     num_real = num_scheduled_tokens
                     draft_ids = []
                     num_reserved_drafts = 0        # prefill / 重算 chunk 都不投机
+                    # 非投机行：末块虽然也采样（只抽一枚），但它的 kept_inputs 语义与投机行
+                    # 不同（要保留**整块**输入，不是 1 枚），所以不纳入验证批——见
+                    # sample_runtime.is_speculative_item()
+                    speculative = False
 
                 start = seq.cache.length
                 input_ids = seq.all_token_ids[start:start + num_real]
@@ -337,6 +347,9 @@ class Scheduler:
                     # ngram 不需要它：草稿是纯函数直接算出来的，`draft_ids` 计划阶段
                     # 就已经填好，所以这里恒为 0。
                     "num_reserved_drafts": num_reserved_drafts,
+                    # 这一项是不是「按投机计划排出的 decode 采样行」。**与草稿数无关**：
+                    # 上面的路由判据只看它，`draft_ids` 空不代表这一轮该切回旧随机流。
+                    "speculative": speculative,
                     "draft_probs": [],
                     # 回滚与重算统计都要「本轮从哪儿开始算」；用 end - num_scheduled_tokens
                     # 反推在投机下是错的——那个 end 是回滚后的长度。

@@ -47,6 +47,23 @@ PHILOX_W1 = 0xBB67AE85
 PHILOX_ROUNDS = 10
 MASK32 = 0xFFFFFFFF
 
+# 事件编号只有 32 位（它就是 c0）。超过上界必须**明确报错**，不能静默截断：
+# 截断意味着「第 2^32 个事件」复用事件 0 的随机数，输出看着完全正常，查不出来。
+EVENT_INDEX_LIMIT = 1 << 32
+
+
+def check_event_index(event_index, where=""):
+    """事件编号必须落在 [0, 2^32) 内——CPU 参考与 GPU 路径共用这一条契约。
+
+    GPU 侧也要查：内核把编号转成 uint32，越界是**静默回绕**（2^32 → 0），比 CPU 侧的
+    异常更难发现。调用点传的是主机侧已知的 Python 整数，所以这里不产生任何 GPU 读取。
+    """
+    if not 0 <= event_index < EVENT_INDEX_LIMIT:
+        raise ValueError(f"{where}事件编号必须落在 [0, 2**32) 内，收到 {event_index}"
+                         f"（上限见 rejection_rng.EVENT_INDEX_LIMIT；静默回绕会让"
+                         f"「第 2**32 个事件」复用事件 0 的随机数）")
+
+
 # uint32 -> [0,1) 的换算：取高 24 位当尾数，逐位精确、CPU/GPU 完全一致
 UNIFORM_SHIFT = 8
 UNIFORM_SCALE = 1.0 / (1 << 24)
@@ -72,8 +89,7 @@ def philox4x32_10(c0, c1, c2, c3, k0, k1):
 
 def event_words(seed, event_index, token_index):
     """把一个逻辑事件映射成 Philox 的（计数器, 密钥）两组 32 位字。"""
-    if not 0 <= event_index < (1 << 32):
-        raise ValueError(f"事件编号必须落在 [0, 2**32) 内，收到 {event_index}")
+    check_event_index(event_index)
     if not 0 <= token_index <= MASK32:
         raise ValueError(f"token 下标必须落在 [0, 2**32) 内，收到 {token_index}")
     seed &= (1 << 64) - 1

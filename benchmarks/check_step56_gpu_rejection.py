@@ -24,7 +24,7 @@ import torch
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step56 import TinyCausalLM
+from step56 import Engine, TinyCausalLM
 from step56 import rejection_triton as rt
 from step56.rejection import (BACKENDS, KIND_ACCEPTED_EOS, KIND_ALL_ACCEPTED,
                               KIND_FIRST_REJECT, TRITON, BatchedRejectionSampler)
@@ -525,20 +525,141 @@ check("组合：未知后端名在构造时明确拒绝",
 # torch 后端保持第五十五关的行为（没有草稿就不走验证）。
 triton_runtime = SampleRuntime(TorchSampler(), None, {3}, None, "triton")
 torch_runtime = SampleRuntime(TorchSampler(), None, {3}, None, "torch")
-# 四种形状都要问一遍。**第三种是关键**：ngram 的草稿在计划阶段就填好了，而
-# `num_reserved_drafts` 恒为 0——只看预留名额的写法会把 ngram 漏掉（也就漏掉了它的验证）。
-cases = [("有草稿 + 有预留", {"draft_ids": [1], "num_reserved_drafts": 2}),
-         ("无草稿 + 有预留（K=0 回退项）", {"draft_ids": [], "num_reserved_drafts": 2}),
-         ("有草稿 + 无预留（ngram）", {"draft_ids": [1], "num_reserved_drafts": 0}),
-         ("无草稿 + 无预留（真·普通项）", {"draft_ids": [], "num_reserved_drafts": 0})]
-expect_triton = [True, True, True, False]
-expect_torch = [True, False, True, False]
+# 判据是**调度时的计划**（`item["speculative"]`），不是「本轮跑出几枚草稿」：
+# 「按投机计划排出的 decode 行」即那些行——哪怕实际一枚草稿都没有（target 预算缩零、
+# draft 池不够、ngram 无匹配）。验收方指出过：按「有没有草稿」判，这些行会切回请求自己的
+# `torch.Generator`，同一条请求中途用上两套随机机制，输出还会随调度漂移。
+cases = [("投机 decode 行 + 有草稿", {"speculative": True, "draft_ids": [1],
+                                      "num_reserved_drafts": 2}),
+         ("投机 decode 行 + 零草稿（预算缩零 / ngram 无匹配）",
+          {"speculative": True, "draft_ids": [], "num_reserved_drafts": 0}),
+         ("非投机行（prefill / 中间重算 chunk）",
+          {"speculative": False, "draft_ids": [], "num_reserved_drafts": 0})]
+# triton：投机行都走（保证随机流不切换）；torch：只看有没有草稿（那个后端两条路共用
+# `sampling_state.generator`，K=0 退回普通采样没有副作用，行为与第五十五关一字不改）
+expect_triton = [True, True, False]
+expect_torch = [True, False, False]
 got_triton = [triton_runtime._needs_verification(case) for _, case in cases]
 got_torch = [torch_runtime._needs_verification(case) for _, case in cases]
 check("走不走验证的判据：triton 看「是不是投机项」，torch 只看「有没有草稿」",
       got_triton == expect_triton and got_torch == expect_torch,
       "；".join(f"{name}: triton={a} torch={b}"
                 for (name, _), a, b in zip(cases, got_triton, got_torch)))
+
+# ------------------------------------------------ F. 运行时回归：整条轨迹上随机流不切换
+
+# 断言的是**不变量**，不是某一种草稿数：只要请求进了 decode，它每一轮都必须走 GPU 验证
+# （counter 推进、请求自己的 `torch.Generator` 一步不动）。草稿数可以逐轮变（预算缩零、
+# 池子不够、ngram 无匹配 → 0；条件够了 → 又有），随机流不能跟着变——验收方 191 号第 1 条
+# 就是这个漏法：按「本轮有几枚草稿」路由，K=0 的那些轮会切回旧随机流。
+def runtime_trace(speculative_mode, budget, greedy=False, max_new_tokens=8,
+                  draft_blocks=16, prompt=(1, 2, 3, 4, 5, 6, 7)):
+    dims = dict(vocab_size=64, d_model=16, num_q_heads=2, num_kv_heads=1, head_dim=8,
+                num_layers=1, intermediate_size=32, max_seq_len=64, eos_token_ids=[63],
+                device="cuda", max_num_query_tokens=max(16, budget))
+    torch.manual_seed(1)
+    target = TinyCausalLM(**dims)
+    draft = TinyCausalLM(**dims) if speculative_mode == "draft_model" else None
+    with torch.no_grad():
+        target.lm_head.weight.zero_()                 # 让 greedy 输出稳定（验收方的做法）
+        if draft is not None:
+            draft.lm_head.weight.zero_()
+    engine = Engine(model=target, draft_model=draft, max_num_seqs=1,
+                    max_num_batched_tokens=budget, block_size=4, num_kv_blocks=16,
+                    draft_num_kv_blocks=draft_blocks if draft else None,
+                    draft_max_num_batched_tokens=16 if draft else None,
+                    enable_prefix_caching=False, speculative_mode=speculative_mode,
+                    rejection_backend="triton", num_speculative_tokens=2)
+    runtime = engine.sample_runtime
+    original = runtime.run
+    rows = []
+
+    def observed(logits, picked, on_token=None):
+        # 贪心请求**没有 generator**（`SamplingState` 只给随机请求建），所以取状态要判空
+        before = [(item, len(item["request"].output_ids),
+                   item["request"].rejection_rng_counter,
+                   (lambda gen: None if gen is None else gen.get_state().clone())(
+                       item["request"].sampling_state.generator))
+                  for item in picked]
+        result = original(logits, picked, on_token)
+        for item, outputs, counter, state in before:
+            seq = item["request"]
+            rows.append(dict(outputs_before=outputs, k=len(item["draft_ids"]),
+                             verified=runtime._needs_verification(item),
+                             counter_delta=seq.rejection_rng_counter - counter,
+                             generator_moved=state is not None and not torch.equal(
+                                 state, seq.sampling_state.generator.get_state())))
+        return result
+
+    runtime.run = observed
+    engine.add_request(dict(request_id="A", prompt_ids=list(prompt),
+                            max_new_tokens=max_new_tokens,
+                            temperature=0.0 if greedy else 0.8, seed=7))
+    steps = 0
+    while engine.has_unfinished_requests():
+        engine.step()
+        steps += 1
+        assert steps < 40, "疑似活锁"
+    return rows
+
+
+# 三种配置合起来要覆盖「有草稿」和「零草稿」两种 decode 轮；每种配置各自都要满足不变量。
+#   ① draft_model + budget=1：真实 token 就吃光预算，**每一轮** K=0（验收方的场景）
+#   ② draft_model + 很小的 draft 池：前几轮 K>0，池子满了之后掉到 0（同一条轨迹里切换）
+#   ③ ngram + 贪心：草稿来自重复历史，时有时无；同时也覆盖贪心（counter 不推进）
+RUNS = [("draft_model，预算缩零", dict(speculative_mode="draft_model", budget=1)),
+        ("draft_model，draft 池偏小", dict(speculative_mode="draft_model", budget=16,
+                                          draft_blocks=5)),
+        ("ngram，贪心", dict(speculative_mode="ngram", budget=16, greedy=True))]
+all_rows = []
+for label, cfg in RUNS:
+    rows = runtime_trace(**cfg)
+    decode = [row for row in rows if row["outputs_before"] > 0]
+    all_rows.extend(decode)
+    check(f"运行时回归（{label}）：进入 decode 后**每一轮**都走 GPU 验证",
+          bool(decode) and all(row["verified"] for row in decode),
+          f"decode 轮 {len(decode)} 个，其中 K=0 的 {sum(1 for r in decode if r['k'] == 0)} 个；"
+          f"未走验证的 {sum(1 for r in decode if not r['verified'])} 个")
+    check(f"运行时回归（{label}）：请求自己的 generator 一步不动（没有切回旧随机流）",
+          not any(row["generator_moved"] for row in decode),
+          f"动了 {sum(1 for row in decode if row['generator_moved'])} 轮")
+check("运行时回归：三种配置合起来同时覆盖了 K>0 与 K=0 的 decode 轮",
+      any(row["k"] > 0 for row in all_rows) and any(row["k"] == 0 for row in all_rows),
+      f"K>0 {sum(1 for r in all_rows if r['k'] > 0)} 轮、"
+      f"K=0 {sum(1 for r in all_rows if r['k'] == 0)} 轮")
+
+# 事件编号的 32 位契约（验收方第 3 条）：**起始越界**在主机侧就报错，「起始合法、本轮抽着
+# 抽着跨过」由内核数（错误码 4）。两者都不能静默回绕——回绕会让「第 2**32 个事件」复用
+# 事件 0 的随机数，输出看着完全正常。
+try:
+    gpu_verify([dict(CASES[2], counter=1 << 32)])
+    raised = None
+except ValueError as error:
+    raised = str(error)
+check("起始 counter 越界（2**32）→ 明确报错，不是静默回绕",
+      raised is not None and "2**32" in raised, str(raised)[:80])
+try:
+    gpu_verify([dict(CASES[2], counter=-1)])
+    negative = None
+except ValueError as error:
+    negative = str(error)
+check("起始 counter 为负 → 明确报错", negative is not None and "事件编号" in negative,
+      str(negative)[:80])
+
+# 跨过边界：CASES[2] 本轮消费 2 个事件（1 个接受 + 1 次抽样），起点取 2**32-1 就会越界
+crossed = gpu_verify([dict(CASES[2], counter=(1 << 32) - 1)])[0]
+# 报错项只算「真的抽过的接受事件」（1 个），那一次 categorical 不算——与上面 `_pack()`
+# 里那条规则一致：没有产出 token 的项不该记一次抽样。
+check("起始合法、本轮跨过 2**32 → 错误码 4（不是静默回绕）",
+      crossed.error is not None and "跨过" in crossed.error
+      and crossed.rng_consumed == 1,
+      f"error={crossed.error}、consumed={crossed.rng_consumed}")
+# 紧邻上界但**没有**跨过：不报错，正常出结论（别把合法的长随机流一刀切）
+near = gpu_verify([dict(CASES[2], counter=(1 << 32) - 2)])[0]
+# 起点 2**32-2：接受事件用 2**32-2、抽样用 2**32-1，**都在范围内**，所以不该报错
+check("起点贴着上界但本轮没跨过 → 正常通过（不误报）",
+      near.error is None and near.rng_consumed == 2,
+      f"error={near.error}、consumed={near.rng_consumed}")
 
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
