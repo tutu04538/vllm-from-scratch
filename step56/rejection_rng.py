@@ -12,16 +12,23 @@
 计数器的四个 32 位字（位宽写清楚，避免静默截断）：
 
     c0 = 事件编号 event_index（int64 截到 32 位；每请求独立计数，见下）
-    c1 = 事件类型 event_type（ACCEPT=0 / CATEGORICAL=1）
-    c2 = 词表内下标 token_index（接受事件恒为 0；categorical 事件按 token ID 区分）
+    c1 = 0（保留：这里本来是「事件类型」，见下）
+    c2 = 词表内下标 token_index（接受事件恒为 0；抽样事件按 token ID 区分）
     c3 = 0（保留）
     k0 = seed 低 32 位，k1 = seed 高 32 位
 
+**这里比需求 §4 的式子少一维「事件类型」**，是有意的：事件编号本身已经保证「每个被消费
+的事件各不相同」，所以「0 < 接受概率 < 1 时抽的随机数」与「抽样事件在 token i 上抽的
+随机数」不可能撞上同一个编号，多一维类型并不带来额外隔离（它只是让随机数的身份看起来
+自描述）。少一维的代价只有一个：**同一个 seed 下派生出来的具体数字与带类型时不同**——
+这无所谓，因为对照测试两边用的是同一套公式（CPU 参考与 GPU 内核逐位一致）。
+判据里原本那条「换事件类型给出不同随机数」随之删掉，其余隔离性质照旧。
+
 **消费规则**（与 CPU 参考路径的 `verify_drafts_random()` 一致，测试会逐条数）：
 
-- `0 < 接受概率 < 1`：消费一个 ACCEPT 事件；
+- `0 < 接受概率 < 1`：消费一个接受事件；
 - 必接受（概率 ≥ 1）/ 必拒绝（概率 ≤ 0）：不消费；
-- 纠正或 bonus 抽样：消费一个 CATEGORICAL 事件（词表内部随机数由 token ID 区分）；
+- 纠正或 bonus 抽样：消费一个抽样事件（词表内部随机数由 token ID 区分）；
 - greedy：不消费任何事件；接受 EOS 之后也不再消费。
 
 `event_index` 是本请求**已消费事件数**（`SequenceConfig.rejection_rng_counter`）加本轮
@@ -39,10 +46,6 @@ PHILOX_W0 = 0x9E3779B9
 PHILOX_W1 = 0xBB67AE85
 PHILOX_ROUNDS = 10
 MASK32 = 0xFFFFFFFF
-
-# 事件类型
-ACCEPT = 0
-CATEGORICAL = 1
 
 # uint32 -> [0,1) 的换算：取高 24 位当尾数，逐位精确、CPU/GPU 完全一致
 UNIFORM_SHIFT = 8
@@ -67,35 +70,34 @@ def philox4x32_10(c0, c1, c2, c3, k0, k1):
     return c0, c1, c2, c3
 
 
-def event_words(seed, event_index, event_type, token_index):
+def event_words(seed, event_index, token_index):
     """把一个逻辑事件映射成 Philox 的（计数器, 密钥）两组 32 位字。"""
     if not 0 <= event_index < (1 << 32):
         raise ValueError(f"事件编号必须落在 [0, 2**32) 内，收到 {event_index}")
-    if not 0 <= event_type <= MASK32 or not 0 <= token_index <= MASK32:
-        raise ValueError(f"事件类型/token 下标必须落在 [0, 2**32) 内，收到 "
-                         f"{event_type}/{token_index}")
+    if not 0 <= token_index <= MASK32:
+        raise ValueError(f"token 下标必须落在 [0, 2**32) 内，收到 {token_index}")
     seed &= (1 << 64) - 1
-    return ((event_index, event_type, token_index, 0),
+    return ((event_index, 0, token_index, 0),
             (seed & MASK32, (seed >> 32) & MASK32))
 
 
-def event_word(seed, event_index, event_type, token_index):
+def event_word(seed, event_index, token_index):
     """一个逻辑事件对应的**原始 32 位随机字**（Philox 输出的第一个字）。
 
     categorical 抽样要的是这个原始字（kernel 里 `(x + 0.5)·2**-32` 那种换算），
     接受判断要的是 `event_uniform()` 那个 float。两个入口共用同一次 Philox 计算。
     """
-    counter, key = event_words(seed, event_index, event_type, token_index)
+    counter, key = event_words(seed, event_index, token_index)
     return philox4x32_10(*counter, *key)[0]
 
 
-def event_uniform(seed, event_index, event_type, token_index):
+def event_uniform(seed, event_index, token_index):
     """一个逻辑事件对应的 uniform（[0,1)，FP32 可精确表示）。
 
     取原始字的高 24 位：这样 CPU 的 Python 参考与 Triton kernel 得到**同一个** float，
     不会因为换算方式不同而分叉（有逐位对照测试）。
     """
-    return (event_word(seed, event_index, event_type, token_index) >> UNIFORM_SHIFT) * UNIFORM_SCALE
+    return (event_word(seed, event_index, token_index) >> UNIFORM_SHIFT) * UNIFORM_SCALE
 
 
 def exponential_race(seed, event_index, weights):
@@ -109,7 +111,7 @@ def exponential_race(seed, event_index, weights):
     for index, weight in enumerate(weights):
         if weight <= 0:
             continue
-        word = event_word(seed, event_index, CATEGORICAL, index)
+        word = event_word(seed, event_index, index)
         u = (word + 0.5) / 4294967296.0
         value = -math.log(u) / weight
         if value < best_value:

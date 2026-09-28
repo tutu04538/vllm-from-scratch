@@ -2,7 +2,7 @@
 
 分三段，都是「固定阶段」的小内核，不追求一个巨型 kernel：
 
-1. `event_uniform_kernel`  —— 按（请求 seed, 事件编号, 事件类型, token 下标）算 uniform。
+1. `event_uniform_kernel`  —— 按（请求 seed, 事件编号, token 下标）算 uniform。
    CPU 侧的参考实现是 `rejection_rng.event_uniform()`，两者必须**逐位一致**（有对照测试）。
 2. `accept_prefix_kernel` —— 每个请求一段：沿 K 个位置推进「接受前缀」，遇到首拒绝或
    接受终止 token 就停；同时数出**实际消费**了几个接受事件。
@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 
 # 与 rejection_rng.py 共用同一套常数与事件编号
-from .rejection_rng import ACCEPT, CATEGORICAL, PHILOX_ROUNDS, UNIFORM_SCALE, UNIFORM_SHIFT
+from .rejection_rng import PHILOX_ROUNDS, UNIFORM_SCALE, UNIFORM_SHIFT
 
 BLOCK_V = 4096          # 词表分块大小（151936 词表 -> 38 块）
 SENTINEL = -1           # 未使用位置的哨兵
@@ -26,8 +26,6 @@ SENTINEL = -1           # 未使用位置的哨兵
 # kernel 里要用的模块级常量必须是 tl.constexpr 实例（Triton 的硬要求）
 _SHIFT = tl.constexpr(UNIFORM_SHIFT)
 _SCALE = tl.constexpr(UNIFORM_SCALE)
-_ACCEPT = tl.constexpr(ACCEPT)
-_CATEGORICAL = tl.constexpr(CATEGORICAL)
 
 
 @triton.jit
@@ -38,32 +36,32 @@ def _uniform_from(out_word):
 
 
 @triton.jit
-def _event_word(seed_lo, seed_hi, event_index, event_type, token_index,
-                ROUNDS: tl.constexpr):
+def _event_word(seed_lo, seed_hi, event_index, token_index, ROUNDS: tl.constexpr):
     """一个逻辑事件的**原始 32 位随机字**（Philox 输出的第一个字）。
 
-    入口先把三个计数器字 `tl.to_tensor()`：调用点常常直接传 Python 字面量
-    （比如接受事件的 token 下标恒为 0），不转成张量的话 Triton 会在编译期炸在 `.to()` 上。
+    入口先把计数器字 `tl.to_tensor()`：调用点常常直接传 Python 字面量（接受事件的 token
+    下标恒为 0），不转成张量的话 Triton 会在编译期炸在 `.to()` 上。
+
+    `c1` 留 0：需求 §4 的式子里那一维是事件类型，但事件编号本身已经保证「每个被消费的
+    事件各不相同」，多一维类型不带来额外隔离（理由与代价见 rejection_rng.py 的模块说明）。
     """
     seed = (tl.to_tensor(seed_hi).to(tl.uint64) << 32) | tl.to_tensor(seed_lo).to(tl.uint64)
     c0 = tl.to_tensor(event_index).to(tl.uint32)
-    c1 = tl.to_tensor(event_type).to(tl.uint32)
     c2 = tl.to_tensor(token_index).to(tl.uint32)
+    c1 = tl.zeros_like(c0)
     c3 = tl.zeros_like(c0)
     out0, _, _, _ = tl.philox(seed, c0, c1, c2, c3, n_rounds=ROUNDS)
     return tl.to_tensor(out0)
 
 
 @triton.jit
-def _event_uniform(seed_lo, seed_hi, event_index, event_type, token_index,
-                   ROUNDS: tl.constexpr):
+def _event_uniform(seed_lo, seed_hi, event_index, token_index, ROUNDS: tl.constexpr):
     """一个逻辑事件的 uniform（[0,1)，取高 24 位，与 CPU 参考逐位一致）。"""
-    return _uniform_from(_event_word(seed_lo, seed_hi, event_index, event_type, token_index,
-                                     ROUNDS))
+    return _uniform_from(_event_word(seed_lo, seed_hi, event_index, token_index, ROUNDS))
 
 
 @triton.jit
-def event_uniform_kernel(seed_lo_ptr, seed_hi_ptr, index_ptr, type_ptr, token_ptr,
+def event_uniform_kernel(seed_lo_ptr, seed_hi_ptr, index_ptr, token_ptr,
                          out_ptr, N, ROUNDS: tl.constexpr, BLOCK: tl.constexpr):
     """把 N 个事件的 uniform 一次算出来（测试与 kernel 内部共用同一段逻辑）。"""
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
@@ -71,24 +69,22 @@ def event_uniform_kernel(seed_lo_ptr, seed_hi_ptr, index_ptr, type_ptr, token_pt
     seed_lo = tl.load(seed_lo_ptr + offsets, mask=mask, other=0).to(tl.int64)
     seed_hi = tl.load(seed_hi_ptr + offsets, mask=mask, other=0).to(tl.int64)
     index = tl.load(index_ptr + offsets, mask=mask, other=0).to(tl.int64)
-    event_type = tl.load(type_ptr + offsets, mask=mask, other=0).to(tl.int64)
     token = tl.load(token_ptr + offsets, mask=mask, other=0).to(tl.int64)
-    value = _event_uniform(seed_lo, seed_hi, index, event_type, token, ROUNDS)
+    value = _event_uniform(seed_lo, seed_hi, index, token, ROUNDS)
     tl.store(out_ptr + offsets, value, mask=mask)
 
 
-def event_uniforms(seed, event_index, event_type, token_index):
+def event_uniforms(seed, event_index, token_index):
     """便捷入口：给一组 CPU 侧的事件参数，返回 GPU 上算出来的 uniform（对照用）。"""
     seed_lo = torch.tensor([(int(seed) & 0xFFFFFFFF)] * len(event_index),
                            dtype=torch.int64, device="cuda")
     seed_hi = torch.tensor([(int(seed) >> 32)] * len(event_index),
                            dtype=torch.int64, device="cuda")
     index = torch.tensor(event_index, dtype=torch.int64, device="cuda")
-    types = torch.tensor(event_type, dtype=torch.int64, device="cuda")
     tokens = torch.tensor(token_index, dtype=torch.int64, device="cuda")
     out = torch.empty(len(event_index), dtype=torch.float32, device="cuda")
     n = len(event_index)
-    event_uniform_kernel[(triton.cdiv(n, 256),)](seed_lo, seed_hi, index, types, tokens, out,
+    event_uniform_kernel[(triton.cdiv(n, 256),)](seed_lo, seed_hi, index, tokens, out,
                                                 n, ROUNDS=PHILOX_ROUNDS, BLOCK=256)
     return out
 
@@ -142,7 +138,7 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
                 # 验证——与「必拒绝」在消费行为上一样，区别只在**报不报出来**。
                 error = 3
             else:
-                u = _event_uniform(seed_lo, seed_hi, base + consumed, _ACCEPT, 0, ROUNDS)
+                u = _event_uniform(seed_lo, seed_hi, base + consumed, 0, ROUNDS)
                 consumed += 1
                 if u < ratio:
                     accepted += 1
@@ -187,7 +183,7 @@ def sample_token_kernel(weight_ptr, seed_lo_ptr, seed_hi_ptr, event_index_ptr,
         weight = tl.load(weight_ptr + d * VOCAB + offs, mask=mask, other=0.0).to(tl.float64)
         # 用**原始 32 位字**（不是 `_event_uniform()` 那个 [0,1) float：把它再转回
         # uint32 只剩高 8 位，u 会恒等于 0，`-log(u)` 变成垃圾）
-        word = _event_word(seed_lo, seed_hi, event_index, _CATEGORICAL, offs, ROUNDS)
+        word = _event_word(seed_lo, seed_hi, event_index, offs, ROUNDS)
         u = (word.to(tl.float64) + 0.5) * (1.0 / 4294967296.0)
         race = tl.where(weight > 0.0, -tl.math.log(u) / weight, float("inf"))
         race = tl.where(mask, race, float("inf"))

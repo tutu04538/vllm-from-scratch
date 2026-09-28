@@ -11,7 +11,7 @@
      接受 EOS / 纠正 EOS / bonus EOS / K=0,1 混批 + 非法输入（q[d]=0），
      对比输出、接受数、保留 KV、消费的随机事件数。
   B. 分布与随机流：纠正分布抽样在大量事件编号上收敛到目标分布；同 seed 可复现；
-     事件编号/事件类型/token 下标各自隔离；未用到的位置不推进计数器。
+     事件编号/token 下标各自隔离；未用到的位置不推进计数器。
   D. 定向观测：`verify_batch()` 内没有逐请求标量读取、没有 D2H；整批结果只回传一次。
 """
 
@@ -27,8 +27,7 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 from step56 import TinyCausalLM
 from step56 import rejection_triton as rt
 from step56.rejection import BACKENDS, TRITON, BatchedRejectionSampler
-from step56.rejection_rng import (ACCEPT, CATEGORICAL, event_uniform, event_word,
-                                  exponential_race)
+from step56.rejection_rng import event_uniform, event_word, exponential_race
 from step56.sample_runtime import SampleRuntime
 from step56.sampling import (SamplingParams, SamplingState, TorchSampler)
 
@@ -82,7 +81,7 @@ def oracle_verify(draft_ids, row_probs, draft_probs, seed, counter, eos_ids, gre
             return dict(error="贪心落进随机分支", consumed=consumed, accepted=accepted,
                         kind=kind, committed=[], kept=0)
         else:
-            uniform = event_uniform(seed, counter + consumed, ACCEPT, 0)
+            uniform = event_uniform(seed, counter + consumed, 0)
             consumed += 1
             if uniform < ratio:
                 accepted += 1
@@ -355,12 +354,11 @@ check("抽样内核：整行权重为零时报错（不是悄悄返回 token 0�
       zero_errs.cpu().tolist() == [2], f"错误码 {zero_errs.cpu().tolist()}")
 
 # 流隔离：换 seed / 换事件类型 / 换 token 下标都要给出不同的随机数
-base = event_uniform(11, 3, ACCEPT, 0)
-check("随机流隔离：换 seed、换事件类型、换 token 下标都不同",
-      base != event_uniform(12, 3, ACCEPT, 0)
-      and base != event_uniform(11, 3, CATEGORICAL, 0)
-      and base != event_uniform(11, 4, ACCEPT, 0)
-      and event_word(11, 3, CATEGORICAL, 5) != event_word(11, 3, CATEGORICAL, 6))
+base = event_uniform(11, 3, 0)
+check("随机流隔离：换 seed、换事件编号、换 token 下标都不同",
+      base != event_uniform(12, 3, 0)
+      and base != event_uniform(11, 4, 0)
+      and event_word(11, 3, 5) != event_word(11, 3, 6))
 
 # 未用到的位置不推进计数器：全必接受 + EOS 的批，消费数必须是 0
 eos_case = dict(CASES[3], counter=17)
