@@ -628,6 +628,97 @@ check("运行时回归：三种配置合起来同时覆盖了 K>0 与 K=0 的 de
       f"K>0 {sum(1 for r in all_rows if r['k'] > 0)} 轮、"
       f"K=0 {sum(1 for r in all_rows if r['k'] == 0)} 轮")
 
+# 抢占恢复：**重算末块也会直接采样**，那时随机流必须继续走 counter（验收方 192 号第 1 条）。
+# 判据不看「这轮是 decode 还是重算」——那是 KV 怎么算，与用哪条随机流无关。
+# 复现配置同验收方：A 先跑出 3 枚，插入高优先级以外的小请求 B 触发名额抢占，A 被抢占后
+# 按预算重算历史，**末块**直接产出下一枚 token。小模型 lm_head 置零让 logits 恒定，
+# K 恒为 0（draft 池只给 1 块），把「K 变化导致的随机事件差异」排除掉。
+def recovery_trace(budget, prefix_caching, interrupt):
+    dims = dict(vocab_size=64, d_model=16, num_q_heads=2, num_kv_heads=1, head_dim=8,
+                num_layers=1, intermediate_size=32, max_seq_len=64, eos_token_ids=[63],
+                device="cuda", max_num_query_tokens=16)
+    torch.manual_seed(1)
+    target, draft = TinyCausalLM(**dims), TinyCausalLM(**dims)
+    with torch.no_grad():
+        target.lm_head.weight.zero_()
+        draft.lm_head.weight.zero_()
+    engine = Engine(model=target, draft_model=draft, max_num_seqs=1,
+                    max_num_batched_tokens=budget, block_size=4, num_kv_blocks=16,
+                    draft_num_kv_blocks=1, draft_max_num_batched_tokens=4,
+                    enable_prefix_caching=prefix_caching, speculative_mode="draft_model",
+                    rejection_backend="triton", num_speculative_tokens=2,
+                    scheduling_policy="priority")
+    engine.add_request(dict(request_id="A", prompt_ids=[1, 2, 3, 4, 5, 6, 7],
+                            max_new_tokens=6, temperature=0.8, seed=7, priority=10))
+    outputs, rows = [], []
+    engine.on_token = lambda ev: outputs.append(ev["token_id"]) if ev["request_id"] == "A" else None
+    runtime = engine.sample_runtime
+    original = runtime.run
+
+    def observed(logits, picked, on_token=None):
+        before = [(item, len(item["request"].output_ids),
+                   item["request"].rejection_rng_counter,
+                   item["request"].sampling_state.generator.get_state().clone())
+                  for item in picked if item["request"].request_id == "A"]
+        result = original(logits, picked, on_token)
+        for item, count, counter, state in before:
+            seq = item["request"]
+            rows.append(dict(outputs_before=count, preemptions=seq.num_preemptions,
+                             start=item["start_cache_length"], inputs=item["num_scheduled_tokens"],
+                             real_inputs=item["num_real_inputs"], k=len(item["draft_ids"]),
+                             verified=runtime._needs_verification(item),
+                             cache_length=seq.cache.length,
+                             counter_delta=seq.rejection_rng_counter - counter,
+                             generator_moved=not torch.equal(
+                                 state, seq.sampling_state.generator.get_state())))
+        return result
+
+    runtime.run = observed
+    inserted = False
+    steps = 0
+    while engine.has_unfinished_requests():
+        if interrupt and not inserted and len(outputs) == 3:
+            engine.add_request(dict(request_id="B", prompt_ids=[1], max_new_tokens=1,
+                                    temperature=0.0, priority=0))
+            inserted = True
+        engine.step()
+        steps += 1
+        assert steps < 60, "疑似活锁"
+    assert all(x == 0 for x in engine.kv_cache_pool.block_usage
+               + engine.draft_kv_pool.block_usage), "跑完两个池子引用应归零"
+    return outputs, rows, engine.scheduler.num_priority_preemptions
+
+
+# 末块长度 1 与 >1、prefix 命不与命中，都要过一遍。预算决定历史（A 被抢占时 10 枚）怎么切：
+#   预算 4 → 4+4+**2**（末块 2 枚）；预算 9 → 9+**1**（末块 1 枚）；预算 3 + 开前缀缓存
+#   → 命中之后剩余部分重算（末块 2 枚）。
+recovery_chunks = []
+for budget, prefix, label in ((4, False, "末块 2 枚 / 关前缀缓存"),
+                              (9, False, "末块 1 枚 / 关前缀缓存"),
+                              (3, True, "末块 2 枚 / 开前缀缓存")):
+    control_out, _, _ = recovery_trace(budget, prefix, interrupt=False)
+    preempt_out, preempt_rows, preemptions = recovery_trace(budget, prefix, interrupt=True)
+    restored = [row for row in preempt_rows if row["preemptions"] > 0 and row["outputs_before"] > 0]
+    check(f"抢占恢复（{label}）：真的发生了抢占，且恢复后有采样行",
+          preemptions > 0 and bool(restored), f"抢占 {preemptions} 次、恢复后采样 {len(restored)} 行")
+    check(f"抢占恢复（{label}）：恢复后的采样走 GPU 验证、counter 继续推进、旧 generator 不动",
+          all(row["verified"] and not row["generator_moved"] for row in restored),
+          "；".join(f"K={r['k']} verified={r['verified']} Δcounter={r['counter_delta']} "
+                    f"generator动={r['generator_moved']}" for r in restored))
+    check(f"抢占恢复（{label}）：插入抢占**不改变** A 的输出（同 seed 逐 token 相同）",
+          control_out == preempt_out, f"对照 {control_out}\n抢占 {preempt_out}")
+    # 恢复末块的 KV 不能被裁短：保留的应该是「本轮真实输入数」，不是 K=0 公式里的 1 枚
+    check(f"抢占恢复（{label}）：恢复末块的 KV 保留 = 起点 + 本轮真实输入数",
+          all(row["cache_length"] == row["start"] + row["real_inputs"]
+              for row in restored),
+          "；".join(f"start={r['start']} real_inputs={r['real_inputs']} "
+                    f"cache={r['cache_length']}" for r in restored))
+    # 恢复后**第一次**采样的那一行就是「重算末块」：它的真实输入数就是末块长度
+    recovery_chunks.append(restored[0]["real_inputs"])
+check("抢占恢复：三种配置合起来覆盖了「重算末块长度 = 1」与「> 1」",
+      any(n == 1 for n in recovery_chunks) and any(n > 1 for n in recovery_chunks),
+      f"各自的末块长度 {recovery_chunks}")
+
 # 事件编号的 32 位契约（验收方第 3 条）：**起始越界**在主机侧就报错，「起始合法、本轮抽着
 # 抽着跨过」由内核数（错误码 4）。两者都不能静默回绕——回绕会让「第 2**32 个事件」复用
 # 事件 0 的随机数，输出看着完全正常。
@@ -656,6 +747,49 @@ check("起始合法、本轮跨过 2**32 → 错误码 4（不是静默回绕）
       f"error={crossed.error}、consumed={crossed.rng_consumed}")
 # 紧邻上界但**没有**跨过：不报错，正常出结论（别把合法的长随机流一刀切）
 near = gpu_verify([dict(CASES[2], counter=(1 << 32) - 2)])[0]
+# 溢出判据按「本轮**实际需要**哪些事件」算（验收方 192 号第 2 条），四类各来一条：
+#   ① 最后合法事件用于「接受 EOS」——之后不抽 bonus/纠正，所以没有越界事件
+#   ② 最后合法事件用于 K=0 的 categorical——它**就是**那次抽样，仍在上界内
+#   ③ 最后合法事件用于接受判断，而之后还要抽 bonus/纠正——那次会越界
+#   ④ 接受事件本身就用到了越界编号
+P_ONE_HOT = probs(0.01, 0.01, 0.98)
+Q_ONE_HOT = probs(0.0, 0.0, 1.0)
+eos_case = dict(CASES[2], name="最后合法事件用于接受 EOS", draft_ids=[2],
+                row_probs=[P_ONE_HOT, P_ONE_HOT], draft_probs=[Q_ONE_HOT],
+                counter=(1 << 32) - 1)
+got_eos = gpu_verify([eos_case], eos_ids=(2,))[0]      # 这个用例的 EOS 是 token 2
+oracle_eos = oracle_verify(eos_case["draft_ids"], eos_case["row_probs"],
+                           eos_case["draft_probs"], 11, (1 << 32) - 1, {2})
+check("边界①：最后合法事件用于接受 EOS → 通过（不误报溢出）",
+      got_eos.error is None and got_eos.committed_ids == oracle_eos["committed"]
+      and got_eos.rng_consumed == 1,
+      f"tokens={got_eos.committed_ids}、consumed={got_eos.rng_consumed}、error={got_eos.error}")
+got_k0 = gpu_verify([dict(CASES[6], name="最后合法事件用于 K=0 抽样",
+                          counter=(1 << 32) - 1)])[0]
+check("边界②：最后合法事件用于 K=0 的 categorical → 通过（那次抽样就在上界上）",
+      got_k0.error is None and got_k0.rng_consumed == 1,
+      f"tokens={got_k0.committed_ids}、consumed={got_k0.rng_consumed}、error={got_k0.error}")
+got_bonus = gpu_verify([dict(CASES[2], name="接受后还要抽 bonus/纠正",
+                             counter=(1 << 32) - 1)])[0]
+check("边界③：最后合法事件用于接受判断、之后还要抽 bonus → 报错误码 4",
+      got_bonus.error is not None and "跨过" in got_bonus.error,
+      f"error={got_bonus.error}")
+overflow_base = (1 << 32) - 1
+u_first = event_uniform(11, overflow_base, 0)                 # 第 1 枚接受判断（编号合法）
+u_wrapped = event_uniform(11, 0, 0)                           # 第 2 枚用的是 2**32，回绕 = 事件 0
+ratio_of = lambda u: (u + 1.0) / 2                            # > u 且 < 1 → 必定走「抽一次」那一支
+multi_case = dict(CASES[0], name="接受事件本身用到越界编号", draft_ids=[1, 2],
+                  row_probs=[probs(0.5, ratio_of(u_first), 0.1, 0),
+                             probs(0.5, 0.1, ratio_of(u_wrapped), 0),
+                             probs(0.25, 0.25, 0.5, 0)],
+                  draft_probs=[probs(0, 1.0, 0, 0), probs(0, 0, 1.0, 0)],
+                  counter=overflow_base)
+got_multi = gpu_verify([multi_case])[0]
+# 不和 oracle 比：CPU 参考对编号 2**32 是直接抛错的（这正是两边的契约），所以这里只断言
+# 「GPU 报了错误码 4」——两枚都接受、第 2 枚的编号确实越界。
+check("边界④：接受事件本身就用到了越界编号 → 报错误码 4（不是静默回绕）",
+      got_multi.error is not None and "跨过" in got_multi.error, f"error={got_multi.error}")
+
 # 起点 2**32-2：接受事件用 2**32-2、抽样用 2**32-1，**都在范围内**，所以不该报错
 check("起点贴着上界但本轮没跨过 → 正常通过（不误报）",
       near.error is None and near.rng_consumed == 2,

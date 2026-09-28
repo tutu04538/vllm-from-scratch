@@ -24,21 +24,22 @@ from .speculative import verify_drafts, verify_drafts_random
 
 
 def is_speculative_item(item):
-    """这一项本轮是不是**按投机计划排出的 decode 采样行**。
+    """这一项本轮要不要用 **counter RNG** 采样（而不是请求自己的 `torch.Generator`）。
 
-    判据是**调度时的计划**（`item["speculative"]`，由 scheduler 在 decode 分支上打），
-    **不看本轮实际跑出几枚草稿**。「有几枚草稿」是运行结果，「是不是投机行」是配置：
+    判据是调度时打在计划项上的 `item["speculative"]`，它由三个条件合成，**与「本轮跑了
+    decode 还是重算」「本轮跑出几枚草稿」都无关**：
 
-    - ngram：草稿在计划阶段就用纯函数算好了，而 `num_reserved_drafts` **恒为 0**——只看
-      预留名额会把它漏掉；
-    - draft_model：target 预算只够 pending token、draft 池不够、补算吃光预算…… 都会让
-      实际草稿数为 0，而 `num_reserved_drafts` 也可能是 0（预算阶段就被缩零了）。
-      这些行**仍然是投机请求的 decode 步**，随机流必须留在 counter 那套上；按「有没有
-      草稿」去判，它们就会切回请求自己的 `torch.Generator`——同一条请求中途用上两套随机
-      机制，输出还会随调度（池子紧不紧）漂移。
+    1. 引擎开了投机（不开投机时 triton 后端本来就被拒）；
+    2. **本轮真的要采样**（`can_sample`：算到了历史末尾；中间的重算 chunk 不采样）；
+    3. **这条请求已经生成过 token**（`len(output_ids) > 0`）。
 
-    非投机行（prefill 与中间重算的 chunk）是 False：末块虽然也采样，但它的 `kept_inputs`
-    语义不同（要保留**整块**输入而不是 1 枚），不能套投机行的回滚公式。
+    第 3 条是明确写下来的策略：**首次 prefill 的采样走普通后端**（旧 generator）；
+    从那以后，这条请求的每一次采样都留在 counter 上。据此，「抢占后重算的末块」也算——
+    它虽然走的是重算分支，但历史里已经有输出，重算到末尾就直接产出下一枚 token，这时切回
+    旧 generator 会让同一条请求中途换随机机制，而且插不插入别的请求（触发抢占与否）会改变
+    它的输出（验收方 192 号第 1 条）。
+
+    第 2 条同时把「中间的重算 chunk」排除掉：它们不采样，不进验证批。
     """
     return bool(item["speculative"])
 
@@ -256,8 +257,9 @@ class SampleRuntime:
 
         判据只看**配置**，不看这一轮草稿跑出来几枚；两个后端规则不同、理由也不同：
 
-        - triton 后端：**本轮所有投机采样行**都走，包括实际一枚草稿都没有的那些
-          （预算缩零、池子不够、ngram 无匹配）。
+        - triton 后端：**本轮所有要用 counter RNG 的采样行**都走（判据见
+          `is_speculative_item()`）——包括实际一枚草稿都没有的那些（预算缩零、池子不够、
+          ngram 无匹配），也包括**抢占后重算到末尾的末块**。
           它必须用同一套 counter RNG 采样——中途切回 target 的 `torch.Generator`，这条
           请求的随机流就换了一条，「同 seed 逐 token 复现」也就不成立了。
         - torch 后端：只有真有草稿的项才走（与第五十五关完全一致）。这个后端里「走不走
@@ -276,7 +278,14 @@ class SampleRuntime:
         判停读到的才是真实进度；draft 那边在同一时刻夹回同一条边界。
         """
         seq = item["request"]
-        self.kv_cache_pool.truncate(seq, item["start_cache_length"] + result.kept_inputs)
+        # `kept_inputs` 的口径是「本轮**输入**保留几个位置」，而验证层数出来的那个数里含一个
+        # 隐含前提：本轮只算了 **1 枚真实 pending token**（`1 + accepted - EOS` 的那个 1）。
+        # decode 行成立；**抢占后重算的末块**可能一次算好几枚真实 token（比如补 2 枚到历史
+        # 末尾、直接采样下一枚），照搬会把刚算好的 KV 裁短（10 枚裁成 9 枚）。所以按
+        # `num_real_inputs` 把差额补回来。
+        num_real_inputs = item["num_real_inputs"]
+        self.kv_cache_pool.truncate(seq, item["start_cache_length"]
+                                    + result.kept_inputs + (num_real_inputs - 1))
         self._align_draft(seq)
         self.num_accepted_drafts += result.num_accepted
         seq.rejection_rng_counter += result.rng_consumed

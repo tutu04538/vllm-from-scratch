@@ -109,8 +109,8 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     `ratio` 是预先在 GPU 上 gather 好的 `p[d]/q[d]`（ngram 时就是 `p[d]`）。
     `kind` 取 `KIND_ALL_ACCEPTED`（全接受）/ `KIND_FIRST_REJECT`（首拒绝）/
     `KIND_ACCEPTED_EOS`（接受的那枚是终止 token），取值表见 rejection.py 顶部。
-    错误码 4 = 本轮实际消费的事件编号跨过 2**32 上界（只报错，不作废已抽出的值：
-    报错的项整项作废，上层不会提交它）。
+    错误码 4 = 本轮**真正用到**的事件编号跨过 2**32 上界（判据见函数末尾：按「实际需要
+    哪些事件」算，不是按计数器指向的下一位）。只报错、不纠正已抽出的值：报错的项整项作废。
     `consumed` 只数**真的抽了 uniform** 的那些位置（0 < ratio < 1），
     必接受 / 必拒绝都不消费——这样计数器的增量与 CPU 参考路径逐条对得上。
 
@@ -124,7 +124,9 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     b = tl.program_id(0)
     start = tl.load(pos_start_ptr + b)
     k = tl.load(k_ptr + b)
-    is_greedy = tl.load(greedy_ptr + b) != 0
+    greedy_code = tl.load(greedy_ptr + b)
+    is_greedy = greedy_code != 0
+    is_random = greedy_code == 0
     seed_lo = tl.load(seed_lo_ptr + b).to(tl.int64)
     seed_hi = tl.load(seed_hi_ptr + b).to(tl.int64)
     base = tl.load(counter_ptr + b).to(tl.int64)
@@ -162,7 +164,16 @@ def verify_prefix_kernel(ratio_ptr, eos_ptr, invalid_ptr, greedy_ptr, pos_start_
     # 事件编号只有 32 位：起始 counter 由主机侧校验（它是 CPU 已知的整数），但「本轮抽着
     # 抽着跨过 2**32」只有内核数得清——不查就是**静默回绕**（第 2**32 个事件复用事件 0 的
     # 随机数，输出看着完全正常）。这里只报错、不必纠正已经抽出来的值：报错的项整项作废。
-    if base + consumed > _EVENT_INDEX_MAX:
+    #
+    # 判据是**本轮实际需要用到哪个编号**，不是「计数器指向的下一位」：
+    #   * 接受事件用掉的是 base .. base+consumed-1，最后一个是 `base + consumed - 1`；
+    #   * 只有「还要抽一次纠正/bonus」时才会用到 `base + consumed` —— 而在接受 EOS 上停下
+    #     的、贪心的、已经报错的项都**不需要**那次抽样；
+    # 所以「用完最后一个合法事件、counter 正好指向下一位」不算越界（验收方 192 号第 2 条：
+    # 最后合法事件接受 EOS 被误判成溢出了）。
+    needs_categorical = (kind != _KIND_ACCEPTED_EOS) & is_random & (error == 0)
+    last_index = base + consumed - 1 + tl.where(needs_categorical, 1, 0)
+    if (error == 0) and (last_index > _EVENT_INDEX_MAX):
         error = 4
     tl.store(accepted_ptr + b, accepted)
     tl.store(kind_ptr + b, kind)

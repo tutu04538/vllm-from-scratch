@@ -1,7 +1,7 @@
 # step56：GPU 批量拒绝采样与单次结果回传
 
 - 对应代码：`step56/`（从 `step55/` 复制，入口改名 `step56.py`；旧包不改）
-- 包摘要 SHA256：`15263488fe01d56e…`（22 个 .py / 5928 行；口径 = 包内 `*.py` 按相对路径
+- 包摘要 SHA256：`a6a7fc786c7d7590…`（22 个 .py / 5949 行；口径 = 包内 `*.py` 按相对路径
   排序，每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 基线：`step55/` 的投手机制**行为逐字节不变**（`benchmarks/diff_step55_step56.py` 88 项，
   默认的 `rejection_backend="torch"` 就是第五十五关那条参考路径）
@@ -13,9 +13,9 @@
 |---|---|
 | `rejection.py`（新增） | 批量执行层 `BatchedRejectionSampler`：`prepare_batch()`（逐行目标分布 + 提议分布）、`verify_batch()`（后端分派）、`materialize_results()`（唯一一次回传）；`_torch_backend()` 逐请求调既有验证函数（行为与第五十五关一字不改）；后端常量与错误码；模块级 `_row_layout()`（两个坐标系）与 `_greedy_draw()` |
 | `rejection_rng.py`（新增） | counter RNG 的 CPU 参考：`philox4x32_10()`、`event_words()` / `event_word()` / `event_uniform()`、`exponential_race()`、`derive_rejection_seed()`；**本次新增 `make_rejection_seed()`**（`seed=None` 时从全局随机源取一个） |
-| `rejection_triton.py`（新增） | 三个内核：`event_uniform_kernel()`、`verify_prefix_kernel()`、`sample_token_kernel()`。**本次**：`_event_word()` 从 `_event_uniform()` 里拆出来（抽样要原始 32 位字，不能拿 `[0,1)` 的 float 再转回去）；`verify_prefix_kernel()` 多 `greedy_ptr` 与贪心分支（贪心不消费随机数）；`sample_token_kernel()` 的 `best_e` 显式声明 FP64、错误码改 2 |
+| `rejection_triton.py`（新增） | 三个内核：`event_uniform_kernel()`、`verify_prefix_kernel()`、`sample_token_kernel()`。**192 号**：溢出判据改为按「本轮实际需要的事件」算（接受 EOS / 贪心 / 已报错都不需要那次 categorical）。**本次**：`_event_word()` 从 `_event_uniform()` 里拆出来（抽样要原始 32 位字，不能拿 `[0,1)` 的 float 再转回去）；`verify_prefix_kernel()` 多 `greedy_ptr` 与贪心分支（贪心不消费随机数）；`sample_token_kernel()` 的 `best_e` 显式声明 FP64、错误码改 2 |
 | `rejection.py` 的 triton 段（**本次**） | **验收方 191 号第 3 条**：起始 counter 在主机侧校验（`rejection_rng.check_event_index`，与 CPU 参考共用同一个上界常量）、新增错误码 4；`_triton_backend()` 整体重写（两个坐标系 + 贪心 + 错误合并 + 不做数据依赖形状）、`_weight_rows()` 重写（收尾行、被拒位置夹住、按项的 `has_q_item`；`proposal_row_index` 保留 -1 哨兵、不再另存 `has_q`）、`_pack()`（列布局按 `max(kmax, 1)`、报错项不算 categorical）、`materialize_results()`（报错项返回空结论 + `num_rng_events` 统计）、`BACKENDS` 放开 triton、新增错误码常量 |
-| `sample_runtime.py` | **验收方 191 号第 1/2 条**：`is_speculative_item()` 改读计划项的 `speculative` 标志、CPU greedy 的 `argmax(...).tolist()` 只在 `uses_greedy_fast_path` 的后端上算（triton 那份白回传一次）；`__init__` 多 `rejection_backend` / `device` 两个参数并转给验证层；`run()` 的第 3/4 步重排（**先整批验证并检查错误，再按 `picked` 顺序提交**）；删 `_commit_drafts()` / `_commit_drafts_random()`（搬进 `rejection.py` 的参考后端），新增 `_needs_verification()` / `_commit_verified()`；`_is_greedy_without_penalty()` 移到 `rejection.py` 成模块级函数 |
+| `sample_runtime.py` | **验收方 191/192 号**：`is_speculative_item()` 只读计划项的 `speculative` 标志（判据含「请求已有输出」，覆盖抢占恢复的重算末块）、`_commit_verified()` 按 `num_real_inputs` 换算保留长度、CPU greedy 的 `argmax(...).tolist()` 只在 `uses_greedy_fast_path` 的后端上算（triton 那份白回传一次）；`__init__` 多 `rejection_backend` / `device` 两个参数并转给验证层；`run()` 的第 3/4 步重排（**先整批验证并检查错误，再按 `picked` 顺序提交**）；删 `_commit_drafts()` / `_commit_drafts_random()`（搬进 `rejection.py` 的参考后端），新增 `_needs_verification()` / `_commit_verified()`；`_is_greedy_without_penalty()` 移到 `rejection.py` 成模块级函数 |
 | `scheduler.py` | `Scheduler.__init__` 多 `rejection_backend="torch"`；在 `add_request()` 里为 triton 后端派生 `seq.rejection_seed`（**只在这个后端下**，否则换后端会动到原有随机流）；计划项新增 `"speculative"` 标志（decode 分支打 True，prefill / 中间重算 chunk 打 False）——随机流路由只看它，不看本轮跑出几枚草稿（验收方 191 号第 1 条） |
 | `engine.py` | `Engine.__init__` / `from_model_dir()` 多 `rejection_backend="torch"`；`_init_runtime()` 调 `check_rejection_backend(rejection_backend, device, speculative_mode)`，并把 `rejection_backend` 与 `device` 传给 `SampleRuntime` / `Scheduler` |
 | `validation.py` | 新增 `REJECTION_BACKENDS` 与 `check_rejection_backend(rejection_backend, device, speculative_mode=None)`（三条拒绝规则见 §5；`speculative_mode` 这条是**本次**加的） |
@@ -185,7 +185,19 @@ counter-based 的规则是「事件的随机数只由它的编号决定」：没
 | 情况 | 谁查 | 结果 |
 |---|---|---|
 | **起始** counter ≥ 2³² 或为负 | 主机侧（它是 CPU 已知的整数，无需读 GPU） | `ValueError`，整批不启动 |
-| 起始合法，**本轮抽着抽着跨过** 2³² | 内核自己数（`base + consumed > 2³²-1`） | 错误码 4，该项整项作废 |
+| 起始合法，**本轮抽着抽着跨过** 2³² | 内核自己数——按**本轮实际需要用到哪一个编号**，不是按计数器指向的下一位 | 错误码 4，该项整项作废 |
+
+内核那条判据的细节（验收方 192 号第 2 条：上一版把「用完最后一个合法事件」误判成溢出）：
+
+```text
+接受事件用掉的是        base .. base + consumed - 1     ← 最后一个是 base + consumed - 1
+纠正/bonus 用掉的是     base + consumed                 ← 只有真要抽时才用
+```
+
+所以「还要不要用 `base + consumed`」取决于三件事：**在接受 EOS 上停下的项不抽**（没有 bonus）、
+**贪心不抽**、**已报错的项不抽**。三者都不成立时才把上界算到 `base + consumed`。四类边界都
+有用例钉着：最后合法事件用于接受 EOS（通过）、用于 K=0 的 categorical（通过）、用于接受判断但
+之后还要抽 bonus（报错）、接受事件本身就用到了越界编号（报错）。
 
 上界定义在 `rejection_rng.EVENT_INDEX_LIMIT`（CPU 参考与 GPU 路径**共用**这一个常量，不许
 各写一份）。上游的 `SequenceConfig.rejection_rng_counter` 是 Python 整数（无上限），所以这道
@@ -264,33 +276,45 @@ rng     = consumed + (kind != 2) & ~greedy & (errors == 0)
 | `"triton"` + 非 CUDA 设备 | `ValueError`（内核与 counter RNG 都在 GPU 上） |
 | `"triton"` + 不开投机 | `ValueError`——那时没有任何一项需要验证，它会**空转**，而普通采样的随机流也不归它管。留一个「看起来开了、实际什么都不做」的组合，就是「悄悄改用参考循环还报告成功」的另一种形态 |
 
-### 5.1 「走哪条随机流」怎么路由：**只看配置，不看本轮跑出几枚草稿**
+### 5.1 「走哪条随机流」怎么路由：**只看配置与本轮是否采样**
 
-这是验收方 191 号第 1 条打回的那处，判据说清楚：
+这是验收方 191 号第 1 条与 192 号第 1 条两次打回的地方，判据定死成**三个条件合取**
+（调度器在计划项上打 `"speculative"`，`SampleRuntime` 只读它）：
 
-| 后端 | 判据 |
+| 条件 | 为什么 |
+|---|---|
+| 引擎开了投机 | 不开投机时 triton 后端本来就被拒 |
+| **本轮真的要采样**（`can_sample`：算到了历史末尾） | 中间的重算 chunk 不采样，不进验证批 |
+| **这条请求已经生成过 token**（`len(output_ids) > 0`） | 首次 prefill 的采样按既定策略走普通后端（旧 generator）；从那以后这条请求的每一次采样都留在 counter 上 |
+
+**判据里没有「本轮走的是 decode 还是重算」，也没有「本轮跑出几枚草稿」**——这两件事分别是
+「KV 怎么算」和「运行结果」，都不该决定下一枚 token 用哪条随机流。两个后端各自的规则：
+
+| 后端 | 规则 |
 |---|---|
 | `torch` | 有草稿才走验证（第五十五关的行为一字不改）。这个后端里两条路抽随机数用的**都是** `sampling_state.generator`，所以 K=0 退回普通采样没有副作用 |
-| `triton` | **本轮所有「按投机计划排出的 decode 采样行」**都走验证——判据是调度时打在计划项上的 `speculative` 标志，**与草稿数无关** |
+| `triton` | 三个条件同时成立就走验证——**包括**「按投机计划、实际一枚草稿都没有」（预算缩零、draft 池不够、ngram 无匹配），也**包括**「抢占后重算到末尾、直接产出下一枚 token」的末块 |
 
-为什么不能按「有没有草稿」判（验收方举了两条而我们原来漏掉的路）：
+191 号打回的是前半段（按「有没有草稿」判，K=0 的投机行会切回旧 generator）；192 号打回的是
+后半段，例子最清楚：
 
-- **target 预算缩零**：`max_num_batched_tokens` 只够 pending token，`_plan_draft_budget()`
-  在计划阶段就把 K 缩成 0，`num_reserved_drafts` 也是 0；
-- **ngram 没匹配上**：`draft_ids` 空，而它的 `num_reserved_drafts` **恒为 0**。
+```text
+A 生成 3 枚后被优先级抢占 → 恢复时按预算重算历史（10 枚）→ **末块算完直接采样**
+（这一轮：已有输出 3 枚、本轮输入 2 枚、走的是重算分支 → 旧判据给 speculative=False）
+```
 
-这两行的实际草稿数都是 0，但它们**仍然是投机请求的 decode 步**。按草稿数路由，它们会切回请求
-自己的 `torch.Generator`——同一条请求中途用上两套随机机制，而且切不切换取决于池子紧不紧、
-ngram 匹没匹配上这些与采样语义无关的事。
+插不插入那个抢占者，A 的第四枚输出就变了——而 A 全程 K=0、每轮都从同一个均匀分布抽一枚，
+本该用同一串随机事件。所以路由必须看「这条请求是否已经在生成」，而不是「这一轮 KV 怎么算」。
 
-**prefill（含最后一块）走普通采样后端**，这是有意的、也是写下来的策略：
+**首次 prefill 走普通后端**是明确写下来的策略（不是遗漏）：它只在请求生命周期的开头发生一次，
+切换点由 prompt 长度决定，不随调度漂移，所以同 seed 复现仍然成立。**这样「只在首次
+prefill → decode 之间切一次随机流」这句话才真正成立**（192 号指出：在上一版里它不成立，
+因为抢占恢复的重算末块还会切回去）。
 
-- 非投机行不打 `speculative` 标志（调度器只在 decode 分支打），所以它不进验证批；
-- 撇开随机流不谈，它的 `kept_inputs` 语义与投机行**不同**：投机行的 K=0 是「本轮只算了 1 个
-  真实 token」，而 prefill 末行可能刚算了 7 个——套 `start_cache_length + kept_inputs` 的
-  K=0 公式（`kept_inputs = 1`）会把已完成的 7 枚 KV 裁成 1 枚；
-- 于是每条投机请求的随机流**只在「首块 prefill → decode」处切换一次**，而这个切换点由请求
-  自己的进度（prompt 长度）决定，不随调度漂移：同 seed 复现仍然成立。
+**重算末块的长度要在回滚时算对**：验证层数出来的 `kept_inputs` 里含一个隐含前提——「本轮只算
+了 **1 枚真实 pending token**」（`1 + accepted − EOS` 的那个 1）。decode 行成立；重算末块可能
+一次算好几枚，照搬会把刚算好的 KV 裁短（10 枚裁成 9 枚）。所以计划项另带
+`num_real_inputs`，`_commit_verified()` 里按 `kept_inputs + (num_real_inputs − 1)` 换算。
 
 **两份名单同源**：`run()` 里「走普通采样」与「走验证」都读同一份 `verify = {id(item): ...}`
 （同一个 `_needs_verification` 判据），互斥且完备。各写一个表达式的话，K=0 的投机行会同时落进
@@ -301,13 +325,6 @@ ngram 匹没匹配上这些与采样语义无关的事。
 `greedy_fast` 快路径时才算（`uses_greedy_fast_path`）。triton 后端一律走一般路径，那份结果没人
 用——验收方在真实 tiny 双模型上数到过「K=2 与 K=1 的轮次各有 2 次结果回传」（一次 argmax 的
 `.tolist()`、一次验证结论的 `.cpu()`），现在只剩后一次。
-
-**贪心**在两个后端里都不抽任何随机数：接受判断是纯比较（`ratio >= 1` 接受、否则拒绝），
-纠正/bonus 是逐行 argmax（并列取最小下标，与 CPU 侧 `weights.index(max(weights))` 一致）。
-贪心的目标分布是 one-hot，`ratio` 只能取 `1/q[d] >= 1` 或 `0`，**落不进 (0,1) 那个分支**；
-真落进去就说明「目标分布是 one-hot」这个前提被破坏了，内核报错误码 3、torch 参考路径直接抛
-异常（`draw_uniform` 是打桩的）——**两边都报出来，不悄悄当成必拒绝**：静默拒绝会给出一个
-看着合理、其实偏掉的分布。两条后端在**可达**区域里行为一致。
 
 ## 6. 验证
 
@@ -362,7 +379,8 @@ CPU↔GPU 往返」，不是「端到端更快」——draft 提议阶段与概�
 | `Scheduler.__init__` | 多一个参数：`rejection_backend="torch"`；`add_request()` 在 triton 后端下派生 `seq.rejection_seed` |
 | `Engine` | 公开参数多一个 `rejection_backend="torch"`（`__init__` 与 `from_model_dir`） |
 | `SequenceConfig` | 新增 `rejection_seed` / `rejection_rng_counter`（默认 `None` / `0`，torch 后端下不用） |
-| `Scheduler` 的计划项 | 新增 `"speculative"`（bool）：这一项是不是「按投机计划排出的 decode 采样行」。随机流路由的唯一判据，**与草稿数无关**（验收方 191 号第 1 条） |
+| `Scheduler` 的计划项 | 新增 `"speculative"`（bool）：这一项要不要用 counter RNG 采样。由「投机开启 + 本轮要采样 + 请求已有输出」三个条件合成，随机流路由的唯一判据（191 号第 1 条 + 192 号第 1 条）；另新增 `"num_real_inputs"`：本轮算了几个**真实** token，供重算末块换算 `kept_inputs` |
+| `ItemResult.kept_inputs` | 口径不变（「本轮输入保留几个位置」），但**调用方要换算**：它含一个隐含的「1 枚真实 pending token」，重算末块按 `num_real_inputs` 补差额 |
 | `validation.py` | `check_rejection_backend(rejection_backend, device, speculative_mode=None)` |
 
 默认值全是 `"torch"`：不传 `rejection_backend` 的调用方行为与第五十五关完全一致。
