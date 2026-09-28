@@ -5,6 +5,29 @@
   排序，每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 基线：`step55/` 的投手机制**行为逐字节不变**（`benchmarks/diff_step55_step56.py` 88 项，
   默认的 `rejection_backend="torch"` 就是第五十五关那条参考路径）
+- **新增 3 个模块 + 改动 7 个代码文件**（另：包 README 重写、2 个检查脚本、`docs/README.md`
+  索引加一行）。表里标 **本次** 的是「把 triton 后端调通」那一批改动（提交 `9c010e2`），
+  没标的是这一关更早已经提交过的部分——一并列在这里，清单才是完整的：
+
+| 文件 | 改动 |
+|---|---|
+| `rejection.py`（新增） | 批量执行层 `BatchedRejectionSampler`：`prepare_batch()`（逐行目标分布 + 提议分布）、`verify_batch()`（后端分派）、`materialize_results()`（唯一一次回传）；`_torch_backend()` 逐请求调既有验证函数（行为与第五十五关一字不改）；后端常量与错误码；模块级 `_row_layout()`（两个坐标系）与 `_greedy_draw()` |
+| `rejection_rng.py`（新增） | counter RNG 的 CPU 参考：`philox4x32_10()`、`event_words()` / `event_word()` / `event_uniform()`、`exponential_race()`、`derive_rejection_seed()`；**本次新增 `make_rejection_seed()`**（`seed=None` 时从全局随机源取一个） |
+| `rejection_triton.py`（新增） | 三个内核：`event_uniform_kernel()`、`verify_prefix_kernel()`、`sample_token_kernel()`。**本次**：`_event_word()` 从 `_event_uniform()` 里拆出来（抽样要原始 32 位字，不能拿 `[0,1)` 的 float 再转回去）；`verify_prefix_kernel()` 多 `greedy_ptr` 与贪心分支（贪心不消费随机数）；`sample_token_kernel()` 的 `best_e` 显式声明 FP64、错误码改 2 |
+| `rejection.py` 的 triton 段（**本次**） | `_triton_backend()` 整体重写（两个坐标系 + 贪心 + 错误合并 + 不做数据依赖形状）、`_weight_rows()` 重写（收尾行、被拒位置夹住、按项的 `has_q_item`）、`_pack()`（列布局按 `max(kmax, 1)`、报错项不算 categorical）、`materialize_results()`（报错项返回空结论 + `num_rng_events` 统计）、`BACKENDS` 放开 triton、新增错误码常量 |
+| `sample_runtime.py` | `__init__` 多 `rejection_backend` / `device` 两个参数并转给验证层；`run()` 的第 3/4 步重排（**先整批验证并检查错误，再按 `picked` 顺序提交**）；删 `_commit_drafts()` / `_commit_drafts_random()`（搬进 `rejection.py` 的参考后端），新增 `_needs_verification()` / `_commit_verified()`；`_is_greedy_without_penalty()` 移到 `rejection.py` 成模块级函数 |
+| `scheduler.py` | `Scheduler.__init__` 多 `rejection_backend="torch"`；**本次**在 `add_request()` 里为 triton 后端派生 `seq.rejection_seed`（**只在这个后端下**，否则换后端会动到原有随机流）；新增 `from .rejection_rng import make_rejection_seed` |
+| `engine.py` | `Engine.__init__` / `from_model_dir()` 多 `rejection_backend="torch"`；`_init_runtime()` 调 `check_rejection_backend(rejection_backend, device, speculative_mode)`，并把 `rejection_backend` 与 `device` 传给 `SampleRuntime` / `Scheduler` |
+| `validation.py` | 新增 `REJECTION_BACKENDS` 与 `check_rejection_backend(rejection_backend, device, speculative_mode=None)`（三条拒绝规则见 §5；`speculative_mode` 这条是**本次**加的） |
+| `request.py` | `SequenceConfig.__init__` 新增 `self.rejection_seed = None` 与 `self.rejection_rng_counter = 0` |
+| `step56.py`（入口） | `main()` 加 `--rejection-backend {torch,triton}` 并透传给 `from_model_dir()` |
+| `__init__.py` | 包说明改成第 56 关（模块清单补三行 `rejection*`）；导出 `BatchedRejectionSampler` / `RejectionItem` / `ItemResult` / `PackedResult` / `REJECTION_BACKENDS` / `derive_rejection_seed` / `make_rejection_seed` |
+| `README.md` | 整体重写：用法、这一关的三条新约定、第五十五关就定下不能破的三条、验证表、遗留 |
+| `benchmarks/check_step56_gpu_rejection.py` | 从「SKIP 工装」改成常驻用例：oracle 对齐贪心/错误语义、打桩采样器 `ScriptedSampler`、ragged 批、抽样内核逐事件对照、定向观测改口径、新增后端组合段 |
+| `benchmarks/check_step56_real_qwen3.py` | 新增第 3 段：triton 后端的 greedy 等价、真跑过批、同 seed 可复现、随机采样跑完 |
+
+`attention.py`、`cache.py`、`draft.py`、`loading.py`、`model.py`、`norm.py`、`rope.py`、
+`sampling.py`、`speculative.py`、`formats/` 的**代码**未改（`loading.py` 只改了注释里的包名）。
 
 ## 0. 需求大概
 
