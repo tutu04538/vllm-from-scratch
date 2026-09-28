@@ -428,7 +428,9 @@ class BatchedRejectionSampler:
                                               self.eos_token_ids, entry.remaining_outputs,
                                               draw_uniform, draw_token,
                                               draft_probs=entry.draft_probs)
-            results.append(ItemResult(committed_ids=list(result.committed_ids),
+            # `committed_ids` 不再复制一层：`_finish_candidates()` 每次都新建一个 list，
+            # 且没有第二个持有者（triton 分支那边是同样的情况）
+            results.append(ItemResult(committed_ids=result.committed_ids,
                                       num_accepted=result.num_accepted,
                                       kept_inputs=result.kept_inputs))
         return results
