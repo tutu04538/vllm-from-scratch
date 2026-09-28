@@ -311,6 +311,30 @@ for index, case in enumerate(RAGGED):
           f" vs oracle {expected['committed']}/{expected['accepted']}/{expected['kept']}"
           f"/{expected['consumed']}")
 
+# 混合批：贪心项与随机项在同一张批里。按主机侧的贪心标志分行之后，两边**各算一次**：
+# 随机那几行过抽样内核，贪心那几行走 `_greedy_draw` 的 argmax——谁也不会覆盖谁，
+# 而且贪心项一个随机事件都不消费（`_pack` 里 `~greedy` 那一项）。
+MIXED = [dict(CASES[7], name="混合·贪心首拒"), dict(CASES[2], name="混合·随机首拒"),
+         dict(CASES[8], name="混合·贪心全接受"), dict(CASES[0], name="混合·随机全接受")]
+got_mixed = gpu_verify(MIXED)
+for index, case in enumerate(MIXED):
+    expected = oracle_verify(case["draft_ids"], case["row_probs"], case.get("draft_probs"),
+                             case.get("seed", 11), case.get("counter", 0), EOS,
+                             greedy=case["params"].is_greedy)
+    got = got_mixed[index]
+    check(f"混合批与 oracle 一致：{case['name']}",
+          (got.committed_ids == expected["committed"]
+           and got.num_accepted == expected["accepted"]
+           and got.kept_inputs == expected["kept"]
+           and got.rng_consumed == expected["consumed"]),
+          f"GPU {got.committed_ids}/{got.num_accepted}/{got.kept_inputs}/{got.rng_consumed}"
+          f" vs oracle {expected['committed']}/{expected['accepted']}/{expected['kept']}"
+          f"/{expected['consumed']}")
+check("混合批：贪心的两项一次随机事件都不消费（rng_consumed == 0）",
+      got_mixed[0].rng_consumed == 0 and got_mixed[2].rng_consumed == 0,
+      f"贪心 {got_mixed[0].rng_consumed}/{got_mixed[2].rng_consumed}、"
+      f"随机 {got_mixed[1].rng_consumed}/{got_mixed[3].rng_consumed}")
+
 # 整批 K 全为 0：一张批里一个草稿位置都没有（输出列只剩哨兵 + 五个字段），
 # 混批与空批两种退化形状都要能走通
 all_zero = gpu_verify([dict(CASES[6], counter=i) for i in range(3)])
