@@ -272,7 +272,7 @@ class BatchedRejectionSampler:
         eos_ids = torch.tensor(sorted(self.eos_token_ids), dtype=torch.long, device=device)
 
         # ---- 位置坐标系：p[d]、q[d]、ratio、eos、invalid（各算一次，不逐项读标量）----
-        if lay.positions:
+        if lay.num_draft_positions:
             p_d = lay.rows_all[lay.draft_rows, lay.tokens]     # 每位置一个标量
             if lay.rows_q is None:
                 # ngram：q 是 d 上的 one-hot，`q[d]` 就是 1，不必物化整行
@@ -366,9 +366,9 @@ class BatchedRejectionSampler:
         # 别人的草稿（全接受的项 `num_accepted == K`，正好越过本项），**必须夹住**：
         # 越界下标喂给下面的 `scatter_` 会直接触发 CUDA device-side assert。
         # 夹住之后读到的是一个合法 token id，而这条分支马上被 `KIND_FIRST_REJECT` 的 where 丢掉。
-        if lay.positions:
+        if lay.num_draft_positions:
             rejected_pos = (lay.pos_offsets.to(torch.long) + accepted_l).clamp(
-                max=lay.positions - 1)
+                max=lay.num_draft_positions - 1)
             rejected = lay.tokens[rejected_pos]
         else:
             rejected_pos, rejected = accepted_l, torch.zeros_like(accepted_l)
@@ -484,7 +484,8 @@ def _row_layout(batch, device):
       从它抽的，取样权重时也要按下标取到它。`rows_all` 一次 stack 出来，之后只做
       高级索引、不再复制。
     * **位置坐标系**：只覆盖**草稿位置**（P = ΣK），`pos_offsets[i]` 是第 i 项的起始
-      位置。`ratio` / `eos` / `invalid` 与接受前缀内核都按它排。
+      位置，`num_draft_positions` 是它的总数（当下标上界用）。`ratio` / `eos` / `invalid`
+      与接受前缀内核都按它排。
 
     q 那侧只收「真的有 q」的项：ngram 的提议是确定性的，`q` 是 d 上的 one-hot，
     不必物化整行。`q_map[j]` 是位置 j 的 q 行号，**没有 q 的位置是 -1**（哨兵，
@@ -494,14 +495,14 @@ def _row_layout(batch, device):
     """
     row_offsets, pos_offsets, ks, has_q_item = [], [], [], []
     rows_all, tokens, draft_rows, q_rows, q_row_of_position = [], [], [], [], []
-    cursor_rows = cursor_positions = 0
+    cursor_rows = cursor_draft_positions = 0
     for entry in batch:
         k = len(entry.draft_ids)
         if len(entry.row_probs) != k + 1:
             raise ValueError(f"triton 后端需要每项 {k + 1} 行目标分布（K 枚草稿 + 1 枚 "
                              f"收尾行），收到 {len(entry.row_probs)} 行")
         row_offsets.append(cursor_rows)
-        pos_offsets.append(cursor_positions)
+        pos_offsets.append(cursor_draft_positions)
         ks.append(k)
         has_q_item.append(entry.draft_probs is not None)
         rows_all.extend(entry.row_probs)
@@ -514,10 +515,13 @@ def _row_layout(batch, device):
                 q_row_of_position.append(len(q_rows))
                 q_rows.append(entry.draft_probs[index])
         cursor_rows += k + 1
-        cursor_positions += k
+        cursor_draft_positions += k
     long = lambda values: torch.tensor(values, dtype=torch.long, device=device)   # noqa: E731
     return SimpleNamespace(
-        kmax=max(ks, default=0), ks=ks, positions=cursor_positions,
+        kmax=max(ks, default=0), ks=ks,
+        # 整批的**草稿位置**总数（P = ΣK）——注意不是行数 Σ(K+1)：行坐标系每项多一个
+        # 收尾行。也别和 RoPE 的 positions 混（那个是 token 的逻辑位置）。
+        num_draft_positions=cursor_draft_positions,
         # `rows_all` / `rows_q` 显式搬到设备：调用方给的 p/q 可能还在 CPU 上
         # （测试与工具脚本就这么干），在这里一次搬完，后面全是设备上的运算
         rows_all=torch.stack(rows_all).to(device=device, dtype=torch.float32),
