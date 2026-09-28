@@ -445,17 +445,28 @@ class BatchedRejectionSampler:
                     < torch.tensor([len(e.draft_ids) for e in batch], dtype=torch.long,
                                    device=device).unsqueeze(1))
             drafts[:, :kmax] = torch.where(mask, matrix, SENTINEL_TOKEN)
-        lengths = accepted.to(torch.int64) + (kind != KIND_ACCEPTED_EOS).to(torch.int64)
+        # 这一行有没有「抽出来的那一枚」：在接受 EOS 上停下的项没有（它不抽 bonus），
+        # 其余都抽了一枚（bonus 或纠正）。长度、保留量、随机事件计数三处都看它，所以
+        # 起个名字，别在三个式子里各写一遍 `kind == ...`。
+        drew = kind != KIND_ACCEPTED_EOS
+        stopped_by_eos = ~drew
+
+        # 有效前缀 = 接受的那些草稿 + 抽出来的那一枚（EOS 停下的没有那一枚）
+        lengths = accepted.to(torch.int64) + drew.to(torch.int64)
         out = drafts.scatter(1, accepted.to(torch.int64).unsqueeze(1).clamp(max=max_len - 1),
                              drawn.unsqueeze(1))
         rows = torch.arange(max_len, device=device).unsqueeze(0)
         out = torch.where(rows < lengths.unsqueeze(1), out, SENTINEL_TOKEN)
-        kept = 1 + accepted.to(torch.int64) - (kind == KIND_ACCEPTED_EOS).to(torch.int64)
-        # 消费的随机事件数：接受事件（`consumed`，内核数的）+ 一次 categorical
-        # （真的要抽纠正/bonus 时才有一个）——贪心两项都不加，**报错的项**也不加
-        # categorical：它没有产出 token，报的必须是「真的抽掉的那几个接受事件」。
-        rng = consumed.to(torch.int64) + ((kind != KIND_ACCEPTED_EOS) & ~greedy
-                                          & (errors == 0)).to(torch.int64)
+
+        # 本轮输入保留几个位置：接受的那些 + 待定 token，**接受 EOS 的那一枚要退掉**
+        # （它的 KV 随本轮输入写进去了，但它不进输出）
+        kept = 1 + accepted.to(torch.int64) - stopped_by_eos.to(torch.int64)
+
+        # 消费的随机事件数 = 接受事件（`consumed`，内核数的）+ 抽出来的那一枚那次抽样。
+        # 后半截三个条件缺一不可：没在 EOS 上停（`drew`，才谈得上抽）、**不是贪心**
+        # （贪心的纠正/bonus 是 argmax，不抽随机数）、**这一项没报错**（它没有产出 token，
+        # 报的必须是「真的抽掉的那几个接受事件」）。
+        rng = consumed.to(torch.int64) + (drew & ~greedy & (errors == 0)).to(torch.int64)
         fields = torch.stack([lengths, accepted.to(torch.int64), kept, rng,
                               errors.to(torch.int64)], dim=1)
         return torch.cat([out, fields], dim=1).to(torch.int64)
