@@ -278,10 +278,11 @@ class BatchedRejectionSampler:
                 # ngram：q 是 d 上的 one-hot，`q[d]` 就是 1，不必物化整行
                 q_d = torch.ones_like(p_d)
             else:
-                # ngram 的位置 `q_map` 是 -1（哨兵）：夹成 0 读到的是一行合法的 q，
+                # ngram 的位置 `proposal_row_index` 是 -1（哨兵）：夹成 0 读到的是一行合法的 q，
                 # 结果随即被 where 丢掉
-                q_d = torch.where(lay.q_map >= 0,
-                                  lay.proposal_rows[lay.q_map.clamp(min=0), lay.tokens],
+                row_of_position = lay.proposal_row_index
+                q_d = torch.where(row_of_position >= 0,
+                                  lay.proposal_rows[row_of_position.clamp(min=0), lay.tokens],
                                   torch.ones_like(p_d))
             # 非法提议（q[d] = 0）不进除法：ratio 填 p[d]，错误由内核单独标记
             invalid = q_d <= 0
@@ -380,9 +381,9 @@ class BatchedRejectionSampler:
             deltas = dig_out
         else:
             # 被拒草稿自己的 q 行；没有 q 的项读到的是夹过的别处（随即被丢掉）
-            # `q_map` 里的 -1 是哨兵（这一项没有 q）：夹成 0 只为索引合法，
+            # `proposal_row_index` 里的 -1 是哨兵（这一项没有 q）：夹成 0 只为索引合法，
             # 结果会被下面的 `has_q_item` 丢掉
-            q_rejected = lay.proposal_rows[lay.q_map[rejected_pos].clamp(min=0)]
+            q_rejected = lay.proposal_rows[lay.proposal_row_index[rejected_pos].clamp(min=0)]
             deltas = torch.where(lay.has_q_item.unsqueeze(1),
                                  (weight - q_rejected).clamp(min=0.0), dig_out)
         return torch.where((kind == KIND_FIRST_REJECT).unsqueeze(1), deltas, weight)
@@ -489,14 +490,15 @@ def _row_layout(batch, device):
 
     `proposal_rows` 是 q 那侧的行，只收「真的有 q」的项（ngram 的提议是确定性的，`q` 是
     d 上的 one-hot，不必物化整行）：所以它是 `(ΣK_有q, V)`，一项都没有 q 时是 `None`——
-    **不是**「所有行」，与 `target_rows` 的覆盖面不同。`q_map[j]` 是位置 j 在那张表里的
+    **不是**「所有行」，与 `target_rows` 的覆盖面不同。`proposal_row_index[j]` 是位置 j 在那张表里的
     行号，**没有 q 的位置是 -1**（哨兵，
-    用到的时候再 clamp）——所以「这个位置有没有 q」不必单独存一张表，`q_map >= 0`
-    就是它。`has_q_item[i]` 表示第 i 项走的是不是一般 q：这是**按项**的属性，
+    用到的时候再 clamp）——所以「这个位置有没有 q」不必单独存一张表，
+    `proposal_row_index >= 0` 就是它。`has_q_item[i]` 表示第 i 项走的是不是一般 q：这是**按项**的属性，
     与位置级别的那一份是两个粒度，不能混用。
     """
     row_offsets, pos_offsets, ks, has_q_item = [], [], [], []
-    target_rows, tokens, draft_rows, proposal_rows, q_row_of_position = [], [], [], [], []
+    target_rows, tokens, draft_rows, proposal_rows = [], [], [], []
+    proposal_row_index = []        # 每位置一个行号（-1 = 这个位置没有 q）
     cursor_rows = cursor_draft_positions = 0
     for entry in batch:
         k = len(entry.draft_ids)
@@ -512,9 +514,9 @@ def _row_layout(batch, device):
             tokens.append(token)
             draft_rows.append(cursor_rows + index)
             if entry.draft_probs is None:
-                q_row_of_position.append(-1)
+                proposal_row_index.append(-1)
             else:
-                q_row_of_position.append(len(proposal_rows))
+                proposal_row_index.append(len(proposal_rows))
                 proposal_rows.append(entry.draft_probs[index])
         cursor_rows += k + 1
         cursor_draft_positions += k
@@ -535,11 +537,12 @@ def _row_layout(batch, device):
         # `_weight_rows()` 都按 `is None` 分岔，不要改成空张量）
         proposal_rows=(torch.stack(proposal_rows).to(device=device, dtype=torch.float32)
                        if proposal_rows else None),
-        # `q_map` **保留 -1 当哨兵**（用到的时候再 clamp）：这样「这个位置有没有 q」
-        # 不必再单独存一张表，`q_map >= 0` 就是它——两张表存同一个事实最容易走偏。
+        # `proposal_row_index[j]` = 位置 j 在 `proposal_rows` 里的行号，**-1 是哨兵**
+        # （这个位置的项没有 q，用到的时候再 clamp）：这样「这个位置有没有 q」不必再
+        # 单独存一张表，`proposal_row_index >= 0` 就是它——两张表存同一个事实最容易走偏。
         # `has_q_item` 是按项的那一份，仍然独立存着：它是唯一不依赖「夹过的下标」的、
         # 无条件正确的标志（见 `_weight_rows()` 里那些越界位置的讨论）。
-        q_map=long(q_row_of_position),
+        proposal_row_index=long(proposal_row_index),
         has_q_item=torch.tensor(has_q_item, dtype=torch.bool, device=device))
 
 
