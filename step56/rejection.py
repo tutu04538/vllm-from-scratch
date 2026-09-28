@@ -300,7 +300,10 @@ class BatchedRejectionSampler:
             ratio.contiguous(), eoses.contiguous(), invalid.to(torch.int32).contiguous(),
             greedy_t.to(torch.int32).contiguous(), lay.pos_offsets, lay.k_t,
             seed_lo, seed_hi, counter_t, accepted, kind, consumed, errors,
-            KMAX=max(lay.kmax, 1), ROUNDS=PHILOX_ROUNDS)
+            # `KMAX` 直接给 kmax：整批一枚草稿都没有时 `tl.static_range(0)` 是合法的
+            # （循环体不展开，四个输出保持初值 0），不必抬到 1。**下面结果张量的列布局
+            # 不一样**——那里必须 pad 到 1，否则字段列的下标会和 `columns` 对不上。
+            KMAX=lay.kmax, ROUNDS=PHILOX_ROUNDS)
 
         # ---- 抽样：纠正（kind==1）用 max(p-q,0) / 挖掉 d，bonus（kind==0）用收尾行 ----
         weights = self._weight_rows(lay, kind, accepted)
