@@ -59,3 +59,4 @@
 | [step56_triton_kernel_design.md](step56_triton_kernel_design.md) | `step56/`（附篇，无代码改动） | 把验证搬进 kernel 的设计思路：先讲清 counter RNG 与指数竞赛两个名词，再讲原做法差在哪、内核担什么、要备哪些输入、易错点与代价 |
 | [step56_state_space.md](step56_state_space.md) | `step56/`（附篇，无代码改动） | 这一关的状态空间地图：五层轴、把不可能组合删掉的不变量、每个函数实际要装几个量、容易混的轴 |
 | [step56_vs_vllm_rejection.md](step56_vs_vllm_rejection.md) | `step56/`（附篇，无代码改动） | 与 vLLM 0.28 拒绝采样的逐项对照：同样的密度、不同的取舍，以及哪些复杂度是需求逼出来的 |
+| [step57a_skeleton.md](step57a_skeleton.md) | `step57/`（**新包**） | 对齐 vLLM V1 架构的竖直骨架：Engine/Executor/Worker/Runner 边界、协议数据包、统一预算调度；57A 只做这一段 |
