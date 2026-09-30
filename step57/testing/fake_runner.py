@@ -102,6 +102,12 @@ class FakeRunner:
     def take_draft_token_ids(self):
         return None                                    # 57A 不投机
 
+    def initialize_kv_cache(self, kv_cache_config):
+        """假执行没有 KV 物理存储，但**协议里有这一格**：真实 Runner 在这里分配并绑定缓存
+        （见 `worker/gpu_model_runner.py`）。留一个显式的空实现，好过让调用方用 hasattr 猜。"""
+        self.kv_cache_config = kv_cache_config
+        return {}
+
     # -------- 协议数据的应用 --------
 
     def _apply_new_requests(self, new_reqs) -> None:

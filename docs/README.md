@@ -60,3 +60,4 @@
 | [step56_state_space.md](step56_state_space.md) | `step56/`（附篇，无代码改动） | 这一关的状态空间地图：五层轴、把不可能组合删掉的不变量、每个函数实际要装几个量、容易混的轴 |
 | [step56_vs_vllm_rejection.md](step56_vs_vllm_rejection.md) | `step56/`（附篇，无代码改动） | 与 vLLM 0.28 拒绝采样的逐项对照：同样的密度、不同的取舍，以及哪些复杂度是需求逼出来的 |
 | [step57a_skeleton.md](step57a_skeleton.md) | `step57/`（**新包**） | 对齐 vLLM V1 架构的竖直骨架：Engine/Executor/Worker/Runner 边界、协议数据包、统一预算调度；57A 只做这一段 |
+| [step57b_real_model.md](step57b_real_model.md) | `step57/`（在 57A 骨架上继续长） | 把真实模型接进协议：Qwen3（GQA + q/k norm + RoPE）、三层权重加载（打包路由 + 覆盖检查）、Attention 边界与分页 KV、Runner 输入打包（198 §4 逐值）、full/chunk/decode 与 HF 逐位置对照；单卡 eager、只支持 TP=1 |

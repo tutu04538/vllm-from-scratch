@@ -30,16 +30,50 @@ class EngineCore:
         from ..core.kv_cache_manager import KVCacheManager
         from ..core.sched.scheduler import Scheduler
 
-        self.kv_cache_manager = KVCacheManager(self.model_executor.get_cache_config())
+        cache_config = self.model_executor.get_cache_config()
+        self.kv_cache_manager = KVCacheManager(cache_config)
+        # 容量定了之后**立刻交给执行侧**：执行侧要按它分配物理缓存并绑定到 Attention 层
+        # （195 §8 的第三步）。顺序不能反——先建调度器再分配缓存的话，第一轮就可能排出
+        # 执行侧根本没有物理存储的块。
+        self.model_executor.initialize_kv_cache(cache_config)
         self.scheduler = Scheduler(vllm_config.scheduler_config, self.kv_cache_manager,
                                    max_model_len=vllm_config.model_config.max_model_len)
 
     # -------- 请求 --------
 
     def preprocess_add_request(self, request: EngineCoreRequest):
-        """`EngineCoreRequest`（API 数据）→ `Request`（内部状态）。列表在这里复制一层。"""
+        """`EngineCoreRequest`（API 数据）→ `Request`（内部状态）。列表在这里复制一层。
+
+        顺带做**输入边界检查**（对应 vLLM `v1/engine/processor.py` 的位置：校验发生在
+        "外部数据变成内部请求"这一步，而不是散在调度器里）：
+
+        - prompt 为空、或长到连一个 token 都生成不出来（`len(prompt) >= max_model_len`）→ 拒绝。
+          不拦的话，Scheduler 只会表现为"连续两轮排不出 token"，报错信息指向调度器，而真正的问题
+          在请求本身（57A 的差异账本里记过这个缺口）。
+        - `max_tokens` 超出剩余上下文 → **截到装得下的量**（vLLM 同样这么做），不是拒绝：
+          "生成 100 个"但只剩 20 个位置时，合理的语义是尽力生成。
+        """
+        import dataclasses
+
         from ..request import Request
 
+        max_model_len = self.vllm_config.model_config.max_model_len
+        prompt_len = len(request.prompt_token_ids)
+        if prompt_len == 0:
+            raise ValueError(f"{request.request_id!r} 的 prompt 是空的：至少要有一个 token")
+        if prompt_len >= max_model_len:
+            raise ValueError(
+                f"{request.request_id!r} 的 prompt 有 {prompt_len} 个 token，"
+                f"而 max_model_len={max_model_len}：连一个 token 都生成不出来。"
+                f"（在入口拒绝，否则只会变成调度器的「排不出 token」空转报错，"
+                f"看不出真正的问题在请求本身）")
+        # 复制一份而不是原地改：`sampling_params` 是调用方的对象（还会被一并打包进
+        # NewRequestData 发给执行侧），就地改会让"谁改了我的配置"说不清
+        sampling_params = request.sampling_params
+        room = max_model_len - prompt_len
+        if sampling_params.max_tokens > room:
+            sampling_params = dataclasses.replace(sampling_params, max_tokens=room)
+            request = dataclasses.replace(request, sampling_params=sampling_params)
         return Request.from_engine_core_request(request)
 
     def add_request(self, request) -> None:
