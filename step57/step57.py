@@ -10,6 +10,10 @@ Request，KV 由 Runner 按块表写入，采样在另一步做。这个文件�
     python step57/step57.py                                  # 默认模型 + 默认问题
     python step57/step57.py --max-new-tokens 64 "问题一" "问题二"
     python step57/step57.py --model-dir /path/to/other --device cpu --trace
+    python step57/step57.py --scheduler-trace "同样的问题" "同样的问题"    # 看前缀命中
+
+`--scheduler-trace` 打印每一轮的调度决策（排了谁几个 token、命中多少、抢占了谁、块占用），
+它是 57C 的交付物之一：**不运行模型也能看懂调度器在做什么**。
 """
 
 import argparse
@@ -37,6 +41,10 @@ def encode(tokenizer, question):
     return tokenizer(text, add_special_tokens=False)["input_ids"]
 
 
+def scheduler_of(engine):
+    return engine.engine_core.engine_core.scheduler
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="对齐 vLLM 架构的引擎：真实模型短生成")
     parser.add_argument("questions", nargs="*", default=None, help="要问的问题，可以给多条")
@@ -47,12 +55,16 @@ def main(argv=None):
     parser.add_argument("--max-num-batched-tokens", type=int, default=64)
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--num-kv-blocks", type=int, default=64)
+    parser.add_argument("--no-prefix-caching", action="store_true",
+                        help="关掉前缀缓存（57C）：块 hash、命中查询、LRU 逐出都不参与")
     parser.add_argument("--dtype", choices=("bfloat16", "float32"), default="bfloat16",
                         help="运行精度。本机 Qwen3-1.7B 的检查点就是 bf16，按 bf16 加载省一半内存")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="0 = 贪心（本关的最小采样器只支持贪心与温度随机，见 sample/sampler.py）")
     parser.add_argument("--trace", action="store_true", help="打印第一轮真正喂给模型的数字")
+    parser.add_argument("--scheduler-trace", action="store_true",
+                        help="打印每轮的调度决策（scheduler_trace）")
     args = parser.parse_args(argv)
     questions = args.questions or DEFAULT_QUESTIONS
 
@@ -73,7 +85,8 @@ def main(argv=None):
     config = VllmConfig(
         model_config=ModelConfig(model=str(model_dir), dtype=args.dtype,
                                  max_model_len=args.max_model_len, hf_config=hf_config),
-        cache_config=CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_kv_blocks),
+        cache_config=CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_kv_blocks,
+                                 enable_prefix_caching=not args.no_prefix_caching),
         scheduler_config=SchedulerConfig(max_num_seqs=args.max_num_seqs,
                                          max_num_batched_tokens=args.max_num_batched_tokens),
         device_config=DeviceConfig(device=device))
@@ -96,6 +109,8 @@ def main(argv=None):
           f"参数 {num_params / 1e9:.2f} G，tied embedding={model.tie_word_embeddings}")
     print(f"  KV 缓存 {len(runner.kv_caches)} 层 × {args.num_kv_blocks} 块 × "
           f"{args.block_size} 槽 = {kv_bytes / 1e6:.0f} MB；加载 {load_seconds:.2f}s（含 tokenizer）")
+    print(f"  前缀缓存：{'开' if config.cache_config.enable_prefix_caching else '关'}"
+          f"（块 hash 链 + 引用计数 + LRU 逐出；两条相同 prompt 的请求会命中同一批块）")
 
     # --trace：只记第一轮。这是"协议 → 模型输入"这一段的真实数字，后面的轮次结构相同
     original_prepare = runner._prepare_inputs
@@ -150,9 +165,16 @@ def main(argv=None):
         print(f"\n答[{request_id}]: {answers.get(request_id, '')}")
         print(f"   结束原因 {finished.get(request_id)}")
     generated = sum(len(tokenizer.encode(text)) for text in answers.values())
+    stats = runner.input_batch.block_table  # noqa: F841  （只是提醒：块表在执行侧）
+    kv_manager = engine.engine_core.engine_core.kv_cache_manager
     print(f"\n{steps} 轮调度、{generated} 个 token、{seconds:.2f}s"
           f"（{generated / max(seconds, 1e-9):.1f} tok/s；本关是逐请求的 Torch attention，"
           f"没有做性能优化）")
+    print(f"KV 池收尾：占用 {kv_manager.num_allocated_blocks} 块、空闲 {kv_manager.num_free_blocks()} 块、"
+          f"缓存中 {kv_manager.num_cached_blocks()} 块、抢占 {scheduler_of(engine).num_preemptions} 次")
+    if args.scheduler_trace:
+        print()
+        print(scheduler_of(engine).format_trace())
     engine.shutdown()
     return 0
 

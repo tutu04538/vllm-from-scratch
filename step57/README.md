@@ -4,16 +4,17 @@
 文本生成子集**。每一层都要能回答：谁拥有这份状态？谁可以改它？模块之间传什么（而不是偷偷共享
 什么）？对应 vLLM 哪个类、哪个方法？省略了哪些条件？
 
-**当前进度：57B（真实模型接进协议）**。设计与差异账本见
-[`docs/step57a_skeleton.md`](../docs/step57a_skeleton.md)（骨架）与
-[`docs/step57b_real_model.md`](../docs/step57b_real_model.md)（模型、loader、Attention、Runner）。
+**当前进度：57C（真实 KV 管理与调度）**。设计与差异账本见
+[`docs/step57a_skeleton.md`](../docs/step57a_skeleton.md)（骨架）、
+[`docs/step57b_real_model.md`](../docs/step57b_real_model.md)（模型、loader、Attention、Runner）、
+[`docs/step57c_kv_and_prefix.md`](../docs/step57c_kv_and_prefix.md)（块池、前缀缓存、抢占恢复）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
 | 配置 | `config.py` / `sampling_params.py` | `vllm/config/*`、`vllm/sampling_params.py` |
 | 请求状态 | `request.py` | `v1/request.py` |
 | 协议 | `outputs.py`、`core/sched/output.py` | `v1/engine/__init__.py`、`v1/outputs.py`、`v1/core/sched/output.py` |
-| KV 控制面 | `core/kv_cache_manager.py` | `v1/core/kv_cache_manager.py` |
+| KV 控制面 | `core/kv_cache_manager.py` → `core/kv_cache_coordinator.py` → `core/single_type_kv_cache_manager.py` → `core/block_pool.py` → `core/kv_cache_utils.py` | `v1/core/` 下同名文件（这条链一层一个问题） |
 | 调度 | `core/sched/{scheduler,request_queue,utils}.py` | `v1/core/sched/*` |
 | 编排 | `engine/{core,core_client,output_processor,llm_engine}.py` | `v1/engine/*` |
 | 执行部署 | `executor/uniproc_executor.py` | `v1/executor/uniproc_executor.py` |
@@ -56,9 +57,25 @@ while engine.has_unfinished_requests():
         print(out.request_id, out.token_ids, out.finished)
 ```
 
+## 调度器可打印的轨迹（57C 交付物）
+
+```bash
+python step57/step57.py --scheduler-trace "同样的问题" "同样的问题"
+```
+
+```text
+step scheduled                    hits           preempted    running            waiting        free cached
+   1 {'q0': 19}                                               ['q0']             ['q1']           10      0
+   2 {'q0': 1, 'q1': 3}           {'q1': 16}                  ['q0', 'q1']       []                9      1
+```
+
+读法：第 1 轮只排得下 q0 的 prompt；第 2 轮 q1 **命中 16 个 token**（用小预算逼它晚一轮进来），
+所以只需要再算 3 个。抢占会出现在 `preempted` 那一列，块占用看最后两列。不运行模型也能看懂调度器
+在做什么，`check_step57_preemption.py` 里也是靠它做断言。
+
 ## 明确不做
 
-KV 前缀缓存与抢占恢复（57C）、完整采样与惩罚（57D）、投机（57E）、异步与多进程、指标。
+完整采样与惩罚（57D）、投机（57E）、异步与多进程、指标。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -74,6 +91,9 @@ python benchmarks/check_step57_scheduler_basic.py    # 25 项：统一预算调�
 python benchmarks/check_step57_runner_inputs.py      # 29 项：输入打包（198 §4 逐值）、批状态、入口边界
 python benchmarks/check_step57_weight_loading.py     # 25 项：权重读取/打包路由/覆盖检查/tied embedding
 python benchmarks/check_step57_model_logits.py       # 18 项：GQA+qk norm+RoPE 参考对照、HF 对照、三种切分
+python benchmarks/check_step57_block_pool.py         # 28 项：空闲队列/引用计数/同 hash 多块/发布/失败原子性
+python benchmarks/check_step57_prefix_cache.py       # 25 项：hash 链、发布边界、命中粒度、共享不覆写、开关一致
+python benchmarks/check_step57_preemption.py         # 23 项：victim 选择、计划撤销与预算退回、恢复整表替换、端到端一致
 ```
 
 数值对照用的外部参照是 **transformers 的 Qwen3**（同一份 tiny 权重）与一份**按公式手写**的

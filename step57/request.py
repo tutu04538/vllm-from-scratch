@@ -198,8 +198,20 @@ class Request:
             self._all_token_ids.extend(token_ids)
         self.update_block_hashes()
 
+    def attach_block_hasher(self, block_hasher) -> None:
+        """挂上块 hash 计算器（Scheduler 在请求进入时挂，见 `core/sched/scheduler.py`）。
+
+        允许后挂是因为 hash 计算器属于**控制面**（它要 block_size 与是否开前缀缓存），
+        而 `Request` 只负责"什么时候该算"。挂上时立刻补算已有历史——否则此前已经确定
+        的完整块会**永久**缺少 hash，那部分前缀就再也命不中了。
+        """
+        if self._block_hasher is block_hasher:
+            return
+        self._block_hasher = block_hasher
+        self.update_block_hashes()
+
     def update_block_hashes(self) -> None:
-        """给新凑满的完整块补 hash（57A 没有 hasher，是空操作）。"""
+        """给新凑满的完整块补 hash（没有挂计算器时是空操作，例如关掉前缀缓存）。"""
         if self._block_hasher is not None:
             self.block_hashes.extend(self._block_hasher(self))
 

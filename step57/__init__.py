@@ -1,4 +1,4 @@
-"""第五十七关：对齐 vLLM V1 架构的文本生成子集（57A 竖直骨架 + 57B 真实模型）。
+"""第五十七关：对齐 vLLM V1 架构的文本生成子集（57A 骨架 + 57B 真实模型 + 57C 真实 KV）。
 
 目标不是再写一个推理框架，而是**做一个能逐层映射到本机 vLLM 的、可运行的文本生成子集**：
 每一层都要能回答"谁拥有这份状态、谁可以改它、模块之间传什么、对应 vLLM 哪个类、去掉它会
@@ -10,7 +10,11 @@
     sampling_params.py        请求级采样参数（不可复制到执行侧的活状态不在这里）
     request.py                Request / RequestStatus（Scheduler 持有的请求状态）
     outputs.py                三层协议：EngineCoreRequest / ModelRunnerOutput / EngineCoreOutput / RequestOutput
-    core/kv_cache_manager.py  KV 控制面：块归谁（不含模型计算与 GPU 写入）
+    core/kv_cache_manager.py  KV 控制面入口：命中查询、分配、发布、释放
+    core/kv_cache_coordinator.py  KV group 这一层（本关只有一组，退化实现）
+    core/single_type_kv_cache_manager.py  请求 → 逻辑块：核算容量、发布完整块、查命中
+    core/block_pool.py        物理块池：引用计数、空闲队列（LRU 淘汰序）、hash 索引
+    core/kv_cache_utils.py    块元数据、空闲双向链表、链式块 hash
     core/sched/output.py      调度数据包：SchedulerOutput / NewRequestData / CachedRequestData
     core/sched/request_queue.py  等待队列（FCFS / priority）
     core/sched/utils.py       停止判定 check_stop
@@ -40,10 +44,12 @@
 
 **明确不做**（各自属于后面的段落，都在代码里用"明确报错"或注释标出，不假装已完成）：
 
-- KV 前缀缓存与抢占恢复（57C）、完整采样与停止（57D）、投机（57E）、异步/多进程/指标；
-- `CacheConfig.enable_prefix_caching=True` 在构造时就拒绝（见 config.py）；
+- 完整采样与停止（57D）、投机（57E）、异步/多进程/指标；
 - 本包 **只支持 TP=1**（`layers/linear.py` 名字叫 Parallel 是为了源码映射，没有通信）；
-  权重只读本地 safetensors（单文件或带 index 的分片），不做 HF hub 下载。
+  权重只读本地 safetensors（单文件或带 index 的分片），不做 HF hub 下载；
+- 只有一个 KV group（`core/kv_cache_coordinator.py` 是单组实现，不假装支持混合 KV）；
+- 前缀缓存的**发布时机**与 vLLM 不同（本关在结果处理之后发布，见 `core/kv_cache_manager.py`
+  与 docs/step57c_kv_and_prefix.md 的差异账本）。
 """
 
 from .config import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,

@@ -53,12 +53,9 @@ class CacheConfig:
             raise ValueError(f"block_size 必须为正，收到 {self.block_size}")
         if self.num_gpu_blocks <= 0:
             raise ValueError(f"num_gpu_blocks 必须为正，收到 {self.num_gpu_blocks}")
-        if self.enable_prefix_caching:
-            # 前缀缓存是 57C 的内容（块 hash、引用计数、命中查询）。现在打开它只会得到一个
-            # "看起来开了、其实没做"的配置，明确拒绝。
-            raise NotImplementedError(
-                "57A 不支持 enable_prefix_caching（块 hash 与命中查询属 57C）；"
-                "先按 False 配置")
+        # 57C 起 `enable_prefix_caching=True` 是真的生效的：块 hash、引用计数、命中查询、
+        # LRU 逐出都在 `core/{kv_cache_utils,block_pool,single_type_kv_cache_manager}.py`
+        # 里（见 docs/step57c_kv_and_prefix.md）。
 
 
 @dataclass(frozen=True)

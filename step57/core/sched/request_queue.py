@@ -28,6 +28,7 @@ class RequestQueue(Protocol):
     def prepend_request(self, request) -> None: ...
     def prepend_requests(self, requests: "RequestQueue") -> None: ...
     def remove_request(self, request) -> None: ...
+    def request_ids(self) -> list[str]: ...
     def remove_requests(self, requests: Iterable) -> None: ...
     def __bool__(self) -> bool: ...
     def __len__(self) -> int: ...
@@ -60,6 +61,10 @@ class FCFSRequestQueue(deque):
     def remove_requests(self, requests: Iterable) -> None:
         for request in requests:
             self.remove(request)
+
+    def request_ids(self) -> list[str]:
+        """按出队顺序列出（trace 与调试用；deque 本身可迭代，这里只是统一接口）。"""
+        return [request.request_id for request in self]
 
 
 class PriorityRequestQueue:
@@ -103,6 +108,15 @@ class PriorityRequestQueue:
     def remove_requests(self, requests: Iterable) -> None:
         for request in requests:
             self.remove_request(request)
+
+    def request_ids(self) -> list[str]:
+        """按**出队顺序**列出（堆里有懒惰删除的旧条目，先过滤掉）。
+
+        `Request.__lt__` 就是 `(priority, arrival_time, request_id)`，所以排序结果与
+        `peek_request()` 逐个弹出的顺序一致——trace 里看到的顺序就是真实的调度顺序。
+        """
+        live = [request for request in self._heap if request.request_id in self._member_ids]
+        return [request.request_id for request in sorted(live)]
 
     def __bool__(self) -> bool:
         try:

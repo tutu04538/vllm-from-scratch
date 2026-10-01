@@ -31,7 +31,8 @@ class EngineCore:
         from ..core.sched.scheduler import Scheduler
 
         cache_config = self.model_executor.get_cache_config()
-        self.kv_cache_manager = KVCacheManager(cache_config)
+        self.kv_cache_manager = KVCacheManager(
+            cache_config, max_model_len=vllm_config.model_config.max_model_len)
         # 容量定了之后**立刻交给执行侧**：执行侧要按它分配物理缓存并绑定到 Attention 层
         # （195 §8 的第三步）。顺序不能反——先建调度器再分配缓存的话，第一轮就可能排出
         # 执行侧根本没有物理存储的块。
@@ -74,7 +75,9 @@ class EngineCore:
         if sampling_params.max_tokens > room:
             sampling_params = dataclasses.replace(sampling_params, max_tokens=room)
             request = dataclasses.replace(request, sampling_params=sampling_params)
-        return Request.from_engine_core_request(request)
+        # 块 hash 计算器属于控制面（要 block_size 与"是否开前缀缓存"），由 Scheduler 持有；
+        # 请求一进门就挂上，保证 hash 链从第一个块开始就是完整的
+        return Request.from_engine_core_request(request, block_hasher=self.scheduler.block_hasher)
 
     def add_request(self, request) -> None:
         self.scheduler.add_request(request)
