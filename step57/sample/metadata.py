@@ -76,7 +76,13 @@ class SamplingMetadata:
 
         all_greedy = all(parameter.temperature < SAMPLING_EPS for parameter in params)
         all_random = all(parameter.temperature >= SAMPLING_EPS for parameter in params)
-        no_top_k = all(parameter.top_k in (-1, 0) for parameter in params)
+        # "要不要筛 top_k"看的是**归一化之后的张量**：不筛的行已经被写成 vocab_size
+        # （vLLM 维护 top_k_reqs 集合，效果等价：整批都不需要筛就把整列省掉）
+        vocab_size = input_batch.vocab_size
+        no_top_k = all(
+            (0 < parameter.top_k < vocab_size) is False if vocab_size is not None
+            else parameter.top_k in (-1, 0)
+            for parameter in params)
         no_top_p = all(parameter.top_p >= 1.0 for parameter in params)
         no_penalties = all(parameter.repetition_penalty == 1.0
                            and parameter.presence_penalty == 0.0

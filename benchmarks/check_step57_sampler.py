@@ -62,6 +62,31 @@ def logits_of(rows):
     return torch.tensor(rows, dtype=torch.float32)
 
 
+def make_input_batch(vocab_size=None):
+    config = VllmConfig(model_config=ModelConfig(model="dummy", max_model_len=64,
+                                                 hf_config=None if vocab_size is None
+                                                 else {"vocab_size": vocab_size}),
+                        cache_config=CacheConfig(block_size=4, num_gpu_blocks=8),
+                        scheduler_config=SchedulerConfig(max_num_seqs=4,
+                                                         max_num_batched_tokens=16),
+                        device_config=DeviceConfig(device="cpu"))
+    return GPUModelRunner(config, "cpu").input_batch
+
+
+def sample_state(req_id, seed=None, params=None, prompt=(1, 2, 3, 4)):
+    params = params or SamplingParams(temperature=1.0, seed=seed)
+    state = CachedRequestState(req_id, list(prompt), params, None, [[0]],
+                               num_computed_tokens=0)
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        state.generator = generator
+    return state
+
+
+build_input_batch = make_input_batch
+
+
 sampler = Sampler()
 
 # ------------------------------------------------ 1. 混批与分流
@@ -159,6 +184,36 @@ check("4. top_k=1：只有最大的那个能留下",
 check("4. top_p=None 且 top_k=None：原样返回（不排序、不改）",
       apply_top_k_top_p(logits.clone(), None, None) is not None)
 
+# `top_k >= vocab_size` 与 `<= 0` 都等价于"不筛"，但**算子不做兜底**（vLLM 同款约定：
+# `V - k` 会是负数或 V，gather 直接报越界）。归一化在**批层面**完成：不筛的行写成 vocab_size，
+# 于是 `V - k = 0` → 阈值取最小值 → 什么都不屏蔽。
+batch_for_k = make_input_batch(vocab_size=4)
+for index, top_k in enumerate((-1, 0, 4, 9)):
+    batch_for_k.add_request(sample_state(f"k{index}", seed=None,
+                                         params=SamplingParams(temperature=1.0, top_k=top_k)))
+check("4. 不筛的 top_k（-1 / 0 / >= V）在批里统统归一化成 vocab_size",
+      batch_for_k.top_k_cpu[:4].tolist() == [4, 4, 4, 4],
+      f"归一化后 {batch_for_k.top_k_cpu[:4].tolist()}")
+check("4. 整批都不需要筛 → 元数据里 top_k 是 None（整列省掉，与 vLLM 的 no_top_k 等价）",
+      SamplingMetadata.from_input_batch(batch_for_k, [0, 1, 2, 3]).top_k is None)
+
+mixed_k = make_input_batch(vocab_size=4)
+mixed_k.add_request(sample_state("a", seed=None, params=SamplingParams(temperature=1.0, top_k=9)))
+mixed_k.add_request(sample_state("b", seed=None, params=SamplingParams(temperature=1.0, top_k=2)))
+md = SamplingMetadata.from_input_batch(mixed_k, [0, 1])
+mixed_logits = logits_of([[4.0, 3.0, 2.0, 1.0], [4.0, 3.0, 2.0, 1.0]])
+masked_mixed = apply_top_k_top_p(mixed_logits.clone(), md.top_k, None)
+check("4. 混批：不筛的行（k=9 归一化成 4）原样保留，要筛的行照常只留 top-2",
+      torch.equal(masked_mixed[0], mixed_logits[0])
+      and (~torch.isinf(masked_mixed[1])).sum().item() == 2,
+      f"第 1 行 {masked_mixed[0].tolist()}；第 2 行 {masked_mixed[1].tolist()}")
+
+tie = torch.tensor([[4.0, 4.0, 3.0, 1.0]])
+tied = apply_top_k_top_p(tie.clone(), torch.tensor([2]), None)
+check("4. 并列时按 vLLM 的语义：等于阈值的都留下（可能多留几个）",
+      (~torch.isinf(tied[0])).sum().item() == 2
+      and torch.isinf(tied[0, 3]).item(), f"{tied.tolist()}")
+
 # 概率 [0.5, 0.3, 0.15, 0.05]：p=0.7 时累积和 0.5、0.8 跨过 0.3 的阈值
 probs = torch.tensor([[0.5, 0.3, 0.15, 0.05]])
 prob_logits = probs.log()
@@ -198,14 +253,6 @@ check("5. top_p 之后不可采的 token 一次都抽不到", samples == {0}, st
 
 # ------------------------------------------------ 6. 随机流归请求：行重排不重置
 
-def build_input_batch():
-    config = VllmConfig(model_config=ModelConfig(model="dummy", max_model_len=64),
-                        cache_config=CacheConfig(block_size=4, num_gpu_blocks=8),
-                        scheduler_config=SchedulerConfig(max_num_seqs=4,
-                                                         max_num_batched_tokens=16),
-                        device_config=DeviceConfig(device="cpu"))
-    runner = GPUModelRunner(config, "cpu")
-    return runner.input_batch
 
 
 input_batch = build_input_batch()

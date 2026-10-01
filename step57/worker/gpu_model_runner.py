@@ -117,7 +117,10 @@ class GPUModelRunner:
             max_num_reqs=vllm_config.scheduler_config.max_num_seqs,
             max_model_len=self.max_model_len,
             device=device,
-            block_size=self.block_size)
+            block_size=self.block_size,
+            # 词表大小来自 **config**（不是等模型加载完再问）：InputBatch 在 __init__ 就要建，
+            # 而 top_k 的归一化规则要用它。假执行路径的 config 没有 hf_config → None
+            vocab_size=(vllm_config.model_config.hf_config or {}).get("vocab_size"))
         self.attn_metadata_builder = AttentionMetadataBuilder(self.block_size)
         self.sampler = None                       # load_model() 之后才有（采样要用模型精度）
         self.kv_caches: dict[str, torch.Tensor] = {}

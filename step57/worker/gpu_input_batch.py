@@ -33,7 +33,10 @@ from .block_table import BlockTable
 
 class InputBatch:
     def __init__(self, max_num_reqs: int, max_model_len: int, device: str,
-                 block_size: int) -> None:
+                 block_size: int, vocab_size: int | None = None) -> None:
+        # 词表大小只用于一件事：判断 top_k 是不是"等于不筛"（见 _write_sampling_params）。
+        # None = 不知道（假执行路径不采样）；此时任何 top_k > 0 都按"要筛"处理。
+        self.vocab_size = vocab_size
         self.max_num_reqs = max_num_reqs
         self.max_model_len = max_model_len
         self.device = device
@@ -164,9 +167,18 @@ class InputBatch:
         del self._req_ids[write:]
 
     def _write_sampling_params(self, row_index: int, sampling_params: SamplingParams) -> None:
-        """把请求的采样参数写进按行的定长张量（采样时整块取用，不必逐行现读对象）。"""
+        """把请求的采样参数写进按行的定长张量（采样时整块取用，不必逐行现读对象）。
+
+        `top_k` 要按 vLLM 的规则**归一化**：只有 `0 < top_k < vocab_size` 才算"要筛"，
+        其余（`-1` / `0` / `>= vocab_size`）一律写成 `vocab_size`——因为 `V - k = 0` 时
+        阈值取到最小值，top-k 掩码等于什么都不屏蔽。这样"不筛"的行也能安全地留在同一张
+        张量里混批，不需要在算子内部做分支或夹取。
+        """
         self.temperature_cpu[row_index] = sampling_params.temperature
-        self.top_k_cpu[row_index] = sampling_params.top_k
+        top_k = sampling_params.top_k
+        if self.vocab_size is not None and not 0 < top_k < self.vocab_size:
+            top_k = self.vocab_size
+        self.top_k_cpu[row_index] = top_k
         self.top_p_cpu[row_index] = sampling_params.top_p
         self.presence_penalties_cpu[row_index] = sampling_params.presence_penalty
         self.frequency_penalties_cpu[row_index] = sampling_params.frequency_penalty

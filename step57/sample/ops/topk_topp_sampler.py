@@ -37,16 +37,25 @@ SAMPLING_EPS = 1e-5
 
 def apply_top_k_top_p(logits: torch.Tensor, k: torch.Tensor | None,
                       p: torch.Tensor | None) -> torch.Tensor:
-    """原地把非候选的 logits 打成 -inf。`k`/`p` 为 None 表示该维度不筛。"""
+    """原地把非候选的 logits 打成 -inf。`k`/`p` 为 None 表示该维度不筛。
+
+    **调用方保证 `0 < k < vocab_size`**（与 vLLM 同款约定）：`k >= V` 会让 `V - k` 变负数、
+    `k <= 0` 会让它变成 V，`gather` 两种都会当场报越界。这不是靠算子自己兜底，而是在
+    **批层面**就归类掉——不需要筛的行在张量里写的是 `vocab_size`（见 `InputBatch`），
+    那样 `V - k = 0`，阈值取到最小值，等于什么都不屏蔽。
+    """
     if k is None and p is None:
         return logits
     # 升序排序：从小到大扫，方便"从概率小的一头开始切"
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
     if k is not None:
-        # 第 k 大的那个值：排序后下标是 `V - k`（k 个候选里有它）
-        top_k_mask = logits_sort.size(1) - k.to(torch.long)
-        top_k_mask = logits_sort.gather(1, top_k_mask.unsqueeze(dim=1))
+        # 第 k 大的那个值：升序排序后，top-k 是**最后 k 个**，其中最小的是下标 `V - k`。
+        # 先算出这个**位置**，再用 gather 取出该位置上的**值**（阈值）。
+        # 注意 `top_k_mask` 这个名字在这两行里换了两次身份：位置 → 阈值 → 掩码（vLLM 也这么写）
+        top_k_index = logits_sort.size(1) - k.to(torch.long)
+        top_k_mask = logits_sort.gather(1, top_k_index.unsqueeze(dim=1))
+        # 严格小于阈值的丢掉；**等于阈值的留下**，所以并列时可能比 k 多几个
         logits_sort.masked_fill_(logits_sort < top_k_mask, -float("inf"))
 
     if p is not None:

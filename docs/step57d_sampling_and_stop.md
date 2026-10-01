@@ -5,7 +5,7 @@
   `step57/sampling_params.py`（`all_stop_token_ids` + 参数校验）、
   `step57/outputs.py`（`SamplerOutput`、`RequestOutput.stop_reason`）、
   `step57/engine/output_processor.py`（透传 `stop_reason`）
-- 包摘要 SHA256：`fdc2c325d9482fab…`（56 个 .py / 5882 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`6debdcdb21245868…`（56 个 .py / 5912 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{sampler,stop_and_outputs}.py`
   （对应需求里点名的 `test_sampler.py` / `test_stop_and_outputs.py`）
@@ -133,7 +133,8 @@ generator 存在 Worker 的 `CachedRequestState` 上，每轮按"行 → 请求"
 
 | 差异 | 原因 / 后续 |
 |---|---|
-| 元数据按行**现扫**生成（vLLM 在增删请求时维护 `all_greedy`/`no_top_p` 这类增量标志位与 CPU 张量） | 本关批量小、可读优先；每轮扫一遍不会漏，代价是 O(批) 的常数 |
+| 元数据按行**现扫**生成（vLLM 在增删请求时维护 `all_greedy`/`no_top_p`/`top_k_reqs` 这类增量集合） | 本关批量小、可读优先；每轮扫一遍不会漏，代价是 O(批) 的常数 |
+| `top_k` 的"不筛"归一化写在 `InputBatch._write_sampling_params`（vLLM 写在同一处的 `add_request` 里） | **同一规则、同一位置**：`0 < top_k < vocab_size` 才算要筛，其余一律写成 `vocab_size`——算子因此不需要任何分支或夹取（`V - k = 0` → 阈值取最小值 → 什么都不屏蔽）。`SamplingParams` 的 `top_k` 取值校验也与 vLLM 一致（`-1`/`0` 表示关，`>= 1` 才有效） |
 | 惩罚在算子内部把 list 拼成 padded 张量（vLLM 在 InputBatch 里维护 CPU 张量、按需上传） | 便于逐值对照；批量小 |
 | `min_tokens` 每轮现算屏蔽掩码（vLLM 用 `MinTokensLogitsProcessor` 维护状态字典） | 语义相同（`len(已提交输出) < min_tokens` 就屏蔽），少一套增量状态 |
 | 没有 logprobs（`max_num_logprobs`/`logprob_token_ids`）、白名单、bad words、`logitsprocs` 插件框架 | 57D 不要求；采样器里那条"会改变 argmax 的约束"只剩 min_tokens 一个 |
@@ -146,10 +147,10 @@ generator 存在 Worker 的 `CachedRequestState` 上，每轮按"行 → 请求"
 
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
-| `check_step57_sampler.py` | 25 | 混批与分流（含"温度 0 不除法"）、min_tokens 屏蔽（贪心行同样受约束）、三种惩罚逐值对照手写公式、不同 prompt 长度混批的 padding 不污染、top-k、**top-p 边界 token 保留 + 至少一个候选**、20000 次抽样的分布统计、同 seed 可复现、行重排后 generator 跟着请求、输出历史是引用、签名里没有 Request |
+| `check_step57_sampler.py` | 27 | 混批与分流（含"温度 0 不除法"）、min_tokens 屏蔽（贪心行同样受约束）、三种惩罚逐值对照手写公式、不同 prompt 长度混批的 padding 不污染、top-k、**top-k 归一化（`-1`/`0`/`>= V` 都当不筛，混批时不筛的行原样保留）**、**top-p 边界 token 保留 + 至少一个候选**、20000 次抽样的分布统计、同 seed 可复现、行重排后 generator 跟着请求、输出历史是引用、签名里没有 Request |
 | `check_step57_stop_and_outputs.py` | 20 | 五条停止规则（max_tokens / eos / ignore_eos / 显式 stop token / 上下文上限）与"多候选只提交到停止位置"、**min_tokens 的采样侧屏蔽 + 调度侧结束**（真模型，eos 设成唯一高 logits）、清理轮 0 输出、增量→累计互为前缀、快照隔离、abort 与 ID 复用、带 tokenizer 的 text、同 seed 端到端可复现 |
 
-十一个脚本全部通过（共 270 项）。
+十一个脚本全部通过（共 272 项）。
 
 真实模型演示（本机 Qwen3-1.7B，bf16，CUDA）：
 
@@ -171,6 +172,8 @@ python step57/step57.py --max-new-tokens 6 --temperature 1.0 --top-k 20 \
   删掉了——57B 那版遇到 top-k/top-p/惩罚会明确报错，现在是真的实现了。
 - `SamplingParams` 新增 `all_stop_token_ids` 属性；`top_k`/`top_p`/`repetition_penalty`
   加了取值校验；`is_greedy` 的阈值与采样侧统一为 `1e-5`。
+- `InputBatch` 新增 `vocab_size`（来自 `ModelConfig.hf_config`，不是等模型加载完再问——
+  `top_k` 的归一化在建批时就要用；假执行路径没有 hf_config 时为 `None`，此时不归类）。
 - `RequestOutput` 新增 `stop_reason`（只在结束时非空）。
 - `InputBatch` 新增 `num_prompt_tokens`、`req_output_token_ids`（引用请求镜像）与六个按行 CPU 张量；
   `_move_row` 一并搬运（漏一个就会出现"token 是 A 的、惩罚是 B 的"）。
