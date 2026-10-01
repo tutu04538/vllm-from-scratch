@@ -1,5 +1,5 @@
 """第五十七关：对齐 vLLM V1 架构的文本生成子集（57A 骨架 + 57B 真实模型 + 57C 真实 KV
-+ 57D 采样与停止）。
++ 57D 采样与停止 + 57E 投机回接）。
 
 目标不是再写一个推理框架，而是**做一个能逐层映射到本机 vLLM 的、可运行的文本生成子集**：
 每一层都要能回答"谁拥有这份状态、谁可以改它、模块之间传什么、对应 vLLM 哪个类、去掉它会
@@ -35,6 +35,9 @@
     sample/metadata.py        按行组织的采样参数（Sampler 不接 Request）
     sample/sampler.py         顺序：约束 → 惩罚 → greedy/random 分流
     sample/ops/*              三种惩罚、top-k/top-p 筛选与指数竞赛抽样
+    spec_decode/metadata.py   投机验证的索引（两个坐标系）
+    spec_decode/rejection_sampler.py  验证草稿：min(1,p/q) 接受、max(p-q,0) 恢复
+    spec_decode/ngram_proposer.py / draft_model.py  两种提议者（历史匹配 / 小模型）
     testing/fake_runner.py    **只给测试**的脚本化 Runner
 
 依赖方向单向：
@@ -47,7 +50,7 @@
 
 **明确不做**（各自属于后面的段落，都在代码里用"明确报错"或注释标出，不假装已完成）：
 
-- 投机（57E）、异步/多进程/指标、logprobs；
+- 异步/多进程/指标、logprobs、EAGLE/MTP；
 - 本包 **只支持 TP=1**（`layers/linear.py` 名字叫 Parallel 是为了源码映射，没有通信）；
   权重只读本地 safetensors（单文件或带 index 的分片），不做 HF hub 下载；
 - 只有一个 KV group（`core/kv_cache_coordinator.py` 是单组实现，不假装支持混合 KV）；

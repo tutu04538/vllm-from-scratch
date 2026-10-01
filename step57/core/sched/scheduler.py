@@ -51,7 +51,13 @@ _MAX_TRACE_STEPS = 200
 
 
 class Scheduler:
-    def __init__(self, scheduler_config, kv_cache_manager, max_model_len: int) -> None:
+    def __init__(self, scheduler_config, kv_cache_manager, max_model_len: int,
+                 speculative_config=None) -> None:
+        # 投机只影响两件事：预算里**算上草稿**（`num_tokens_with_spec` 已经含了）、
+        # 以及把草稿发给执行侧。所以这里只需要"开没开"这一条信息。
+        self.speculative_config = speculative_config
+        self.num_speculative_tokens = (speculative_config.num_speculative_tokens
+                                       if speculative_config is not None else 0)
         self.max_num_seqs = scheduler_config.max_num_seqs
         self.max_num_batched_tokens = scheduler_config.max_num_batched_tokens
         self.policy = scheduler_config.policy
@@ -130,6 +136,7 @@ class Scheduler:
         req_to_new_blocks: dict[str, object] = {}
         num_scheduled_tokens: dict[str, int] = {}
         num_hit_tokens: dict[str, int] = {}
+        scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         preempted_reqs: list[Request] = []
         token_budget = self.max_num_batched_tokens
 
@@ -180,6 +187,18 @@ class Scheduler:
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
             req_index += 1
+
+            # 投机：把本轮**实际采用**的草稿前缀发给执行侧。
+            # `num_new_tokens + num_computed_tokens - num_tokens` 就是"本轮要算的 token 里
+            # 超出已提交历史的那部分" = 采用的草稿数（预算不够时自动截短，多余的草稿丢掉——
+            # 它们没被验证，留着下一轮就会拿旧草稿去对新的历史）
+            if request.spec_token_ids:
+                num_spec_tokens = (num_new_tokens + request.num_computed_tokens
+                                   - request.num_tokens)
+                if num_spec_tokens > 0:
+                    scheduled_spec_decode_tokens[request.request_id] = \
+                        request.spec_token_ids[:num_spec_tokens]
+                request.spec_token_ids = []
 
         # ---- 2) 再接纳 waiting：**本轮发生过抢占就不接纳**（196 §5.6）----
         while self.waiting and token_budget > 0 and not preempted_reqs:
@@ -237,7 +256,7 @@ class Scheduler:
             scheduled_cached_reqs=cached_reqs_data,
             num_scheduled_tokens=num_scheduled_tokens,
             total_num_scheduled_tokens=sum(num_scheduled_tokens.values()),
-            scheduled_spec_decode_tokens={},          # 57E 才填
+            scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
             # 注意是**引用**当前的集合，下面 `_update_after_schedule()` 会把它绑定到新对象上；
             # 清空（而不是重新绑定）会让这里已经发出去的快照跟着变空。
             finished_req_ids=self.finished_req_ids,
@@ -382,6 +401,18 @@ class Scheduler:
             req_index = model_runner_output.req_id_to_index[req_id]
             new_token_ids = list(model_runner_output.sampled_token_ids[req_index])
 
+            # 投机：**被拒的草稿要把进度退回来**。`_update_after_schedule()` 是按"排了多少
+            # 行"推进的（K+1 行），但其中只有"接受的 a 枚 + 最后那个 token"是有效的：
+            # 被拒的草稿行虽然算过 KV（下一次会被同位置的写入覆盖），但它们不对应任何已提交
+            # token，留在进度里会让下一轮从错误的位置续算（vLLM 在同一处做同样的减法）。
+            # 注意要在 `_update_request_with_output()` **之前**算：停止截断之后的长度不算数。
+            scheduled_spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
+            if scheduled_spec_token_ids and new_token_ids:
+                num_accepted = max(len(new_token_ids) - 1, 0)      # 去掉最后那个 token
+                num_rejected = len(scheduled_spec_token_ids) - num_accepted
+                if request.num_computed_tokens > 0:
+                    request.num_computed_tokens -= num_rejected
+
             stopped = False
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(request, new_token_ids)
@@ -433,6 +464,33 @@ class Scheduler:
                 del new_token_ids[num_new:]
                 break
         return new_token_ids, stopped
+
+    # -------- 投机草稿（57E）--------
+
+    def update_draft_token_ids(self, draft_token_ids) -> None:
+        """把执行侧交回的草稿记到请求上，供**下一轮** `schedule()` 采用（对应 vLLM 同名方法）。
+
+        时序是这条：轮 t 的 `sample_tokens` 里验证并顺便提了草稿 → `post_step` 取回来 →
+        写进 `request.spec_token_ids` → 轮 t+1 的 `schedule()` 决定采用几枚。
+        **草稿不在这里提交**，只是候选：采用与否则由 budget 和命中决定。
+
+        三种情况要丢掉：
+        - 请求已经结束/不存在（提议时还在，回来时已经收尾了）；
+        - 它还是个中间 prefill 块（没有可用来验证草稿的 next token）；
+        - 结构化输出会在这里过滤不合语法的草稿（本关不做）。
+        """
+        if draft_token_ids is None:
+            return
+        for req_id, spec_token_ids in zip(draft_token_ids.req_ids,
+                                          draft_token_ids.draft_token_ids):
+            request = self.requests.get(req_id)
+            if request is None or request.is_finished():
+                continue
+            if request.is_prefill_chunk:
+                if request.spec_token_ids:
+                    request.spec_token_ids = []
+                continue
+            request.spec_token_ids = list(spec_token_ids)
 
     # -------- 结束与清理 --------
 

@@ -38,7 +38,8 @@ class EngineCore:
         # 执行侧根本没有物理存储的块。
         self.model_executor.initialize_kv_cache(cache_config)
         self.scheduler = Scheduler(vllm_config.scheduler_config, self.kv_cache_manager,
-                                   max_model_len=vllm_config.model_config.max_model_len)
+                                   max_model_len=vllm_config.model_config.max_model_len,
+                                   speculative_config=vllm_config.speculative_config)
 
     # -------- 请求 --------
 

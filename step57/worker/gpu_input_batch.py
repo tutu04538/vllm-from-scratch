@@ -52,6 +52,9 @@ class InputBatch:
         self.generators: list[torch.Generator | None] = [None] * max_num_reqs
         # 已提交的输出（与 CachedRequestState 共享同一个 list 对象，见模块说明）
         self.req_output_token_ids: list[list[int]] = [[] for _ in range(max_num_reqs)]
+        # 本轮采用的草稿（57E）：写在 `token_ids_cpu` 里"已提交历史"之后，**不算**已提交。
+        # 目标模型的 query 就是 [b, d1..dK]，所以它们必须在输入缓冲里（vLLM 同款）
+        self.spec_token_ids: list[list[int]] = [[] for _ in range(max_num_reqs)]
         self.num_prompt_tokens = torch.zeros(max_num_reqs, dtype=torch.int64)
         # 采样用的按行定长 CPU 张量：建一次、每行原地写（对应 vLLM 的 *_cpu_tensor）
         self.temperature_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
@@ -80,6 +83,33 @@ class InputBatch:
     def num_tokens(self, row_index: int) -> int:
         """该行已知的 token 数（prompt + 已产出）。"""
         return int(self.num_tokens_no_spec[row_index])
+
+    def num_tokens_with_spec(self, row_index: int) -> int:
+        """已提交 token + 本轮草稿。**执行侧的 ready 判据用它**（与 Request 上的同名属性同义）。"""
+        return self.num_tokens(row_index) + len(self.spec_token_ids[row_index])
+
+    def update_req_spec_token_ids(self, req_id: str, scheduled_spec_tokens: dict) -> None:
+        """按协议把本轮采用的草稿写进输入缓冲（对应 vLLM 同名方法）。
+
+        写在"已提交历史"之后、并单独记一份：这样既能当模型输入（草稿是 query 的一部分），
+        又能被下一轮**整体覆盖**——草稿被拒之后就不该留在缓冲里。
+        """
+        row_index = self.req_id_to_index.get(req_id)
+        if row_index is None:
+            return
+        spec_token_ids = list(scheduled_spec_tokens.get(req_id, ()))
+        self.spec_token_ids[row_index].clear()
+        if not spec_token_ids:
+            return
+        start = self.num_tokens(row_index)
+        end = start + len(spec_token_ids)
+        if end > self.max_model_len:
+            raise ValueError(
+                f"{req_id!r} 的草稿写到第 {end} 个 token，超过 max_model_len="
+                f"{self.max_model_len}：调度侧该为本轮的草稿留出位置")
+        self.token_ids_cpu[row_index, start:end].copy_(
+            torch.tensor(spec_token_ids, dtype=torch.int64))
+        self.spec_token_ids[row_index].extend(spec_token_ids)
 
     def prompt_token_ids(self, row_index: int) -> list[int]:
         """该行的 prompt token（从输入缓冲里切出来，不另存一份）。"""
@@ -147,6 +177,7 @@ class InputBatch:
         self.generators[row_index] = None
         self.req_output_token_ids[row_index] = []
         self.num_prompt_tokens[row_index] = 0
+        self.spec_token_ids[row_index] = []
 
     # -------- 重排 --------
 
@@ -200,6 +231,8 @@ class InputBatch:
         self.generators[dst] = self.generators[src]
         self.req_output_token_ids[dst] = self.req_output_token_ids[src]
         self.num_prompt_tokens[dst] = self.num_prompt_tokens[src]
+        self.spec_token_ids[dst] = self.spec_token_ids[src]
+        self.spec_token_ids[src] = []
         for name in ("temperature", "top_k", "top_p", "presence_penalties",
                      "frequency_penalties", "repetition_penalties"):
             tensor = getattr(self, f"{name}_cpu")

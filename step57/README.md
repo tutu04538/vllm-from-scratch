@@ -4,11 +4,12 @@
 文本生成子集**。每一层都要能回答：谁拥有这份状态？谁可以改它？模块之间传什么（而不是偷偷共享
 什么）？对应 vLLM 哪个类、哪个方法？省略了哪些条件？
 
-**当前进度：57D（普通采样与停止）**。设计与差异账本见
+**当前进度：57E（投机回接）**。设计与差异账本见
 [`docs/step57a_skeleton.md`](../docs/step57a_skeleton.md)（骨架）、
 [`docs/step57b_real_model.md`](../docs/step57b_real_model.md)（模型、loader、Attention、Runner）、
 [`docs/step57c_kv_and_prefix.md`](../docs/step57c_kv_and_prefix.md)（块池、前缀缓存、抢占恢复）、
-[`docs/step57d_sampling_and_stop.md`](../docs/step57d_sampling_and_stop.md)（采样、惩罚、停止、增量输出）。
+[`docs/step57d_sampling_and_stop.md`](../docs/step57d_sampling_and_stop.md)（采样、惩罚、停止、增量输出）、
+[`docs/step57e_speculative.md`](../docs/step57e_speculative.md)（投机验证、草稿时序、draft 模型）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -26,6 +27,7 @@
 | 模型 | `models/qwen3.py` | `model_executor/models/{qwen2,qwen3}.py` |
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
+| 投机 | `spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py` | `v1/spec_decode/*`、`v1/sample/rejection_sampler.py` |
 | 测试替身 | `testing/fake_runner.py` | 无（只给测试） |
 
 ## 怎么用（57B：本地模型短生成）
@@ -79,7 +81,7 @@ step scheduled                    hits           preempted    running           
 
 ## 明确不做
 
-投机（57E）、异步与多进程、指标、logprobs。
+EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -100,6 +102,10 @@ python benchmarks/check_step57_prefix_cache.py       # 25 项：hash 链、发�
 python benchmarks/check_step57_preemption.py         # 23 项：victim 选择、计划撤销与预算退回、恢复整表替换、端到端一致
 python benchmarks/check_step57_sampler.py            # 25 项：混批分流、min_tokens 屏蔽、三种惩罚、top-k/p 边界、分布统计
 python benchmarks/check_step57_stop_and_outputs.py   # 20 项：五条停止规则、min_tokens 两处职责、增量输出、seed 可复现
+python benchmarks/check_step57_spec_metadata.py      # 13 项：两个坐标系的索引数学（vLLM 算例逐值）
+python benchmarks/check_step57_rejection_sampler.py  # 17 项：greedy/random 验证、恢复分布、CPU 公式与统计对照
+python benchmarks/check_step57_spec_lifecycle.py     # 12 项：提议与采用的时序、K 裁剪、进度回退、抢占清草稿
+python benchmarks/check_step57_draft_model.py        # 12 项：draft 规格校验、KV 独立、端到端与可复现
 ```
 
 数值对照用的外部参照是 **transformers 的 Qwen3**（同一份 tiny 权重）与一份**按公式手写**的

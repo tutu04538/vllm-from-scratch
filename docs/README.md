@@ -63,3 +63,4 @@
 | [step57b_real_model.md](step57b_real_model.md) | `step57/`（在 57A 骨架上继续长） | 把真实模型接进协议：Qwen3（GQA + q/k norm + RoPE）、三层权重加载（打包路由 + 覆盖检查）、Attention 边界与分页 KV、Runner 输入打包（198 §4 逐值）、full/chunk/decode 与 HF 逐位置对照；单卡 eager、只支持 TP=1 |
 | [step57c_kv_and_prefix.md](step57c_kv_and_prefix.md) | `step57/`（KV 这条链重写） | 真实 KV 控制面：块池（引用计数 + O(1) 空闲队列 + 同 hash 多块）、前缀缓存（链式 hash、发布边界、共享不覆写）、priority 与重算式抢占（计划撤销/预算退回/恢复整表替换）、可打印 scheduler_trace |
 | [step57d_sampling_and_stop.md](step57d_sampling_and_stop.md) | `step57/sample/`（新增） | 普通采样与停止：按行的 SamplingMetadata、min_tokens 的两处职责（采样侧屏蔽 vs 调度侧结束）、三种惩罚与 top-k/top-p 边界、指数竞赛抽样、用户增量输出与 stop_reason |
+| [step57e_speculative.md](step57e_speculative.md) | `step57/spec_decode/`（新增） | 投机回接：SpecDecodeMetadata 的两个坐标系、min(1,p/q) 验证与 max(p−q,0) 恢复、「轮 t 提议 → 轮 t+1 采用」的时序、被拒草稿的进度回退、ngram 与真实 draft 模型（同 KV group、每层各自 tensor、规格不兼容明确报错） |

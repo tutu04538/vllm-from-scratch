@@ -82,6 +82,23 @@ class EngineCoreOutputs:
 
 
 @dataclass
+class DraftTokenIds:
+    """执行侧交回的**下一轮草稿**（对应 vLLM `v1/outputs.py::DraftTokenIds`）。
+
+    只带请求 ID 与候选 token：CPU 侧的 Scheduler 只需要这些来决定下一轮的预算，
+    **不需要**持有 `[P, V]` 的草稿概率（那是执行侧自己的东西，下一轮按实际采用的草稿
+    前缀去组织 q，见 199 §5）。
+
+    这里多带一个 `draft_probs`（vLLM 放在 Runner 里按请求 ID 存）：本关把概率与草稿一起
+    交回，由 Runner 自己按行号组织，少一份跨结构的索引。
+    """
+
+    req_ids: list[str]
+    draft_token_ids: list[list[int]]
+    draft_probs: torch.Tensor | None = None
+
+
+@dataclass
 class SamplerOutput:
     """`Sampler` 的产物：**只有 token**，形状 `[num_rows, 1]`（对应 vLLM
     `v1/outputs.py::SamplerOutput` 的子集——它还有 logprobs 张量，本关不做 logprobs）。

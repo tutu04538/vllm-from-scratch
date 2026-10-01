@@ -49,6 +49,8 @@ class SamplingMetadata:
     # min_tokens：还没生成够的行，要把它的停止 token 屏蔽掉（"暂不允许采到什么"）
     min_tokens: list[int] = field(default_factory=list)
     stop_token_ids: list[list[int]] = field(default_factory=list)
+    # 投机的草稿（57E）：只有验证路径用得到——它要按"已提交历史 + 草稿前缀"算惩罚
+    spec_token_ids: list[list[int]] = field(default_factory=list)
 
     @property
     def num_rows(self) -> int:
@@ -60,8 +62,9 @@ class SamplingMetadata:
         return len(self.min_tokens)
 
     @classmethod
-    def from_input_batch(cls, input_batch, rows: list[int],
-                         device=None) -> "SamplingMetadata":
+    def from_input_batch(cls, input_batch, rows: list[int], device=None,
+                         scheduled_spec_decode_tokens: dict | None = None
+                         ) -> "SamplingMetadata":
         """把 batch 的若干行翻译成采样元数据。`rows` 是 batch 行号，顺序就是 logits 的行序。
 
         `device` 必须与 **logits 所在设备**一致（采样器要把温度/惩罚直接作用在 logits 上，
@@ -72,7 +75,10 @@ class SamplingMetadata:
         """
         params = [input_batch.sampling_params[row] for row in rows]
         if not params:
-            return cls(temperature=torch.empty(0), all_greedy=True, all_random=False)
+            # 没有要采样的行（比如整批都是中间 prefill 块）：给一份空元数据，
+            # 采样器在空张量上跑一遍也不产出任何 token
+            return cls(temperature=torch.empty(0), all_greedy=True, all_random=False,
+                       top_k=None, top_p=None)
 
         all_greedy = all(parameter.temperature < SAMPLING_EPS for parameter in params)
         all_random = all(parameter.temperature >= SAMPLING_EPS for parameter in params)
@@ -113,4 +119,6 @@ class SamplingMetadata:
             else input_batch.repetition_penalties_cpu[rows_tensor].to(device, torch.float32),
             min_tokens=[parameter.min_tokens for parameter in params],
             stop_token_ids=[sorted(parameter.all_stop_token_ids) for parameter in params],
+            spec_token_ids=[list((scheduled_spec_decode_tokens or {}).get(
+                input_batch.req_id_at(row), [])) for row in rows],
         )
