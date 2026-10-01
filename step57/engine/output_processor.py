@@ -76,6 +76,7 @@ class OutputProcessor:
                 token_ids=list(state.token_ids),          # 快照：用户改它不影响内部状态
                 finished=finished,
                 finish_reason=core_output.finish_reason,
+                stop_reason=core_output.stop_reason,
                 text=self._decode(state.token_ids) if self.tokenizer is not None else None,
             ))
 

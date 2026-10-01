@@ -43,8 +43,26 @@ class SamplingParams:
             raise ValueError(f"min_tokens({self.min_tokens}) 不能大于 max_tokens({self.max_tokens})")
         if self.temperature < 0.0:
             raise ValueError(f"temperature 不能为负，收到 {self.temperature}")
+        if self.top_k < -1:
+            raise ValueError(f"top_k 只能是 -1（不筛）或非负整数，收到 {self.top_k}")
+        if not 0.0 < self.top_p <= 1.0:
+            raise ValueError(f"top_p 必须落在 (0, 1]，收到 {self.top_p}")
+        if self.repetition_penalty <= 0.0:
+            raise ValueError(f"repetition_penalty 必须为正，收到 {self.repetition_penalty}")
 
     @property
     def is_greedy(self) -> bool:
-        """温度 0 即贪心。57A 不用它采样，但 `check_stop` 之外的调用方会问。"""
-        return self.temperature == 0.0
+        """温度低于 1e-5 就算贪心（与采样侧的阈值一致，见 sample/metadata.py）。"""
+        return self.temperature < 1e-5
+
+    @property
+    def all_stop_token_ids(self) -> set[int]:
+        """这条请求的**全部**停止 token：eos（除非 ignore_eos）+ 显式 stop token。
+
+        采样侧用它做 min_tokens 的屏蔽（"还没生成够就不许吐停止 token"），
+        Scheduler 侧 `check_stop` 用它判断结束——同一个集合，两处用法不同（199 §2）。
+        """
+        stop_ids = set(self.stop_token_ids)
+        if self.eos_token_id is not None and not self.ignore_eos:
+            stop_ids.add(self.eos_token_id)
+        return stop_ids

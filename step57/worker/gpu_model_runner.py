@@ -36,6 +36,7 @@ import torch
 
 from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
 from ..outputs import ModelRunnerOutput
+from ..sample import SamplingMetadata
 from .gpu_input_batch import InputBatch
 
 
@@ -434,10 +435,11 @@ class GPUModelRunner:
                                "返回 None 的 execute_model() 之后")
         self.execute_model_state = None
 
-        sampling_params = [self.input_batch.sampling_params[row] for row in state.sample_rows]
-        generators = [self.input_batch.generators[row] for row in state.sample_rows]
-        sampled = self.sampler.sample(state.logits, sampling_params, generators)
-        return self._bookkeeping_sync(state, sampled)
+        # 元数据只对**要采样的行**建：张量的第 i 行对应 state.sample_rows[i]
+        sampling_metadata = SamplingMetadata.from_input_batch(self.input_batch, state.sample_rows,
+                                                             device=self.device)
+        sampler_output = self.sampler.forward(state.logits, sampling_metadata)
+        return self._bookkeeping_sync(state, sampler_output.sampled_token_ids.tolist())
 
     def take_draft_token_ids(self):
         """投机的草稿在下一步才取回（57E）。"""

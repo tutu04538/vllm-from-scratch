@@ -22,6 +22,8 @@
 import enum
 from dataclasses import dataclass, field
 
+import torch
+
 from .sampling_params import SamplingParams
 
 
@@ -80,6 +82,19 @@ class EngineCoreOutputs:
 
 
 @dataclass
+class SamplerOutput:
+    """`Sampler` 的产物：**只有 token**，形状 `[num_rows, 1]`（对应 vLLM
+    `v1/outputs.py::SamplerOutput` 的子集——它还有 logprobs 张量，本关不做 logprobs）。
+
+    形状里那个 1 是"一行出一个 token"；投机（57E）会变成 `max_spec_len + 1`，
+    被拒绝的位置填 -1。为什么不让采样器直接产出 `list[list[int]]`：它是**执行侧**的东西，
+    行号与请求 ID 的对应关系是 Runner 才知道的事（见 `_bookkeeping_sync`）。
+    """
+
+    sampled_token_ids: torch.Tensor
+
+
+@dataclass
 class ModelRunnerOutput:
     """执行侧 → Scheduler 的结果。
 
@@ -101,11 +116,16 @@ class ModelRunnerOutput:
 
 @dataclass
 class RequestOutput:
-    """用户可见的结果：累计 token（不是增量），外加结束状态。`text` 由 tokenizer 提供（57B）。"""
+    """用户可见的结果：累计 token（不是增量），外加结束状态。`text` 由 tokenizer 提供。
+
+    `stop_reason` 只在结束那一条上有值：显式 stop token 命中时是那个 token id，
+    否则是 None（对应 vLLM `CompletionOutput.stop_reason`）。
+    """
 
     request_id: str
     prompt_token_ids: list[int]
     token_ids: list[int]
     finished: bool = False
     finish_reason: FinishReason | None = None
+    stop_reason: int | str | None = None
     text: str | None = None

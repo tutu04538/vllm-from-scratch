@@ -14,6 +14,9 @@ Request，KV 由 Runner 按块表写入，采样在另一步做。这个文件�
 
 `--scheduler-trace` 打印每一轮的调度决策（排了谁几个 token、命中多少、抢占了谁、块占用），
 它是 57C 的交付物之一：**不运行模型也能看懂调度器在做什么**。
+
+采样参数（57D）：`--temperature/--top-k/--top-p/--seed` 与三种惩罚，外加 `--min-tokens`
+（"至少生成 N 个 token 才允许出现停止 token"）与 `--ignore-eos`。默认贪心、不开任何筛选。
 """
 
 import argparse
@@ -61,7 +64,16 @@ def main(argv=None):
                         help="运行精度。本机 Qwen3-1.7B 的检查点就是 bf16，按 bf16 加载省一半内存")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--temperature", type=float, default=0.0,
-                        help="0 = 贪心（本关的最小采样器只支持贪心与温度随机，见 sample/sampler.py）")
+                        help="0 = 贪心；>0 = 按温度随机（57D 的采样器）")
+    parser.add_argument("--top-k", type=int, default=-1, help="只从概率最高的 k 个里采（-1 = 不筛）")
+    parser.add_argument("--top-p", type=float, default=1.0, help="核采样阈值（1.0 = 不筛）")
+    parser.add_argument("--repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--presence-penalty", type=float, default=0.0)
+    parser.add_argument("--frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--min-tokens", type=int, default=0,
+                        help="至少生成这么多个 token 才允许出现停止 token（采样侧屏蔽）")
+    parser.add_argument("--seed", type=int, default=None, help="随机种子（同 seed 可复现）")
+    parser.add_argument("--ignore-eos", action="store_true")
     parser.add_argument("--trace", action="store_true", help="打印第一轮真正喂给模型的数字")
     parser.add_argument("--scheduler-trace", action="store_true",
                         help="打印每轮的调度决策（scheduler_trace）")
@@ -130,6 +142,12 @@ def main(argv=None):
         engine.add_request(f"q{index}", prompt_token_ids,
                            SamplingParams(max_tokens=args.max_new_tokens,
                                           temperature=args.temperature,
+                                          top_k=args.top_k, top_p=args.top_p,
+                                          seed=args.seed, min_tokens=args.min_tokens,
+                                          ignore_eos=args.ignore_eos,
+                                          repetition_penalty=args.repetition_penalty,
+                                          presence_penalty=args.presence_penalty,
+                                          frequency_penalty=args.frequency_penalty,
                                           eos_token_id=hf_config.get("eos_token_id")))
         print(f"\n问: {question}（{len(prompt_token_ids)} 个 prompt token）")
 

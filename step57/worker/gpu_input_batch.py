@@ -5,9 +5,13 @@
 
     [max_num_reqs]                  req_ids / req_id_to_index
     [max_num_reqs, max_model_len]   token_ids_cpu      ← 已知的 token 历史（prompt + 已产出）
-    [max_num_reqs]                  num_computed_tokens_cpu / num_tokens_no_spec
+    [max_num_reqs]                  num_computed_tokens_cpu / num_tokens_no_spec / num_prompt_tokens
     block_table                     [max_num_reqs, max_num_blocks_per_req]（每个 KV group 一份）
     sampling_params / generators    每行的采样配置与随机流（本关放普通 list，没编成 GPU 张量）
+    采样用的定长 CPU 张量            temperature / top_k / top_p / 三种惩罚（57D）
+
+`req_output_token_ids[row]` 存的是**请求镜像那个 list 的引用**（vLLM 同款）：`_bookkeeping_sync`
+往里 append 之后，下一轮建 `SamplingMetadata` 时立刻能看到——惩罚历史因此不需要另存一份。
 
 **行号不是身份**：`req_id_to_index` 是唯一的对应关系，行号会因为 `condense()` 而变。所以
 generator、采样参数都必须跟着**行**搬运（见 `_move_row`），不能让 seed 跟着显存行号走——
@@ -43,6 +47,16 @@ class InputBatch:
         # 温度/top_k 编成 GPU 张量、变成一次批采样）。
         self.sampling_params: list[SamplingParams | None] = [None] * max_num_reqs
         self.generators: list[torch.Generator | None] = [None] * max_num_reqs
+        # 已提交的输出（与 CachedRequestState 共享同一个 list 对象，见模块说明）
+        self.req_output_token_ids: list[list[int]] = [[] for _ in range(max_num_reqs)]
+        self.num_prompt_tokens = torch.zeros(max_num_reqs, dtype=torch.int64)
+        # 采样用的按行定长 CPU 张量：建一次、每行原地写（对应 vLLM 的 *_cpu_tensor）
+        self.temperature_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
+        self.top_k_cpu = torch.zeros(max_num_reqs, dtype=torch.int64)
+        self.top_p_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
+        self.presence_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
+        self.frequency_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
+        self.repetition_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
 
         # 本关只有一个 KV group，所以只有一张块表（vLLM 是每个 group 一张的列表）
         max_num_blocks_per_req = (max_model_len + block_size - 1) // block_size
@@ -63,6 +77,10 @@ class InputBatch:
     def num_tokens(self, row_index: int) -> int:
         """该行已知的 token 数（prompt + 已产出）。"""
         return int(self.num_tokens_no_spec[row_index])
+
+    def prompt_token_ids(self, row_index: int) -> list[int]:
+        """该行的 prompt token（从输入缓冲里切出来，不另存一份）。"""
+        return self.token_ids_cpu[row_index, :int(self.num_prompt_tokens[row_index])].tolist()
 
     def req_id_at(self, row_index: int) -> str:
         """行号 → 请求 ID。**行号不是身份**，它是可变的（`condense` 之后会变），
@@ -108,6 +126,10 @@ class InputBatch:
         self.num_tokens_no_spec[row_index] = len(all_token_ids)
         self.sampling_params[row_index] = request.sampling_params
         self.generators[row_index] = request.generator
+        self.num_prompt_tokens[row_index] = len(request.prompt_token_ids)
+        # **引用**请求镜像的输出列表（不复制）：append 之后采样侧立刻可见
+        self.req_output_token_ids[row_index] = request.output_token_ids
+        self._write_sampling_params(row_index, request.sampling_params)
         self.block_table.add_row(row_index, request.block_ids[0])
         return row_index
 
@@ -120,6 +142,8 @@ class InputBatch:
         self._req_ids[row_index] = None
         self.sampling_params[row_index] = None
         self.generators[row_index] = None
+        self.req_output_token_ids[row_index] = []
+        self.num_prompt_tokens[row_index] = 0
 
     # -------- 重排 --------
 
@@ -139,6 +163,15 @@ class InputBatch:
             write += 1
         del self._req_ids[write:]
 
+    def _write_sampling_params(self, row_index: int, sampling_params: SamplingParams) -> None:
+        """把请求的采样参数写进按行的定长张量（采样时整块取用，不必逐行现读对象）。"""
+        self.temperature_cpu[row_index] = sampling_params.temperature
+        self.top_k_cpu[row_index] = sampling_params.top_k
+        self.top_p_cpu[row_index] = sampling_params.top_p
+        self.presence_penalties_cpu[row_index] = sampling_params.presence_penalty
+        self.frequency_penalties_cpu[row_index] = sampling_params.frequency_penalty
+        self.repetition_penalties_cpu[row_index] = sampling_params.repetition_penalty
+
     def _move_row(self, src: int, dst: int) -> None:
         """搬一行：**所有**按行存的缓冲都要跟着搬，漏一个就会出现"token 是 A 的、
         采样参数是 B 的"这类错。generator 尤其重要——它决定随机流跟谁走。"""
@@ -153,4 +186,10 @@ class InputBatch:
         self.num_tokens_no_spec[dst] = self.num_tokens_no_spec[src]
         self.sampling_params[dst] = self.sampling_params[src]
         self.generators[dst] = self.generators[src]
+        self.req_output_token_ids[dst] = self.req_output_token_ids[src]
+        self.num_prompt_tokens[dst] = self.num_prompt_tokens[src]
+        for name in ("temperature", "top_k", "top_p", "presence_penalties",
+                     "frequency_penalties", "repetition_penalties"):
+            tensor = getattr(self, f"{name}_cpu")
+            tensor[dst] = tensor[src]
         self.block_table.move_row(src, dst)
