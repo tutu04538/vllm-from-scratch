@@ -5,7 +5,7 @@
   `step57/sampling_params.py`（`all_stop_token_ids` + 参数校验）、
   `step57/outputs.py`（`SamplerOutput`、`RequestOutput.stop_reason`）、
   `step57/engine/output_processor.py`（透传 `stop_reason`）
-- 包摘要 SHA256：`6debdcdb21245868…`（56 个 .py / 5912 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`69bb04afb5d8f1e5…`（56 个 .py / 5922 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{sampler,stop_and_outputs}.py`
   （对应需求里点名的 `test_sampler.py` / `test_stop_and_outputs.py`）
@@ -90,7 +90,10 @@ q_i ~ Exp(1)  →  argmax(probs_i / q_i)
 ```
 
 这个 argmax 恰好以 `probs` 为分布（Gumbel-max 的等价形式），**整批一次算完**，不需要把概率
-拉回 CPU。vLLM 的注释写明它就是为了避免 `torch.multinomial` 的同步才自己写。用例里的证据：
+拉回 CPU。vLLM 的注释说这么写是为了避开 `torch.multinomial` 的同步；本机 torch 2.13 没有复现出
+同步（GPU 忙时的 CPU 侧耗时并不变大），但开销差距是真的：每次调用 CPU 侧 167 μs vs 51 μs、
+GPU 侧 204 μs vs 76 μs（`[8, 151936]`），多出来的部分是 `torch.multinomial` 额外挂的校验
+（profile 里能看到 `aminmax` + `sum` + 两次 `_assert_async`）。用例里的证据：
 
 - 20000 次抽样的频率与给定分布的最大偏差 < 0.02；
 - 同一个 generator + 同一个种子 → 结果可复现；

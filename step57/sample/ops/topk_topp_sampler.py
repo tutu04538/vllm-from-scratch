@@ -21,8 +21,18 @@
 
     q_i ~ Exp(1)，取 argmax(probs_i / q_i)
 
-这个 argmax 恰好以 `probs` 为分布（Gumbel-max 的等价形式），而且**整批一次算完**、
-不需要把 probs 拉回 CPU——`torch.multinomial` 会引入一次同步，vLLM 的注释就是为这个才自己写。
+这个 argmax 恰好以 `probs` 为分布（Gumbel-max 的等价形式），而且**整批一次算完**。
+
+vLLM 的原注释说，自己写 `random_sample` 是为了避开 `torch.multinomial` 的同步：
+
+    We use this function instead of torch.multinomial because torch.multinomial
+    causes CPU-GPU synchronization.
+
+本机 torch 2.13 **没有复现出同步**（GPU 忙时的 CPU 侧耗时并不变大），但开销差距是真的：
+每次调用 CPU 侧 167 μs vs 51 μs、GPU 侧 204 μs vs 76 μs（`[8, 151936]` 的批）。多出来的部分
+来自它额外挂的校验步骤——profile 里能看到 `aminmax` + `sum` + 两次 `_assert_async`
+（设备端断言的机制，历史上就是靠宿主等待来检查的）。所以"为了避开同步"这句注释在当前版本
+更准确的读法是：**它每一步都做了指数竞赛不需要的检查，而且那些检查在别的版本上会等 GPU**。
 
 **随机源**：每个请求自己的 generator（`generators[row]`）只作用在**它那一行**的噪声上；
 没有 seed 的行用全局 RNG。第 56 关的拒绝采样用的也是这套"指数竞赛"，只是那里比较的是
