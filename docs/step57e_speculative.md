@@ -3,7 +3,7 @@
 - 对应代码：`step57/spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py`（新增；
   `SpecDecodeBaseProposer` 与 `DraftModelProposer` 同放在 `draft_model.py` 里，vLLM 是分两个文件），以及 `core/sched/scheduler.py`（草稿的采用与回退）、`worker/gpu_model_runner.py`
   （验证路径、下一轮提议）、`sample/metadata.py`（`spec_token_ids`）、`outputs.py`（`DraftTokenIds`）
-- 包摘要 SHA256：`8a9414034afb3e5c…`（61 个 .py / 7038 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`011a821832017a1e…`（61 个 .py / 7048 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{spec_metadata,rejection_sampler,spec_lifecycle,draft_model}.py`
   （对应需求里点名的 `test_spec_metadata.py` / `test_rejection_sampler.py` /
@@ -126,6 +126,8 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | `RejectionSampler` 返回 padded `[B, max_spec_len+1]`（无效位 -1），Runner 裁掉 | 与 vLLM 同形；本关照做，但**不**为它准备 padded 的中间张量 |
 | `draft_probs` 由执行侧按请求存、下一轮按"实际采用的前缀"重排（`_align_draft_probs`） | 199 §5 要求的 q 对齐。vLLM 也存概率并按请求重排（`take_last_draft_probs`），只是它按**批行号**索引，本关按**请求 ID**（并因此给 `SpecDecodeMetadata` 加了 `req_ids`，vLLM 没有这个字段） |
 | 没有 synthetic mode / fp64 Gumbel / logprobs / 结构化输出过滤 | 实验与对照用途，或不属于 57E |
+| **提议侧的 q 只做温度 + top-k/top-p，不做惩罚** | vLLM 的注释把这条写明了："we ignore most of the sampling parameters in generating the draft tokens. We only use the temperature. While this could degrade the acceptance rate, it does not affect the distribution of the generated tokens after rejection sampling."。拒绝采样对**任何** q 都成立，省掉约束只影响接受率。本关额外做了 top-k/top-p（与 target 的 p 更接近，接受率略高，代价是每次提议多一次排序）；**惩罚两边都不做** |
+| 验证侧施加 min_tokens 的停止 token 屏蔽（vLLM 用 `MinTokensLogitsProcessor.apply_with_spec_decode`） | 本关复用普通采样器的同一条屏蔽逻辑，历史用"已提交 + 草稿前缀"的假设历史 |
 | 只有一条 Torch 路径（vLLM 走 Triton 内核） | 199 §7 明确允许："第一版先 Torch 可读实现，函数边界对应源码" |
 | EAGLE/MTP 的"左移一位输入"、draft 的 lookahead 输入槽不做 | 本关只有普通自回归 draft（199 §9 允许收窄并记录） |
 
@@ -134,11 +136,11 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
 | `check_step57_spec_metadata.py` | 13 | vLLM 算例逐值对照（cu_num_draft / cu_num_sampled / logits / target / bonus）、K=0 退化、ragged、预填块、草稿数与行数不符要报错 |
-| `check_step57_rejection_sampler.py` | 17 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批 |
+| `check_step57_rejection_sampler.py` | 18 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批、min_tokens 的停止 token 在投机路径上同样被屏蔽 |
 | `check_step57_spec_lifecycle.py` | 12 | 提议不改本轮计划、下一轮才采用（逐枚对照）、K 裁剪（预算只够 1 行时一枚都不发）、进度回退不变量、抢占清空草稿、**greedy 下开/关投机输出逐 token 一致**、草稿位置被块表覆盖 |
 | `check_step57_draft_model.py` | 12 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
 
-十五个脚本全部通过（共 313 项）。
+十五个脚本全部通过（共 314 项）。
 
 真实模型演示（本机 Qwen3-1.7B 作 target + tiny fixture 作 draft 需要同词表，所以这里用
 **同一个小模型的 1 层切片**当 draft，见用例）：

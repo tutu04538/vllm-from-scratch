@@ -207,6 +207,23 @@ out_mixed = sampler.forward(mixed_meta, torch.tensor(mixed_logits), None, mixed_
 check("4. greedy/random 混批：greedy 行按 argmax 判、random 行按 p/q 判（都不看对方的路径）",
       out_mixed.tolist() == [[0, 2], [1, 3]], str(out_mixed.tolist()))
 
+# ------------------------------------------------ 5. min_tokens 在投机路径上同样生效
+
+# 草稿就是停止 token（4）、target 的 argmax 也是它：min_tokens 没到就不该提交
+# 两条请求各 K=1 → 4 行（各自 1 个验证行 + 1 个 bonus 行）
+eos_logits = [[0.0, 0, 0, 0, 9.0], [0.0, 0, 0, 0, 9.0], [0.0, 0, 0, 0, 9.0]]
+censor_sampling = SamplingMetadata(
+    temperature=None, all_greedy=True, all_random=False, top_k=None, top_p=None,
+    generators={}, no_penalties=True, prompt_token_ids=[[], []],
+    output_token_ids=[[], []], min_tokens=[3, 0], stop_token_ids=[[4], [4]],
+    spec_token_ids=[[4], [4]])
+eos_logits.append([0.0, 0, 0, 0, 9.0])
+out_censored = sampler.forward(metadata_for([[4], [4]]), torch.tensor(eos_logits), None,
+                               censor_sampling).sampled_token_ids
+check("5. min_tokens 未到时，停止 token 即使在草稿里也不会被提交（验证侧同样要屏蔽）",
+      out_censored[0, 0].item() != 4 and out_censored[1, 0].item() == 4,
+      f"未到 min_tokens 的行={out_censored[0, 0].item()}、已到的行={out_censored[1, 0].item()}")
+
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")
 sys.exit(1 if FAIL else 0)

@@ -31,6 +31,13 @@ random 行：草稿 d 来自分布 q，接受概率 = min(1, p[d] / q[d])，用�
 （每个请求一行噪声）。bonus、recovered 都可能先算了没用上，**不回滚随机流**。测试可以注入
 固定的 uniform / recovered 值，从而把"实现差异"与"算法错误"分开。
 
+### 提议侧的 q 与验证侧的 p 不必一样（199 §7）
+
+拒绝采样对**任何** q 都成立（接受概率 `min(1, p/q)` 保证边缘分布是 p），所以提议侧可以省掉
+惩罚、top-k/top-p 这些约束——q 离 p 越远只是**接受率**越低，不改变输出分布。
+**验证侧必须施加**：惩罚要按"已提交历史 + 草稿前缀"算（199 §7 的历史条件），
+`min_tokens` 的停止 token 屏蔽也要有（否则草稿可能在 min_tokens 之前把停止 token 送进来）。
+
 ### 本关与 vLLM 的差异
 
 | 差异 | 说明 |
@@ -110,6 +117,9 @@ class RejectionSampler:
             combine_outputs_with_spec_tokens(sampling_metadata.output_token_ids,
                                              sampling_metadata.spec_token_ids),
             num_tokens_per_req=metadata.num_draft_tokens)
+        # 「会改变 argmax 的约束」也要施加（目前只有 min_tokens 的停止 token 屏蔽）：
+        # 复用普通采样器的同一条逻辑，历史是**假设历史**（已提交 + 草稿前缀）
+        target_logits = self.sampler.apply_logits_processors(target_logits, target_metadata)
         target_logits = self._apply_penalties(target_logits, target_metadata,
                                               metadata.num_draft_tokens)
         target_logits = self._apply_constraints(target_logits, target_metadata,
