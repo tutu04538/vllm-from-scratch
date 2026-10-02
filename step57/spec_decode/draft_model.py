@@ -46,7 +46,7 @@ import torch
 
 from ..outputs import DraftTokenIds
 from ..sample import Sampler
-from ..sample.metadata import SAMPLING_EPS, SamplingMetadata
+from ..sample.metadata import SAMPLING_EPS
 from ..sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
 
@@ -69,7 +69,6 @@ class SpecDecodeBaseProposer:
         self._draft_computed: dict[str, int] = {}
         self._draft_generators: dict[str, torch.Generator] = {}
         self.num_drafts_proposed = 0
-        self.num_drafts_accepted_hint = 0
 
     # -------- 交给子类 --------
 
@@ -99,7 +98,7 @@ class SpecDecodeBaseProposer:
         if rows:
             hidden = self._forward(rows, all_token_ids, input_batch)
             last_row: dict[str, int] = {}
-            for index, (req_id, _position) in enumerate(rows):
+            for index, (req_id, _) in enumerate(rows):
                 last_row[req_id] = index
             self._sample(hidden, list(last_row.items()), input_batch, drafts, probs)
             for req_id in last_row:
@@ -202,9 +201,9 @@ class SpecDecodeBaseProposer:
         # **先过 LM head**：hidden 是隐藏态，采样要的是词表上的 logits（与 Runner 同一条路：
         # `compute_logits` 只对需要的行做词表 GEMM）
         logits = self.model.compute_logits(
-            hidden[torch.tensor([row for _req_id, row in row_refs],
+            hidden[torch.tensor([row for _, row in row_refs],
                                 dtype=torch.int64, device=hidden.device)]).to(torch.float32)
-        for index, (req_id, row) in enumerate(row_refs):
+        for index, (req_id, _) in enumerate(row_refs):
             parameter = input_batch.sampling_params[input_batch.req_id_to_index[req_id]]
             row_logits = logits[index]
             probs_row = self._row_probs(row_logits, parameter)
@@ -213,7 +212,6 @@ class SpecDecodeBaseProposer:
                               {0: self._generator(req_id, parameter)})[0])
             drafts[req_id].append(token)
             probs[req_id].append(probs_row)
-            self.num_drafts_accepted_hint += 0
 
     def _row_probs(self, row_logits: torch.Tensor, parameter) -> torch.Tensor:
         """一行的提议分布：贪心 → one-hot（点质量）；否则与普通采样同一条约束链。"""
