@@ -3,7 +3,7 @@
 - 对应代码：`step57/spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py`（新增；
   `SpecDecodeBaseProposer` 与 `DraftModelProposer` 同放在 `draft_model.py` 里，vLLM 是分两个文件），以及 `core/sched/scheduler.py`（草稿的采用与回退）、`worker/gpu_model_runner.py`
   （验证路径、下一轮提议）、`sample/metadata.py`（`spec_token_ids`）、`outputs.py`（`DraftTokenIds`）
-- 包摘要 SHA256：`486b74007c8c2054…`（61 个 .py / 7114 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`3df5b17054cc5d72…`（61 个 .py / 7114 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{spec_metadata,rejection_sampler,spec_lifecycle,draft_model}.py`
   （对应需求里点名的 `test_spec_metadata.py` / `test_rejection_sampler.py` /

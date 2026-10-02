@@ -47,6 +47,8 @@ random 行：草稿 d 来自分布 q，接受概率 = min(1, p[d] / q[d])，用�
 | 只有一条 Torch 路径 | vLLM 走 Triton 内核；本关按 199 §7"第一版先 Torch 可读实现，函数边界对应源码" |
 """
 
+import dataclasses
+
 import torch
 
 from ..outputs import SamplerOutput
@@ -224,8 +226,6 @@ class RejectionSampler:
 
         `num_tokens_per_req` 给了就把 `[B]` 的参数展开成 `[P]`（验证行是"每请求 K 行"）。
         """
-        import dataclasses
-
         # ---- 契约检查（2026-10-02 补）----
         # 这个方法把"逐请求"的参数摊成"逐验证行"，**行序必须与传入的 sampling_metadata 一致**，
         # 长度也必须对得上。原来什么都不查、还用 `zip()` 摊平——zip 会按短的那边**静默截断**：
