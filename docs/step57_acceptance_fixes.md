@@ -3,7 +3,7 @@
 - 对应代码：`step57/core/{kv_cache_manager.py,sched/scheduler.py}`、
   `step57/worker/{gpu_model_runner.py,block_table.py}`、
   `step57/spec_decode/{rejection_sampler.py,draft_model.py}`
-- 包摘要 SHA256：`3df5b17054cc5d72…`（61 个 .py / 7114 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`34770b54f3c34e44…`（61 个 .py / 7188 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收输入：`vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step57_review_20261002/`
   （三个独立探针 + 我的 15 个用例的日志）
@@ -117,6 +117,33 @@ K 相等时静默算错（我的用例原来只测了 K=[1,1]，所以没抓到�
 （`prompt_token_ids[repeat_indices]`）而不是摊平 Python 列表——数组索引天然会检查长度，
 本关保持列表、但把长度检查显式写出来。
 
+### 1.9 补：chunked prefill 与"group 发布边界"（204 §6）
+
+204 §6 有两条，**第一条我修了、第二条只修了一半**，这一轮补上：
+
+**6.1 未 ready 的 prefill 不提议**（已修）：`_propose_draft_tokens(ready_rows=...)` 只对
+本轮 ready 的请求提——中间 prefill 块既没有 next token、槽位也没分配完。这对应 vLLM
+`update_draft_tokens_ids()` 里那句 *"Ignore draft tokens for prefill chunks"*。
+
+**6.2 target 算完 ≠ 整个 group 算完**（这一轮补）：同一个逻辑块在 target/draft 的**每一层**
+都有各自的 tensor，**只要有一层没写完，这个 group 的块就不能声明"完整可复用"**。
+我原来只在 `Scheduler._publish_blocks()` 里看 target 的进度 ✗，于是：
+
+```text
+target num_computed = 8   draft 只算到 7   完整块发布范围 = 8 tokens
+position 7 的 draft KV = 全零              该块 block_hash = 已登记   ✗
+```
+
+修法（204 §6 的"修复要求"第三条：执行端维护临时有效边界、控制端只发布得到保证的范围）：
+
+- 提议者暴露 `draft_computed(req_id)`（ngram 不写 KV → 返回一个"不夹"的哨兵值）；
+- `ModelRunnerOutput` 多带一项 `draft_computed_tokens`（**这是我们比 vLLM 多做的对账**：
+  vLLM 按 target 发布、假定 drafter 自己会补齐；本关显式把两边取 min）；
+- `Scheduler.update_from_output()` 发布时夹到 `min(target 进度, draft 进度)`。
+
+**它是"延迟发布"而不是"漏发"**：draft 落后时那个块只是晚一点登记，draft 追上来之后照常发布
+（用例里能看到 `draft=0` 的几轮 `cached_blocks=0`，追上来之后变成 2）。
+
 ## 2. 验证
 
 | 探针 / 脚本 | 修复前 | 修复后 |
@@ -124,7 +151,7 @@ K 相等时静默算错（我的用例原来只测了 K=[1,1]，所以没抓到�
 | `review_inference_boundary.py` | 0/1（每步 +30 图节点） | **1/1**（`requires_grad=False`、`grad_fn=None`、0 节点） |
 | `review_draft_boundaries.py` | 2/6 | **6/6** |
 | `review_rejection_boundaries.py` | 0/2 | **2/2** |
-| 我自己的 16 个脚本 | 314 项 | **325 项**（把上面这些类都补成了回归用例） |
+| 我自己的 16 个脚本 | 314 项 | **330 项**（把上面这些类都补成了回归用例） |
 
 新增的回归用例（免得下次再漏）：
 

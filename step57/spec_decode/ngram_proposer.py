@@ -43,6 +43,14 @@ class NgramProposer:
             draft_token_ids.append(self._propose_one(tokens))
         return DraftTokenIds(req_ids=list(req_ids), draft_token_ids=draft_token_ids)
 
+    def draft_computed(self, req_id: str) -> int:
+        """ngram **不写 KV**（它没有第二个模型），所以不构成"发布边界"的约束。
+
+        接口与 draft_model 提议器保持一致，返回一个"不夹"的哨兵值：控制端只在
+        `min(target 进度, 这个值)` 上做夹取，返回一个很大的数就等于不夹。
+        """
+        return 1 << 30
+
     def _propose_one(self, tokens: list[int]) -> list[int]:
         for ngram_size in range(min(self.max_ngram, len(tokens)), 0, -1):
             suffix = tokens[-ngram_size:]

@@ -138,6 +138,16 @@ class SpecDecodeBaseProposer:
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
 
+    def draft_computed(self, req_id: str) -> int:
+        """draft 侧**已经算过 KV 的位置数**（0 = 还没算过）。
+
+        它决定"这条请求的块能不能发布进前缀缓存"：同一个逻辑块在 target/draft 的每一层都有
+        各自的 tensor，**只要有一层没写完，这个 group 的块就不能声明完整可复用**
+        （199 §9；验收报告 204 §6.2）。所以发布边界取 `min(target 进度, 这个值)`——
+        它落后时只是**延迟发布**，不会漏掉（draft 追上来之后照常发布）。
+        """
+        return self._draft_computed.get(req_id, 0)
+
     def _drop_stale(self, req_ids: list[str], reset_req_ids: set[str]) -> None:
         """丢掉不再成立的 draft 侧进度：请求结束、或它刚被恢复（块表整表换过）。
 

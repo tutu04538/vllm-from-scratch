@@ -428,8 +428,16 @@ class Scheduler:
 
             # 发布缓存：此刻本轮的 KV 已经写完（forward 在前），进度也是校正过的值。
             # 放在"释放块之前"——释放之后块就进空闲队列了，但内容还在，只是我们要在
-            # 还持有它的时候把 hash 登记好（197 §4）
-            self._publish_blocks(request)
+            # 还持有它的时候把 hash 登记好（197 §4）。
+            #
+            # 边界还要夹上 **draft 侧的进度**：同一个逻辑块在 target/draft 的每层都有各自
+            # 的 tensor，draft 还没算过的位置不能让这个块变成"完整可复用"（199 §9）。
+            # 它落后时只是延迟发布，追上来之后照常发布。
+            draft_boundary = (model_runner_output.draft_computed_tokens or {}).get(req_id)
+            safe_tokens = request.num_computed_tokens
+            if draft_boundary is not None:
+                safe_tokens = min(safe_tokens, draft_boundary)
+            self._publish_blocks(request, safe_tokens)
 
             should_emit = bool(new_token_ids) or stopped
             if not should_emit:
@@ -457,10 +465,16 @@ class Scheduler:
 
         return EngineCoreOutputs(outputs=outputs, finished_requests=finished_now)
 
-    def _publish_blocks(self, request: Request) -> None:
-        """把这条请求已经确定的完整块登记进前缀缓存（关缓存时是空操作）。"""
+    def _publish_blocks(self, request: Request, num_tokens: int | None = None) -> None:
+        """把这条请求已经确定的完整块登记进前缀缓存（关缓存时是空操作）。
+
+        `num_tokens` 是**保证有效**的 token 数（默认取 target 的进度；投机时由调用方夹到
+        `min(target, draft)`）。发布上限仍然是 `floor(min(num_tokens, num_tokens)/block_size)`
+        ——预留给提议者的 lookahead 块**不在**这里面（"预留块不等于 token 已计算"）。
+        """
         if self.enable_prefix_caching:
-            self.kv_cache_manager.cache_blocks(request, request.num_computed_tokens)
+            self.kv_cache_manager.cache_blocks(
+                request, request.num_computed_tokens if num_tokens is None else num_tokens)
 
     def _update_request_with_output(self, request: Request,
                                     new_token_ids: list[int]) -> tuple[list[int], bool]:

@@ -218,6 +218,21 @@
 ## 5. 采样与投机
 
 ```text
+主题：**发布边界多夹一层 draft 进度**（vLLM 只按 target 发布）
+本机路径 / 类 / 方法：v1/core/sched/scheduler.py::update_from_output、
+                       v1/core/single_type_kv_cache_manager.py::cache_blocks
+本机做法：按 target 的 `num_computed_tokens` 发布完整块（drafter 自己负责补齐它的那一份）
+本项目做法：发布前把边界夹到 `min(target 进度, draft 进度)`——执行侧在 `ModelRunnerOutput` 里
+            回报每条请求的 `draft_computed_tokens`（vLLM 没有这个字段）
+为何简化：不这么做的话，chunked prefill 或"draft 还没追上来"时会把只有 target 算过的块登记成
+          可复用（199 §9 明确不允许：**"不能把只有 target 算过的块作为双模型命中"**）
+影响：命中机会略微减少（发布被推迟到 draft 追上来）；正确性更强（不会命中缺 draft KV 的块）
+对应测试：check_step57_draft_model.py §6（chunked prefill 下 cached_blocks 恒为 0、
+          追上来之后照常发布、prefix 开/关对照、恢复后 draft 进度不落后）
+以后何时消除：如果以后 drafter 能在发布前保证补齐（或 group 拆分成独立池），可以去掉这一层夹取
+```
+
+```text
 主题：普通 draft 限定兼容 KV 规格与同词表
 本机路径 / 类 / 方法：v1/spec_decode/draft_model.py::DraftModelProposer（`_create_draft_vllm_config`）、
                        v1/core/kv_cache_coordinator.py（多 KV group）

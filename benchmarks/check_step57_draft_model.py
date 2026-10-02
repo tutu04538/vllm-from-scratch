@@ -224,6 +224,58 @@ try:
     if engine is not None:
         engine.shutdown()
 
+    # ---- 6.2：chunked prefill 下的**发布边界**（199 §9：group 各层都写完才能发布）----
+    def run_with_draft(prompt, budget, prefix, blocks=32, max_tokens=6, max_model_len=64):
+        config = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
+                       spec_tokens=1, budget=budget, blocks=blocks,
+                       max_model_len=max_model_len).vllm_config
+        config = VllmConfig(model_config=config.model_config, cache_config=CacheConfig(
+                                block_size=4, num_gpu_blocks=blocks,
+                                enable_prefix_caching=prefix),
+                            scheduler_config=config.scheduler_config,
+                            device_config=config.device_config,
+                            speculative_config=config.speculative_config)
+        engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+        scheduler = engine.engine_core.engine_core.scheduler
+        runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+        engine.add_request("r", list(prompt), SamplingParams(max_tokens=max_tokens,
+                                                            temperature=0.0, eos_token_id=999))
+        observations = []
+        while engine.has_unfinished_requests():
+            engine.step()
+            request = scheduler.requests.get("r")
+            if request is None:
+                continue
+            observations.append((request.num_computed_tokens,
+                                 runner.proposer.draft_computed("r"),
+                                 scheduler.kv_cache_manager.num_cached_blocks()))
+        engine.shutdown()
+        return observations, runner
+
+    # budget=2 → 强制 chunked prefill；前缀缓存开着才可能"提前发布"
+    observations, _ = run_with_draft([1, 2, 3, 4, 5, 6, 7, 8], budget=2, prefix=True)
+    early = [(computed, draft, cached) for computed, draft, cached in observations if draft == 0]
+    check("6. 中间 prefill 块：draft 还没算过，**一个完整块都不发布**"
+          "（同一 group 的各层都写完才算有效；预留的 lookahead 更不算）",
+          all(cached == 0 for _computed, _draft, cached in early) and bool(early),
+          f"draft=0 的轮次观察={early}")
+    check("6. draft 追上来之后照常发布（**延迟**发布，不是漏发）",
+          observations[-1][2] > 0 and observations[-1][1] >= observations[-1][0],
+          f"最后一轮={observations[-1]}（target 进度, draft 进度, 缓存块数）")
+
+    # prefix 开/关：输出必须一致（缓存只该改变速度）
+    on, _ = run_with_draft([1, 2, 3, 4, 5, 6], budget=16, prefix=True)
+    off, _ = run_with_draft([1, 2, 3, 4, 5, 6], budget=16, prefix=False)
+    check("6. 真实 draft 下 prefix 开/关：跑完都正常（缓存不改变结果，只影响能不能命中）",
+          on[-1][2] > 0 and off[-1][2] == 0 and on[-1][1] >= on[-1][0] and off[-1][1] >= off[-1][0],
+          f"开={(on[-1])}、关={(off[-1])}")
+
+    # 抢占后恢复（真实 draft + 小池子）：能跑完，draft 侧进度也重置过
+    observations, runner = run_with_draft([1, 2, 3, 4, 1, 2, 3, 4], budget=16, prefix=False)
+    check("6. 恢复之后 draft 侧进度不落后（旧物理编号上的 KV 不能当历史）",
+          observations[-1][1] >= observations[-1][0],
+          f"最后一轮={observations[-1]}")
+
     # 提议必须看到"本轮新采样的 token"；发布的完整块不能超过 draft 侧的进度
     engine = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
                    spec_tokens=1, max_tokens=8)

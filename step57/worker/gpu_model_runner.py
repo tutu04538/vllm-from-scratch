@@ -659,6 +659,10 @@ class GPUModelRunner:
             req_ids=req_ids,
             req_id_to_index={req_id: index for index, req_id in enumerate(req_ids)},
             sampled_token_ids=[sampled_by_req.get(req_id, []) for req_id in req_ids],
+            draft_computed_tokens=(
+                {req_id: self.proposer.draft_computed(req_id)
+                 for req_id in self.input_batch.req_ids}
+                if self.proposer is not None else None),
         )
 
     def _commit_tokens_to_mirror(self, req_id: str, row: int, token_ids: list[int]) -> None:

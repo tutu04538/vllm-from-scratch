@@ -125,6 +125,11 @@ class ModelRunnerOutput:
     req_ids: list[str]
     req_id_to_index: dict[str, int]
     sampled_token_ids: list[list[int]]
+    # 投机时多带一项：每条请求"draft 侧已经算过 KV 的位置数"。控制端用它把**发布边界**
+    # 夹到 `min(target 进度, draft 进度)`——同一个 KV group 的每一层都写完了，块才能声明
+    # 完整可复用（199 §9）。没有投机 / 没有 draft 时是 None（不夹）。
+    # vLLM 没有这个字段（它按 target 发布），这是我们为"双模型共用一个 group"显式加的对账。
+    draft_computed_tokens: dict[str, int] | None = None
 
     @classmethod
     def make_empty(cls) -> "ModelRunnerOutput":
