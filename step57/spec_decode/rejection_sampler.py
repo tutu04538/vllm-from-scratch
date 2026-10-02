@@ -128,13 +128,14 @@ class RejectionSampler:
         # ---- 3) 逐请求判定（greedy / random 两路），产出 padded [B, max_spec_len+1] ----
         return SamplerOutput(sampled_token_ids=self._verify(
             metadata, target_logits, target_metadata, draft_probs, bonus_token_ids,
-            uniforms=uniforms, recoveries=recoveries))
+            sampling_metadata=sampling_metadata, uniforms=uniforms, recoveries=recoveries))
 
     # -------- 结果合成 --------
 
     def _verify(self, metadata, target_logits: torch.Tensor,
                 target_metadata: SamplingMetadata, draft_probs: torch.Tensor | None,
-                bonus_token_ids: torch.Tensor, *, uniforms: torch.Tensor | None,
+                bonus_token_ids: torch.Tensor, *, sampling_metadata: SamplingMetadata,
+                uniforms: torch.Tensor | None,
                 recoveries: torch.Tensor | None) -> torch.Tensor:
         batch_size = metadata.batch_size
         max_spec_len = metadata.max_spec_len
@@ -155,8 +156,11 @@ class RejectionSampler:
             is_greedy_rows = torch.zeros(target_logits.shape[0], dtype=torch.bool,
                                          device=device)
         else:
+            # 注意用**逐请求**的 `sampling_metadata.temperature`（[B]）来展开成 [P] 行；
+            # `target_metadata.temperature` 已经是展开过的 [P]，再 expand 一次会
+            # "repeats.size(0) != input.size(0)"（K 不一致时当场报错，K 一致时静默算错）
             is_greedy_rows = expand_batch_to_tokens(
-                target_metadata.temperature < SAMPLING_EPS, metadata.num_draft_tokens)
+                sampling_metadata.temperature < SAMPLING_EPS, metadata.num_draft_tokens)
 
         if uniforms is None and is_greedy_rows is not None and not bool(is_greedy_rows.all()):
             uniforms = self._draw_uniforms(metadata, target_metadata, device)
@@ -228,7 +232,10 @@ class RejectionSampler:
                 sampling_metadata.min_tokens, num_tokens_per_req) for _ in range(count)]
             updates["stop_token_ids"] = [value for value, count in zip(
                 sampling_metadata.stop_token_ids, num_tokens_per_req) for _ in range(count)]
-            updates["generators"] = {}
+            # `generators` **按请求下标留原样**（不展开、也不清空）：抽样按
+            # `enumerate(num_draft_tokens)` 的下标取，与 vLLM 的
+            # `generate_uniform_probs(..., generators, ...)` 同一套键。清空的话，
+            # 有 seed 的请求会退化成用全局 RNG → 结果随全局种子变（验收方的独立探针抓到了）
         return dataclasses.replace(sampling_metadata, **updates)
 
     @staticmethod

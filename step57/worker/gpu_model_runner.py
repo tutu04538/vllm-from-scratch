@@ -133,8 +133,9 @@ class GPUModelRunner:
         self.rejection_sampler = RejectionSampler(Sampler())
         self.proposer = None
         self.speculative_config = vllm_config.speculative_config
-        # 本轮验证时顺手提的下一轮草稿（`post_step` 取走）
+        # 本轮验证时顺手提的下一轮草稿（`post_step` 取走）；概率留到下一轮按采用的前缀重排
         self.pending_draft_token_ids = None
+        self.pending_draft_probs = None
         # 本轮协议里"整表替换过块表"的请求（draft 侧据此重置自己的进度）
         self._resumed_req_ids: set[str] = set()
         self.kv_caches: dict[str, torch.Tensor] = {}
@@ -451,8 +452,18 @@ class GPUModelRunner:
 
     # -------- 执行侧的两步协议 --------
 
+    @torch.inference_mode()
     def execute_model(self, scheduler_output):
-        """第一步：合并状态、跑模型、存下 logits。返回 `None` 表示"等 sample_tokens"。"""
+        """第一步：合并状态、跑模型、存下 logits。返回 `None` 表示"等 sample_tokens"。
+
+        **`torch.inference_mode()` 不是装饰性的**（vLLM 在同样的位置也有这个装饰器）：模型的
+        参数默认 `requires_grad=True`，而 KV 写入是 `index_copy_`——没有这个边界的话，每次
+        写入都会记一个 `CopySlices` 反向图挂在 KV 缓存上，并且**一步一步累积**（每一步多 30 个
+        图节点）。推理引擎里这意味着显存随步数单调上涨（验收方的独立探针就是查这个）。
+
+        为什么不在 `load_model` 上也加：那会让权重本身变成"推理张量"，而这些权重还要被
+        测试里的直接前向用到；本关只在**每步的入口**（执行与采样）划这条线。
+        """
         self._check_usable()
         if self.execute_model_state is not None:
             raise RuntimeError(
@@ -489,8 +500,9 @@ class GPUModelRunner:
             spec_metadata=inputs.spec_metadata)
         return None
 
+    @torch.inference_mode()
     def sample_tokens(self, grammar_output=None):
-        """第二步：消费 logits 采样，并产出 `ModelRunnerOutput`。
+        """第二步：消费 logits 采样，并产出 `ModelRunnerOutput`（同样在推理边界内）。
 
         `grammar_output`（结构化输出）本关不用，但接口留着：执行与采样分开的意义之一就是给
         这类"采样前还要改一遍 logits"的路径留位置。
@@ -517,9 +529,17 @@ class GPUModelRunner:
             sampler_output = self.sampler.forward(state.logits, sampling_metadata)
             sampled = sampler_output.sampled_token_ids.tolist()
 
-        # 验证完就顺手提**下一轮**的草稿（199 §4 的时序：轮 t 提 → 轮 t+1 采用）
-        self.pending_draft_token_ids = self._propose_draft_tokens()
-        return self._bookkeeping_sync(state, sampled)
+        # 先记账、再提草稿（顺序不能反，199 §4 的时序）：
+        # `_bookkeeping_sync` 把本轮采样结果写进镜像，**提议必须看到它**——
+        # 否则草稿是基于"少一个 token 的历史"算出来的，draft 侧的进度也会比 target 落后一格，
+        # 于是发布出去的完整块可能还没被 draft 算过（验收方的独立探针分别抓到了这两点）
+        output = self._bookkeeping_sync(state, sampled)
+        # 只对**本轮已 ready**（历史算完）的请求提草稿：中间 prefill 块既没有"next token"，
+        # 它的 KV 槽位也还没分配完（草稿要写在 target query 之外）。
+        # vLLM 在 Scheduler.update_draft_token_ids 里同样跳过 prefill 块
+        # （"Ignore draft tokens for prefill chunks"）——这里更早一步就不提。
+        self.pending_draft_token_ids = self._propose_draft_tokens(ready_rows=state.sample_rows)
+        return output
 
     # -------- 投机（57E）--------
 
@@ -546,15 +566,21 @@ class GPUModelRunner:
                 [token for token in rows[index] if token != -1] if row in ready else [])
         return [sampled_by_row[row] for row in state.sample_rows]
 
-    def _propose_draft_tokens(self):
+    def _propose_draft_tokens(self, ready_rows=None):
         """按配置提**下一轮**的草稿（199 §4：轮 t 验证时顺手提，轮 t+1 才采用）。
 
         提议的输入只看**已提交历史**（不看本轮自己的草稿区）；返回的草稿与概率只留到
         下一轮的 `sample_tokens`，届时按实际采用的条数重排 q。
+        `ready_rows` 非空时只给这些行提（中间 prefill 块不提）。
         """
         if self.proposer is None:
             return None
-        req_ids = list(self.input_batch.req_ids)
+        if ready_rows is None:
+            req_ids = list(self.input_batch.req_ids)
+        else:
+            req_ids = [self.input_batch.req_id_at(row) for row in ready_rows]
+            if not req_ids:
+                return None
         all_token_ids = {req_id: self.requests[req_id].all_token_ids for req_id in req_ids}
         num_tokens_no_spec = {}
         for req_id in req_ids:

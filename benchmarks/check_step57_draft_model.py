@@ -175,6 +175,84 @@ try:
         error = str(exc)
     check("5. 声明 draft_model 却没给 draft_model_config → 明确报错",
           error is not None and "draft_model_config" in error, first_line(error))
+    # ------------------------------------------------ 6. 验收方抓到的四类边界（补成回归用例）
+
+    def one_step(prompt, k=3, budget=16, device="cpu"):
+        """跑一轮，返回 (是否抛异常, 异常字符串)。"""
+        engine = None
+        try:
+            engine = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
+                           spec_tokens=k, budget=budget)
+            engine.add_request("r", list(prompt), SamplingParams(max_tokens=6, temperature=0.0,
+                                                                eos_token_id=999))
+            engine.step()
+            return None, engine
+        except Exception as exc:                     # noqa: BLE001
+            return f"{type(exc).__name__}: {exc}", engine
+
+
+    error, engine = one_step([1, 2, 3, 4], k=3)
+    check("6. prompt 恰好占满一个块：草稿要写的位置有 lookahead 槽位（不越界）",
+          error is None, error or "正常")
+    if engine is not None:
+        engine.shutdown()
+
+    error, engine = one_step([1, 2, 3, 4, 5, 6, 7, 8], k=2)
+    check("6. prompt 恰好占满两个块：同上", error is None, error or "正常")
+    if engine is not None:
+        engine.shutdown()
+
+    error, engine = one_step([1, 2, 3, 4, 5, 6], k=1, budget=2)
+    check("6. 中间 prefill 块不提草稿（它的 KV 槽位还没分配完；vLLM 同样跳过 prefill 块）",
+          error is None, error or "正常")
+    if engine is not None:
+        engine.shutdown()
+
+    if torch.cuda.is_available():
+        error, engine = one_step([1, 2, 3, 4, 5, 6], k=3, device="cuda")
+        check("6. CUDA：草稿的 slot_mapping 在 CPU 上算完再搬（块表镜像是 CPU 结构）",
+              error is None, error or "正常")
+        if engine is not None:
+            engine.shutdown()
+    else:
+        check("6. （跳过 CUDA 设备用例：本机没有 CUDA）", True)
+
+    # 提议必须看到"本轮新采样的 token"；发布的完整块不能超过 draft 侧的进度
+    engine = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
+                   spec_tokens=1, max_tokens=8)
+    runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+    scheduler = engine.engine_core.engine_core.scheduler
+    seen_histories = []
+    original_propose = runner.proposer.propose
+
+
+    def traced_propose(req_ids, all_token_ids, num_tokens_no_spec, *args, **kwargs):
+        seen_histories.append({req_id: list(all_token_ids[req_id][:num_tokens_no_spec[req_id]])
+                               for req_id in req_ids})
+        return original_propose(req_ids, all_token_ids, num_tokens_no_spec, *args, **kwargs)
+
+
+    runner.proposer.propose = traced_propose
+    engine.add_request("r", [1, 2, 3, 4, 5, 6], SamplingParams(max_tokens=8, temperature=0.0,
+                                                               eos_token_id=999))
+    published_boundary, draft_boundary = None, None
+    while engine.has_unfinished_requests():
+        engine.step()
+        request = scheduler.requests.get("r")
+        if request is not None and "r" in runner.proposer._draft_computed:
+            block_size = 4
+            published_boundary = (min(request.num_computed_tokens, request.num_tokens)
+                                  // block_size) * block_size
+            draft_boundary = runner.proposer._draft_computed["r"]
+    engine.shutdown()
+
+    check("6. 提议看到的是**本轮刚采样的 token**（提议在记账之后，199 §4 的时序）",
+          bool(seen_histories) and len(seen_histories[0]["r"]) >= 7,
+          f"第一次提议看到的历史长度={len(seen_histories[0]['r']) if seen_histories else None}")
+    check("6. 发布的完整块不超过 draft 侧已算到的位置（prefix 只在该 group 各层都有 KV 时才能发布）",
+          published_boundary is not None and published_boundary <= draft_boundary,
+          f"发布到 {published_boundary}、draft 算到 {draft_boundary}")
+
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

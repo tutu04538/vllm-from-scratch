@@ -121,7 +121,7 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 
 | 差异 | 说明 |
 |---|---|
-| 没有 `num_lookahead_tokens` 预留 | 本关草稿的槽位**在本轮调度范围之内**（`num_tokens_with_spec` 已含草稿），所以不需要额外预留；EAGLE/MTP 那种"提议者就是 target 自己"才需要 |
+| `num_lookahead_tokens` 按 vLLM 规则实现（draft_model → K，ngram → 0）；仍没有 `input_budget` | 提议者写 target query 之外的 K 个位置，必须预留；输入缓冲不预分配，只检查位置边界（见对齐账本） |
 | 没有独立的输入预算（`input_budget` / `max_num_new_slots_for_drafting`），也**没有预分配的定长输入缓冲** | 每轮按"实际要补多少 token"现搭张量，只检查位置落在 `[0, max_model_len)`。一轮的行数不小：**恢复之后 draft 要重算整段历史** |
 | `RejectionSampler` 返回 padded `[B, max_spec_len+1]`（无效位 -1），Runner 裁掉 | 与 vLLM 同形；本关照做，但**不**为它准备 padded 的中间张量 |
 | `draft_probs` 由执行侧按请求存、下一轮按"实际采用的前缀"重排（`_align_draft_probs`） | 199 §5 要求的 q 对齐。vLLM 也存概率并按请求重排（`take_last_draft_probs`），只是它按**批行号**索引，本关按**请求 ID**（并因此给 `SpecDecodeMetadata` 加了 `req_ids`，vLLM 没有这个字段） |
@@ -138,9 +138,9 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | `check_step57_spec_metadata.py` | 13 | vLLM 算例逐值对照（cu_num_draft / cu_num_sampled / logits / target / bonus）、K=0 退化、ragged、预填块、草稿数与行数不符要报错 |
 | `check_step57_rejection_sampler.py` | 18 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批、min_tokens 的停止 token 在投机路径上同样被屏蔽 |
 | `check_step57_spec_lifecycle.py` | 12 | 提议不改本轮计划、下一轮才采用（逐枚对照）、K 裁剪（预算只够 1 行时一枚都不发）、进度回退不变量、抢占清空草稿、**greedy 下开/关投机输出逐 token 一致**、草稿位置被块表覆盖 |
-| `check_step57_draft_model.py` | 12 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
+| `check_step57_draft_model.py` | 18 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
 
-十五个脚本全部通过（共 314 项）。
+十五个脚本全部通过（共 322 项；含验收修复后补的回归用例）。
 
 真实模型演示（本机 Qwen3-1.7B 作 target + tiny fixture 作 draft 需要同词表，所以这里用
 **同一个小模型的 1 层切片**当 draft，见用例）：

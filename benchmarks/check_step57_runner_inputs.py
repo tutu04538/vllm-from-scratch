@@ -370,6 +370,12 @@ check("7. 每个 SchedulerOutput 里没有 torch.Tensor、没有 Request/Schedul
       not spy.problems, "；".join(spy.problems[:3]))
 check("7. Scheduler 实例上也没有张量属性（GPU 缓冲都在执行侧）",
       not tensor_attrs, str(tensor_attrs))
+# 推理边界：`execute_model`/`sample_tokens` 上必须有 `torch.inference_mode()`，
+# 否则 KV 写入（index_copy_）会把反向图挂在缓存上，并且**一步一步累积**
+kv_tensors = list(runner.kv_caches.values())
+check("7. KV 缓存上没有 autograd 图（推理边界；否则显存随步数单调上涨）",
+      all(not tensor.requires_grad and tensor.grad_fn is None for tensor in kv_tensors),
+      f"{[tensor.grad_fn for tensor in kv_tensors][:2]}")
 engine.shutdown()
 
 # ------------------------------------------------ 8. 入口边界（prompt 装不下）

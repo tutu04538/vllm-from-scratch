@@ -66,3 +66,4 @@
 | [step57e_speculative.md](step57e_speculative.md) | `step57/spec_decode/`（新增） | 投机回接：SpecDecodeMetadata 的两个坐标系、min(1,p/q) 验证与 max(p−q,0) 恢复、「轮 t 提议 → 轮 t+1 采用」的时序、被拒草稿的进度回退、ngram 与真实 draft 模型（同 KV group、每层各自 tensor、规格不兼容明确报错） |
 | [step57_architecture.md](step57_architecture.md) | `step57/`（对照关，无代码改动） | 回到真实源码：分层与状态归属、一条覆盖五种事件的状态轨迹、194 §8 的七问×五事件、与真实 vLLM 的数学对照（logits 2.4e-7 / 端到端 fp32 逐 token 一致） |
 | [step57_alignment.md](step57_alignment.md) | `step57/`（对照关，无代码改动） | 57 关的差异账本汇总：按 vLLM 模块归类、每项九段（本机做法/本项目做法/为何简化/影响/对应测试/何时消除） |
+| [step57_acceptance_fixes.md](step57_acceptance_fixes.md) | `step57/`（验收修复） | 独立探针抓到的 6 个问题：KV 上的 autograd 图（显存随步数涨）、提议者越界写 lookahead 槽位、CUDA 设备、提议与记账顺序、混批 ragged K 的展开、seed 被全局 RNG 污染；逐条按 vLLM 修 + 补回归用例 |

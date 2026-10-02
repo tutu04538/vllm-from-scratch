@@ -114,17 +114,29 @@
 ```
 
 ```text
-主题：没有 `num_lookahead_tokens` / `input_budget` / `max_num_new_slots_for_drafting`
-本机路径 / 类 / 方法：v1/core/kv_cache_manager.py::allocate_slots(num_lookahead_tokens)、
+主题：`num_lookahead_tokens` 已按 vLLM 实现；仍然没有 `input_budget` /
+      `max_num_new_slots_for_drafting`
+本机路径 / 类 / 方法：v1/config/vllm.py::VllmConfig.num_lookahead_tokens、
+                       v1/core/kv_cache_manager.py::allocate_slots(num_lookahead_tokens)、
                        v1/core/sched/scheduler.py（input_budget）
-本机做法：为提议者将写入的槽位预留 lookahead 块；token 预算与输入预算分开算
-本项目做法：草稿的槽位**就在本轮调度范围内**（`num_tokens_with_spec` 已含草稿），所以不需要
-            预留；draft 前向的输入不预分配缓冲，只检查位置在 `[0, max_model_len)` 内
-为何简化：本关只有普通自回归 draft（不是 EAGLE/MTP 那种"提议者就是 target 自己"）
+本机做法：`num_lookahead_tokens` = K（EAGLE / draft model）或 0（ngram），
+          scheduler 在 `allocate_slots` 时一律带上；token 预算与输入预算分开算
+本项目做法：**同一条规则**（`Scheduler.num_lookahead_tokens`：draft_model → K，ngram → 0），
+            `num_tokens_need_slot = min(computed + new + lookahead, max_model_len)`；
+            提议者仍然问 `BlockTable.covers()`，没有槽位就少提几枚；
+            仍然没有 input_budget——draft 前向的输入不预分配缓冲，只检查位置在
+            `[0, max_model_len)` 内
+为何简化：本关只有普通自回归 draft（不是 EAGLE/MTP 那种"提议者就是 target 自己"），
+          输入预算不预分配也能保证不越界
 影响：功能（EAGLE/MTP 接不进来）；性能（每轮可能重建输入张量）
-对应测试：check_step57_spec_lifecycle.py（槽位被块表覆盖）、check_step57_draft_model.py
-以后何时消除：接 EAGLE/MTP 之前必须先补这两个预算
+对应测试：check_step57_draft_model.py §6（prompt 恰好占满整块 / 中间 prefill / CUDA 设备）
+以后何时消除：接 EAGLE/MTP 之前必须补 input_budget
 ```
+
+**注（2026-10-02 修正）**：这里原来写的是"草稿在本轮调度范围内，所以不需要预留 lookahead"——
+**那是错的**。target 的 query 覆盖的是上一轮采用的草稿，而提议者这一轮要写的是**更后面** K 个
+位置。独立验收探针用"prompt 恰好占满整块"复现了越界。详见
+[`step57_acceptance_fixes.md`](step57_acceptance_fixes.md)。
 
 ```text
 主题：没有流式会话 / 阻塞状态 / KV 连接器
@@ -149,6 +161,20 @@
 影响：少算一些用不上的 LM head（性能，略微有利）；RNG 消费轨迹与 vLLM 不同（199 §8 允许）
 对应测试：check_step57_runner_inputs.py（只对 ready 行算 logits）
 以后何时消除：不需要；若要 RNG 逐位对齐才需要改
+```
+
+```text
+主题：推理边界（`torch.inference_mode()`）——**不是差异**，是必须对齐的一条
+本机路径 / 类 / 方法：v1/worker/gpu_model_runner.py（`execute_model`/`sample_tokens`/`load_model`
+                       上共 8 处 `@torch.inference_mode()`）
+本机做法：每步入口都在推理模式下跑
+本项目做法：`execute_model` / `sample_tokens` 加 `@torch.inference_mode()`；
+            **`load_model` 不加**（那会把权重变成"推理张量"，而测试要直接用这些权重做前向）
+为何简化：本关没有 warmup / dummy run，不需要在加载期划边界
+影响：**没有这条就是显存泄漏**——KV 写入（`index_copy_`）会挂 `CopySlices` 反向图并逐步累积
+对应测试：check_step57_runner_inputs.py §7（KV 缓存 `grad_fn is None`）、
+          验收探针 review_inference_boundary.py
+以后何时消除：如果以后加了 warmup/dummy run，把 `load_model` 也划进推理模式
 ```
 
 ```text

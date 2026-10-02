@@ -131,8 +131,15 @@ class KVCacheManager:
     # -------- 分配 --------
 
     def allocate_slots(self, request, num_new_tokens: int, num_new_computed_tokens: int = 0,
-                       new_computed_blocks: KVCacheBlocks | None = None) -> KVCacheBlocks | None:
+                       new_computed_blocks: KVCacheBlocks | None = None,
+                       num_lookahead_tokens: int = 0) -> KVCacheBlocks | None:
         """给"算到 `num_computed_tokens + num_new_computed_tokens + num_new_tokens`"申请槽位。
+
+        `num_lookahead_tokens` 是**额外**预留的槽位数：提议者会往 target 本轮 query 之外的
+        位置写 KV（draft 模型的草稿），那些槽位也必须先分配好——否则 proposer 会写到块表
+        覆盖不到的位置（对应 vLLM 的 `VllmConfig.num_lookahead_tokens`，它的注释是
+        "The drafter writes KV for positions beyond the target model's query range,
+        so every component that reserves blocks must add this margin"）。
 
         失败（块不够）时**什么都不改**：不 touch、不分配、不改账本。调用方（Scheduler）
         按"这轮排不了它"处理，或者去抢占别的请求再来一遍。
@@ -143,8 +150,10 @@ class KVCacheManager:
         num_local_computed_tokens = request.num_computed_tokens + num_new_computed_tokens
         # 申请范围**夹到 max_model_len**：多出来的 token 本来就跑不完（Scheduler 裁剪过），
         # 不夹的话会因为"申请超过上下文长度的槽位"而误判容量不足
-        num_tokens_need_slot = num_local_computed_tokens + num_new_tokens
+        num_tokens_need_slot = (num_local_computed_tokens + num_new_tokens
+                                + num_lookahead_tokens)
         if self.max_model_len is not None:
+            # 上下文快满时 lookahead 会被截掉——proposer 那边有对应的检查，不会越界写
             num_tokens_need_slot = min(num_tokens_need_slot, self.max_model_len)
 
         num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(

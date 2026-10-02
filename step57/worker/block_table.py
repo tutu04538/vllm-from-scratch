@@ -38,6 +38,15 @@ class BlockTable:
     def num_blocks(self, row_index: int) -> int:
         return int(self.num_blocks_per_row[row_index])
 
+    def covers(self, row_index: int, position: int) -> bool:
+        """这一行的块表是否覆盖到 `position`（提议者写草稿 KV 前要问这一句）。
+
+        块表是按"本轮要算到哪 **加上 lookahead**"分配的；上下文快满时 lookahead 会被截掉，
+        所以提议者不能假定自己想去的位置一定在块表里——**问一句再写**，而不是让
+        `compute_slot_mapping` 的越界检查去报错。
+        """
+        return position < self.num_blocks(row_index) * self.block_size
+
     # -------- 写入（都在 CPU 副本上做）--------
 
     def add_row(self, row_index: int, block_ids) -> None:

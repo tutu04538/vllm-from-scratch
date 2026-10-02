@@ -85,6 +85,7 @@ class SpecDecodeBaseProposer:
         `input_batch` 是 target 的批状态：草稿要读**共享的块表**（同一套 slot 编号）与
         每条请求的采样参数。draft 的 KV 写在自己的 tensor 上，但位置与槽位由这里决定。
         """
+
         self._drop_stale(req_ids, reset_req_ids or set())
         drafts: dict[str, list[int]] = {req_id: [] for req_id in req_ids}
         probs: dict[str, list[torch.Tensor]] = {req_id: [] for req_id in req_ids}
@@ -165,10 +166,11 @@ class SpecDecodeBaseProposer:
                          for unique in unique_reqs}
 
         positions_tensor = torch.tensor(positions, dtype=torch.int64, device=device)
-        # 批行号直接喂给块表（它按行存），位置→槽位的公式与 target 完全同一份实现
+        # 槽位映射在 **CPU** 上算：块表镜像是 CPU 结构（`.cpu`），索引也必须是 CPU 张量，
+        # 否则会撞上 "Expected all tensors to be on the same device"。公式与 target 同一份实现。
         slots = block_table.compute_slot_mapping(
-            input_batch.num_reqs, positions_tensor,
-            torch.tensor(batch_rows, dtype=torch.int64))
+            input_batch.num_reqs, positions_tensor.cpu(),
+            torch.tensor(batch_rows, dtype=torch.int64)).to(device)
         # 块表张量：只取参与的批行，顺序与 unique_reqs 一致
         max_blocks = max(block_table.num_blocks(row) for row in batch_rows)
         table_tensor = torch.zeros((len(unique_reqs), max(1, max_blocks)), dtype=torch.int64,

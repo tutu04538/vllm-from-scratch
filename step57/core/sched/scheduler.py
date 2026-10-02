@@ -58,6 +58,12 @@ class Scheduler:
         self.speculative_config = speculative_config
         self.num_speculative_tokens = (speculative_config.num_speculative_tokens
                                        if speculative_config is not None else 0)
+        # 给提议者预留的 KV 槽位（vLLM `VllmConfig.num_lookahead_tokens` 的规则）：
+        # draft 模型要往 target query 之外写 K 个位置，所以预留 K 个；ngram 不写 KV → 0。
+        self.num_lookahead_tokens = (
+            self.num_speculative_tokens
+            if speculative_config is not None and speculative_config.method == "draft_model"
+            else 0)
         self.max_num_seqs = scheduler_config.max_num_seqs
         self.max_num_batched_tokens = scheduler_config.max_num_batched_tokens
         self.policy = scheduler_config.policy
@@ -154,7 +160,9 @@ class Scheduler:
             # 分配失败 → 抢占 victim → 重试（直到成功，或者连自己都被抢占）
             new_blocks = None
             while True:
-                new_blocks = self.kv_cache_manager.allocate_slots(request, num_new_tokens)
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request, num_new_tokens,
+                    num_lookahead_tokens=self.num_lookahead_tokens)
                 if new_blocks is not None:
                     break
                 victim = self._pick_victim()
@@ -217,7 +225,8 @@ class Scheduler:
 
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request, num_new_tokens, num_new_computed_tokens=num_new_computed_tokens,
-                new_computed_blocks=computed_blocks)
+                new_computed_blocks=computed_blocks,
+                num_lookahead_tokens=self.num_lookahead_tokens)
             if new_blocks is None:
                 # 分配失败**什么都不改**：请求留在 waiting，下一轮再看（不许半个成功的块表）
                 break

@@ -47,7 +47,7 @@ def sampling_metadata(temperatures, drafts, output_token_ids=None, **kwargs):
         temperature=None if all(value < 1e-5 for value in temperatures) else temperature,
         all_greedy=all(value < 1e-5 for value in temperatures),
         all_random=all(value >= 1e-5 for value in temperatures),
-        top_k=None, top_p=None, generators={}, no_penalties=True,
+        top_k=None, top_p=None, no_penalties=True,
         prompt_token_ids=[[] for _ in range(count)],
         output_token_ids=output_token_ids or [[] for _ in range(count)],
         min_tokens=[0] * count, stop_token_ids=[[] for _ in range(count)],
@@ -206,6 +206,47 @@ out_mixed = sampler.forward(mixed_meta, torch.tensor(mixed_logits), None, mixed_
                             recoveries=torch.tensor([1, 1])).sampled_token_ids
 check("4. greedy/random 混批：greedy 行按 argmax 判、random 行按 p/q 判（都不看对方的路径）",
       out_mixed.tolist() == [[0, 2], [1, 3]], str(out_mixed.tolist()))
+
+# ------------------------------------------------ 4b. 混批 + **ragged K**（我原来只测了 K 相等的情形）
+
+# K 不相等时，"把已经展开过的温度再展开一次"会当场报错（K 相等时反而静默算错）——
+# 这正是验收方用 K=[2,1] 抓到的那个 bug，用例里补上
+ragged_mixed = metadata_for([[0, 1], [1]])
+ragged_logits = torch.tensor([[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0],
+                              [0, 8.0, 0], [0, 0, 8.0]])
+ragged_sampling = SamplingMetadata(
+    temperature=torch.tensor([0.0, 1.0]), all_greedy=False, all_random=False,
+    top_k=None, top_p=None, generators={}, no_penalties=True,
+    prompt_token_ids=[[], []], output_token_ids=[[], []], min_tokens=[0, 0],
+    stop_token_ids=[[], []], spec_token_ids=[[0, 1], [1]])
+out_ragged_mixed = sampler.forward(
+    ragged_mixed, ragged_logits, None, ragged_sampling,
+    uniforms=torch.tensor([0.1, 0.1, 0.1], dtype=torch.float64),
+    recoveries=torch.tensor([2, 2, 2])).sampled_token_ids
+check("4b. 混批且 K 不相等（K=[2,1]）：greedy 行照常走 argmax、random 行照常走 p/q",
+      out_ragged_mixed[0].tolist() == [0, 1, 2] and out_ragged_mixed[1, 0].item() == 1,
+      str(out_ragged_mixed.tolist()))
+
+# ------------------------------------------------ 4c. 有 seed 的请求不依赖全局 RNG
+
+def seeded_run(global_seed, draws=16):
+    torch.manual_seed(global_seed)
+    generator = torch.Generator().manual_seed(99)
+    local = RejectionSampler(Sampler())
+    rows = []
+    for _ in range(draws):
+        # 一条请求、K=1 → 2 行（1 个验证行 + 1 个 bonus 行）
+        rows.append(local.forward(
+            metadata_for([[0]]),
+            torch.tensor([[0.2, 0.3, 0.5], [0.2, 0.3, 0.5]]).log(), None,
+            sampling_metadata([1.0], [[0]], generators={0: generator})
+        ).sampled_token_ids[0].tolist())
+    return rows
+
+
+check("4c. 请求带 seed 时，输出与**全局 RNG 状态**无关（随机流归请求）",
+      seeded_run(0) == seeded_run(1),
+      f"全局种子 0/1 两次跑出同一串 {seeded_run(0)[:4]}…")
 
 # ------------------------------------------------ 5. min_tokens 在投机路径上同样生效
 
