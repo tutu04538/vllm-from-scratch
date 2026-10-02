@@ -9,7 +9,9 @@
 [`docs/step57b_real_model.md`](../docs/step57b_real_model.md)（模型、loader、Attention、Runner）、
 [`docs/step57c_kv_and_prefix.md`](../docs/step57c_kv_and_prefix.md)（块池、前缀缓存、抢占恢复）、
 [`docs/step57d_sampling_and_stop.md`](../docs/step57d_sampling_and_stop.md)（采样、惩罚、停止、增量输出）、
-[`docs/step57e_speculative.md`](../docs/step57e_speculative.md)（投机验证、草稿时序、draft 模型）。
+[`docs/step57e_speculative.md`](../docs/step57e_speculative.md)（投机验证、草稿时序、draft 模型）；
+57F 的两篇对照见 [`docs/step57_architecture.md`](../docs/step57_architecture.md)（与真实 vLLM 的
+结构/数值对照）与 [`docs/step57_alignment.md`](../docs/step57_alignment.md)（差异账本）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -106,6 +108,17 @@ python benchmarks/check_step57_spec_metadata.py      # 13 项：两个坐标系�
 python benchmarks/check_step57_rejection_sampler.py  # 17 项：greedy/random 验证、恢复分布、CPU 公式与统计对照
 python benchmarks/check_step57_spec_lifecycle.py     # 12 项：提议与采用的时序、K 裁剪、进度回退、抢占清草稿
 python benchmarks/check_step57_draft_model.py        # 12 项：draft 规格校验、KV 独立、端到端与可复现
+```
+
+## 与真实 vLLM 的对照（57F，需要 GPU）
+
+```bash
+# WSL2 必须带这两个环境变量（否则 vLLM 引擎起不来，见 docs/step57_architecture.md §4）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
+    python benchmarks/compare_step57_vllm.py            # logits / 增量位置 / 拒绝采样 / 端到端
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
+    python benchmarks/check_step57_vllm_boundaries.py   # 两条边界在真实 vLLM 上核实
+python benchmarks/trace_step57.py                       # 一条覆盖五种事件的状态轨迹（CPU）
 ```
 
 数值对照用的外部参照是 **transformers 的 Qwen3**（同一份 tiny 权重）与一份**按公式手写**的

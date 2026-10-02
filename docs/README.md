@@ -64,3 +64,5 @@
 | [step57c_kv_and_prefix.md](step57c_kv_and_prefix.md) | `step57/`（KV 这条链重写） | 真实 KV 控制面：块池（引用计数 + O(1) 空闲队列 + 同 hash 多块）、前缀缓存（链式 hash、发布边界、共享不覆写）、priority 与重算式抢占（计划撤销/预算退回/恢复整表替换）、可打印 scheduler_trace |
 | [step57d_sampling_and_stop.md](step57d_sampling_and_stop.md) | `step57/sample/`（新增） | 普通采样与停止：按行的 SamplingMetadata、min_tokens 的两处职责（采样侧屏蔽 vs 调度侧结束）、三种惩罚与 top-k/top-p 边界、指数竞赛抽样、用户增量输出与 stop_reason |
 | [step57e_speculative.md](step57e_speculative.md) | `step57/spec_decode/`（新增） | 投机回接：SpecDecodeMetadata 的两个坐标系、min(1,p/q) 验证与 max(p−q,0) 恢复、「轮 t 提议 → 轮 t+1 采用」的时序、被拒草稿的进度回退、ngram 与真实 draft 模型（同 KV group、每层各自 tensor、规格不兼容明确报错） |
+| [step57_architecture.md](step57_architecture.md) | `step57/`（对照关，无代码改动） | 回到真实源码：分层与状态归属、一条覆盖五种事件的状态轨迹、194 §8 的七问×五事件、与真实 vLLM 的数学对照（logits 2.4e-7 / 端到端 fp32 逐 token 一致） |
+| [step57_alignment.md](step57_alignment.md) | `step57/`（对照关，无代码改动） | 57 关的差异账本汇总：按 vLLM 模块归类、每项九段（本机做法/本项目做法/为何简化/影响/对应测试/何时消除） |
