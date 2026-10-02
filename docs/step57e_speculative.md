@@ -136,11 +136,11 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | 脚本 | 项数 | 覆盖 |
 |---|---:|---|
 | `check_step57_spec_metadata.py` | 13 | vLLM 算例逐值对照（cu_num_draft / cu_num_sampled / logits / target / bonus）、K=0 退化、ragged、预填块、草稿数与行数不符要报错 |
-| `check_step57_rejection_sampler.py` | 18 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批、min_tokens 的停止 token 在投机路径上同样被屏蔽 |
+| `check_step57_rejection_sampler.py` | 22 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批、min_tokens 的停止 token 在投机路径上同样被屏蔽 |
 | `check_step57_spec_lifecycle.py` | 12 | 提议不改本轮计划、下一轮才采用（逐枚对照）、K 裁剪（预算只够 1 行时一枚都不发）、进度回退不变量、抢占清空草稿、**greedy 下开/关投机输出逐 token 一致**、草稿位置被块表覆盖 |
 | `check_step57_draft_model.py` | 19 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
 
-十五个脚本全部通过（共 322 项；含验收修复后补的回归用例）。
+十五个脚本全部通过（共 325 项；含验收修复后补的回归用例）。
 
 真实模型演示（本机 Qwen3-1.7B 作 target + tiny fixture 作 draft 需要同词表，所以这里用
 **同一个小模型的 1 层切片**当 draft，见用例）：

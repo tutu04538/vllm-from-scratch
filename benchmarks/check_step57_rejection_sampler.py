@@ -248,6 +248,37 @@ check("4c. 请求带 seed 时，输出与**全局 RNG 状态**无关（随机流
       seeded_run(0) == seeded_run(1),
       f"全局种子 0/1 两次跑出同一串 {seeded_run(0)[:4]}…")
 
+# ------------------------------------------------ 4d. 行序契约：长度对不上要报错，不能静默丢掩码
+
+def expect_value_error(name, build_metadata):
+    try:
+        sampler.forward(metadata_for([[0, 1], [1]]),
+                        torch.tensor([[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0],
+                                      [0, 8.0, 0], [0, 0, 8.0]]),
+                        None, build_metadata())
+        return None
+    except ValueError as exc:
+        return str(exc)
+
+
+def metadata_rows(count, min_tokens, stop_token_ids):
+    return SamplingMetadata(
+        temperature=torch.ones(count), all_greedy=False, all_random=True, top_k=None,
+        top_p=None, generators={}, no_penalties=True,
+        prompt_token_ids=[[] for _ in range(count)], output_token_ids=[[] for _ in range(count)],
+        min_tokens=min_tokens, stop_token_ids=stop_token_ids,
+        spec_token_ids=[[0, 1], [1]][:count])
+
+
+error = expect_value_error("min_tokens 少一项", lambda: metadata_rows(2, [2], [[], []]))
+check("4d. 元数据自相矛盾（min_tokens 比行数少）→ 报错，而不是让 zip 静默截断"
+      "（那一行的停止 token 屏蔽会悄悄消失）",
+      error is not None and "自相矛盾" in error, (error or "没有报错").splitlines()[0])
+
+error = expect_value_error("只对部分行建元数据", lambda: metadata_rows(1, [3], [[4]]))
+check("4d. 采样元数据的行数与投机元数据的请求数不一致 → 报错（行序契约）",
+      error is not None and "逐请求对应" in error, (error or "没有报错").splitlines()[0])
+
 # ------------------------------------------------ 5. min_tokens 在投机路径上同样生效
 
 # 草稿就是停止 token（4）、target 的 argmax 也是它：min_tokens 没到就不该提交

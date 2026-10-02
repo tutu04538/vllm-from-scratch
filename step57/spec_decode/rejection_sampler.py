@@ -102,6 +102,15 @@ class RejectionSampler:
         if metadata.num_draft_tokens_total == 0 and metadata.batch_size == 0:
             raise ValueError("空的投机批次：没有请求就不该走到 RejectionSampler")
 
+        # **行序契约**（2026-10-02 补）：`sampling_metadata` 必须正好覆盖 spec metadata 里的
+        # 那些请求、且顺序一致——验证行的历史、惩罚、min_tokens 全靠它逐请求摊到逐行。
+        # 少了或换了顺序都不会报错，只会把 A 的参数用到 B 的行上（静默错），所以在这里挡住。
+        if len(sampling_metadata.prompt_token_ids) != metadata.batch_size:
+            raise ValueError(
+                f"采样元数据有 {len(sampling_metadata.prompt_token_ids)} 行，"
+                f"但投机元数据里有 {metadata.batch_size} 条请求：两者必须逐请求对应、顺序一致"
+                f"（不能只对一部分行建元数据）")
+
         # ---- 1) bonus token：用"全部草稿都接受"的历史，走一次普通采样 ----
         bonus_logits = logits[metadata.bonus_logits_indices]
         bonus_metadata = self._with_histories(
@@ -216,6 +225,30 @@ class RejectionSampler:
         `num_tokens_per_req` 给了就把 `[B]` 的参数展开成 `[P]`（验证行是"每请求 K 行"）。
         """
         import dataclasses
+
+        # ---- 契约检查（2026-10-02 补）----
+        # 这个方法把"逐请求"的参数摊成"逐验证行"，**行序必须与传入的 sampling_metadata 一致**，
+        # 长度也必须对得上。原来什么都不查、还用 `zip()` 摊平——zip 会按短的那边**静默截断**：
+        # 少给一项 min_tokens，那一行的停止 token 屏蔽就悄悄没了（不报错，只是行为变了）。
+        num_rows = len(sampling_metadata.prompt_token_ids)
+        for name in ("min_tokens", "stop_token_ids"):
+            if len(getattr(sampling_metadata, name)) != num_rows:
+                raise ValueError(f"元数据自相矛盾：{name} 有 "
+                                 f"{len(getattr(sampling_metadata, name))} 项，"
+                                 f"但 prompt_token_ids 有 {num_rows} 项")
+        if num_tokens_per_req is None:
+            if len(histories) != num_rows:
+                raise ValueError(
+                    f"历史有 {len(histories)} 行，元数据有 {num_rows} 行：逐行对应，必须相等")
+        else:
+            if len(num_tokens_per_req) != num_rows:
+                raise ValueError(
+                    f"num_tokens_per_req 有 {len(num_tokens_per_req)} 项，元数据有 {num_rows} 行："
+                    f"前者是**逐请求**的草稿数，行序必须与元数据一致（不能只给一部分请求）")
+            if len(histories) != sum(num_tokens_per_req):
+                raise ValueError(
+                    f"历史有 {len(histories)} 行，但按草稿数展开应该是 "
+                    f"{sum(num_tokens_per_req)} 行（ΣK）：验证行数 = 各请求草稿数之和")
 
         updates = {"output_token_ids": histories}
         if num_tokens_per_req is not None:

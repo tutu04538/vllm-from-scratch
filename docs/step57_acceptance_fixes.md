@@ -99,6 +99,24 @@ K 相等时静默算错（我的用例原来只测了 K=[1,1]，所以没抓到�
 块表镜像是 CPU 结构（`.cpu`），索引也必须是 CPU 张量；算完 `.to(device)`。原来直接把 CUDA
 的 `positions` 传进 `compute_slot_mapping` → `Expected all tensors to be on the same device`。
 
+### 1.8 补：`_with_histories` 的"行序契约"
+
+这个方法把**逐请求**的参数摊成**逐验证行**，靠的是"行序与传入的 `sampling_metadata` 一致"这条
+隐含前提，而代码里什么都没查、还用 `zip()` 摊平——`zip` 按短的那边**静默截断**：
+
+```text
+元数据 2 行、min_tokens 只给 1 项 → 以前：不报错，第 2 行的停止 token 屏蔽悄悄消失
+                                   现在：ValueError「元数据自相矛盾：min_tokens 有 1 项…」
+只对一部分行建元数据（比如"只对 ready 行建"）→ 以前：IndexError 或静默错位
+                                   现在：ValueError「采样元数据有 1 行，但投机元数据里有 2 条请求…」
+```
+
+检查放在两处：`forward()` 校验"采样元数据的行数 == 投机元数据的请求数"（**行序契约**，
+`sampling_metadata` 与 `spec_metadata.req_ids` 必须逐请求对应），`_with_histories()` 校验
+"各参数的项数 == 行数"与"ΣK == 验证行数"。vLLM 那边是**按索引 gather 张量**
+（`prompt_token_ids[repeat_indices]`）而不是摊平 Python 列表——数组索引天然会检查长度，
+本关保持列表、但把长度检查显式写出来。
+
 ## 2. 验证
 
 | 探针 / 脚本 | 修复前 | 修复后 |
@@ -106,7 +124,7 @@ K 相等时静默算错（我的用例原来只测了 K=[1,1]，所以没抓到�
 | `review_inference_boundary.py` | 0/1（每步 +30 图节点） | **1/1**（`requires_grad=False`、`grad_fn=None`、0 节点） |
 | `review_draft_boundaries.py` | 2/6 | **6/6** |
 | `review_rejection_boundaries.py` | 0/2 | **2/2** |
-| 我自己的 16 个脚本 | 314 项 | **322 项**（把上面六类都补成了回归用例） |
+| 我自己的 16 个脚本 | 314 项 | **325 项**（把上面这些类都补成了回归用例） |
 
 新增的回归用例（免得下次再漏）：
 
