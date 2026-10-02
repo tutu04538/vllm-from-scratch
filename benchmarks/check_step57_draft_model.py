@@ -58,10 +58,10 @@ def make_dir(work, source, config, drop_layer_prefix=None):
 
 
 def build(target_dir=TINY, target_config=None, draft_dir=None, draft_config=None,
-          spec_tokens=3, blocks=16, budget=16, max_tokens=6, seed=None):
+          spec_tokens=3, blocks=16, budget=16, max_tokens=6, seed=None, max_model_len=64):
     target_config = target_config or TINY_CONFIG
     config = VllmConfig(
-        model_config=ModelConfig(model=target_dir, dtype="float32", max_model_len=64,
+        model_config=ModelConfig(model=target_dir, dtype="float32", max_model_len=max_model_len,
                                  hf_config=target_config),
         cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=budget),
@@ -177,12 +177,12 @@ try:
           error is not None and "draft_model_config" in error, first_line(error))
     # ------------------------------------------------ 6. 验收方抓到的四类边界（补成回归用例）
 
-    def one_step(prompt, k=3, budget=16, device="cpu"):
+    def one_step(prompt, k=3, budget=16, device="cpu", max_model_len=64):
         """跑一轮，返回 (是否抛异常, 异常字符串)。"""
         engine = None
         try:
             engine = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
-                           spec_tokens=k, budget=budget)
+                           spec_tokens=k, budget=budget, max_model_len=max_model_len)
             engine.add_request("r", list(prompt), SamplingParams(max_tokens=6, temperature=0.0,
                                                                 eos_token_id=999))
             engine.step()
@@ -216,6 +216,13 @@ try:
             engine.shutdown()
     else:
         check("6. （跳过 CUDA 设备用例：本机没有 CUDA）", True)
+
+    # 上下文快满：lookahead 会被 max_model_len 截掉 → 提议者要少提几枚，而不越界写
+    error, engine = one_step([1, 2, 3, 4, 5, 6], k=3, max_model_len=8)
+    check("6. 上下文快满（max_model_len=8）时 lookahead 被截掉：提议者少提几枚，不越界",
+          error is None, error or "正常")
+    if engine is not None:
+        engine.shutdown()
 
     # 提议必须看到"本轮新采样的 token"；发布的完整块不能超过 draft 侧的进度
     engine = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),

@@ -3,7 +3,7 @@
 - 对应代码：`step57/core/{kv_cache_manager.py,sched/scheduler.py}`、
   `step57/worker/{gpu_model_runner.py,block_table.py}`、
   `step57/spec_decode/{rejection_sampler.py,draft_model.py}`
-- 包摘要 SHA256：`43f3a0a63e581a43…`（61 个 .py / 7110 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`486b74007c8c2054…`（61 个 .py / 7114 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收输入：`vllm-omni/learning_notes/14_vllm_from_scratch/验收记录/step57_review_20261002/`
   （三个独立探针 + 我的 15 个用例的日志）

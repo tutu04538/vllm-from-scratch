@@ -106,9 +106,21 @@ class SpecDecodeBaseProposer:
                 self._draft_computed[req_id] = num_tokens_no_spec[req_id]
 
         # ---- 自回归补足 K 枚：上一枚当输入，位置接在它后面 ----
+        #
+        # 每一枚草稿都写在"已提交历史之后"（位置 = 已提交 + j - 1），那是 target 本轮 query
+        # **之外**的位置：调度侧为此预留了 `num_lookahead_tokens` 个槽位（vLLM 同款规则）。
+        # 但上下文快满时预留会被 `max_model_len` 截掉，所以**先问块表这个位置有没有槽位**，
+        # 没有就少提几枚——不能写到块表覆盖不到的地方（那会覆盖别人的 KV 或报越界）。
         while True:
-            pending = [req_id for req_id in req_ids
-                       if 0 < len(drafts[req_id]) < self.num_speculative_tokens]
+            pending: list[str] = []
+            for req_id in req_ids:
+                if not 0 < len(drafts[req_id]) < self.num_speculative_tokens:
+                    continue
+                position = num_tokens_no_spec[req_id] + len(drafts[req_id]) - 1
+                row = input_batch.req_id_to_index[req_id]
+                if not input_batch.block_table.covers(row, position):
+                    continue
+                pending.append(req_id)
             if not pending:
                 break
             rows = [(req_id, num_tokens_no_spec[req_id] + len(drafts[req_id]) - 1)
@@ -299,11 +311,3 @@ class DraftModelProposer(SpecDecodeBaseProposer):
             module.kv_cache = cache
             self.kv_caches[name] = cache
 
-    # -------- 采样参数 --------
-
-    def _sampling_params_for(self, req_ids):
-        return {req_id: self._params_by_req[req_id] for req_id in req_ids}
-
-    def set_sampling_params(self, params_by_req: dict) -> None:
-        """由 Runner 每轮同步一次：草稿要用**与 target 相同**的采样参数（口径必须一致）。"""
-        self._params_by_req = dict(params_by_req)

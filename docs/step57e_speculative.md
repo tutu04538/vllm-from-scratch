@@ -3,7 +3,7 @@
 - 对应代码：`step57/spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py`（新增；
   `SpecDecodeBaseProposer` 与 `DraftModelProposer` 同放在 `draft_model.py` 里，vLLM 是分两个文件），以及 `core/sched/scheduler.py`（草稿的采用与回退）、`worker/gpu_model_runner.py`
   （验证路径、下一轮提议）、`sample/metadata.py`（`spec_token_ids`）、`outputs.py`（`DraftTokenIds`）
-- 包摘要 SHA256：`011a821832017a1e…`（61 个 .py / 7048 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`486b74007c8c2054…`（61 个 .py / 7114 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{spec_metadata,rejection_sampler,spec_lifecycle,draft_model}.py`
   （对应需求里点名的 `test_spec_metadata.py` / `test_rejection_sampler.py` /
@@ -138,7 +138,7 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | `check_step57_spec_metadata.py` | 13 | vLLM 算例逐值对照（cu_num_draft / cu_num_sampled / logits / target / bonus）、K=0 退化、ragged、预填块、草稿数与行数不符要报错 |
 | `check_step57_rejection_sampler.py` | 18 | greedy 首/中/全接受、random 接受与拒绝（注入 uniform/recovered）、边界 `u == p/q`、`q[d]=0` 防御性拒绝、与独立 CPU 公式逐值一致、recovered 分布 ∝ max(p−q,0) 的统计检查、K=0、ragged、点质量提议、greedy/random 混批、min_tokens 的停止 token 在投机路径上同样被屏蔽 |
 | `check_step57_spec_lifecycle.py` | 12 | 提议不改本轮计划、下一轮才采用（逐枚对照）、K 裁剪（预算只够 1 行时一枚都不发）、进度回退不变量、抢占清空草稿、**greedy 下开/关投机输出逐 token 一致**、草稿位置被块表覆盖 |
-| `check_step57_draft_model.py` | 18 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
+| `check_step57_draft_model.py` | 19 | 词表/KV 规格不兼容明确报错（不给独立 pool 兜底）、draft 与 target 的 KV 是两份 tensor/一张块表、端到端出 token、草稿确实在被提、同 seed 可复现 |
 
 十五个脚本全部通过（共 322 项；含验收修复后补的回归用例）。
 
