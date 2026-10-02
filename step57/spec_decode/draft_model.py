@@ -32,8 +32,11 @@ draft 与 target 共用**逻辑块表**与分配生命周期（同一张块表�
 
 - 没有 `num_lookahead_tokens` 预留：本关草稿的槽位在**本轮的调度范围之内**（`num_tokens_with_spec`
   已经把草稿算进去了），所以不需要额外预留。
-- 没有独立的输入预算（vLLM 的 `input_budget` / `max_num_new_slots_for_drafting`）：本关的
-  draft 前向缓冲按 `max_num_seqs × (K + 2)` 行**预分配并断言**，调度侧给出的行数不会越界。
+- **没有预分配的定长输入缓冲**：每轮按"实际要补多少 token"现搭张量（vLLM 预分配缓冲，并用
+  `input_budget` / `max_num_new_slots_for_drafting` 单独算它的容量）。所以我们不需要给缓冲定容量，
+  只做一条**位置边界**检查：草稿要算的位置必须落在 `[0, max_model_len)` 内。
+  代价是每轮可能重建张量；好处是代码短，而且不存在"缓冲不够"这类越界。
+  一轮的行数并不小：**恢复（抢占）之后 draft 要重算整段历史**，行数可以到 prompt 那么长。
 - 不做 EAGLE/MTP 的"左移一位"输入（本关只有普通自回归 draft）。
 - draft 不共享 target 的 random stream：自己按 `seed` 建 generator（可复现），
   与 target 的采样流相互独立（vLLM 也把 draft 的随机数分开算）。
@@ -139,10 +142,12 @@ class SpecDecodeBaseProposer:
 
     def _forward(self, rows: list[tuple[str, int]], token_ids_by_req, input_batch):
         """把 `(请求, 绝对位置)` 这批行喂给 draft 模型，返回 hidden states。"""
-        if len(rows) > self._buffer_rows():
-            raise RuntimeError(
-                f"draft 前向需要 {len(rows)} 行，缓冲只准备了 {self._buffer_rows()} 行"
-                f"（max_num_seqs × (K + 2)）：调度侧给出的草稿数超出了配置")
+        max_model_len = self.vllm_config.model_config.max_model_len
+        for req_id, position in rows:
+            if not 0 <= position < max_model_len:
+                raise RuntimeError(
+                    f"{req_id!r} 的 draft 前向要算位置 {position}，超出了 "
+                    f"max_model_len={max_model_len}：draft 侧的历史边界与 target 对不上了")
         block_table = input_batch.block_table
         device = self.device
         input_ids, positions, batch_rows = [], [], []
@@ -236,9 +241,6 @@ class SpecDecodeBaseProposer:
     def _attention_layer_names(self) -> list[str]:
         return sorted(self.kv_caches)
 
-    def _buffer_rows(self) -> int:
-        return (self.vllm_config.scheduler_config.max_num_seqs
-                * (self.num_speculative_tokens + 2))
 
 
 class DraftModelProposer(SpecDecodeBaseProposer):

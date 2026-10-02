@@ -3,7 +3,7 @@
 - 对应代码：`step57/spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py`（新增；
   `SpecDecodeBaseProposer` 与 `DraftModelProposer` 同放在 `draft_model.py` 里，vLLM 是分两个文件），以及 `core/sched/scheduler.py`（草稿的采用与回退）、`worker/gpu_model_runner.py`
   （验证路径、下一轮提议）、`sample/metadata.py`（`spec_token_ids`）、`outputs.py`（`DraftTokenIds`）
-- 包摘要 SHA256：`78b6f3175865ca64…`（61 个 .py / 7038 行；口径 = 包内 `*.py` 按相对路径排序，
+- 包摘要 SHA256：`909ad8c7f46f1233…`（61 个 .py / 7040 行；口径 = 包内 `*.py` 按相对路径排序，
   每个文件取自身 sha256，拼成 `名字\0哈希\n` 再取 sha256）
 - 验收脚本：`benchmarks/check_step57_{spec_metadata,rejection_sampler,spec_lifecycle,draft_model}.py`
   （对应需求里点名的 `test_spec_metadata.py` / `test_rejection_sampler.py` /
@@ -122,7 +122,7 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 | 差异 | 说明 |
 |---|---|
 | 没有 `num_lookahead_tokens` 预留 | 本关草稿的槽位**在本轮调度范围之内**（`num_tokens_with_spec` 已含草稿），所以不需要额外预留；EAGLE/MTP 那种"提议者就是 target 自己"才需要 |
-| 没有独立的输入预算（`input_budget` / `max_num_new_slots_for_drafting`） | draft 前向的行数按 `max_num_seqs × (K+2)` **断言**上界，调度侧给出的行数不会越界（超出就明确报错） |
+| 没有独立的输入预算（`input_budget` / `max_num_new_slots_for_drafting`），也**没有预分配的定长输入缓冲** | 每轮按"实际要补多少 token"现搭张量，只检查位置落在 `[0, max_model_len)`。一轮的行数不小：**恢复之后 draft 要重算整段历史** |
 | `RejectionSampler` 返回 padded `[B, max_spec_len+1]`（无效位 -1），Runner 裁掉 | 与 vLLM 同形；本关照做，但**不**为它准备 padded 的中间张量 |
 | `draft_probs` 由执行侧按请求存、下一轮按"实际采用的前缀"重排（`_align_draft_probs`） | 199 §5 要求的 q 对齐。vLLM 也存概率并按请求重排（`take_last_draft_probs`），只是它按**批行号**索引，本关按**请求 ID**（并因此给 `SpecDecodeMetadata` 加了 `req_ids`，vLLM 没有这个字段） |
 | 没有 synthetic mode / fp64 Gumbel / logprobs / 结构化输出过滤 | 实验与对照用途，或不属于 57E |
