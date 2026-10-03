@@ -11,7 +11,7 @@
   "package": {
     "root": "minivllm/",
     "python_files": 66,
-    "sha256": "8d5837829b2548e951e891c8cb3b410e3ae85edf1a5a54dd981d486c4500d297",
+    "sha256": "6f46015cd92213e8163fcb91a95257f397f6182d0f8d4d7138770d540f06ed1a",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58 口径）"
   },
   "environment": {
