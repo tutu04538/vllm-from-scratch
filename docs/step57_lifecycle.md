@@ -100,7 +100,7 @@ for request in self.running:
   普通 draft 同样需要那份核算；并写明 prefix 命中后 draft 仍要整段重算的成本。
 - `BaseModelLoader.load_model()` 返回前 `model.eval()`（204 §6 的遗留项）：
   eval 管模块行为（dropout/BN 等训练态分支），`torch.inference_mode()` 管梯度记录，两者分工不同。
-- 回归用例：`check_step57_draft_model.py` §7 新增六条（见 §3）。
+- 回归用例：`check_step57_draft_model.py` §7 新增七条（见 §3）。
 
 ## 2. 设计要点
 
@@ -120,7 +120,7 @@ for request in self.running:
 |---|---|
 | `验收记录/step57_recheck_20261003/review_remaining_boundaries.py`（205 的 9 个收尾场景） | **9/9**（原 4/9）：逻辑上限 K=3 与非投机同为 `[6,10]`；B 的 generator 同对象保留、再入批跑完；复用 ID 后 `_draft_computed={}`、generators 为空、新请求 draft 前向 9 行、新 prefix 第 3 位 draft KV=32.36；注入异常后 `runner.failure` 有值、下一轮在调度前被拒；抢占 1 次且输出与非投机一致；prefix 命中 4 token 且开/关输出一致；CUDA 8 token 与非投机一致 |
 | 上一轮三个独立探针（`review_draft_boundaries` / `review_rejection_boundaries` / `review_inference_boundary`） | 6/6、2/2、1/1 |
-| 15 个功能回归脚本 | 全过（`check_step57_draft_model.py` 现在 **39 项**） |
+| 15 个功能回归脚本 | 全过（exit=0，共 **354 项**；`check_step57_draft_model.py` 从 25 项增到 **32 项**） |
 | `check_step57_draft_model.py` §7（新） | 逻辑上限 9/10/11/12 与非投机逐 token 一致；最后一轮刚好到上限；未调度请求保留 generator（第二轮 batch=`['A']`、B 的 generator 是同一对象且状态不变）；结束清理后 `({}, [])` 且复用 ID 重算；失败态；真实抢占 `num_preemptions=1` 且输出一致；prefix 命中 4 token 且输出一致 |
 
 复跑验收脚本时**先拷到 `/tmp`**：它把结果写在 `Path(__file__).with_name(...)`，在原地跑会覆盖

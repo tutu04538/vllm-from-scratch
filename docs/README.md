@@ -68,4 +68,4 @@
 | [step57_alignment.md](step57_alignment.md) | `step57/`（对照关，无代码改动） | 57 关的差异账本汇总：按 vLLM 模块归类、每项九段（本机做法/本项目做法/为何简化/影响/对应测试/何时消除） |
 | [step57_acceptance_fixes.md](step57_acceptance_fixes.md) | `step57/`（验收修复） | 独立探针抓到的 6 个问题：KV 上的 autograd 图（显存随步数涨）、提议者越界写 lookahead 槽位、CUDA 设备、提议与记账顺序、混批 ragged K 的展开、seed 被全局 RNG 污染；逐条按 vLLM 修 + 补回归用例 |
 | [step57_draft_lockstep.md](step57_draft_lockstep.md) | `step57/`（验收修复·续） | 204 §6.2 的第二个选项换成第一个：drafter 每轮与 target 跑同一段位置（中间 prefill 块只同步 KV、不提草稿），于是**撤销**发布边界的 `min(target, draft)` 夹取，回到与 vLLM 相同的"只按 target 发布"；不变量改由用例盯着（发布边界 ≤ draft 进度，且发布位置上的 draft KV 非零） |
-| [step57_lifecycle.md](step57_lifecycle.md) | `step57/`（验收修复·再续） | 205 的三类收尾：草稿写入同时过**逻辑上界 + 物理槽位**（块表容量向上取整不能当模型长度）；请求三态（未调度保留 / 恢复重置 / finished 删除）与"草稿只活一轮"的 q 契约；sample/propose 异常 → **失败态**，下一轮在调度前被拒绝；补 `model.eval()` 与六条回归用例 |
+| [step57_lifecycle.md](step57_lifecycle.md) | `step57/`（验收修复·再续） | 205 的三类收尾：草稿写入同时过**逻辑上界 + 物理槽位**（块表容量向上取整不能当模型长度）；请求三态（未调度保留 / 恢复重置 / finished 删除）与"草稿只活一轮"的 q 契约；sample/propose 异常 → **失败态**，下一轮在调度前被拒绝；补 `model.eval()` 与七条回归用例 |
