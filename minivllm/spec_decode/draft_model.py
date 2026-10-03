@@ -8,18 +8,37 @@
 
 ### 它为什么不是"第二套引擎"
 
-它没有调度器、没有请求状态、没有输出提交：只做一件事——**给定请求的已提交历史，提 K 枚草稿**。
+它没有调度器、没有请求状态、没有输出提交：只做一件事——**给定本轮 target 侧的事实，提 K 枚草稿**。
 
-    第一遍 forward：把"上一轮新提交的那段"喂给 draft 模型，把它的 KV 补到与 target 一致；
-                    最后一行的 logits 顺便得到**第一枚**草稿
-    自回归 K-1 步：每步一行（上一枚草稿当输入），得到其余草稿
+    第一遍 forward：把 [本轮起点, 采样后有效历史末尾) 喂给 draft 模型（含 prefix 命中之后的续算），
+                    写进自己的 KV；扩容行的 hidden 顺便得到**第一枚**草稿
+    自回归 K-1 步：每步一行（上一枚草稿当输入），**复用同一个工作区**，得到其余草稿
 
-第一遍为什么需要：draft 模型要提出**像样**的草稿，它的 KV 必须覆盖请求的已提交历史。
-但我们不重算整段历史——上一轮提草稿时它已经算到那里了，本轮只需要补"新提交的 a+1 个 token"。
+第一遍为什么需要：draft 要提出**像样**的草稿，它的 KV 必须覆盖与 target 相同的那段历史；
+57 的设计是"每轮与 target 跑同一段位置"（中间 prefill 块也同步），所以发布出去的完整块
+在 draft 那几层也都写过（199 §9 的不变量）。
 
-**有效边界**（199 §9 点名的一条）：上一轮为**被拒的草稿**写过的 KV 仍留在物理缓冲里，
-但它们不是有效历史。所以每轮都按"已提交到哪"重建 positions 与 slot_mapping——
-**位置从有效边界续，不从缓冲里残留的位置续**。
+### 58：第一遍的输入怎么组织（padded + mask，与上游同形）
+
+普通自回归 draft 的第一遍，每条请求的**物理行**是：
+
+    [有效行 (n - num_rejected)] + [1 行扩容行（新采出的 token）] + [num_rejected 行被拒行]
+    总物理行 = Σ(target 本轮物理行数 + 1)          ← 与 target 的 input_budget 对得上
+
+- **有效行** = target 本轮 query 里真正成为历史的那部分（起点 `start` 到采样后有效历史末尾）；
+- **扩容行** = target 刚采出的那个 token（普通 draft 比 target 多要的就是这 1 行）；
+  中间 prefill 块没有新 token，用 backup（本段历史最后一个 token）占位，草稿不提；
+- **被拒行** = 留在工作区里但被屏蔽：token=padding、position=0、`slot=PADDING_SLOT_ID(-1)`，
+  于是它既不写 KV、也不进新提议的上下文。展开规则与上游
+  `copy_and_expand_eagle_inputs_kernel`（`shift_input_ids=False`）逐值一致，见 `utils.py`。
+
+**prefix 命中**：起点直接用调度快照里的 `num_computed_tokens`（含命中起点），命中段不再重算——
+它的前提正是上面的 199 §9 不变量（缓存交回来的块在 draft 每一层都有效）。58 之前用
+`_draft_computed` 当第二套权威，新请求=0 于是命中 120 个 token 也会从 0 重算。
+
+**固定工作区**：`input_ids/positions/slot_mapping/masks/query_start_loc/seq_lens/block_table`
+在初始化时按 `max_num_batched_tokens` / `max_num_seqs` 开好，每轮只覆盖前 `[:num_tokens]` /
+`[:num_reqs]`，`data_ptr()` 稳定；自回归步骤复用同一块工作区，不再重复计入输入预算。
 
 ### KV：共用一个 group，但每层是自己的 tensor
 
@@ -28,21 +47,19 @@ draft 与 target 共用**逻辑块表**与分配生命周期（同一张块表�
 加载时校验规格（词表、dtype、KV head 数、head_size、block_size），不兼容就明确报错——
 不假装"所有小模型都能配对"。
 
-### 本关的简化（写清楚，不假装已实现）
+### 本关的差异（写清楚，不假装已实现）
 
-- **有** `num_lookahead_tokens` 预留（204 §4 之后补上的）：草稿里"下一轮才验证"的那 K 枚写在
-  target 本轮 query **之外**，所以 Scheduler 分配块时按 `num_lookahead_tokens=K` 多留 K 个槽位
-  （`Scheduler.__init__` → `allocate_slots`）。预留块**不等于** token 已计算，发布 prefix 时不算。
-  上下文快满时预留会被 `max_model_len` 截掉，所以自回归循环每写一枚前还要过
-  逻辑上界 + `BlockTable.covers` 两道检查（205 §3），过不了就少提几枚。
-- **没有预分配的定长输入缓冲**，也**没有** vLLM 的 `input_budget` / `max_num_new_slots_for_drafting`
-  核算：每轮按"实际要补多少 token"现搭张量。它避免了定长缓冲的写越界，但**不等于**有了输入预算
-  ——普通 draft 同样需要那份核算，只是本关用动态张量绕开了容量维度（对齐差异，见
-  `docs/step57_alignment.md`）。代价是每轮重建张量，而且 **prefix 命中之后 draft 要整段重算**
-  （命中省的是 target 的 prefill，draft 第一次同步仍要写满命中的位置）。
-- 不做 EAGLE/MTP 的"左移一位"输入（本关只有普通自回归 draft）。
+- `num_lookahead_tokens` = K：草稿里"下一轮才验证"的那 K 枚写在 target 本轮 query **之外**，
+  Scheduler 分配块时多留 K 个槽位；上下文快满时预留会被 `max_model_len` 截掉，所以自回归
+  每写一枚前还要过逻辑上界 + `BlockTable.covers` 两道检查（205 §3），过不了就少提几枚。
+- 仍然**没有** vLLM 的 EAGLE / MTP / 并行提议（PARD/DFlash）分支：`max_num_new_slots_for_drafting`
+  只有普通 draft 的 1 与 ngram 的 0 两条路径；`is_masked_token_mask` 缓冲留着但对齐的是
+  "并行提议的多 query 槽位"，本关恒为 False。
+- 中间 prefill 块**不提草稿**（只同步 KV）：vLLM 跑完 drafter 再让 Scheduler 丢掉草稿，
+  本关在采样阶段就不采（少跑 K 次试探性前向，57E 起就记在差异账本里）。
 - draft 不共享 target 的 random stream：自己按 `seed` 建 generator（可复现），
   与 target 的采样流相互独立（vLLM 也把 draft 的随机数分开算）。
+- 不做 CUDA Graph / 编译（那是 69 关）：本关只保证输入工作区稳定复用，不要求中间算子零分配。
 """
 
 import torch
@@ -52,10 +69,12 @@ from ..sample import Sampler
 from ..sample.metadata import SAMPLING_EPS
 from ..sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
+from .utils import (DraftInputRows, FirstPassPlan, TargetRows, compute_new_slot_mapping,
+                    expand_draft_inputs, extend_all_queries_by_N)
 
 
 class SpecDecodeBaseProposer:
-    """提议步骤的骨架：**没有调度、没有请求状态**，只有"历史进、草稿出"。"""
+    """提议步骤的骨架：**没有调度、没有请求状态**，只有"本轮哪些行进、草稿怎么出"。"""
 
     def __init__(self, spec_config, vllm_config, device: str) -> None:
         self.spec_config = spec_config
@@ -66,17 +85,48 @@ class SpecDecodeBaseProposer:
         # **逻辑**上界。块表容量是按块向上取整的（10 个位置可能给 12 个槽位），
         # 所以"物理槽位够"不等于"模型允许写这个位置"——两个边界要分别检查（205 §3）。
         self.max_model_len = vllm_config.model_config.max_model_len
+        # 普通自回归 draft：第一遍比 target query 多要 1 行输入（= 新采出的那个 token）
+        self.num_new_slots_per_request = spec_config.max_num_new_slots_for_drafting
         self.model = None                     # 子类加载
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.metadata_builder = AttentionMetadataBuilder(self.block_size)
         self.sampler = Sampler()
-        # draft 模型自己的进度（"它的 KV 已经算到哪"）。与 target 的进度**分开维护**：
-        # 恢复/新请求要重置，否则会拿旧物理编号上的 KV 当历史（199 §5）。
-        # 它正常每轮都追平 target（中间 prefill 块也同步），所以不需要谁去夹发布边界——
-        # 但要有一条用例盯着它（check_step57_draft_model.py §6）
+        # **观测字段，不参与任何决策**（58 §5）：上一次第一遍把 draft 的 KV 覆盖到哪。
+        # 58 之前的版本用它当"从哪开始补算"的第二套权威（新请求=0 于是命中前缀也整段重算）；
+        # 现在起点由本轮调度快照的 `TargetRows.start` 决定，这里只留给测试/排查对账。
         self._draft_computed: dict[str, int] = {}
         self._draft_generators: dict[str, torch.Generator] = {}
         self.num_drafts_proposed = 0
+        # ---------------- 固定输入工作区（58 §7） ----------------
+        # 一次性开好、每轮只覆盖前 N 行/N 个请求：**不每轮新建张量**（`data_ptr()` 稳定，
+        # 为后面的编译/CUDA Graph 留地基）。CPU 上 staging 与 device 侧是同一份；
+        # CUDA 上先写 staging、再只上传有效前缀。
+        scheduler_config = vllm_config.scheduler_config
+        self.max_num_reqs = scheduler_config.max_num_seqs
+        # 容量口径与 Scheduler 的 input_budget 起点**同一个配置**（58 §5），不另加一个
+        # "调大一点逃避预算"的旋钮。
+        self.max_num_tokens = scheduler_config.max_num_batched_tokens
+        self.max_blocks_per_req = max(1, -(-self.max_model_len // self.block_size))
+
+        def _buffer(size, dtype):
+            cpu = torch.zeros(size, dtype=dtype)
+            if device == "cpu":
+                return cpu, cpu
+            return cpu, torch.zeros(size, dtype=dtype, device=device)
+
+        self.input_ids_cpu, self.input_ids = _buffer((self.max_num_tokens,), torch.int64)
+        self.positions_cpu, self.positions = _buffer((self.max_num_tokens,), torch.int64)
+        self.slot_mapping_cpu, self.slot_mapping = _buffer((self.max_num_tokens,), torch.int64)
+        self.is_rejected_token_mask_cpu, self.is_rejected_token_mask = _buffer(
+            (self.max_num_tokens,), torch.bool)
+        # 并行提议（DFlash/PARD）才用到的 mask；普通 draft 恒 False，缓冲先留着对齐布局
+        self.is_masked_token_mask_cpu, self.is_masked_token_mask = _buffer(
+            (self.max_num_tokens,), torch.bool)
+        self.query_start_loc_cpu, self.query_start_loc = _buffer((self.max_num_reqs + 1,),
+                                                                 torch.int64)
+        self.seq_lens_cpu, self.seq_lens = _buffer((self.max_num_reqs,), torch.int64)
+        self.block_table_cpu, self.block_table = _buffer(
+            (self.max_num_reqs, self.max_blocks_per_req), torch.int64)
 
     # -------- 交给子类 --------
 
@@ -85,87 +135,66 @@ class SpecDecodeBaseProposer:
 
     # -------- 提议 --------
 
-    def propose(self, req_ids: list[str], all_token_ids: dict[str, list[int]],
-                num_computed_tokens: dict[str, int], input_batch,
-                ready_req_ids: set[str] | None = None,
+    def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]], input_batch,
                 reset_req_ids: set[str] | None = None) -> DraftTokenIds:
         """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
 
-        `num_computed_tokens[req_id]` 是"target 本轮之后算到哪"——draft 的 KV 必须覆盖到
-        这个位置（通过第一遍前向补齐）。**中间 prefill 块也要同步**：同一个逻辑块在
-        target/draft 的每一层都有各自的 tensor，draft 没写过的那一层会让这个块不能算
-        "完整可复用"，而 target 的完整块这一轮就会发布出去（199 §9）。vLLM 的做法就是这样
-        ——drafter 与 target 每步跑同一段位置，草案在同一轮里天然同步。
+        `rows` 是本轮 target 侧的事实（`TargetRows`：起点 `start`、本轮行数 `target_rows`、
+        被拒数 `num_rejected`、采样后有效历史末尾 `history_end`）。**起点直接来自调度快照**
+        ——prefix 命中过的请求 `start` 就是命中末尾，draft 不再从位置 0 重算（58 §4/§6）。
 
-        草稿本身只给 `ready_req_ids` 里的请求提（None = 全提）：中间 prefill 块没有可验证的
-        next token，提了 Scheduler 也会丢（vLLM 的 `update_draft_token_ids` 同款规则），
-        这里更早一步不提，省掉 K 次前向。
+        中间 prefill 块也要同步（`ready=False`）：同一个逻辑块在 target/draft 的每一层都有
+        各自的 tensor，draft 没写过的那一层会让这个块不能算"完整可复用"，而 target 的完整块
+        这一轮就会发布出去（199 §9）。**草稿只给 ready 的请求提**：中间 prefill 块没有可验证的
+        next token，提了 Scheduler 也会丢（vLLM 的 `update_draft_token_ids` 同款规则）。
 
-        `input_batch` 是 target 的批状态：草稿要读**共享的块表**（同一套 slot 编号）与
-        每条请求的采样参数。draft 的 KV 写在自己的 tensor 上，但位置与槽位由这里决定。
-
-        **生命周期**（205 §4.4，与 Controller 的分工）：
-
-        - 本轮没被调度的请求：它根本不进 `req_ids`，这里什么都不做——进度与随机流由
-          `_draft_computed` / `_draft_generators` 保留（块仍然有效，"没排上"≠"结束"）；
-        - 抢占恢复（`reset_req_ids`）：块表整表换过 → 进度作废重算，随机流**继续**；
-        - 结束/abort：由 `remove_requests()` 显式删除（不在 batch 里不能当结束）。
+        **生命周期**（205 §4.4，与 Controller 的分工）：没被调度的请求根本不进 `rows`，
+        状态保留；抢占恢复（`reset_req_ids`）只重置进度、随机流继续；结束/abort 由
+        `remove_requests()` 显式删除。
         """
-
         self._reset_requests(reset_req_ids or set())
-        ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
+        req_ids = [target.req_id for target in rows]
         drafts: dict[str, list[int]] = {req_id: [] for req_id in req_ids}
         probs: dict[str, list[torch.Tensor]] = {req_id: [] for req_id in req_ids}
+        if not rows:
+            return DraftTokenIds(req_ids=[], draft_token_ids=[], draft_probs=None)
 
-        # ---- 第一遍：把"target 算完、draft 还没算"的那段补进 draft 的 KV ----
-        rows: list[tuple[str, int]] = []
-        for req_id in req_ids:
-            boundary = num_computed_tokens[req_id]
-            start = min(self._draft_computed.get(req_id, 0), boundary)
-            rows.extend((req_id, position) for position in range(start, boundary))
-        if rows:
-            hidden = self._forward(rows, all_token_ids, input_batch)
-            # 进度对**所有**请求推进（包括中间 prefill 块）：它们这一轮的 KV 也写了
-            for req_id, _ in rows:
-                self._draft_computed[req_id] = num_computed_tokens[req_id]
-            # 但只有 ready 的行才取第一枚草稿：其余行的草稿不会被采用（行是同请求连续的，
-            # 所以"最后一行"就是该请求同步到的那一行）
-            last_row: dict[str, int] = {}
-            for index, (req_id, _) in enumerate(rows):
-                if req_id in ready:
-                    last_row[req_id] = index
-            if last_row:
-                self._sample(hidden, list(last_row.items()), input_batch, drafts, probs)
+        # ---- 第一遍：把 [start, history_end) 这段写进 draft 的 KV（含 prefix 命中的跳过）----
+        self._fill_block_table_rows([target.row for target in rows], input_batch.block_table)
+        plan = self.set_inputs_first_pass(rows, all_token_ids)
+        hidden = self._forward(plan.num_tokens, plan.num_reqs)
+        for target in rows:
+            self._draft_computed[target.req_id] = target.history_end      # 观测用
+        if plan.sample_rows:
+            self._sample_draft_tokens(hidden,
+                                      list(zip(plan.sample_req_ids, plan.sample_rows)),
+                                      input_batch, drafts, probs)
 
-        # ---- 自回归补足 K 枚：上一枚当输入，位置接在它后面 ----
+        # ---- 自回归补足 K 枚：上一枚当输入，位置接在它后面（**复用同一个工作区**）----
         #
-        # 每一枚草稿都写在"已提交历史之后"（位置 = 已提交 + j - 1），那是 target 本轮 query
-        # **之外**的位置：调度侧为此预留了 `num_lookahead_tokens` 个槽位（vLLM 同款规则）。
-        # 但预留可能被 `max_model_len` 截掉、上下文也可能刚好走到尽头，所以每写一枚都要过
-        # **两个**边界：模型自己的位置范围（逻辑）与块表覆盖（物理）。少一个就会在"10 个
-        # 位置、3 个块（12 槽）"这种配置下写出 position=10（205 §3）。过不了就少提几枚——
-        # 草稿只是候选，不写就不会越界，也不会让这一轮失败。
+        # 第 k 枚草稿写在位置 `history_end + k - 2`，那是 target 本轮 query 之外的位置：
+        # 调度侧为此预留了 `num_lookahead_tokens` 个 KV 槽位。但预留可能被 `max_model_len`
+        # 截掉、上下文也可能刚好走到尽头，所以每写一枚都要过**两个**边界：模型自己的位置范围
+        # （逻辑）与块表覆盖（物理）。过不了就少提几枚——草稿只是候选，不写就不会越界。
         while True:
-            pending: list[str] = []
-            for req_id in req_ids:
+            pending: list[tuple[TargetRows, int]] = []
+            for target in rows:
+                req_id = target.req_id
                 if not 0 < len(drafts[req_id]) < self.num_speculative_tokens:
                     continue
-                position = num_computed_tokens[req_id] + len(drafts[req_id]) - 1
-                row = input_batch.req_id_to_index[req_id]
+                position = target.history_end + len(drafts[req_id]) - 1
                 if not 0 <= position < self.max_model_len:
                     continue
-                if not input_batch.block_table.covers(row, position):
+                if not input_batch.block_table.covers(target.row, position):
                     continue
-                pending.append(req_id)
+                pending.append((target, position))
             if not pending:
                 break
-            rows = [(req_id, num_computed_tokens[req_id] + len(drafts[req_id]) - 1)
-                    for req_id in pending]
-            tokens = {req_id: list(all_token_ids[req_id][:num_computed_tokens[req_id]])
-                      + drafts[req_id] for req_id in pending}
-            hidden = self._forward(rows, tokens, input_batch)
-            self._sample(hidden, [(req_id, index) for index, (req_id, _) in enumerate(rows)],
-                         input_batch, drafts, probs)
+            self._set_autoregressive_inputs(pending, drafts, input_batch)
+            hidden = self._forward(len(pending), len(pending))
+            self._sample_draft_tokens(
+                hidden, [(target.req_id, index) for index, (target, _) in enumerate(pending)],
+                input_batch, drafts, probs)
 
         probs_rows = [row for req_id in req_ids for row in probs[req_id]]
         self.num_drafts_proposed += sum(len(drafts[req_id]) for req_id in req_ids)
@@ -173,6 +202,142 @@ class SpecDecodeBaseProposer:
             req_ids=list(req_ids),
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
+
+    # -------- 第一遍输入（对应上游 set_inputs_first_pass） --------
+
+    def set_inputs_first_pass(self, rows: list[TargetRows],
+                              all_token_ids: dict[str, list[int]]) -> FirstPassPlan:
+        """把第一遍的输入写进工作区，返回物理行数、采样行与各请求的 AR 起点。
+
+        每条请求的物理行 = [有效行 (n - num_rejected)] + [1 行扩容行] + [被拒行]，展开规则与
+        上游 `copy_and_expand_eagle_inputs_kernel`（`shift_input_ids=False`）一致，见
+        `spec_decode/utils.py`；槽位用上游同款 `compute_new_slot_mapping()` 算，query/seq
+        长度用 `extend_all_queries_by_N()` 扩。
+
+        **拒绝尾部留在工作区里但被屏蔽**：token 取 padding、position 取 0、slot 取哨兵，
+        于是它既不写 KV、也不进新提议的上下文（58 §6）。
+        """
+        input_rows = []
+        for target in rows:
+            tokens = all_token_ids[target.req_id]
+            input_rows.append(DraftInputRows(
+                valid_token_ids=[int(tokens[position])
+                                 for position in range(target.start,
+                                                       target.start + target.num_valid)],
+                start=target.start,
+                next_token_id=target.next_token_id,
+                num_rejected=target.num_rejected))
+        input_ids, positions, is_rejected, sample_indices = expand_draft_inputs(input_rows)
+        num_tokens = len(input_ids)
+        if num_tokens > self.max_num_tokens:
+            raise RuntimeError(
+                f"draft 第一遍要 {num_tokens} 行，超过输入工作区 {self.max_num_tokens} 行："
+                f"Scheduler 的 input_budget 没兜住，属于控制面/执行面口径不一致（不是模型问题）")
+        query_lens = [target.target_rows for target in rows]
+        # target 的 query_start_loc 与 seq_lens，交给 extend_all_queries_by_N 各 +1 行/+1 长度
+        query_start_loc = [0]
+        for length in query_lens:
+            query_start_loc.append(query_start_loc[-1] + length)
+        seq_lens = [target.start + target.target_rows for target in rows]
+        query_start_loc, seq_lens = extend_all_queries_by_N(
+            query_start_loc, seq_lens, self.num_new_slots_per_request)
+
+        self.input_ids_cpu[:num_tokens] = torch.tensor(input_ids, dtype=torch.int64)
+        self.positions_cpu[:num_tokens] = torch.tensor(positions, dtype=torch.int64)
+        self.is_rejected_token_mask_cpu[:num_tokens] = torch.tensor(is_rejected, dtype=torch.bool)
+        self.query_start_loc_cpu[:len(query_start_loc)] = torch.tensor(query_start_loc,
+                                                                      dtype=torch.int64)
+        self.seq_lens_cpu[:len(seq_lens)] = torch.tensor(seq_lens, dtype=torch.int64)
+        # slot mapping 在 **CPU** 上算：块表镜像是 CPU 结构，索引也必须是 CPU 张量
+        # （否则会撞上 "Expected all tensors to be on the same device"，204 §5）。
+        self.slot_mapping_cpu[:num_tokens] = compute_new_slot_mapping(
+            self.block_table_cpu[:len(rows)], query_lens, self.positions_cpu[:num_tokens],
+            self.is_rejected_token_mask_cpu[:num_tokens], self.block_size,
+            self.num_new_slots_per_request, self.max_model_len)
+        self._check_valid_positions(rows)
+        ready = [index for index, target in enumerate(rows) if target.ready]
+        return FirstPassPlan(
+            num_tokens=num_tokens, num_reqs=len(rows),
+            sample_rows=[sample_indices[index] for index in ready],
+            sample_req_ids=[rows[index].req_id for index in ready],
+            history_end={target.req_id: target.history_end for target in rows})
+
+    def _check_valid_positions(self, rows: list[TargetRows]) -> None:
+        """内部错误检查（对应 205 §3 保留的那条断言）：有效行/扩容行必须在模型位置上界内。
+
+        被拒行不在检查范围（它们是 padding，position=0，本来就不参与上下文）。
+        """
+        for target in rows:
+            last = target.start + target.num_valid          # 扩容行的位置
+            if not 0 <= last < self.max_model_len:
+                raise RuntimeError(
+                    f"{target.req_id!r} 的 draft 第一遍要写位置 {last}，超出 "
+                    f"max_model_len={self.max_model_len}：调度快照与 draft 输入口径不一致")
+
+    def _set_autoregressive_inputs(self, pending: list[tuple[TargetRows, int]],
+                                   drafts: dict, input_batch) -> None:
+        """后续自回归步骤：**复用同一个工作区的前 B 行**（每活跃请求一行，58 §7）。"""
+        num_reqs = len(pending)
+        tokens = [drafts[target.req_id][-1] for target, _ in pending]
+        positions = [position for _, position in pending]
+        batch_rows = [target.row for target, _ in pending]
+        self.input_ids_cpu[:num_reqs] = torch.tensor(tokens, dtype=torch.int64)
+        self.positions_cpu[:num_reqs] = torch.tensor(positions, dtype=torch.int64)
+        # 槽位与 target 同一份公式、同一张块表（物理容量已由 covers() 确认过）
+        self.slot_mapping_cpu[:num_reqs] = input_batch.block_table.compute_slot_mapping(
+            input_batch.num_reqs, torch.tensor(positions, dtype=torch.int64),
+            torch.tensor(batch_rows, dtype=torch.int64))
+        self.is_rejected_token_mask_cpu[:num_reqs] = False
+        self.query_start_loc_cpu[:num_reqs + 1] = torch.arange(num_reqs + 1, dtype=torch.int64)
+        # 第 k 枚草稿的上下文 = 它自己的位置 + 1（之前几枚的 KV 已经写进缓存）
+        self.seq_lens_cpu[:num_reqs] = torch.tensor(
+            [position + 1 for _, position in pending], dtype=torch.int64)
+        self._fill_block_table_rows(batch_rows, input_batch.block_table)
+
+    def _fill_block_table_rows(self, batch_rows: list[int], block_table) -> None:
+        """把这几条请求的块表行拷进**工作区块表**（只覆盖前 len(batch_rows) 行）。
+
+        尾部残留的块号不会被读到：metadata 只带 `[:num_reqs]` 的有效切片（58 §7）。
+        """
+        for index, row in enumerate(batch_rows):
+            count = block_table.num_blocks(row)
+            if count > self.max_blocks_per_req:
+                raise RuntimeError(
+                    f"第 {row} 行有 {count} 个块，超过工作区 {self.max_blocks_per_req} 列："
+                    f"工作区是按 max_model_len/block_size 开的，说明块表与本配置不匹配")
+            self.block_table_cpu[index, :count] = torch.tensor(
+                block_table.cpu[row, :count].tolist(), dtype=torch.int64)
+            self.block_table_cpu[index, count:].zero_()
+
+    def _upload(self, num_tokens: int, num_reqs: int) -> None:
+        """只上传有效前缀（CPU 上 staging 与 device 侧是同一份，直接返回）。"""
+        if self.device == "cpu":
+            return
+        self.input_ids[:num_tokens].copy_(self.input_ids_cpu[:num_tokens])
+        self.positions[:num_tokens].copy_(self.positions_cpu[:num_tokens])
+        self.slot_mapping[:num_tokens].copy_(self.slot_mapping_cpu[:num_tokens])
+        self.is_rejected_token_mask[:num_tokens].copy_(
+            self.is_rejected_token_mask_cpu[:num_tokens])
+        self.query_start_loc[:num_reqs + 1].copy_(self.query_start_loc_cpu[:num_reqs + 1])
+        self.seq_lens[:num_reqs].copy_(self.seq_lens_cpu[:num_reqs])
+        self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs])
+
+    def _forward(self, num_tokens: int, num_reqs: int):
+        """把工作区的前 `num_tokens` / `num_reqs` 行交给 draft 模型，返回 hidden states。
+
+        **只传有效切片**：缓冲尾部的残留 token / 块号不能被 attention 读到——用长度表达有效，
+        不是"内容恰好是 0"（58 §7）。
+        """
+        self._upload(num_tokens, num_reqs)
+        metadata = self.metadata_builder.build(
+            query_start_loc=self.query_start_loc[:num_reqs + 1],
+            seq_lens=self.seq_lens[:num_reqs],
+            block_table=self.block_table[:num_reqs],
+            slot_mapping=self.slot_mapping[:num_tokens],
+            num_reqs=num_reqs)
+        attn_metadata = {name: metadata for name in self.kv_caches}
+        with set_forward_context(attn_metadata, num_tokens=num_tokens):
+            return self.model(self.input_ids[:num_tokens], self.positions[:num_tokens])
 
     def _reset_requests(self, reset_req_ids: set[str]) -> None:
         """丢掉不再成立的 draft 侧**进度**：请求刚被抢占恢复（块表整表换过）。
@@ -197,62 +362,10 @@ class SpecDecodeBaseProposer:
             self._draft_computed.pop(req_id, None)
             self._draft_generators.pop(req_id, None)
 
-    # -------- 单次 forward --------
-
-    def _forward(self, rows: list[tuple[str, int]], token_ids_by_req, input_batch):
-        """把 `(请求, 绝对位置)` 这批行喂给 draft 模型，返回 hidden states。"""
-        max_model_len = self.vllm_config.model_config.max_model_len
-        for req_id, position in rows:
-            if not 0 <= position < max_model_len:
-                raise RuntimeError(
-                    f"{req_id!r} 的 draft 前向要算位置 {position}，超出了 "
-                    f"max_model_len={max_model_len}：draft 侧的历史边界与 target 对不上了")
-        block_table = input_batch.block_table
-        device = self.device
-        input_ids, positions, batch_rows = [], [], []
-        for req_id, position in rows:
-            input_ids.append(int(token_ids_by_req[req_id][position]))
-            positions.append(int(position))
-            batch_rows.append(input_batch.req_id_to_index[req_id])
-
-        # 参与本轮的请求，按第一次出现的顺序（同一请求的行是连续的）
-        unique_reqs = list(dict.fromkeys(req_id for req_id, _ in rows))
-        counts = [sum(1 for req_id, _ in rows if req_id == unique) for unique in unique_reqs]
-        query_start_loc = [0]
-        for count in counts:
-            query_start_loc.append(query_start_loc[-1] + count)
-        last_position = {unique: max(position for req_id, position in rows if req_id == unique)
-                         for unique in unique_reqs}
-
-        positions_tensor = torch.tensor(positions, dtype=torch.int64, device=device)
-        # 槽位映射在 **CPU** 上算：块表镜像是 CPU 结构（`.cpu`），索引也必须是 CPU 张量，
-        # 否则会撞上 "Expected all tensors to be on the same device"。公式与 target 同一份实现。
-        slots = block_table.compute_slot_mapping(
-            input_batch.num_reqs, positions_tensor.cpu(),
-            torch.tensor(batch_rows, dtype=torch.int64)).to(device)
-        # 块表张量：只取参与的批行，顺序与 unique_reqs 一致
-        max_blocks = max(block_table.num_blocks(row) for row in batch_rows)
-        table_tensor = torch.zeros((len(unique_reqs), max(1, max_blocks)), dtype=torch.int64,
-                                   device=device)
-        for index, req_id in enumerate(unique_reqs):
-            row = input_batch.req_id_to_index[req_id]
-            count = block_table.num_blocks(row)
-            table_tensor[index, :count] = torch.tensor(
-                block_table.cpu[row, :count].tolist(), dtype=torch.int64, device=device)
-        metadata = self.metadata_builder.build(
-            query_start_loc=torch.tensor(query_start_loc, dtype=torch.int64, device=device),
-            seq_lens=torch.tensor([last_position[req_id] + 1 for req_id in unique_reqs],
-                                  dtype=torch.int64, device=device),
-            block_table=table_tensor, slot_mapping=slots, num_reqs=len(unique_reqs))
-        attn_metadata = {name: metadata for name in self.kv_caches}
-        with set_forward_context(attn_metadata, num_tokens=len(rows)):
-            return self.model(torch.tensor(input_ids, dtype=torch.int64, device=device),
-                              positions_tensor)
-
     # -------- 采样草稿 --------
 
-    def _sample(self, hidden: torch.Tensor, row_refs: list[tuple[str, int]], input_batch,
-                drafts: dict, probs: dict) -> None:
+    def _sample_draft_tokens(self, hidden: torch.Tensor, row_refs: list[tuple[str, int]],
+                             input_batch, drafts: dict, probs: dict) -> None:
         """对给定行各采一枚草稿，同时记下它来自的分布（q）。
 
         `q` 必须是**实际提议时用的分布**（199 §7），所以这里与 `Sampler.sample` 走同一条

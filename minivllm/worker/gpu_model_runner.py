@@ -40,6 +40,7 @@ from ..outputs import DraftTokenIds
 from ..sample import Sampler, SamplingMetadata
 from ..spec_decode.metadata import SpecDecodeMetadata
 from ..spec_decode.rejection_sampler import RejectionSampler
+from ..spec_decode.utils import TargetRows
 from .gpu_input_batch import InputBatch
 
 
@@ -556,7 +557,7 @@ class GPUModelRunner:
         # 否则草稿是基于"少一个 token 的历史"算出来的，draft 侧的进度也会比 target 落后一格，
         # 于是发布出去的完整块可能还没被 draft 算过（验收方的独立探针分别抓到了这两点）
         output = self._bookkeeping_sync(state, sampled)
-        self.pending_draft_token_ids = self._propose_draft_tokens(state)
+        self.pending_draft_token_ids = self._propose_draft_tokens(state, sampled)
         return output
 
     # -------- 投机（57E）--------
@@ -584,42 +585,70 @@ class GPUModelRunner:
                 [token for token in rows[index] if token != -1] if row in ready else [])
         return [sampled_by_row[row] for row in state.sample_rows]
 
-    def _propose_draft_tokens(self, state):
+    def _propose_draft_tokens(self, state, sampled):
         """按配置提**下一轮**的草稿（199 §4：轮 t 验证时顺手提，轮 t+1 才采用）。
 
-        提议的输入只看**已提交历史**（不看本轮自己的草稿区）；返回的草稿与概率只留到
-        下一轮的 `sample_tokens`，届时按实际采用的条数重排 q。
+        这里只做一件事：把本轮 target 侧的**事实**摊成 `TargetRows`（58 §5 要求起点/终点
+        写清楚），提议者据此决定 draft 第一遍写哪些位置：
 
-        **每个被调度的请求都要过一遍提议者，包括中间 prefill 块**：它们这一轮也要把 draft 的
-        KV 同步到 target 算完的位置。不同步的话，target 这一轮发布的完整块会带着一层没写过的
-        draft KV——同一个逻辑块在两边各层都有 tensor，缺一层就不算"完整可复用"（199 §9）。
-        vLLM 就是这样：drafter 与 target 每步跑同一段位置，草案天然同步。
+            start        本轮起点 = 执行侧收到的调度快照里的 `num_computed_tokens`
+                         （**含 prefix 命中起点**，所以命中过的前缀不会被重算）
+            target_rows  本轮 target 执行的行数（调度快照里的 `num_scheduled_tokens`）
+            num_rejected 本轮采用的草稿里被拒的条数（= 采用数 - 接受数）
+            history_end  记账后的**有效历史**末尾（ready 行）；未 ready = start + target_rows
+            next_token_id 扩容行的 token：ready = 最后一个新采样 token；
+                         未 ready = backup（本段历史的最后一个 token，上游同款）
 
-        草稿本身只给 **ready 行**提：中间 prefill 块没有可验证的 next token，提了也会被
-        Scheduler 丢掉（vLLM 的 `update_draft_token_ids` 同款规则），这里更早一步不提。
+        中间 prefill 块（未 ready）也要过一遍提议者：它们这一轮也要把 draft 的 KV 同步到
+        target 算完的位置，否则 target 这一轮发布的完整块会带着一层没写过的 draft KV
+        （199 §9）。草稿本身只给 ready 行提（提了 Scheduler 也会丢）。
         """
         if self.proposer is None:
             return None
         req_ids = list(self.input_batch.req_ids)
         if not req_ids:
             return None
-        ready_req_ids = {self.input_batch.req_id_at(row) for row in state.sample_rows}
+        sampled_by_row = {row: list(tokens) for row, tokens in zip(state.sample_rows, sampled)}
+        adopted = state.scheduler_output.scheduled_spec_decode_tokens
         all_token_ids = {req_id: self.requests[req_id].all_token_ids for req_id in req_ids}
-        num_computed_tokens = {}
+
+        rows: list[TargetRows] = []
         for req_id in req_ids:
             row = self.input_batch.req_id_to_index[req_id]
-            if req_id in ready_req_ids:
-                # 记账已经做完：**已提交历史**就是 target 本轮之后的有效边界
-                num_computed_tokens[req_id] = self.input_batch.num_tokens(row)
+            start = int(self.input_batch.num_computed_tokens_cpu[row])
+            target_rows = int(state.scheduler_output.num_scheduled_tokens[req_id])
+            tokens = sampled_by_row.get(row, [])
+            num_drafted = len(adopted.get(req_id, ()))
+            if tokens:
+                # ready：接受 a 枚 + 1 个纠正/奖励 token；被拒的 K-a 枚不进新提议上下文
+                num_accepted = max(len(tokens) - 1, 0)
+                num_rejected = num_drafted - num_accepted
+                history_end = self.input_batch.num_tokens(row)
+                # [start, history_end) = 本轮 target query 里的**有效行** + 1 个扩容行：
+                # 有效行 = n - 被拒行；扩容行 = 最后那个新采样 token（位置 history_end-1）
+                if history_end != start + (target_rows - num_rejected) + 1:
+                    raise RuntimeError(
+                        f"{req_id!r} 的本轮口径对不上：记账后历史 {history_end} != "
+                        f"起点 {start} + (target 行数 {target_rows} - 被拒 {num_rejected}) + 1。"
+                        f"这是调度快照/记账/草稿采用数三者不一致，属于执行侧 bug")
+                if num_rejected < 0:
+                    raise RuntimeError(
+                        f"{req_id!r} 接受了 {num_accepted} 枚草稿，但本轮只采用了 "
+                        f"{num_drafted} 枚：采用数不该小于接受数")
             else:
                 # 中间 prefill 块：只同步到 target 本轮**算完**的位置（已提交历史里那些还没算的
-                # 位置，KV 槽位也还没分配，同步过去就是越界写）
-                num_computed_tokens[req_id] = (
-                    int(self.input_batch.num_computed_tokens_cpu[row])
-                    + int(state.scheduler_output.num_scheduled_tokens[req_id]))
-        # 恢复过的请求：它的块表整表换过，draft 侧的历史进度不再成立 → 重置
-        drafts = self.proposer.propose(req_ids, all_token_ids, num_computed_tokens,
-                                       self.input_batch, ready_req_ids=ready_req_ids,
+                # 位置，KV 槽位也还没分配，同步过去就是越界写，204 §6.1）
+                num_rejected = 0
+                history_end = start + target_rows
+            # 扩容行的 token：ready 用刚采出的最后一个；未 ready 用 backup（=本段最后一个 token）
+            backup_index = start + target_rows - 1
+            next_token_id = int(tokens[-1]) if tokens else int(all_token_ids[req_id][backup_index])
+            rows.append(TargetRows(req_id=req_id, row=row, start=start,
+                                   target_rows=target_rows, num_rejected=num_rejected,
+                                   history_end=history_end, next_token_id=next_token_id,
+                                   ready=bool(tokens)))
+        # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
+        drafts = self.proposer.propose(rows, all_token_ids, self.input_batch,
                                        reset_req_ids=set(self._resumed_req_ids))
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None

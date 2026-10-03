@@ -17,6 +17,7 @@ token 抄过来当草稿。所以它是**确定性**的——没有分布 q，�
 """
 
 from ..outputs import DraftTokenIds
+from .utils import TargetRows
 
 
 class NgramProposer:
@@ -26,29 +27,26 @@ class NgramProposer:
         self.num_speculative_tokens = num_speculative_tokens
         self.max_ngram = max_ngram
 
-    def propose(self, req_ids: list[str], all_token_ids: dict[str, list[int]],
-                num_computed_tokens: dict[str, int], input_batch=None,
-                ready_req_ids: set[str] | None = None,
-                reset_req_ids: set[str] | None = None) -> DraftTokenIds:
+    def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]],
+                input_batch=None, reset_req_ids: set[str] | None = None) -> DraftTokenIds:
         """给每条**ready** 请求提最多 `num_speculative_tokens` 枚草稿。
 
-        `num_computed_tokens` 是"target 本轮之后算到哪"——**匹配只看这段历史**，不看上一轮
-        留下的草稿区（那部分可能刚被覆盖，掺进来会让提议依赖上一轮的运气）。中间 prefill
-        块拿到的边界只是"target 本轮算完的位置"，而且它们本来就不提（见下）。
+        `rows` 与 draft_model 提议者共用同一个数据结构（`TargetRows`）：ngram 只用
+        `req_id`、`history_end`（匹配只看这段历史）与 `ready`。不看上一轮留下的草稿区——
+        那部分可能刚被覆盖，掺进来会让提议依赖上一轮的运气。
 
-        `ready_req_ids` 是**与 draft_model 提议器统一的接口**：ngram 不写 KV，没有"同步"这
-        件事，所以只对 ready 的请求提；其余请求原样返回空列表。中间 prefill 块的草稿没有可
-        验证的 next token，Scheduler 也会丢掉（vLLM 的 `update_draft_token_ids` 同款规则）。
-        `input_batch` / `reset_req_ids` 同理用不到（ngram 没有块表，也没有自己的进度）。
+        ngram 不写 KV，没有"同步"这件事，所以只对 ready 的请求提；中间 prefill 块的草稿
+        没有可验证的 next token，Scheduler 也会丢掉（vLLM 的 `update_draft_token_ids` 同款
+        规则）。`input_batch` / `reset_req_ids` 同理用不到（ngram 没有块表，也没有自己的进度）。
         **生命周期**：请求没被调度时什么都不留；抢占恢复不需要重置；只有"结束/abort"由
         Runner 调 `remove_requests()`——ngram 无状态，那个方法是空操作（205 §4.4）。
         """
-        ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
         draft_token_ids: list[list[int]] = []
-        for req_id in req_ids:
-            tokens = all_token_ids[req_id][:num_computed_tokens[req_id]]
-            draft_token_ids.append(self._propose_one(tokens) if req_id in ready else [])
-        return DraftTokenIds(req_ids=list(req_ids), draft_token_ids=draft_token_ids)
+        for target in rows:
+            tokens = all_token_ids[target.req_id][:target.history_end]
+            draft_token_ids.append(self._propose_one(tokens) if target.ready else [])
+        return DraftTokenIds(req_ids=[target.req_id for target in rows],
+                             draft_token_ids=draft_token_ids)
 
     def remove_requests(self, req_ids) -> None:
         """与 draft_model 提议者统一的接口：ngram 没有自己的进度与随机流，所以是空操作。

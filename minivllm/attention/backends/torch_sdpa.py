@@ -53,9 +53,22 @@ class TorchAttentionImpl:
         flat = kv_cache.view(2, num_blocks * block_size, self.num_kv_heads, self.head_size)
         slots = attn_metadata.slot_mapping
         # 入参是扁平的 [num_tokens, kv_heads * head_size]（模型的 qkv 投影与 RoPE 都是扁平约定），
-        # 折成 [num_tokens, kv_heads, head_size] 才能按槽位整行写入
-        flat[0].index_copy_(0, slots, key.view(-1, self.num_kv_heads, self.head_size))
-        flat[1].index_copy_(0, slots, value.view(-1, self.num_kv_heads, self.head_size))
+        # 折成 [num_tokens, kv_heads, head_size] 才能按槽位整行写入。
+        #
+        # **哨兵槽位（PADDING_SLOT_ID = -1）要跳过**（58：draft 第一遍的"被拒尾部"就靠它）：
+        # index_copy_ 会把 -1 当成最后一个槽位，真写进去就把池子最后一格覆盖了。
+        # 上游 kernel 同样先判 slot >= 0 再存。
+        valid = slots >= 0
+        if not bool(valid.all()):
+            slots = slots[valid]
+            key = key.view(-1, self.num_kv_heads, self.head_size)[valid]
+            value = value.view(-1, self.num_kv_heads, self.head_size)[valid]
+        else:
+            key = key.view(-1, self.num_kv_heads, self.head_size)
+            value = value.view(-1, self.num_kv_heads, self.head_size)
+        if slots.numel():
+            flat[0].index_copy_(0, slots, key)
+            flat[1].index_copy_(0, slots, value)
 
     # -------- 2) 算注意力 --------
 

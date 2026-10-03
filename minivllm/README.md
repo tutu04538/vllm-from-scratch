@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复）。旧的 `stepNN/` 代码目录已经
+这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复与第五十八关的 draft 输入/双预算对齐）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 
 它不自己发明协议，而是做一个**能逐层映射到本机 vLLM（0.28.0）的、可运行的文本生成子集**。
@@ -88,6 +88,22 @@ step scheduled                    hits           preempted    running           
 所以只需要再算 3 个。抢占会出现在 `preempted` 那一列，块占用看最后两列。不运行模型也能看懂调度器
 在做什么，`check_step57_preemption.py` 里也是靠它做断言。
 
+## 第五十八关：draft 第一遍输入与双预算（热点）
+
+- **Scheduler 两份预算**：`token_budget`（本轮 target 能算多少 token）与 `input_budget`
+  （draft 第一遍工作区能放多少行）；普通 draft 每条被调度请求多占
+  `max_num_new_slots_for_drafting = 1` 行。抢占时两份一起返还。
+- **draft 第一遍**：每条请求的物理行 = `[有效行] + [1 行扩容行] + [被拒行]`，
+  被拒尾部用 mask + `slot=-1` 屏蔽；展开规则与上游
+  `copy_and_expand_eagle_inputs_kernel(shift_input_ids=False)` 逐值一致（`tests/step58` 里有 CUDA 差分）。
+- **prefix 命中不再重算**：起点用调度快照里的 `num_computed_tokens`（含命中起点），
+  命中段直接复用共享块里 draft 各层已经写好的 KV。
+- **固定工作区**：输入缓冲按 `max_num_batched_tokens` / `max_num_seqs` 开一次、每轮只覆盖有效前缀，
+  `data_ptr()` 稳定（69 关的编译/CUDA Graph 地基）。
+
+设计与对照见 [`docs/step58_alignment.md`](../docs/step58_alignment.md)，
+实测记录见 [`docs/step58_results.json`](../docs/step58_results.json)。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -115,6 +131,10 @@ python benchmarks/check_step57_spec_metadata.py      # 13 项：两个坐标系�
 python benchmarks/check_step57_rejection_sampler.py  # 22 项：greedy/random 验证、恢复分布、CPU 公式与统计对照
 python benchmarks/check_step57_spec_lifecycle.py     # 12 项：提议与采用的时序、K 裁剪、进度回退、抢占清草稿
 python benchmarks/check_step57_draft_model.py        # 32 项：draft 规格校验、KV 独立、端到端、逻辑上限与请求生命周期（205 回归）
+python benchmarks/check_step58_input_budget.py       # 10 项：双预算（token + input）与抢占返还
+python benchmarks/check_step58_draft_inputs.py       # 11 项：第一遍输入逐值 + prefix 复用 + 与上游 kernel 差分
+python benchmarks/check_step58_workspace.py          # 15 项：固定工作区（地址稳定/只读有效切片）与端到端
+python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

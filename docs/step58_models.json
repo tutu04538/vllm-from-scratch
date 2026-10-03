@@ -1,0 +1,83 @@
+{
+  "step": 58,
+  "说明": "本关的测试全部用**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）；真实模型的端到端对照留给需要真实 vLLM/Qwen3 的脚本，见 not_run。",
+  "target_draft_pairs": [
+    {
+      "用途": "全部 CPU 功能测试与 pytest（双预算 / 第一遍输入 / 工作区 / 端到端）",
+      "target": {
+        "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+        "repository": null,
+        "revision": null,
+        "本地路径": "临时目录（进程内缓存）",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "model_type": "qwen3",
+        "hidden_size": 32,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 16,
+        "intermediate_size": 48,
+        "vocab_size": 11,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 10000.0,
+        "max_position_embeddings": 64,
+        "dtype": "float32",
+        "tie_word_embeddings": false,
+        "tokenizer": "无（只用 token id）",
+        "权重来源": "随机初始化（固定 seed，确定性；与 57 时代提交的 fixtures 权重无关）"
+      },
+      "draft": {
+        "说明": "与 target 同一份 tiny 模型（贪心时草稿必被接受，用来覆盖“全接受”路径）",
+        "共享配置": [
+          "vocab_size",
+          "num_key_value_heads",
+          "head_dim",
+          "dtype"
+        ]
+      }
+    },
+    {
+      "用途": "B 组“与上游 kernel 差分”与 C 组 CUDA 端到端",
+      "target": {
+        "同": "tiny_gqa（同一份）",
+        "device": "cuda:0（RTX 5090 Laptop）"
+      },
+      "draft": {
+        "同": "tiny_gqa（同一份）"
+      },
+      "备注": "差分测试另外直接调用上游 vllm 0.28.0 的 copy_and_expand_eagle_inputs_kernel"
+    },
+    {
+      "用途": "真实模型集成为**待验**（本关未跑）",
+      "target": {
+        "本地路径": "models/Qwen3-1.7B",
+        "repository": null,
+        "revision": null,
+        "dtype": "bfloat16 / float32",
+        "tokenizer": "模型目录自带",
+        "state": "集成待验：需要 GPU 与真实 vLLM 对照脚本，本关只做 CPU/CUDA tiny 验证"
+      },
+      "draft": {
+        "说明": "真实 draft 组合留给后续关卡（63 EAGLE / 65 MTP / 82 draft 配置）",
+        "state": "未接入"
+      }
+    }
+  ],
+  "generation_config": {
+    "command": "python -m minivllm.testing.tiny_models --out <目录>",
+    "seed": 0,
+    "确定性": "同一 seed 生成的 model.safetensors 字节一致"
+  },
+  "上游参考": {
+    "vllm": "0.28.0（site-packages 安装版）",
+    "相关文件": [
+      "vllm/v1/spec_decode/llm_base_proposer.py",
+      "vllm/v1/spec_decode/utils.py",
+      "vllm/v1/spec_decode/draft_model.py",
+      "vllm/v1/core/sched/scheduler.py",
+      "vllm/config/speculative.py"
+    ]
+  }
+}

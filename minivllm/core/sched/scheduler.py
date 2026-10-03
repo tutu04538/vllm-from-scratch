@@ -64,8 +64,26 @@ class Scheduler:
             self.num_speculative_tokens
             if speculative_config is not None and speculative_config.method == "draft_model"
             else 0)
+        # 58：**第二份预算**。draft 第一遍要吃 target 本轮刚采出的 token，所以每条被调度的
+        # 请求在输入工作区里多占 `draft_slots` 行（普通 draft=1，ngram=0）。
+        # 与 `num_lookahead_tokens`（KV 位置）不是一回事，见 docs/step58_alignment.md。
+        self.draft_slots = (speculative_config.max_num_new_slots_for_drafting
+                            if speculative_config is not None else 0)
         self.max_num_seqs = scheduler_config.max_num_seqs
+        # 两份预算的**起点**在本地数值相同（本关没有 encoder 预算），但含义不同：
+        #   token budget：本轮 target 最多执行多少 query token（上游 max_num_scheduled_tokens）
+        #   input budget：draft 第一遍工作区最多容纳多少行（上游 max_num_batched_tokens）
+        self.max_num_scheduled_tokens = scheduler_config.max_num_batched_tokens
         self.max_num_batched_tokens = scheduler_config.max_num_batched_tokens
+        if self.max_num_batched_tokens < _NUM_SAMPLED_TOKENS_PER_STEP + self.draft_slots:
+            raise ValueError(
+                f"输入工作区容量 max_num_batched_tokens={self.max_num_batched_tokens} 装不下"
+                f"「至少 {_NUM_SAMPLED_TOKENS_PER_STEP} 个 target token + "
+                f"{self.draft_slots} 行 draft 额外输入」：开投机时把 "
+                f"max_num_batched_tokens 调到至少 "
+                f"{_NUM_SAMPLED_TOKENS_PER_STEP + self.draft_slots}，否则 draft 第一遍"
+                f"永远放不下任何请求（不空转，直接拒绝这个配置）")
+
         self.policy = scheduler_config.policy
         self.max_model_len = max_model_len
         self.kv_cache_manager = kv_cache_manager
@@ -90,6 +108,9 @@ class Scheduler:
         self.num_no_progress_steps = 0
         self.num_preemptions = 0
         self.trace: list[dict] = []
+        # 最近一轮结束时两份预算的余额（只读账本，不参与决策；测试直接查它）
+        self.last_token_budget: int | None = None
+        self.last_input_budget: int | None = None
 
     # -------- 请求进入/离开 --------
 
@@ -162,7 +183,10 @@ class Scheduler:
         num_hit_tokens: dict[str, int] = {}
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         preempted_reqs: list[Request] = []
-        token_budget = self.max_num_batched_tokens
+        # 两份预算：target 的 token 预算 + draft 第一遍的输入工作区预算（58）
+        token_budget = self.max_num_scheduled_tokens
+        input_budget = self.max_num_batched_tokens
+        draft_slots = self.draft_slots
 
         # ---- 0) 先作废"断代"的草稿（必须在算采用数之前）----
         self._invalidate_stale_drafts()
@@ -170,11 +194,15 @@ class Scheduler:
         # ---- 1) 先排 running（用下标遍历而不是 for：抢占要在循环里删元素）----
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
+            if input_budget <= draft_slots:
+                # 输入工作区连"每请求必修的额外行"都放不下了：排在后面的这轮都别排
+                # （上游 running/waiting 两条循环都有这条守卫）
+                break
             request = self.running[req_index]
-            num_new_tokens = self._num_new_tokens(request, token_budget)
+            num_new_tokens = self._num_new_tokens(request, token_budget, input_budget)
             if num_new_tokens == 0:
-                # 没有新 token 可算（例如已到上下文上限）。**跳过它、继续看后面的**——
-                # vLLM 在这里也是 continue，允许后面的请求先跑。
+                # 没有新 token 可算（例如已到上下文上限，或工作区只够留额外行）。
+                # **跳过它、继续看后面的**——vLLM 在这里也是 continue，允许后面的请求先跑。
                 req_index += 1
                 continue
 
@@ -193,13 +221,16 @@ class Scheduler:
                 if victim_index < req_index:
                     req_index -= 1
                 del self.running[victim_index]
-                # victim 可能**已经在本轮计划里**：撤销它的记录并把预算退回来，
-                # 否则那些已经释放的块会被发到执行侧（196 §5 明确点名的坑）
+                # victim 可能**已经在本轮计划里**：撤销它的记录并把**两份预算**都退回来，
+                # 否则那些已经释放的块/工作区会被发到执行侧（196 §5 明确点名的坑；
+                # 草稿计划也要一起删，否则会留下"请求不跑了、草稿还在计划里"的残余）
                 if victim in scheduled_running_reqs:
                     scheduled_running_reqs.remove(victim)
                     restored = num_scheduled_tokens.pop(victim.request_id)
                     token_budget += restored
+                    input_budget += restored + draft_slots
                     req_to_new_blocks.pop(victim.request_id, None)
+                    scheduled_spec_decode_tokens.pop(victim.request_id, None)
                 self._preempt_request(victim)
                 preempted_reqs.append(victim)
                 if victim is request:
@@ -215,6 +246,7 @@ class Scheduler:
             req_to_new_blocks[request.request_id] = new_blocks
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
+            input_budget -= num_new_tokens + draft_slots
             req_index += 1
 
             # 投机：把本轮**实际采用**的草稿前缀发给执行侧。
@@ -231,6 +263,8 @@ class Scheduler:
 
         # ---- 2) 再接纳 waiting：**本轮发生过抢占就不接纳**（196 §5.6）----
         while self.waiting and token_budget > 0 and not preempted_reqs:
+            if input_budget <= draft_slots:
+                break
             # 只数 running：本轮刚接纳的请求已经 append 进 running 了，
             # 再和 scheduled_new_reqs 相加会把同一条数两遍（那一版会让并发上限变成一半）
             if len(self.running) >= self.max_num_seqs:
@@ -240,7 +274,8 @@ class Scheduler:
             # 前缀命中：能白拿多少 token 的 KV（关缓存时恒为 0）
             computed_blocks, num_new_computed_tokens = self.kv_cache_manager.get_computed_blocks(request)
             start = request.num_computed_tokens + num_new_computed_tokens
-            num_new_tokens = self._num_new_tokens(request, token_budget, start=start)
+            num_new_tokens = self._num_new_tokens(request, token_budget, input_budget,
+                                                 start=start)
             if num_new_tokens == 0:
                 break
 
@@ -270,6 +305,24 @@ class Scheduler:
                 request.request_id)
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
+            input_budget -= num_new_tokens + draft_slots
+
+        # 打包之前把两份预算的约束**断言住**（上游在同一处断言）：
+        #   Σ target 行数 ≤ token 预算；Σ(target 行数 + draft 额外行) ≤ 工作区容量
+        # 把不变量写在这里，后面改调度时不会悄悄破坏它；测试也直接查这两个数。
+        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+        assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens, (
+            f"本轮 target 排了 {total_num_scheduled_tokens} 行，超过 token 预算 "
+            f"{self.max_num_scheduled_tokens}")
+        assert total_num_scheduled_tokens + draft_slots * len(num_scheduled_tokens) \
+            <= self.max_num_batched_tokens, (
+            f"本轮 target {total_num_scheduled_tokens} 行 + draft 额外 "
+            f"{draft_slots * len(num_scheduled_tokens)} 行，超过输入工作区容量 "
+            f"{self.max_num_batched_tokens}")
+        assert token_budget >= 0 and input_budget >= 0, (
+            f"预算被扣成负数：token_budget={token_budget}、input_budget={input_budget}")
+        self.last_token_budget = token_budget
+        self.last_input_budget = input_budget
 
         # ---- 3) 打包快照（进度是**旧值**）----
         new_reqs_data = [
@@ -300,16 +353,20 @@ class Scheduler:
         self._update_after_schedule(scheduler_output)
         return scheduler_output
 
-    def _num_new_tokens(self, request: Request, token_budget: int,
+    def _num_new_tokens(self, request: Request, token_budget: int, input_budget: int,
                         start: int | None = None) -> int:
-        """统一预算公式：差多少、预算剩多少、上下文还装得下多少，三者取小。
+        """统一预算公式：差多少、两份预算各剩多少、上下文还装得下多少，取小。
 
         `start` 是本轮的起点（= 已算进度 + 前缀命中），默认就是 `num_computed_tokens`。
+
+        `input_budget - draft_slots`：这一轮排进来之后，工作区还要能给这条请求留出
+        `draft_slots` 行（普通 draft 的额外 1 行）。上游同一处是
+        `min(needed, token_budget, input_budget - draft_slots, ...)`。
         """
         if start is None:
             start = request.num_computed_tokens
         num_new_tokens = request.num_tokens_with_spec - start
-        num_new_tokens = min(num_new_tokens, token_budget)
+        num_new_tokens = min(num_new_tokens, token_budget, input_budget - self.draft_slots)
         # 给本轮采样出来的 token 留位置：算到 start + n 之后还要能放下 1 个新 token
         num_new_tokens = min(num_new_tokens,
                              self.max_model_len - start - _NUM_SAMPLED_TOKENS_PER_STEP)

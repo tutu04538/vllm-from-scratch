@@ -203,6 +203,7 @@ try:
     if engine is not None:
         engine.shutdown()
 
+    # budget=2、draft_slots=1 → 输入预算只剩 1 行给 target，所以本轮排 1 个 token（58 双预算）
     error, engine = one_step([1, 2, 3, 4, 5, 6], k=1, budget=2)
     synced = None
     if engine is not None:
@@ -211,7 +212,7 @@ try:
                   runner.proposer.num_drafts_proposed)
     check("6. 中间 prefill 块：不提草稿（没有可验证的 next token），但 draft 的 KV 照常同步"
           "（提了 Scheduler 也会丢，vLLM 的 update_draft_token_ids 同款规则）",
-          error is None and synced == (2, 0), error or f"（draft 进度, 累计提议数）={synced}")
+          error is None and synced == (1, 0), error or f"（draft 进度, 累计提议数）={synced}")
     if engine is not None:
         engine.shutdown()
 
@@ -314,10 +315,11 @@ try:
     original_propose = runner.proposer.propose
 
 
-    def traced_propose(req_ids, all_token_ids, num_tokens_no_spec, *args, **kwargs):
-        seen_histories.append({req_id: list(all_token_ids[req_id][:num_tokens_no_spec[req_id]])
-                               for req_id in req_ids})
-        return original_propose(req_ids, all_token_ids, num_tokens_no_spec, *args, **kwargs)
+    def traced_propose(rows, all_token_ids, *args, **kwargs):
+        # 58：参数从"req_ids + 一个含糊的边界"改成 TargetRows（起点/终点写清楚）
+        seen_histories.append({target.req_id: list(all_token_ids[target.req_id][:target.history_end])
+                               for target in rows})
+        return original_propose(rows, all_token_ids, *args, **kwargs)
 
 
     runner.proposer.propose = traced_propose
@@ -406,7 +408,9 @@ try:
           f"非投机={results[None]}、K=3={results[3]}")
 
     # 7.2 本轮没被调度的请求：**不是结束**——进度与随机流必须保留，再入批不能拿旧草稿配新 q
-    engine, core, runner = build_engine(k=3, budget=4)
+    # budget=6：第一轮 A、B 各要 2+1=3 行（都排得下）；第二轮 A 要 4+1=5 行把预算吃光，
+    # B 因为 input_budget 只剩 1 行（<= draft_slots）被跳过——正是"本轮没排上"的场景
+    engine, core, runner = build_engine(k=3, budget=6)
     for req, seed in (("A", 10), ("B", 20)):
         engine.add_request(req, [1, 2], SamplingParams(max_tokens=3, temperature=1.0,
                                                        seed=seed, eos_token_id=999))
@@ -432,9 +436,10 @@ try:
     calls = []
     original_forward = runner.proposer._forward
 
-    def observed_forward(rows, *args, **kwargs):
-        calls.append(list(rows))
-        return original_forward(rows, *args, **kwargs)
+    def observed_forward(num_tokens, num_reqs):
+        # 58：`_forward` 现在只吃"工作区的前 N 行"（固定缓冲），行内容从缓冲里读
+        calls.append(runner.proposer.positions_cpu[:num_tokens].tolist())
+        return original_forward(num_tokens, num_reqs)
 
     runner.proposer._forward = observed_forward
     engine.add_request("reuse", [8, 7, 6, 5, 4, 3, 2, 1],
@@ -479,7 +484,9 @@ try:
 
     # 7.5 真实抢占 + 恢复：要求确实抢占，且输出与非投机 greedy 完全一致
     def preemption_run(k):
-        engine, core, _runner = build_engine(k=k, budget=4, blocks=4, policy="priority")
+        # blocks=3：58 的双预算让每轮能排的 target token 变少，原来 blocks=4 已经不再抢占；
+        # 缩到 3 才能继续覆盖"抢占后恢复"（两边都必须 preemptions>0 且输出一致）
+        engine, core, _runner = build_engine(k=k, budget=4, blocks=3, policy="priority")
         for req, priority in (("A", 0), ("B", 5)):
             engine.add_request(req, [1, 2], SamplingParams(max_tokens=8, temperature=0.0,
                                                            eos_token_id=999),

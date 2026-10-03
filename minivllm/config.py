@@ -81,7 +81,7 @@ class DeviceConfig:
 
 @dataclass(frozen=True)
 class SpeculativeConfig:
-    """投机配置（57E 才接进调度）。57A 只需要它存在、且默认 None。"""
+    """投机配置（57E 接进调度；58 增加输入槽位派生量）。"""
 
     method: str = "ngram"
     num_speculative_tokens: int = 0
@@ -90,6 +90,32 @@ class SpeculativeConfig:
     def __post_init__(self):
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
+        if self.method not in ("ngram", "draft_model"):
+            raise ValueError(
+                f"本关只支持 method='ngram' / 'draft_model'，收到 {self.method!r}"
+                "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
+
+    def uses_draft_model(self) -> bool:
+        """是否用独立的 draft 模型提议（上游同名方法）。"""
+        return self.method == "draft_model"
+
+    @property
+    def max_num_new_slots_for_drafting(self) -> int:
+        """每条被调度的请求，draft 第一遍比 target query **多**要几个输入槽位。
+
+        上游 `SpeculativeConfig.max_num_new_slots_for_drafting`（本机 0.28.0）的分支是
+        按"用不用 draft 模型 / 是不是并行提议"分的：普通自回归 draft model → **1**，
+        ngram / MTP → 0，P-EAGLE → K-1，DFlash / PARD → K。
+
+        本关只实现**普通自回归 draft**：它保留一个未切片的 token 作为第一遍的最后一行
+        （就是 target 本轮刚采出的那个），所以是 1；ngram 不跑模型、不写 KV，是 0。
+
+        **不要和 `num_lookahead_tokens` 混**：那个是"额外保留几个 KV 位置"（=K），
+        这个是"draft 输入工作区每请求多占几行"。
+        """
+        if self.uses_draft_model():
+            return 1
+        return 0
 
 
 @dataclass(frozen=True)

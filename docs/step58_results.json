@@ -1,0 +1,154 @@
+{
+  "step": 58,
+  "requirement": "learning_notes/14_vllm_from_scratch/207_第五十八关_对齐Draft输入与双预算调度.md",
+  "status": "implemented + self-verified (待独立验收)",
+  "recorded_at": "2026-10-03T05:47:33+00:00",
+  "git": {
+    "commit": "907b00e1d3a2da3569df6032508eb9edadf056fa",
+    "note": "结果记录于实现提交之前；代码改动见同一提交",
+    "worktree_dirty": true
+  },
+  "package": {
+    "root": "minivllm/",
+    "python_files": 63,
+    "sha256": "31fbc5e79d7415cab19408b472dd95d5f031456b83b4210cadf389ed4a545fad",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57 口径）"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.28.0",
+    "transformers": "5.14.1",
+    "triton": "3.7.1",
+    "cuda_available": true,
+    "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+    "conda_env": "vllm-omni-dev"
+  },
+  "models": "docs/step58_models.json（tiny 测试模型现场生成；无外部权重下载）",
+  "commands": [
+    {
+      "cmd": "python -m pytest tests/step58 -q",
+      "cwd": "项目根",
+      "result": "41 passed, 14 warnings in 5.41s",
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_input_budget.py",
+      "result": "10 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_draft_inputs.py",
+      "result": "11 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_workspace.py",
+      "result": "15 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step57_*.py（15 个）",
+      "result": "354 PASS / 0 FAIL",
+      "failed": 0,
+      "detail": {
+        "block_pool": {
+          "passed": 28,
+          "failed": 0
+        },
+        "draft_model": {
+          "passed": 32,
+          "failed": 0
+        },
+        "engine_protocol": {
+          "passed": 23,
+          "failed": 0
+        },
+        "model_logits": {
+          "passed": 18,
+          "failed": 0
+        },
+        "preemption": {
+          "passed": 23,
+          "failed": 0
+        },
+        "prefix_cache": {
+          "passed": 25,
+          "failed": 0
+        },
+        "rejection_sampler": {
+          "passed": 22,
+          "failed": 0
+        },
+        "request_progress": {
+          "passed": 29,
+          "failed": 0
+        },
+        "runner_inputs": {
+          "passed": 30,
+          "failed": 0
+        },
+        "sampler": {
+          "passed": 29,
+          "failed": 0
+        },
+        "scheduler_basic": {
+          "passed": 25,
+          "failed": 0
+        },
+        "spec_lifecycle": {
+          "passed": 12,
+          "failed": 0
+        },
+        "spec_metadata": {
+          "passed": 13,
+          "failed": 0
+        },
+        "stop_and_outputs": {
+          "passed": 20,
+          "failed": 0
+        },
+        "weight_loading": {
+          "passed": 25,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "execution_trace": {
+    "双预算": {
+      "M=8 两条请求各要 4 行": "计划 {A: 4, B: 2}（6 行 target + 2 行 draft 额外 = 8）；没有输入预算时会是 {A: 4, B: 4}，draft 第一遍需要 10 行",
+      "ngram": "draft_slots=0 → {A: 4, B: 4}，不占额外输入",
+      "input_budget<=draft_slots": "守卫生效，本轮不排（target 还想排 7 行也只排 1 行）",
+      "抢占已排入的 victim": "两条预算都返还（token += n、input += n+1），草稿计划同步删除",
+      "非法配置": "M=1 + 普通 draft → Scheduler 初始化 ValueError（不进空转）"
+    },
+    "第一遍输入": {
+      "prefill": "prompt 6 → 7 行（6 有效 + 1 扩容），positions 0..6，无被拒行",
+      "首拒绝": "K=1、草稿被拒 → 3 行 = [b, 纠正 token, 被拒(pad,pos=0,slot=-1)]",
+      "中拒绝": "K=3、第 2 枚被拒 → 5 行 = 2 有效 + 1 扩容 + 2 被拒",
+      "全接受": "K=3 全中 → 无被拒行，行数 = target 行数 + 1",
+      "prefix 命中": "命中 12 个 token → 第一遍只写位置 [12, 13]（57 的实现是 [0..13]）",
+      "chunked prefill": "只同步被安排的那一段（如 [0,3)、[3,3)），不提草稿",
+      "抢占恢复": "num_preemptions=2、输出与非投机一致、每轮仍满足 rows ≤ target_rows+1",
+      "与上游 kernel 差分": "copy_and_expand_eagle_inputs_kernel(shift_input_ids=False) 的 input_ids/positions/is_rejected/token_indices_to_sample/is_masked 与本地实现逐值相同"
+    },
+    "工作区": {
+      "地址稳定": "input_ids/positions/slot_mapping/masks/query_start_loc/seq_lens/block_table 的 data_ptr 在多轮、多请求、batch 缩了又涨之后都不变",
+      "只读有效切片": "把工作区尾部灌成 999/-1 后输出与参考运行完全一致",
+      "端到端": "greedy 投机(k=1/3, prefix 开/关) == 非投机；CPU 与 CUDA 各一组",
+      "生命周期": "abort / ID 复用 / 失败态 / 上下文上限 / 请求暂停后再入批 全部通过",
+      "可复现": "同一 seed 两次运行逐 token 一致"
+    },
+    "回归": {
+      "step57 的 15 个脚本": "354 项全过；其中 check_step57_draft_model.py 的期望值按双预算与 blocks=3 抢占配置同步",
+      "57 时代的验收探针": "review_rejection_boundaries 2/2、review_inference_boundary 1/1 仍通过；review_draft_boundaries 与 review_remaining_boundaries 因为按旧接口（propose 签名、_draft_generators['B'] 的预算假设）写死而无法直接复跑，对应场景已由 check_step58_draft_inputs.py 与 check_step58_workspace.py 覆盖"
+    }
+  },
+  "not_run": [
+    "真实 vLLM / Qwen3-1.7B 的端到端对照（compare_step57_vllm.py、check_step57_vllm_boundaries.py）",
+    "性能测量（本关不要求吞吐目标；总纲把统一性能矩阵放在 84 关）",
+    "CUDA Graph / 编译（69 关）"
+  ]
+}
