@@ -36,7 +36,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机 | `spec_decode/{metadata,rejection_sampler,ngram_proposer,draft_model}.py` | `v1/spec_decode/*`、`v1/sample/rejection_sampler.py` |
-| 测试替身 | `testing/fake_runner.py` | 无（只给测试） |
+| 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
 
@@ -129,5 +129,5 @@ python benchmarks/trace_step57.py                       # 一条覆盖五种事�
 ```
 
 数值对照用的外部参照是 **transformers 的 Qwen3**（同一份 tiny 权重）与一份**按公式手写**的
-注意力参考实现；权重与 tokenizer 用本机 `fixtures/step30_qwen3` 与 `models/Qwen3-1.7B`
-（都已存在，不下载新模型）。
+注意力参考实现；权重与 tokenizer 用本机 `models/Qwen3-1.7B` 与**现场生成**的 tiny 模型
+（`minivllm/testing/tiny_models.py`，固定 seed、写临时目录，不下载也不提交权重）。

@@ -2,7 +2,7 @@
 
 四个对照，从"纯数学"到"整条链路"：
 
-  A. **模型 logits**：同一份小权重（`fixtures/step30_qwen3/tiny_gqa`）、同一 prompt，
+  A. **模型 logits**：同一份现场生成的 tiny 权重（`minivllm.testing.tiny_models`，两边读同一个目录）、同一 prompt，
      逐位置比 top-5 logprobs（我们的 `compute_logits` vs vLLM 的 `prompt_logprobs`）——
      这条覆盖 GQA、q/k norm、RoPE、以及"绝对位置"。
   B. **增量位置**：vLLM greedy 生成几步的 `logprobs` vs 我们**逐 token decode**（每步一行的
@@ -32,7 +32,8 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 import torch
 
 FAIL = []
-TINY = "fixtures/step30_qwen3/tiny_gqa"
+from minivllm.testing.tiny_models import tiny_qwen3_dir   # 测试模型现场生成（仓库不再放 fixtures）
+TINY = tiny_qwen3_dir("tiny_gqa")
 TINY_CONFIG = json.load(open(f"{TINY}/config.json"))
 REAL = "models/Qwen3-1.7B"
 PROMPT = [1, 2, 3, 5, 7, 9, 0, 1, 4]

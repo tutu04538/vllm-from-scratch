@@ -40,6 +40,9 @@ htmlcov/
 *.nsys-rep
 *.ncu-rep
 
+# Local model dirs: tiny test models are generated on demand (see minivllm/testing/tiny_models.py)
+/fixtures/
+
 # Model directories written by tests/save_model(): regenerable, not source
 minivllm/my_*_model/
 minivllm/*.safetensors

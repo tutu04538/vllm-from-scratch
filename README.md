@@ -21,8 +21,9 @@
 ```text
 minivllm/         唯一的实现包（对齐 vLLM V1 的文本生成子集）；入口 python minivllm/demo.py
                   README 里有"层 ↔ vLLM 模块"对照表与用法
-fixtures/         验收用的外部模型目录（随机初始化的 Qwen3 tiny 模型，非预训练权重）
 models/           本机真实模型（Qwen3-1.7B 等），不进版本控制
+                  测试用的 tiny Qwen3 由 minivllm/testing/tiny_models.py 现场生成到临时目录，
+                  仓库里不再提交任何模型权重（原 fixtures/ 已删除）
 benchmarks/       回归脚本与对照脚本（跟踪）+ results/ 实测产物（**不跟踪**，见 .gitignore）
 docs/             每次改动的记录：需求、改动、设计要点、验证、遗留；索引见 docs/README.md
 ```

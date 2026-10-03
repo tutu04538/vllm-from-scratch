@@ -28,7 +28,8 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 import torch
 
 FAIL = []
-TINY = "fixtures/step30_qwen3/tiny_gqa"
+from minivllm.testing.tiny_models import tiny_qwen3_dir   # 测试模型现场生成（仓库不再放 fixtures）
+TINY = tiny_qwen3_dir("tiny_gqa")
 
 
 def check(name, ok, detail=""):

@@ -12,7 +12,7 @@ ngram 只能验证状态时序（`check_step57_spec_lifecycle.py` 那段）；19
   5. **可复现**：同一个 seed 跑两遍结果一致。
 
 draft 模型用 tiny_gqa **切掉第 2 层**得到（同词表、同 KV 规格、层数更少）：
-本仓库不改动 fixtures，切模型在临时目录里做。
+tiny 模型由 minivllm.testing.tiny_models 现场生成（仓库不再放 safetensors），切模型在临时目录里做。
 """
 
 import json
@@ -31,8 +31,9 @@ from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, Samplin
                     SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 
 FAIL = []
-TINY = "fixtures/step30_qwen3/tiny_gqa"
-MQA = "fixtures/step30_qwen3/tiny_mqa"
+from minivllm.testing.tiny_models import tiny_qwen3_dir   # 测试模型现场生成（仓库不再放 fixtures）
+TINY = tiny_qwen3_dir("tiny_gqa")
+MQA = tiny_qwen3_dir("tiny_mqa")
 TINY_CONFIG = json.load(open(f"{TINY}/config.json"))
 
 

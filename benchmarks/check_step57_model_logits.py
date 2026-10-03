@@ -39,7 +39,8 @@ from minivllm.sampling_params import SamplingParams
 from minivllm.worker import GPUModelRunner
 
 FAIL = []
-TINY_DIR = "fixtures/step30_qwen3/tiny_gqa"
+from minivllm.testing.tiny_models import tiny_qwen3_dir   # 测试模型现场生成（仓库不再放 fixtures）
+TINY_DIR = tiny_qwen3_dir("tiny_gqa")
 TINY_CONFIG = json.load(open(f"{TINY_DIR}/config.json"))
 CHECKPOINT = dict(iter_weights(TINY_DIR))
 PROMPT = [1, 2, 3, 5, 7, 9, 0, 1, 4]

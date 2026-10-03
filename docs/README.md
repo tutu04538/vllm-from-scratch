@@ -10,6 +10,8 @@
 
 顺带一条：**验收记录里按旧路径写的脚本**（`from step57 import ...`）需要改一行才能再跑，例如
 `sed 's/from step57/from minivllm/g' 脚本.py > /tmp/probe.py`；仓库不再为旧路径保留 alias。
+同理，`fixtures/` 也已删除：测试用的 tiny 模型改成现场生成，需要旧布局时用
+`python -m minivllm.testing.tiny_models --out <目录>` 重建，再把脚本里的模型路径指过去。
 
 每篇记录固定写这几节：
 
