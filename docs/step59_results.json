@@ -4,8 +4,9 @@
   "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
   "recorded_at": "2026-10-03T17:05:00+00:00",
   "git": {
-    "baseline_commit_at_record_time": "34b4122944a21d0e2f3a9d3f0b80e5bd0d78f1e6",
-    "note": "环境/命令/轨迹记录于本关实现提交之前（baseline 34b4122，工作区含本关改动）；代码与文档在同一提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算"
+    "baseline_commit_at_record_time": "34b412275946882e1cf64975afa167193dc63e8a",
+    "implementation_commit": "dab4f4ed08b098d5922900987f2e62aa1e71821d",
+    "note": "命令与轨迹在本关实现提交（dab4f4e）之前实跑并记录；代码与文档随该提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算（66 个文件）；本文件里的提交号在实现提交之后补记"
   },
   "package": {
     "root": "minivllm/",
