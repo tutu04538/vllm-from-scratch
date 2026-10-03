@@ -22,6 +22,10 @@ dist/
 .coverage.*
 htmlcov/
 
+# Local agent instructions: 只在本机用，不进版本控制
+AGENTS.md
+CLAUDE.md
+
 # Editor settings, local backups and temporary files
 .vscode/
 .idea/
