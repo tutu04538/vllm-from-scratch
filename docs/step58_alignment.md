@@ -62,6 +62,9 @@
 | 首遍 forward 的取行 | `sample_hidden_states = last_hidden_states[token_indices_to_sample]` | 同左（`_sample_draft_tokens`） |
 | 自回归 K-1 步 | 复用同一缓冲，`_update_positions_dependent_metadata` 每步 positions+1、slot 重算、seq_lens+1 | 同左（`_set_autoregressive_inputs`：同一工作区前 B 行，positions = `history_end + k - 2`，seq_lens = position+1，slot 用 target 同一份 `compute_slot_mapping`） |
 | 差异（记录） | ① 上游用 Triton kernel 在 GPU 上拷贝+扩容；本项目是 Torch/Python 逐行实现（**语义逐值一致**，见 §4 的差分测试），原因是要支持 CPU；② 上游给**所有**请求都填 `token_indices_to_sample` 再让 Scheduler 丢未 ready 的草稿，本项目只填 ready 的（57E 起就记在差异账本：少跑 K 次试探性前向）；③ 上游的 `_get_slot_mapping`/cudagraph padding 分支本关不做（69 关） |
+| 缓冲归属（结构差异） | 上游 proposer **不持有** `query_start_loc` / `seq_lens` / `block_table`：它们来自 runner 传进来的 `CommonAttentionMetadata`，首趟原地改写（shift 路径）或 `replace()` 生成新实例；本项目 proposer 自己持有这三样（本地 attention metadata 只有 4 个字段、runner 不往 draft 传 CAD）→ 影响：draft 的 metadata 由 proposer 自己拼。69 关接 CUDA Graph 时要与 runner 的 CAD/padding 口径对齐 |
+| `token_indices_to_sample` 的分配 | 上游每次首趟 `torch.empty(batch_size * extra_slots, int32)` 新分配；本项目用固定工作区里算出来的行号 list → 语义相同，且连这个也不每轮新建（差一点点更省） |
+| 异步占位符分支 | 上游有 `num_output_placeholders` 与 `pad_spec_decode`（新 decode 请求按 `1 + num_spec_tokens` 排、登记 `[-1] * num_spec_tokens` 占位），本项目没有（70 关：异步调度占位符与 GPU 结果回传） |
 | 哨兵写入 | attention kernel 里 `slot >= 0` 才写 | `TorchAttentionImpl.write_kv` 先过滤 `slots >= 0`（否则 `index_copy_` 会把 -1 当最后一个槽位） |
 
 ### 2.4 "起点"的口径（本关修掉的那个 bug）
