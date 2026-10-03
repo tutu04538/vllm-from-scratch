@@ -32,14 +32,14 @@
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+import numpy as np
 import torch
 
 from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
 from ..outputs import ModelRunnerOutput
 from ..outputs import DraftTokenIds
-from ..sample import Sampler, SamplingMetadata
+from ..sample import RejectionSampler, Sampler, SamplingMetadata
 from ..spec_decode.metadata import SpecDecodeMetadata
-from ..spec_decode.rejection_sampler import RejectionSampler
 from ..spec_decode.utils import TargetRows
 from .gpu_input_batch import InputBatch
 
@@ -130,8 +130,14 @@ class GPUModelRunner:
             vocab_size=(vllm_config.model_config.hf_config or {}).get("vocab_size"))
         self.attn_metadata_builder = AttentionMetadataBuilder(self.block_size)
         self.sampler = None                       # load_model() 之后才有（采样要用模型精度）
-        # 投机的两个部件（57E）：拒绝采样器复用普通采样器；提议器由 load_model() 按配置建
-        self.rejection_sampler = RejectionSampler(Sampler())
+        # 投机的两个部件（57E）：拒绝采样器复用普通采样器（对应上游 sample/rejection_sampler.py，
+        # 59 关搬到 `sample/` 下并换成 Triton 批量内核）；提议器由 load_model() 按配置建
+        self.rejection_sampler = RejectionSampler(Sampler(), vllm_config.speculative_config)
+        # 投机元数据的索引算术要在 CPU 侧反复做，`arange` 预分配到最大批（上游 `arange_np` 同款）
+        arange_size = max(vllm_config.scheduler_config.max_num_batched_tokens,
+                          vllm_config.scheduler_config.max_num_seqs + 1)
+        self._arange_np = np.arange(arange_size, dtype=np.int64)
+        self._arange_scratch = np.empty(arange_size, dtype=np.int64)
         self.proposer = None
         self.speculative_config = vllm_config.speculative_config
         # 本轮验证时顺手提的下一轮草稿（`post_step` 取走）；概率留到下一轮按采用的前缀重排
@@ -402,12 +408,21 @@ class GPUModelRunner:
         # 每请求最后一个 query 行：它的 hidden 才需要过 LM head
         logits_indices = query_start_loc[1:] - 1
         # 投机批：带草稿的请求要的是**它那 K+1 行**的 logits（b 一行 + K 枚草稿），
-        # 不是"最后一行"；K=0 的请求退化成最后一行，与上面完全一致
+        # 不是"最后一行"；整批都没有草稿时（`scheduled_spec_decode_tokens` 为空）走普通路径，
+        # 与上游 `use_spec_decode = len(scheduled_spec_decode_tokens) > 0` 同一条判据
         spec_metadata = None
-        if self.speculative_config is not None:
-            spec_metadata = SpecDecodeMetadata.from_scheduled(
-                scheduler_output.scheduled_spec_decode_tokens,
-                scheduler_output.num_scheduled_tokens, self.input_batch.req_ids)
+        if self.speculative_config is not None and scheduler_output.scheduled_spec_decode_tokens:
+            # 逐请求的草稿数（上游从 `scheduled_spec_decode_tokens` 填同一个数组）
+            num_draft_tokens_np = np.zeros(num_reqs, dtype=np.int32)
+            for req_id, draft_token_ids in \
+                    scheduler_output.scheduled_spec_decode_tokens.items():
+                num_draft_tokens_np[self.input_batch.req_id_to_index[req_id]] = \
+                    len(draft_token_ids)
+            cu_num_scheduled_tokens_np = np.cumsum(
+                np.array(num_scheduled, dtype=np.int32))
+            spec_metadata = self._calc_spec_decode_metadata(
+                num_draft_tokens_np, cu_num_scheduled_tokens_np, input_ids,
+                scheduler_output.scheduled_spec_decode_tokens)
             logits_indices = spec_metadata.logits_indices
 
         # 只对 **ready 行** 采样：算完之后已经追平已知历史（prompt + 已产出）才谈得上"下一个 token"。
@@ -425,6 +440,108 @@ class GPUModelRunner:
                               slot_mapping=slot_mapping, logits_indices=logits_indices,
                               sample_rows=sample_rows, num_scheduled_tokens=num_scheduled,
                               spec_metadata=spec_metadata)
+
+    # -------- 一轮：投机元数据（59 关）--------
+
+    def _get_cumsum_and_arange(self, num_tokens: np.ndarray, arange_out: np.ndarray,
+                               cumsum_dtype=None) -> np.ndarray:
+        """累积和 + "每段内部从 0 开始"的 arange（上游同名方法）。
+
+        例：`[2, 5, 3]` → 返回 `[2, 7, 10]`，并把 `[0,1,0,1,2,3,4,0,1,2]` 写进
+        `arange_out[:10]`（本关的 `arange_out` 是预分配的 `_arange_scratch`）。
+        """
+        cu_num_tokens = np.cumsum(num_tokens, dtype=cumsum_dtype)
+        total_num_tokens = cu_num_tokens[-1]
+        cumsums_offsets = np.repeat(cu_num_tokens - num_tokens, num_tokens)
+        np.subtract(self._arange_np[:total_num_tokens], cumsums_offsets,
+                    out=arange_out[:total_num_tokens])
+        return cu_num_tokens
+
+    def _calc_spec_decode_metadata(
+        self,
+        num_draft_tokens: np.ndarray,
+        cu_num_scheduled_tokens: np.ndarray,
+        input_ids: torch.Tensor,
+        scheduled_spec_decode_tokens: dict[str, list[int]],
+    ) -> SpecDecodeMetadata:
+        """构造一轮验证的索引（上游同名方法的 3+3 步）。
+
+        ```text
+        cu_num_scheduled_tokens: [  4, 104, 107, 207, 209]
+        num_draft_tokens:        [  3,   0,   2,   0,   1]
+        cu_num_draft_tokens:     [  3,   3,   5,   5,   6]
+        logits_indices:          [0,1,2,3, 103, 104,105,106, 206, 207,208]
+        target_logits_indices:   [0,1,2, 5,6, 9]
+        bonus_logits_indices:    [3, 4, 7,8, 10]
+        ```
+
+        **本机与上游的两点差异**（都不改值）：
+
+        1. 上游的草稿 token 从常驻 GPU 输入缓冲取
+           （`input_ids.gpu[logits_indices][target_logits_indices + 1]`）；本机还没有那个缓冲
+           （69 关 CUDA Graph 才有），所以对**同一份 CPU 输入行**做同样的索引，再随元数据一起上传。
+        2. 多一个"输入行 vs 协议"的一致性检查：本机的输入缓冲与 `SchedulerOutput` 是两份状态，
+           草稿取错来源（比如缓冲没同步上）会**静默地验证别的 token**，所以这里当场比一遍。
+        """
+        # 带草稿的请求，query 必须恰好是 K+1 行：`logits_indices` 取的是该请求**最后 K+1 行**，
+        # 多出来的行会让 `target+1` 取到别的 token（上游靠调度侧保证，这里显式挡住）
+        num_scheduled_per_req = np.diff(
+            np.concatenate([[0], cu_num_scheduled_tokens]))
+        for index, num_draft in enumerate(num_draft_tokens):
+            num_scheduled = int(num_scheduled_per_req[index])
+            if num_draft > 0 and num_scheduled != num_draft + 1:
+                raise ValueError(
+                    f"{self.input_batch.req_ids[index]!r} 本轮排了 {num_scheduled} 个 token，"
+                    f"却带了 {num_draft} 枚草稿：带草稿的请求 query 必须恰好是 K+1 行"
+                    f"（b + K 枚草稿）。不一致说明调度侧算错了草稿的采用数")
+
+        # Step 1：每请求 K+1 行的累积末端与段内 arange
+        num_sampled_tokens = num_draft_tokens + 1
+        cu_num_sampled_tokens = self._get_cumsum_and_arange(
+            num_sampled_tokens, self._arange_scratch, cumsum_dtype=np.int32)
+        # Step 2：每请求取它 query 块的**最后 K+1 行**
+        logits_indices = np.repeat(
+            cu_num_scheduled_tokens - num_sampled_tokens, num_sampled_tokens)
+        # Step 3：段内偏移
+        logits_indices = logits_indices + self._arange_scratch[:cu_num_sampled_tokens[-1]]
+        # bonus 行 = 每请求取完之后的第 K 行（紧凑坐标系）
+        bonus_logits_indices = cu_num_sampled_tokens - 1
+
+        # 验证行 = 每请求前 K 行（紧凑坐标系）
+        cu_num_draft_tokens = self._get_cumsum_and_arange(
+            num_draft_tokens, self._arange_scratch, cumsum_dtype=np.int32)
+        target_logits_indices = np.repeat(
+            cu_num_sampled_tokens - num_sampled_tokens, num_draft_tokens)
+        target_logits_indices = (target_logits_indices
+                                 + self._arange_scratch[:cu_num_draft_tokens[-1]])
+
+        # 草稿 token：草稿本来就是**输入行**，取"验证行的下一行"就是它们自己
+        logits_indices_t = torch.from_numpy(logits_indices)
+        draft_token_ids = input_ids[logits_indices_t][
+            torch.from_numpy(target_logits_indices) + 1]
+
+        # 与协议逐请求比一遍（顺序 = batch 行序）
+        expected = [token for req_id in self.input_batch.req_ids
+                    for token in scheduled_spec_decode_tokens.get(req_id, ())]
+        if draft_token_ids.tolist() != expected:
+            raise RuntimeError(
+                f"输入行里取出的草稿 {draft_token_ids.tolist()} 与本轮协议 "
+                f"`scheduled_spec_decode_tokens` 的 {expected} 不一致：输入缓冲与调度快照"
+                f"不同步（草稿必须是协议里那几枚，否则验证的不是 q 对应的候选）")
+
+        def to_device(array, dtype=torch.int32):
+            return torch.from_numpy(np.ascontiguousarray(array)).to(
+                device=self.device, dtype=dtype)
+
+        return SpecDecodeMetadata(
+            draft_token_ids=draft_token_ids.to(device=self.device, dtype=torch.int32),
+            num_draft_tokens=num_draft_tokens.tolist(),
+            cu_num_draft_tokens=to_device(cu_num_draft_tokens),
+            cu_num_sampled_tokens=to_device(cu_num_sampled_tokens),
+            target_logits_indices=to_device(target_logits_indices),
+            bonus_logits_indices=to_device(bonus_logits_indices),
+            logits_indices=to_device(logits_indices),
+        )
 
     # -------- 一轮：跑模型 --------
 
@@ -492,7 +609,7 @@ class GPUModelRunner:
             # 投机批例外：一个请求要 K+1 行（验证 + bonus），行是按请求块排的、不在
             # `sample_rows` 的坐标系里，所以整块都要算（不 ready 的请求由结果侧丢弃）
             spec_metadata = inputs.spec_metadata
-            if spec_metadata is not None and spec_metadata.num_draft_tokens_total > 0:
+            if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
                 sample_indices = inputs.logits_indices
             else:
                 sample_indices = inputs.logits_indices[inputs.sample_rows]
@@ -539,7 +656,7 @@ class GPUModelRunner:
         """`sample_tokens()` 的正常路径（单独一层，好让失败态只包一层 try）。"""
         scheduled_spec = state.scheduler_output.scheduled_spec_decode_tokens
         spec_metadata = state.spec_metadata
-        if spec_metadata is not None and spec_metadata.num_draft_tokens_total > 0:
+        if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
             # ---- 投机路径：验证草稿 ----
             # 元数据要按**被调度的请求**建（草稿的"假设历史"来自协议里的 spec tokens），
             # 行序与 spec_metadata 的请求顺序一致，长度是 K+1 而不是 1
@@ -565,24 +682,27 @@ class GPUModelRunner:
     def _sample_with_spec(self, state, spec_metadata, scheduled_spec):
         """验证草稿，摊成**每条请求一串 token**（无效位置裁掉、非 ready 的给空）。
 
-        拒绝采样器给的是 `[B, max_spec_len+1]` 的 padded 张量（无效位置 -1）；这里做裁剪与
-        "请求 → 行"的映射。**元数据按整个批建**（行序 = `input_batch.req_ids`），因为草稿的
-        "假设历史"来自协议里的 spec tokens，而不是我们筛出来的采样行。
+        拒绝采样器给的是 `[B, max_spec_len+1]` 的 padded 张量（无效位置 `-1`）；裁剪交给
+        `RejectionSampler.parse_output`（上游同一处：那里是整条验证路径唯一的 D2H）。
+        **元数据按整个批建**（行序 = `input_batch.req_ids`），因为草稿的"假设历史"来自协议里的
+        spec tokens，而不是我们筛出来的采样行。
         """
         sampling_metadata = SamplingMetadata.from_input_batch(
             self.input_batch, list(range(self.input_batch.num_reqs)), device=self.device,
             scheduled_spec_decode_tokens=scheduled_spec)
-        draft_probs = self._align_draft_probs(spec_metadata)
-        output = self.rejection_sampler.forward(
-            spec_metadata, state.logits, draft_probs, sampling_metadata)
-        rows = output.sampled_token_ids.tolist()
+        draft_probs = self._get_spec_decode_draft_probs(spec_metadata)
+        sampler_output = self.rejection_sampler(
+            spec_metadata, draft_probs, state.logits, sampling_metadata)
 
+        # 未 ready 的行整行丢弃（中间 prefill 块：logits 有效，但这一轮不该产出 token）。
+        # 上游用同一个 `discard_req_indices` 参数（它的 `discard_request_mask`），
+        # 并在那里顺手把对应 generator 的 offset 退回去。
         ready = set(state.sample_rows)
-        sampled_by_row: dict[int, list[int]] = {}
-        for index, req_id in enumerate(self.input_batch.req_ids):
-            row = self.input_batch.req_id_to_index[req_id]
-            sampled_by_row[row] = (
-                [token for token in rows[index] if token != -1] if row in ready else [])
+        discard = [row for row in range(self.input_batch.num_reqs) if row not in ready]
+        rows, _ = RejectionSampler.parse_output(sampler_output.sampled_token_ids,
+                                                self.input_batch.vocab_size, discard)
+        sampled_by_row = {row: (list(rows[row]) if row in ready else [])
+                          for row in range(self.input_batch.num_reqs)}
         return [sampled_by_row[row] for row in state.sample_rows]
 
     def _propose_draft_tokens(self, state, sampled):
@@ -654,15 +774,19 @@ class GPUModelRunner:
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
         return drafts
 
-    def _align_draft_probs(self, spec_metadata):
-        """把上一轮存的 `[P_prev, V]` 草稿概率重排成本轮 `[P, V]`（199 §5 的 q 对齐）。
+    def _get_spec_decode_draft_probs(self, spec_metadata) -> torch.Tensor | None:
+        """按**本轮采用的行序**拼出 `[P, V]` 的 q（上游同名方法；199 §5 的 q 对齐）。
 
         上一轮提草稿的顺序与本轮采用的顺序一般**不同**（行序会变、每条还可能被预算截短），
         所以要按"每请求取前 K_i 行"重新拼，**不能**拿原矩阵的前 P 行——那会把 A 的概率
-        配到 B 的草稿上。确定性提议（ngram）没有概率，返回 None。
+        配到 B 的草稿上。确定性提议（ngram）没有概率，返回 None（点质量 q，内核走
+        `NO_DRAFT_PROBS` 分支）。
+
+        与上游的差异：上游在"某条请求的概率没缓存"时打 warning 然后**退回无 q**，那会让接受
+        判定变成 `p[d] >= u`（接受率虚高）；本机按约定**明确报错**，不静默降级。
         """
         previous = self.pending_draft_probs
-        if previous is None:
+        if previous is None or previous.draft_probs is None:
             return None
         offsets: dict[str, int] = {}
         cursor = 0
@@ -670,7 +794,7 @@ class GPUModelRunner:
             offsets[req_id] = cursor
             cursor += len(draft_ids)
         rows: list[int] = []
-        for req_id, num_draft in zip(spec_metadata.req_ids,
+        for req_id, num_draft in zip(self.input_batch.req_ids,
                                      spec_metadata.num_draft_tokens):
             if num_draft == 0:
                 continue
@@ -679,10 +803,14 @@ class GPUModelRunner:
                 raise RuntimeError(
                     f"{req_id!r} 本轮采用了草稿，但上一轮没有为它提过："
                     f"q 对不上（草稿必须与本轮采用的前缀同源）")
+            if start + num_draft > cursor:
+                raise RuntimeError(
+                    f"{req_id!r} 本轮采用了 {num_draft} 枚草稿，但上一轮只为它提了 "
+                    f"{cursor - start} 枚：采用数不该超过提议数")
             rows.extend(range(start, start + num_draft))
         if not rows:
             return None
-        return previous.draft_probs[rows]
+        return previous.draft_probs[rows].contiguous()
 
     def take_draft_token_ids(self):
         """取走本轮提的草稿（`EngineCore.post_step` 调，发生在 `sample_tokens` 之后）。

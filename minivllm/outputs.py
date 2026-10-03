@@ -100,15 +100,19 @@ class DraftTokenIds:
 
 @dataclass
 class SamplerOutput:
-    """`Sampler` 的产物：**只有 token**，形状 `[num_rows, 1]`（对应 vLLM
-    `v1/outputs.py::SamplerOutput` 的子集——它还有 logprobs 张量，本关不做 logprobs）。
+    """`Sampler` 的产物：token（+ 上游同名的 logprobs 槽位），对应 vLLM `v1/outputs.py::SamplerOutput`。
 
-    形状里那个 1 是"一行出一个 token"；投机（57E）会变成 `max_spec_len + 1`，
-    被拒绝的位置填 -1。为什么不让采样器直接产出 `list[list[int]]`：它是**执行侧**的东西，
-    行号与请求 ID 的对应关系是 Runner 才知道的事（见 `_bookkeeping_sync`）。
+    形状：普通采样一行出一个 token（`[num_rows, 1]`）；投机是 `[B, max_spec_len + 1]`，
+    被拒绝的位置填 `PLACEHOLDER_TOKEN_ID(-1)`（int32，上游同 dtype）。为什么不让采样器直接
+    产出 `list[list[int]]`：它是**执行侧**的东西，行号与请求 ID 的对应关系是 Runner 才知道的
+    事（见 `_bookkeeping_sync` / `RejectionSampler.parse_output`）。
+
+    `logprobs_tensors` 是留给 logprobs 的位置（68 关）：**本关恒为 None**，
+    字段先按上游的形状摆着，免得 68 关改一批签名。
     """
 
     sampled_token_ids: torch.Tensor
+    logprobs_tensors: object | None = None
 
 
 @dataclass

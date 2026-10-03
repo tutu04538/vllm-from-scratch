@@ -13,9 +13,15 @@ from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, Request
 from minivllm.core.kv_cache_manager import KVCacheManager  # noqa: E402
 from minivllm.core.sched.scheduler import Scheduler  # noqa: E402
 
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以跑真引擎的用例要上 GPU。
+# CPU 上的算法语义由 `minivllm/testing/torch_rejection_sampler.py` 覆盖（见 tests/step59）。
+import torch  # noqa: E402
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 def make_config(*, tiny_dir, hf_config, spec_k=3, budget=16, blocks=32, prefix=False,
-                max_model_len=64, max_num_seqs=2, device="cpu", draft_dir=None,
+                max_model_len=64, max_num_seqs=2, device=DEVICE, draft_dir=None,
                 draft_config=None):
     model = ModelConfig(model=tiny_dir, dtype="float32", max_model_len=max_model_len,
                         hf_config=hf_config)

@@ -288,8 +288,12 @@ check("6. 往请求镜像里 append 一个 token，元数据这一行立刻看�
 # ------------------------------------------------ 7. 边界：采样器不认识 Request
 
 signature = inspect.signature(Sampler.forward)
-check("7. `Sampler.forward` 的入参只有 logits 与 sampling_metadata（不接 Request）",
-      list(signature.parameters) == ["self", "logits", "sampling_metadata"],
+# 59 关加上 `predict_bonus_token`（上游同名参数：投机采样 bonus 行时惩罚的历史要把全部草稿
+# 算进去）。仍然**不接 Request**——多出来的这个参数是布尔开关，不是请求对象。
+check("7. `Sampler.forward` 的入参只有 logits / sampling_metadata / predict_bonus_token"
+      "（不接 Request）",
+      list(signature.parameters) == ["self", "logits", "sampling_metadata",
+                                     "predict_bonus_token"],
       str(list(signature.parameters)))
 check("7. 采样器不返回 finished / 不追加输出（产物只有 token 张量）",
       set(SamplerOutput_fields := {field for field in dir(out) if not field.startswith("_")})

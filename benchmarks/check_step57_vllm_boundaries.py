@@ -140,8 +140,9 @@ try:
           f"按草稿行（r0 的 2 行 + r1 的 1 行）屏蔽情况={censored}")
     print("      ↳ vLLM 在哪一行做的：`MinTokensLogitsProcessor.apply_with_spec_decode()`")
     print("        它按 num_draft_tokens 算出每个请求占的草稿行，只屏蔽 min_tokens 未到的那些行")
-    print("        （对应我们 `spec_decode/rejection_sampler.py::forward` 里")
-    print("          调 `sampler.apply_logits_processors(target_logits, target_metadata)` 的那一步）")
+    print("        （对应我们 `sample/rejection_sampler.py::RejectionSampler.apply_logits_processors`")
+    print("          里调 `sampler.apply_min_tokens_for_spec_decode(...)` 的那一步；59 关按同一规则")
+    print("          的 n_mask 屏蔽，见 tests/step59/test_metrics.py）")
 except Exception as exc:                     # noqa: BLE001
     check("C2. 真实 vLLM 的 min_tokens 屏蔽可隔离调用（环境不支持则记录原因）", False,
           first_line(str(exc)))

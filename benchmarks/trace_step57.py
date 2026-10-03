@@ -20,6 +20,11 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
+import torch
+
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以开投机的脚本要上 GPU。
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                     SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 
@@ -74,7 +79,7 @@ def main() -> int:
         # 小池子（4 块 × 4 槽）：两条请求都跑长一点就会撞上抢占
         cache_config=CacheConfig(block_size=4, num_gpu_blocks=4),
         scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=8),
-        device_config=DeviceConfig(device="cpu"),
+        device_config=DeviceConfig(device=DEVICE),
         speculative_config=SpeculativeConfig(method="ngram", num_speculative_tokens=3))
     engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
     scheduler = engine.engine_core.engine_core.scheduler

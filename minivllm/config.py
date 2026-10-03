@@ -86,6 +86,8 @@ class SpeculativeConfig:
     method: str = "ngram"
     num_speculative_tokens: int = 0
     draft_model_config: ModelConfig | None = None
+    # 验证方式（上游 `SpeculativeConfig.rejection_sample_method`，59 关只接 standard）
+    rejection_sample_method: str = "standard"
 
     def __post_init__(self):
         if self.num_speculative_tokens < 0:
@@ -94,6 +96,11 @@ class SpeculativeConfig:
             raise ValueError(
                 f"本关只支持 method='ngram' / 'draft_model'，收到 {self.method!r}"
                 "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
+        if self.rejection_sample_method != "standard":
+            raise ValueError(
+                f"本关只支持 rejection_sample_method='standard'，收到 "
+                f"{self.rejection_sample_method!r}：synthetic（合成接受率）与 block"
+                f"（V2 块验证）按需求顺序在 75 关实现，不要用 standard 的结果冒充它们")
 
     def uses_draft_model(self) -> bool:
         """是否用独立的 draft 模型提议（上游同名方法）。"""

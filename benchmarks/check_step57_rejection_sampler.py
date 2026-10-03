@@ -1,28 +1,31 @@
-"""57E 验收（对应需求里的 `test_rejection_sampler.py`）：验证算法本身。
+"""57E 验收（59 关改造后重写）：拒绝采样的算法语义 + 与上游/参考实现的差分。
 
-按 199 §7/§8 分三段：
+59 关把生产入口搬到了 `minivllm/sample/rejection_sampler.py`，实现换成 **Triton 批量内核**
+（上游同一条路径），Torch 版只作为参考实现留在 `minivllm/testing/`。用例没变，但改为对着
+**新入口**跑，并且：
 
-  1. **两条路径的形状**：greedy 逐位置比对 argmax；random 用 `min(1, p/q)` 接受、
-     拒绝时用 `max(p - q, 0)` 恢复。固定 p/q + **注入**均匀随机数与 recovered 值，
-     这样"算法错"和"随机流不同"不会混在一起（199 §8 允许注入）。
-  2. **分布正确性**：接受概率与 recovered 分布对着**独立 CPU 公式**逐值比，再用大量抽样
-     做统计检查（不要求与旧代码同 seed 同 token）。
-  3. **形状与边界**：K=0、ragged、q[d]=0（防御性拒绝）、点质量提议（`draft_probs=None`）、
-     bonus 只在全接受时追加、无效位置填 -1。
+  - 注入随机数（199 §8 允许）逐值核对 `min(1, p/q)` 与 recovered 的选择；
+  - 上游 `vllm.v1.sample.rejection_sampler.rejection_sample` 与 Torch 参考实现各做一遍差分；
+  - 顺手确认内核路径**没有逐候选 D2H**（059 §3.6）。
+
+完整用例集在 `tests/step59/`（pytest）。
 """
 
 import sys
 
-sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
-
+import numpy as np
 import torch
 
-from minivllm.sample import Sampler, SamplingMetadata
-from minivllm.spec_decode.metadata import SpecDecodeMetadata
-from minivllm.spec_decode.rejection_sampler import RejectionSampler
+sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
+from minivllm.sample import Sampler, SamplingMetadata, expand_batch_to_tokens
+from minivllm.sample import rejection_sampler as mine
+from minivllm.testing.spec_metadata import make_metadata
+from minivllm.testing.torch_rejection_sampler import TorchRejectionSampler
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+PLACEHOLDER = -1
 FAIL = []
-V = 5
 
 
 def check(name, ok, detail=""):
@@ -31,270 +34,268 @@ def check(name, ok, detail=""):
         FAIL.append(name)
 
 
-def metadata_for(drafts: list[list[int]]) -> SpecDecodeMetadata:
-    req_ids = [f"r{index}" for index in range(len(drafts))]
-    scheduled = {req_id: (len(draft) + 1 if draft else 1)
-                 for req_id, draft in zip(req_ids, drafts)}
-    return SpecDecodeMetadata.from_scheduled(
-        {req_id: draft for req_id, draft in zip(req_ids, drafts) if draft},
-        scheduled, req_ids)
+if DEVICE != "cuda":
+    print("拒绝采样内核需要 CUDA（上游同样只有 GPU 路径）：本机没有 CUDA")
+    sys.exit(1)
 
 
-def sampling_metadata(temperatures, drafts, output_token_ids=None, **kwargs):
+def sampling_metadata(temperatures, drafts, *, device=DEVICE, output_token_ids=None):
     count = len(temperatures)
-    temperature = torch.tensor(temperatures, dtype=torch.float32)
+    all_greedy = all(value < 1e-5 for value in temperatures)
     return SamplingMetadata(
-        temperature=None if all(value < 1e-5 for value in temperatures) else temperature,
-        all_greedy=all(value < 1e-5 for value in temperatures),
-        all_random=all(value >= 1e-5 for value in temperatures),
+        temperature=None if all_greedy else torch.tensor(temperatures, dtype=torch.float32,
+                                                         device=device),
+        all_greedy=all_greedy, all_random=all(value >= 1e-5 for value in temperatures),
         top_k=None, top_p=None, no_penalties=True,
         prompt_token_ids=[[] for _ in range(count)],
         output_token_ids=output_token_ids or [[] for _ in range(count)],
         min_tokens=[0] * count, stop_token_ids=[[] for _ in range(count)],
-        spec_token_ids=[list(draft) for draft in drafts],
-        **kwargs)
+        spec_token_ids=[list(draft) for draft in drafts])
 
 
-sampler = RejectionSampler(Sampler())
+def case(drafts, rows, *, q_rows=None, bonus_tokens=None, temperature=0.0):
+    """`rows` 按**紧凑行序**给（每请求 K_i 个验证行 + 紧跟它自己的 1 个 bonus 行）。"""
+    meta = make_metadata(drafts, device=DEVICE)
+    logits = torch.tensor(rows, dtype=torch.float32, device=DEVICE).log()
+    q = None
+    if q_rows is not None:
+        q = torch.tensor(q_rows, dtype=torch.float32, device=DEVICE)
+    if bonus_tokens is None:
+        bonus_tokens = [int(np.argmax(row)) for row in rows[-len(drafts):]]
+    bonus = torch.tensor(bonus_tokens, dtype=torch.int32, device=DEVICE).unsqueeze(1)
+    return meta, logits, q, bonus, sampling_metadata([temperature] * len(drafts), drafts)
 
 
-def run(drafts, logits, temperature=0.0, *, uniforms=None, recoveries=None,
-        draft_probs=None, history=None):
-    return sampler.forward(metadata_for(drafts), torch.tensor(logits, dtype=torch.float32),
-                           draft_probs, sampling_metadata([temperature] * len(drafts), drafts,
-                                                          history),
-                           uniforms=uniforms, recoveries=recoveries).sampled_token_ids
+def run(meta, logits, q, bonus, sm):
+    return mine.rejection_sample(meta.draft_token_ids, meta.num_draft_tokens,
+                                 meta.max_spec_len, meta.cu_num_draft_tokens, q,
+                                 logits[meta.target_logits_indices], bonus, sm)
 
 
-# ------------------------------------------------ 1. greedy：逐位置比对 argmax
-
-# target argmax = [0, 1, 2]（行 0/1 是验证行、行 2 是 bonus 行）
-logits = [[9.0, 0, 0, 0, 0], [0, 9.0, 0, 0, 0], [0, 0, 9.0, 0, 0]]
-out = run([[0, 1]], logits)
-check("1. greedy 全接受：两枚草稿 + bonus，长度 K+1",
-      out.tolist() == [[0, 1, 2]], str(out.tolist()))
-
-out = run([[0, 1]], logits)[:, :2]
-out_first_reject = run([[1, 1]], logits)
-check("1. greedy 首枚就不同：用 target 的 argmax 顶替，**后面全部丢掉**（不追加 bonus）",
-      out_first_reject.tolist() == [[0, -1, -1]], str(out_first_reject.tolist()))
-
-out_mid = run([[0, 0]], logits)
-check("1. greedy 中间被拒（第 2 枚不同）：接受 1 枚 + 顶替 1 枚，长度 2",
-      out_mid.tolist() == [[0, 1, -1]], str(out_mid.tolist()))
-
-# ------------------------------------------------ 2. random：接受判定与恢复
-
-# 构造 p：row0 上草稿 token 0 的 p=0.9（one-hot 附近），q = 点质量（1.0）
-logits_random = [[9.0, 0, 0, 0, 0], [0, 0, 9.0, 0, 0]]
-u_accept = torch.tensor([0.5], dtype=torch.float64)
-u_reject = torch.tensor([0.9999], dtype=torch.float64)
-out_accept = run([[0]], logits_random, temperature=1.0, uniforms=u_accept)
-out_reject = run([[0]], logits_random, temperature=1.0, uniforms=u_reject,
-                 recoveries=torch.tensor([3]))
-check("2. random 接受（u < p/q）：提交草稿 + bonus",
-      out_accept.tolist() == [[0, 2]], str(out_accept.tolist()))
-check("2. random 拒绝（u > p/q）：提交 recovered token，**不追加 bonus**",
-      out_reject.tolist() == [[3, -1]], str(out_reject.tolist()))
-
-# 边界：u 恰好等于 p/q → 接受（判定是 >=）
-p_draft = float(torch.softmax(torch.tensor(logits_random[0]), dim=-1)[0])
-out_edge = run([[0]], logits_random, temperature=1.0,
-               uniforms=torch.tensor([p_draft], dtype=torch.float64))
-check("2. 边界：u == p/q 时接受（判定用 `>=`，与 vLLM 内核一致）",
-      out_edge.tolist() == [[0, 2]], f"p/q={p_draft:.6f}、结果={out_edge.tolist()}")
-
-# 带 q 的接受概率：q 是**实际提议**的分布，不是重新算的 softmax。
-# 用均匀的 target（p=0.2 每项）与更"自信"的 q（0.6/0.4），把 p/q 压到 1 以下，
-# 这样 u 落在 [0,1) 里就能同时造出"刚好接受"和"刚好拒绝"两个边界
-flat_logits = [[0.0, 0.0, 0.0, 0.0, 0.0], [0, 0, 0, 0, 9.0]]
-draft_probs = torch.tensor([[0.6, 0.4, 0, 0, 0], [0, 0, 1.0, 0, 0]])
-ratio = 0.2 / 0.6
-out_q = run([[0]], flat_logits, temperature=1.0, draft_probs=draft_probs,
-            uniforms=torch.tensor([ratio - 1e-6], dtype=torch.float64))
-out_q_reject = run([[0]], flat_logits, temperature=1.0, draft_probs=draft_probs,
-                   uniforms=torch.tensor([ratio + 1e-6], dtype=torch.float64),
-                   recoveries=torch.tensor([4]))
-check("2. 有 q 时按 p/q 判定：刚好低于阈值接受、刚好高于拒绝",
-      out_q.tolist() == [[0, 4]] and out_q_reject.tolist() == [[4, -1]],
-      f"p/q={ratio:.4f} → {out_q.tolist()} / {out_q_reject.tolist()}")
-
-# 不做接受判定时（u 极小）也要按 q 归一：这里顺便确认 bonus 行取的是最后一行的 logits
-out_q_bonus = run([[0]], flat_logits, temperature=1.0, draft_probs=draft_probs,
-                  uniforms=torch.tensor([0.0], dtype=torch.float64))
-check("2. 接受到底时 bonus 取的是 bonus 行（不是验证行）",
-      out_q_bonus.tolist() == [[0, 4]], str(out_q_bonus.tolist()))
-
-# q[d] == 0：防御性拒绝（不能算出 NaN/Inf）
-zero_q = torch.tensor([[0.0, 1.0, 0, 0, 0], [0, 0, 1.0, 0, 0]])
-out_zero_q = run([[0]], logits_random, temperature=1.0, draft_probs=zero_q,
-                 uniforms=torch.tensor([1e-9], dtype=torch.float64),
-                 recoveries=torch.tensor([2]))
-check("2. q[d] == 0：即使 u 极小也**拒绝**（vLLM 内核同样是防御性拒绝）",
-      out_zero_q.tolist() == [[2, -1]], str(out_zero_q.tolist()))
-
-# ------------------------------------------------ 3. 独立 CPU 公式对照
-
-def cpu_reference(draft_token, p_row, q_row, uniform, recovered):
-    """按定义写一遍：接受概率 min(1, p[d]/q[d])，否则用 max(p-q, 0) 采样。"""
-    draft_prob = 1.0 if q_row is None else q_row[draft_token]
-    accept_probability = min(1.0, p_row[draft_token] / draft_prob) if draft_prob > 0 else 0.0
-    if uniform < accept_probability:
-        return draft_token, True
-    return recovered, False
+def one_hot(token, vocab):
+    row = [0.01] * vocab
+    row[token] = 0.9
+    return row
 
 
-p_row = torch.softmax(torch.tensor(logits_random[0]), dim=-1)
-q_row = torch.tensor([0.4, 0.6, 0, 0, 0])
-for uniform in (0.01, 0.5, 0.99):
-    expected_token, expected_accept = cpu_reference(0, p_row.tolist(), q_row.tolist(), uniform, 4)
-    got = run([[0]], logits_random, temperature=1.0, draft_probs=q_row.unsqueeze(0),
-              uniforms=torch.tensor([uniform], dtype=torch.float64),
-              recoveries=torch.tensor([4]))
-    check(f"3. 与 CPU 公式逐值一致（u={uniform}）",
-          (got[0, 0].item() == expected_token) and (got[0, 1].item() == 2) == expected_accept,
-          f"CPU={expected_token}/接受 {expected_accept}，实现={got.tolist()}")
+# ------------------------------------------------ 1. greedy 路径的形状
 
-# recovered 的分布 ∝ max(p - q, 0)：统计检查
-draft_probs_big = torch.zeros(1, V)
-draft_probs_big[0, 0] = 0.5
-draft_probs_big[0, 1] = 0.5
-target_logits = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0]])       # p 均匀 = 0.2
-counts = torch.zeros(V)
-draws = 4000
-two_rows = torch.cat([target_logits, target_logits], dim=0)      # 验证行 + bonus 行
-for _ in range(draws):
-    got = sampler.forward(metadata_for([[0]]), two_rows, draft_probs_big,
-                          sampling_metadata([1.0], [[0]]),
-                          uniforms=torch.tensor([0.9], dtype=torch.float64)
-                          ).sampled_token_ids
-    counts[got[0, 0].item()] += 1
-expected = torch.tensor([0.0, 0.0, 1 / 3, 1 / 3, 1 / 3])
-check("3. recovered 分布 ∝ max(p - q, 0)：大量抽样后频率收敛（草稿位置的 p-q 为 0，永不出现）",
-      (counts / draws - expected).abs().max().item() < 0.03,
-      f"实测 {[round(x, 3) for x in (counts / draws).tolist()]} vs 期望 {[round(x, 3) for x in expected.tolist()]}")
+meta, logits, _, bonus, sm = case([[1, 2, 3], [], [4]],
+                                  [one_hot(1, 5), one_hot(0, 5), one_hot(3, 5),
+                                   one_hot(2, 5), one_hot(3, 5), one_hot(4, 5), one_hot(1, 5)],
+                                  bonus_tokens=[2, 3, 1])
+out = run(meta, logits, None, bonus, sm)
+check("1. A/B/C：A 第 2 枚被拒 → 用 target argmax 顶替、后面全丢；B（K=0）只有 bonus",
+      out.tolist() == [[1, 0, PLACEHOLDER, PLACEHOLDER],
+                       [3, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER],
+                       [4, 1, PLACEHOLDER, PLACEHOLDER]],
+      str(out.tolist()))
+check("1. 输出是 int32 的 `[B, max_spec_len+1]`，无效位置填 -1",
+      out.dtype == torch.int32 and tuple(out.shape) == (3, 4)
+      and PLACEHOLDER == mine.PLACEHOLDER_TOKEN_ID, f"{out.dtype} {tuple(out.shape)}")
 
-# ------------------------------------------------ 4. 形状、ragged 与点质量
+meta, logits, _, bonus, sm = case([[1, 2], [3]],
+                                  [one_hot(1, 5), one_hot(2, 5), one_hot(0, 5),
+                                   one_hot(3, 5), one_hot(4, 5)], bonus_tokens=[0, 4])
+check("1. 全接受 → 追加 bonus token",
+      run(meta, logits, None, bonus, sm).tolist() == [[1, 2, 0], [3, 4, PLACEHOLDER]])
 
-ragged_logits = [[9.0, 0, 0, 0, 0], [0, 9.0, 0, 0, 0], [0, 0, 9.0, 0, 0], [0, 0, 0, 9.0, 0]]
-out_ragged = run([[0, 1], []], ragged_logits)
-check("4. ragged：一条 K=2、一条 K=0；padded 到 max_spec_len+1，无效位填 -1",
-      out_ragged.tolist() == [[0, 1, 2], [3, -1, -1]], str(out_ragged.tolist()))
+meta, logits, _, bonus, sm = case([[1, 2, 3]],
+                                  [one_hot(0, 5), one_hot(1, 5), one_hot(2, 5),
+                                   one_hot(4, 5)], bonus_tokens=[4])
+check("1. 首枚就被拒 → 只提交 1 个 token",
+      run(meta, logits, None, bonus, sm).tolist() == [[0, PLACEHOLDER, PLACEHOLDER,
+                                                       PLACEHOLDER]])
 
-out_k0 = run([[]], [[0, 0, 9.0, 0, 0]])
-check("4. 全批 K=0：等价于普通解码（就是 bonus 那一行）",
-      out_k0.tolist() == [[2]], str(out_k0.tolist()))
+# ------------------------------------------------ 2. 形状退化与 ragged
 
-# 点质量提议（ngram）：draft_probs=None → q[d] = 1
-out_point = run([[0]], logits_random, temperature=1.0, draft_probs=None,
-                uniforms=torch.tensor([0.5], dtype=torch.float64))
-check("4. `draft_probs=None` 表示点质量提议（q[d]=1）：接受判定退化成 p[d] >= u",
-      out_point.tolist() == [[0, 2]], str(out_point.tolist()))
+meta, logits, _, bonus, sm = case([[], []], [one_hot(3, 5), one_hot(4, 5)],
+                                  bonus_tokens=[3, 4])
+check("2. 全批 K=0：等价于普通解码（输出就是 bonus 行）",
+      run(meta, logits, None, bonus, sm).tolist() == [[3], [4]])
 
-# 混合批：一条贪心、一条随机
-# 两条请求各 K=1 → 4 行：r0 的验证行 + r0 的 bonus 行 + r1 的验证行 + r1 的 bonus 行
-mixed_logits = [[9.0, 0, 0, 0, 0], [0, 0, 9.0, 0, 0], [0, 9.0, 0, 0, 0], [0, 0, 0, 9.0, 0]]
-mixed_meta = metadata_for([[0], [1]])   # r0 的草稿 0、r1 的草稿 1
-mixed_sampling = SamplingMetadata(
-    temperature=torch.tensor([0.0, 1.0]), all_greedy=False, all_random=False,
-    top_k=None, top_p=None, generators={}, no_penalties=True,
-    prompt_token_ids=[[], []], output_token_ids=[[], []], min_tokens=[0, 0],
-    stop_token_ids=[[], []], spec_token_ids=[[0], [1]])
-# 注入的均匀随机数按**扁平草稿位置**给（P 个），与 vLLM 内核的索引方式一致
-out_mixed = sampler.forward(mixed_meta, torch.tensor(mixed_logits), None, mixed_sampling,
-                            uniforms=torch.tensor([0.0, 0.5], dtype=torch.float64),
-                            recoveries=torch.tensor([1, 1])).sampled_token_ids
-check("4. greedy/random 混批：greedy 行按 argmax 判、random 行按 p/q 判（都不看对方的路径）",
-      out_mixed.tolist() == [[0, 2], [1, 3]], str(out_mixed.tolist()))
+meta, logits, _, bonus, sm = case([[2]], [one_hot(2, 5), one_hot(1, 5)], bonus_tokens=[1])
+check("2. B=1：形状 [1, 2]",
+      run(meta, logits, None, bonus, sm).tolist() == [[2, 1]])
 
-# ------------------------------------------------ 4b. 混批 + **ragged K**（我原来只测了 K 相等的情形）
+meta, logits, _, bonus, sm = case([[1, 2], [], [3], [4, 0, 2]],
+                                  [one_hot(1, 5), one_hot(2, 5), one_hot(0, 5),
+                                   one_hot(1, 5), one_hot(3, 5), one_hot(0, 5),
+                                   one_hot(4, 5), one_hot(1, 5), one_hot(2, 5),
+                                   one_hot(3, 5)], bonus_tokens=[0, 1, 0, 3])
+ragged = run(meta, logits, None, bonus, sm)
+check("2. ragged（K=[2,0,1,3]）：每行有效长度 = K_i+1，其余是 -1，互不串行",
+      ragged.tolist() == [[1, 2, 0, PLACEHOLDER],
+                          [1, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER],
+                          [3, 0, PLACEHOLDER, PLACEHOLDER],
+                          [4, 1, PLACEHOLDER, PLACEHOLDER]],
+      str(ragged.tolist()))
 
-# K 不相等时，"把已经展开过的温度再展开一次"会当场报错（K 相等时反而静默算错）——
-# 这正是验收方用 K=[2,1] 抓到的那个 bug，用例里补上
-ragged_mixed = metadata_for([[0, 1], [1]])
-ragged_logits = torch.tensor([[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0],
-                              [0, 8.0, 0], [0, 0, 8.0]])
-ragged_sampling = SamplingMetadata(
-    temperature=torch.tensor([0.0, 1.0]), all_greedy=False, all_random=False,
-    top_k=None, top_p=None, generators={}, no_penalties=True,
-    prompt_token_ids=[[], []], output_token_ids=[[], []], min_tokens=[0, 0],
-    stop_token_ids=[[], []], spec_token_ids=[[0, 1], [1]])
-out_ragged_mixed = sampler.forward(
-    ragged_mixed, ragged_logits, None, ragged_sampling,
-    uniforms=torch.tensor([0.1, 0.1, 0.1], dtype=torch.float64),
-    recoveries=torch.tensor([2, 2, 2])).sampled_token_ids
-check("4b. 混批且 K 不相等（K=[2,1]）：greedy 行照常走 argmax、random 行照常走 p/q",
-      out_ragged_mixed[0].tolist() == [0, 1, 2] and out_ragged_mixed[1, 0].item() == 1,
-      str(out_ragged_mixed.tolist()))
+# ------------------------------------------------ 3. random 路径（注入随机数）
 
-# ------------------------------------------------ 4c. 有 seed 的请求不依赖全局 RNG
+P = mine.generate_uniform_probs
+R = mine.sample_recovered_tokens
+try:
+    mine.sample_recovered_tokens = lambda *a, **k: torch.tensor([0], dtype=torch.int32,
+                                                                device=DEVICE)
+    meta, logits, q, bonus, sm = case([[1]], [[0.5, 0.5], [0.9, 0.1]], q_rows=[[0.5, 1.0]],
+                                      bonus_tokens=[0], temperature=1.0)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.49], dtype=torch.float64,
+                                                               device=DEVICE)
+    accepted = run(meta, logits, q, bonus, sm)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.51], dtype=torch.float64,
+                                                               device=DEVICE)
+    rejected = run(meta, logits, q, bonus, sm)
+    check("3. `p[d]/q[d]=0.5`：u=0.49 接受、u=0.51 拒绝（`min(1, p/q)` 的边界）",
+          accepted.tolist() == [[1, 0]] and rejected.tolist() == [[0, PLACEHOLDER]],
+          f"{accepted.tolist()} / {rejected.tolist()}")
 
-def seeded_run(global_seed, draws=16):
-    torch.manual_seed(global_seed)
-    generator = torch.Generator().manual_seed(99)
-    local = RejectionSampler(Sampler())
-    rows = []
-    for _ in range(draws):
-        # 一条请求、K=1 → 2 行（1 个验证行 + 1 个 bonus 行）
-        rows.append(local.forward(
-            metadata_for([[0]]),
-            torch.tensor([[0.2, 0.3, 0.5], [0.2, 0.3, 0.5]]).log(), None,
-            sampling_metadata([1.0], [[0]], generators={0: generator})
-        ).sampled_token_ids[0].tolist())
-    return rows
+    meta, logits, q, bonus, sm = case([[1]], [[0.5, 0.5], [0.9, 0.1]], q_rows=[[1.0, 0.0]],
+                                      bonus_tokens=[0], temperature=1.0)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.0], dtype=torch.float64,
+                                                               device=DEVICE)
+    check("3. q[d]=0 → 防御性拒绝（否则 p/q 出 NaN），用 recovered token 顶替",
+          run(meta, logits, q, bonus, sm).tolist() == [[0, PLACEHOLDER]])
 
+    mine.sample_recovered_tokens = R
+    meta, logits, q, bonus, sm = case([[1, 2, 0]], [[0.2, 0.3, 0.5]] * 4,
+                                      q_rows=[[0.2, 0.3, 0.5]] * 3, bonus_tokens=[2],
+                                      temperature=1.0)
+    check("3. q == p（draft 与 target 同分布）→ 全部接受并追加 bonus",
+          run(meta, logits, q, bonus, sm).tolist() == [[1, 2, 0, 2]])
 
-check("4c. 请求带 seed 时，输出与**全局 RNG 状态**无关（随机流归请求）",
-      seeded_run(0) == seeded_run(1),
-      f"全局种子 0/1 两次跑出同一串 {seeded_run(0)[:4]}…")
+    meta, logits, q, bonus, sm = case([[1]], [[0.4, 0.6], [0.9, 0.1]], q_rows=None,
+                                      bonus_tokens=[0], temperature=1.0)
+    mine.sample_recovered_tokens = lambda *a, **k: torch.tensor([0], dtype=torch.int32,
+                                                                device=DEVICE)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.59], dtype=torch.float64,
+                                                               device=DEVICE)
+    point_mass_accept = run(meta, logits, None, bonus, sm)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.61], dtype=torch.float64,
+                                                               device=DEVICE)
+    point_mass_reject = run(meta, logits, None, bonus, sm)
+    check("3. 点质量提议（ngram，draft_probs=None）：判定退化成 `p[d] >= u`",
+          point_mass_accept.tolist() == [[1, 0]]
+          and point_mass_reject.tolist() == [[0, PLACEHOLDER]],
+          f"{point_mass_accept.tolist()} / {point_mass_reject.tolist()}")
 
-# ------------------------------------------------ 4d. 行序契约：长度对不上要报错，不能静默丢掩码
+    meta, logits, q, bonus, sm = case([[1, 2, 3]], [[0.4, 0.6]] * 4,
+                                      q_rows=[[0.5, 1.0]] * 3, bonus_tokens=[0],
+                                      temperature=1.0)
+    mine.generate_uniform_probs = lambda *a, **k: torch.tensor([0.9, 0.0, 0.0],
+                                                               dtype=torch.float64,
+                                                               device=DEVICE)
+    mine.sample_recovered_tokens = lambda *a, **k: torch.tensor([0, 1, 1],
+                                                                dtype=torch.int32,
+                                                                device=DEVICE)
+    check("3. 第 1 枚被拒 → 后面预先算好的 recovered 不许泄漏（尾部保持 -1）",
+          run(meta, logits, q, bonus, sm).tolist() == [[0, PLACEHOLDER, PLACEHOLDER,
+                                                        PLACEHOLDER]])
+finally:
+    mine.generate_uniform_probs = P
+    mine.sample_recovered_tokens = R
 
-def expect_value_error(name, build_metadata):
-    try:
-        sampler.forward(metadata_for([[0, 1], [1]]),
-                        torch.tensor([[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0],
-                                      [0, 8.0, 0], [0, 0, 8.0]]),
-                        None, build_metadata())
-        return None
-    except ValueError as exc:
-        return str(exc)
+# ------------------------------------------------ 4. 与上游 / 参考实现差分
 
-
-def metadata_rows(count, min_tokens, stop_token_ids):
-    return SamplingMetadata(
-        temperature=torch.ones(count), all_greedy=False, all_random=True, top_k=None,
-        top_p=None, generators={}, no_penalties=True,
-        prompt_token_ids=[[] for _ in range(count)], output_token_ids=[[] for _ in range(count)],
-        min_tokens=min_tokens, stop_token_ids=stop_token_ids,
-        spec_token_ids=[[0, 1], [1]][:count])
+from vllm.v1.sample.logits_processor import LogitsProcessors           # noqa: E402
+from vllm.v1.sample.metadata import SamplingMetadata as VllmMeta       # noqa: E402
+from vllm.v1.sample.rejection_sampler import rejection_sample as upstream_sample  # noqa: E402
 
 
-error = expect_value_error("min_tokens 少一项", lambda: metadata_rows(2, [2], [[], []]))
-check("4d. 元数据自相矛盾（min_tokens 比行数少）→ 报错，而不是让 zip 静默截断"
-      "（那一行的停止 token 屏蔽会悄悄消失）",
-      error is not None and "自相矛盾" in error, (error or "没有报错").splitlines()[0])
+def upstream_call(meta, logits, q, bonus, temperatures):
+    batch = len(meta.num_draft_tokens)
+    drafts, start = [], 0
+    tokens = meta.draft_token_ids.tolist()
+    for num in meta.num_draft_tokens:
+        drafts.append(tokens[start:start + num])
+        start += num
+    vmeta = VllmMeta(
+        temperature=None if all(t < 1e-5 for t in temperatures) else torch.tensor(
+            temperatures, dtype=torch.float32, device=DEVICE),
+        all_greedy=all(t < 1e-5 for t in temperatures),
+        all_random=all(t >= 1e-5 for t in temperatures),
+        top_p=None, top_k=None, generators={}, max_num_logprobs=None, no_penalties=True,
+        prompt_token_ids=None,
+        frequency_penalties=torch.zeros(batch, device=DEVICE),
+        presence_penalties=torch.zeros(batch, device=DEVICE),
+        repetition_penalties=torch.ones(batch, device=DEVICE),
+        output_token_ids=[[] for _ in range(batch)],
+        allowed_token_ids_mask=None, bad_words_token_ids={},
+        logitsprocs=LogitsProcessors(), spec_token_ids=drafts)
+    return upstream_sample(meta.draft_token_ids, meta.num_draft_tokens, meta.max_spec_len,
+                           meta.cu_num_draft_tokens, q, logits[meta.target_logits_indices],
+                           bonus, vmeta)
 
-error = expect_value_error("只对部分行建元数据", lambda: metadata_rows(1, [3], [[4]]))
-check("4d. 采样元数据的行数与投机元数据的请求数不一致 → 报错（行序契约）",
-      error is not None and "逐请求对应" in error, (error or "没有报错").splitlines()[0])
 
-# ------------------------------------------------ 5. min_tokens 在投机路径上同样生效
+drafts = [[1, 2, 3], [], [4]]
+rows = [one_hot(1, 5), one_hot(0, 5), one_hot(3, 5), one_hot(2, 5),
+        one_hot(3, 5), one_hot(4, 5), one_hot(1, 5)]
+meta, logits, _, bonus, sm = case(drafts, rows, bonus_tokens=[2, 3, 1])
+check("4. greedy：与上游 `rejection_sample` 逐值一致",
+      run(meta, logits, None, bonus, sm).tolist()
+      == upstream_call(meta, logits, None, bonus, [0.0, 0.0, 0.0]).tolist())
 
-# 草稿就是停止 token（4）、target 的 argmax 也是它：min_tokens 没到就不该提交
-# 两条请求各 K=1 → 4 行（各自 1 个验证行 + 1 个 bonus 行）
-eos_logits = [[0.0, 0, 0, 0, 9.0], [0.0, 0, 0, 0, 9.0], [0.0, 0, 0, 0, 9.0]]
-censor_sampling = SamplingMetadata(
-    temperature=None, all_greedy=True, all_random=False, top_k=None, top_p=None,
-    generators={}, no_penalties=True, prompt_token_ids=[[], []],
-    output_token_ids=[[], []], min_tokens=[3, 0], stop_token_ids=[[4], [4]],
-    spec_token_ids=[[4], [4]])
-eos_logits.append([0.0, 0, 0, 0, 9.0])
-out_censored = sampler.forward(metadata_for([[4], [4]]), torch.tensor(eos_logits), None,
-                               censor_sampling).sampled_token_ids
-check("5. min_tokens 未到时，停止 token 即使在草稿里也不会被提交（验证侧同样要屏蔽）",
-      out_censored[0, 0].item() != 4 and out_censored[1, 0].item() == 4,
-      f"未到 min_tokens 的行={out_censored[0, 0].item()}、已到的行={out_censored[1, 0].item()}")
+torch.manual_seed(7)
+q = torch.rand(4, 5, device=DEVICE)
+q = (q / q.sum(-1, keepdim=True)).float()
+rows = [[0.1 + 0.1 * ((index + token) % 3) for token in range(5)] for index in range(7)]
+meta, logits, q, bonus, sm = case(drafts, rows, q_rows=q.tolist(), bonus_tokens=[3, 1, 0],
+                                  temperature=1.0)
+torch.manual_seed(99)
+ours = run(meta, logits, q, bonus, sm)
+torch.manual_seed(99)
+theirs = upstream_call(meta, logits, q, bonus, [1.0] * 3)
+check("4. random：同一 seed 下与上游逐值一致（随机数调用顺序也一致）",
+      ours.tolist() == theirs.tolist(), f"{ours.tolist()} / {theirs.tolist()}")
+
+# 参考实现要在 CPU 上跑，用一份 CPU 的元数据副本 + 同一批 logits
+greedy_rows = [one_hot(1, 5), one_hot(0, 5), one_hot(3, 5), one_hot(2, 5),
+               one_hot(3, 5), one_hot(4, 5), one_hot(1, 5)]
+meta_g, logits_g, _, bonus_g, sm_g = case(drafts, greedy_rows, bonus_tokens=[2, 3, 1])
+reference = TorchRejectionSampler(Sampler()).forward(
+    make_metadata(drafts, device="cpu"), None, logits_g.cpu(),
+    sampling_metadata([0.0] * 3, drafts, device="cpu"))
+check("4. greedy：与 Torch 参考实现逐值一致（参考实现只给测试用）",
+      run(meta_g, logits_g, None, bonus_g, sm_g).tolist()
+      == reference.sampled_token_ids.tolist(),
+      f"{run(meta_g, logits_g, None, bonus_g, sm_g).tolist()}"
+      f" / {reference.sampled_token_ids.tolist()}")
+
+# ------------------------------------------------ 5. 交付边界与性能口径
+
+
+def parse_case():
+    from minivllm.sample import RejectionSampler
+    padded = torch.tensor([[1, 0, PLACEHOLDER, PLACEHOLDER],
+                           [3, 99, PLACEHOLDER, PLACEHOLDER]], dtype=torch.int32,
+                          device=DEVICE)
+    outputs, _ = RejectionSampler.parse_output(padded, vocab_size=10, discard_req_indices=[1])
+    return outputs
+
+
+check("5. `parse_output` 一次过滤 -1 与越界 id，并按行丢弃（中间 prefill 块）",
+      parse_case() == [[1, 0], []], str(parse_case()))
+
+meta, logits, q, bonus, sm = case([[1, 2, 3, 4, 5]] * 8,
+                                  [[0.2, 0.3, 0.5]] * 48,
+                                  q_rows=[[0.5, 0.3, 0.2]] * 40, temperature=1.0)
+for _ in range(3):
+    run(meta, logits, q, bonus, sm)
+torch.cuda.synchronize()
+from torch.profiler import ProfilerActivity, profile   # noqa: E402
+
+with profile(activities=[ProfilerActivity.CUDA]) as prof:
+    for _ in range(5):
+        run(meta, logits, q, bonus, sm)
+    torch.cuda.synchronize()
+d2h = sum(1 for event in prof.events() if "DtoH" in event.name) / 5
+check("5. B=8、K=5（40 个候选）的内核路径没有任何 D2H（逐候选取值会变成 40+ 次）",
+      d2h == 0, f"实测 {d2h} 次/步")
+
+check("5. `expand_batch_to_tokens` 与上游逐值一致（温度/top-k/top-p 的按请求展开）",
+      expand_batch_to_tokens(torch.tensor([0.0, 2.0], device=DEVICE),
+                             torch.tensor([1, 4], dtype=torch.int32, device=DEVICE), 4,
+                             replace_from=0, replace_to=1).tolist() == [1.0, 2.0, 2.0, 2.0])
 
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")

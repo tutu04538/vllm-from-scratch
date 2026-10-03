@@ -210,11 +210,11 @@ def _rejection_case():
     所以下面用 metadata 自己的索引把同一组 logits 摆成各自的形状，避免手摆出错。
     """
     vocab = 6
-    drafts = {"r0": [0, 0], "r1": [0]}
-    scheduled = {"r0": 3, "r1": 2}
-    from minivllm.spec_decode.metadata import SpecDecodeMetadata
+    # 59 关起元数据由 Runner 的 `_calc_spec_decode_metadata` 构造（上游结构）；这里不建 Runner，
+    # 用测试辅助函数造同一份索引（tests/step59 里有用例证明两者逐值一致）
+    from minivllm.testing.spec_metadata import make_metadata
 
-    meta = SpecDecodeMetadata.from_scheduled(drafts, scheduled, ["r0", "r1"])
+    meta = make_metadata([[0, 0], [0]], device="cpu")
     draft_probs = torch.zeros(3, vocab)
     draft_probs[:, 0], draft_probs[:, 1] = 0.6, 0.4
     target_rows = torch.zeros(3, vocab)
@@ -253,7 +253,7 @@ def vllm_rejection_statistics(draws=600):
     device = "cuda"
     num_draft_tokens = meta.num_draft_tokens
     draft_token_ids = meta.draft_token_ids.to(torch.int32).to(device)
-    cu_num_draft = meta.cu_num_draft_tokens.to(torch.int32).to(device)
+    cu_num_draft = meta.cu_num_draft_tokens.to(torch.int32).to(device)  # 上游同样要 GPU int32
     draft_probs = draft_probs.to(device)
     target_logits = target_rows.to(device)              # ← target-only（vLLM 的接口）
     # bonus 行：vLLM 只用来在"全接受"时追加，取一个固定 token 即可
@@ -281,21 +281,26 @@ def vllm_rejection_statistics(draws=600):
 def our_rejection_statistics(draws=600):
     from minivllm.sample import Sampler
     from minivllm.sample import SamplingMetadata as OurMetadata
-    from minivllm.spec_decode.rejection_sampler import RejectionSampler
+    from minivllm.sample import RejectionSampler
 
     meta, draft_probs, target_rows, bonus_rows = _rejection_case()
-    # 摆成**紧凑 [P+B, V]**：用 metadata 自己的索引，不手摆
-    logits = torch.zeros(meta.num_draft_tokens_total + meta.batch_size, 6)
-    logits[meta.target_logits_indices] = target_rows
-    logits[meta.bonus_logits_indices] = bonus_rows
+    # 摆成**紧凑 [P+B, V]**：用 metadata 自己的索引，不手摆。生产路径要 CUDA（Triton 内核）
+    device = "cuda"
+    num_tokens = meta.draft_token_ids.shape[0]
+    logits = torch.zeros(num_tokens + len(meta.num_draft_tokens), 6, device=device)
+    logits[meta.target_logits_indices] = target_rows.to(device)
+    logits[meta.bonus_logits_indices] = bonus_rows.to(device)
     sampling_metadata = OurMetadata(
-        temperature=torch.ones(2), all_greedy=False, all_random=True, top_k=None, top_p=None,
-        generators={}, no_penalties=True, prompt_token_ids=[[], []], output_token_ids=[[], []],
+        temperature=torch.ones(2, device=device), all_greedy=False, all_random=True,
+        top_k=None, top_p=None, generators={}, no_penalties=True,
+        prompt_token_ids=[[], []], output_token_ids=[[], []],
         min_tokens=[0, 0], stop_token_ids=[[], []], spec_token_ids=[[0, 0], [0]])
     sampler = RejectionSampler(Sampler())
 
     def step():
-        out = sampler.forward(meta, logits, draft_probs, sampling_metadata).sampled_token_ids
+        # 新签名与上游一致：`(metadata, draft_probs, logits, sampling_metadata)`
+        out = sampler(meta, draft_probs.to(device), logits,
+                      sampling_metadata).sampled_token_ids
         rows = out.tolist()
         lengths = [len([t for t in row if t != -1]) - 1 for row in rows]
         return rows[0], lengths

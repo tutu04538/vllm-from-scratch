@@ -25,6 +25,9 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以跑真引擎的用例要上 GPU。
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                       SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 from minivllm.spec_decode.draft_model import SpecDecodeBaseProposer
@@ -118,7 +121,7 @@ def build(*, k=3, draft_dir=None, budget=16, blocks=32, prefix=False, max_model_
                                                  enable_prefix_caching=prefix),
                         scheduler_config=SchedulerConfig(max_num_seqs=max_num_seqs,
                                                          max_num_batched_tokens=budget),
-                        device_config=DeviceConfig(device="cpu"), speculative_config=spec)
+                        device_config=DeviceConfig(device=DEVICE), speculative_config=spec)
     engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
     core = engine.engine_core.engine_core
     runner = core.model_executor.driver_worker.model_runner

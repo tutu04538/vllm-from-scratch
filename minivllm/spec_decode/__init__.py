@@ -1,7 +1,7 @@
 """投机（对应 vLLM `v1/spec_decode/`）。
 
     metadata.py           一轮验证的索引：两个坐标系（forward 行 / 取完的 logits）
-    rejection_sampler.py  验证草稿：greedy 比对 argmax、random 用 min(1, p/q)
+    metrics.py            接受率统计（只统计已验证的候选）
     ngram_proposer.py     从历史里找重复片段当草稿（确定性，没有 q）
     draft_model.py        用小模型提议（SpecDecodeBaseProposer + DraftModelProposer）
 
@@ -10,13 +10,16 @@
 
 **KV**（199 §9）：draft 与 target 共用逻辑块表与 slot 编号（同一个 KV group），
 但每个 Attention 层绑自己的物理 tensor；规格不兼容时**明确报错**，不给独立 pool 兜底。
+
+**验证不在这里**（59 关）：拒绝采样对应上游 `vllm/v1/sample/rejection_sampler.py`，所以本项目的
+生产实现放在 `minivllm/sample/rejection_sampler.py`（Torch 参考版在 `minivllm/testing/`）。
+本包只管"怎么提草稿"和"草稿的索引/统计"。
 """
 
 from .draft_model import DraftModelProposer, SpecDecodeBaseProposer
 from .metadata import SpecDecodeMetadata
+from .metrics import SpecDecodingStats
 from .ngram_proposer import NgramProposer
-from .rejection_sampler import PLACEHOLDER_TOKEN_ID, RejectionSampler, expand_batch_to_tokens
 
-__all__ = ["SpecDecodeMetadata", "RejectionSampler", "PLACEHOLDER_TOKEN_ID",
-           "expand_batch_to_tokens", "NgramProposer", "SpecDecodeBaseProposer",
-           "DraftModelProposer"]
+__all__ = ["SpecDecodeMetadata", "SpecDecodingStats", "NgramProposer",
+           "SpecDecodeBaseProposer", "DraftModelProposer"]

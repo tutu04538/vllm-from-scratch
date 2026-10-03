@@ -35,6 +35,7 @@ prompt、已提交输出、优先级、采样配置、**块 hash 链**都保留�
 """
 
 from ...request import Request, RequestStatus
+from ...spec_decode.metrics import SpecDecodingStats
 from ..kv_cache_utils import BlockHasher
 from .output import CachedRequestData, NewRequestData, SchedulerOutput
 from .request_queue import create_request_queue
@@ -87,6 +88,9 @@ class Scheduler:
         self.policy = scheduler_config.policy
         self.max_model_len = max_model_len
         self.kv_cache_manager = kv_cache_manager
+        # 59：接受率统计。上游把它放进 `SchedulerStats` 随 `EngineCoreOutputs` 送前端；
+        # 本项目没有指标前端，所以留**最近一步**的这一份给测试/demo 读（每步重建）。
+        self.spec_decoding_stats = None
 
         # 前缀缓存的 hash 计算器：**只在开了缓存时才有**。没有它 → `block_hashes` 为空 →
         # 命中查询与发布都是空操作（"关掉缓存就跑同一套代码的另一条分支"）。
@@ -477,6 +481,8 @@ class Scheduler:
         outputs: list[EngineCoreOutput] = []
         stopped_running: list[Request] = []
         finished_now: set[str] = set()
+        # 本步的接受率统计（上游同名局部变量：每步重建，随 SchedulerStats 送前端）
+        spec_decoding_stats = None
 
         # 按 Scheduler 自己的 num_scheduled_tokens 遍历（顺序稳定），再用 req_id_to_index
         # 去结果里取——**不能**按 Runner 的行顺序 zip（Runner 允许重排）。
@@ -499,6 +505,12 @@ class Scheduler:
                 num_rejected = len(scheduled_spec_token_ids) - num_accepted
                 if request.num_computed_tokens > 0:
                     request.num_computed_tokens -= num_rejected
+                # 59：统计**已经验证过**的候选（排了 K 枚、验完接受 a 枚）。
+                # 提议数（上一轮提了多少）不能拿来做接受数：这一轮可能只采用了它的前缀。
+                spec_decoding_stats = self.make_spec_decoding_stats(
+                    spec_decoding_stats,
+                    num_draft_tokens=len(scheduled_spec_token_ids),
+                    num_accepted_tokens=num_accepted)
 
             stopped = False
             if new_token_ids:
@@ -539,7 +551,24 @@ class Scheduler:
             stopped_ids = {request.request_id for request in stopped_running}
             self.running = [r for r in self.running if r.request_id not in stopped_ids]
 
+        self.spec_decoding_stats = spec_decoding_stats
         return EngineCoreOutputs(outputs=outputs, finished_requests=finished_now)
+
+    def make_spec_decoding_stats(self, spec_decoding_stats, num_draft_tokens: int,
+                                 num_accepted_tokens: int):
+        """把一条请求本轮的 (验证了几枚, 接受了几枚) 记进本步统计（上游同名方法）。
+
+        只记**验证过**的候选：调用点在本步结果已经按 req_id 取到之后（能走到那里就说明
+        执行侧验证过这 K 枚）。上游还会扣掉 `num_invalid_spec_tokens`（排了草稿但结果整批
+        被丢弃的请求）并受 `log_stats` 开关控制，本项目没有这两条路径。
+        """
+        if not num_draft_tokens:
+            return None
+        if spec_decoding_stats is None:
+            spec_decoding_stats = SpecDecodingStats.new(self.num_speculative_tokens)
+        spec_decoding_stats.observe_draft(num_draft_tokens=num_draft_tokens,
+                                         num_accepted_tokens=num_accepted_tokens)
+        return spec_decoding_stats
 
     def _publish_blocks(self, request: Request) -> None:
         """把这条请求已经确定的完整块登记进前缀缓存（关缓存时是空操作）。

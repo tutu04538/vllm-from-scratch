@@ -38,6 +38,10 @@ def first_line(error):
     return error.splitlines()[0] if error else "没有报错"
 
 
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以开投机的脚本要上 GPU。
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def build(spec_tokens=3, method="ngram", blocks=16, budget=16, model=TINY_DIR,
           hf_config=TINY_CONFIG, draft_config=None, seqs=2, block_size=4):
     config = VllmConfig(
@@ -46,7 +50,7 @@ def build(spec_tokens=3, method="ngram", blocks=16, budget=16, model=TINY_DIR,
         cache_config=CacheConfig(block_size=block_size, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=seqs,
                                          max_num_batched_tokens=budget),
-        device_config=DeviceConfig(device="cpu"),
+        device_config=DeviceConfig(device=DEVICE),
         speculative_config=None if spec_tokens == 0 else SpeculativeConfig(
             method=method, num_speculative_tokens=spec_tokens,
             draft_model_config=draft_config))

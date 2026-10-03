@@ -21,6 +21,9 @@ from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, Samplin
                       SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 from minivllm.testing.tiny_models import tiny_qwen3_config, tiny_qwen3_dir
 
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以跑真引擎的用例要上 GPU。
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 FAIL = []
 TINY = tiny_qwen3_dir("tiny_gqa")
 HF = tiny_qwen3_config("tiny_gqa")
@@ -33,7 +36,7 @@ def check(name, ok, detail=""):
 
 
 def build(*, k=3, budget=16, blocks=32, prefix=False, max_model_len=64, max_num_seqs=2,
-          device="cpu"):
+          device=DEVICE):
     model = ModelConfig(model=TINY, dtype="float32", max_model_len=max_model_len, hf_config=HF)
     spec = None if k is None else SpeculativeConfig(
         method="draft_model", num_speculative_tokens=k,
@@ -121,7 +124,7 @@ engine.shutdown()
 
 # ---------------------------------------------------------------- 3. 端到端 == 非投机
 def greedy_run(k, *, prefix=False, prompts=((("r", [1, 2, 3, 4, 5, 6]),)),
-               max_tokens=6, device="cpu", budget=16):
+               max_tokens=6, device=DEVICE, budget=16):
     engine, _core, _runner = build(k=k, prefix=prefix, device=device, budget=budget)
     for req_id, prompt in prompts:
         engine.add_request(req_id, list(prompt), SamplingParams(max_tokens=max_tokens,

@@ -58,6 +58,10 @@ def make_dir(work, source, config, drop_layer_prefix=None):
     return work
 
 
+# 59 关起：投机**验证**走 Triton 内核（上游同样只有 GPU 路径），所以开投机的脚本要上 GPU。
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def build(target_dir=TINY, target_config=None, draft_dir=None, draft_config=None,
           spec_tokens=3, blocks=16, budget=16, max_tokens=6, seed=None, max_model_len=64):
     target_config = target_config or TINY_CONFIG
@@ -66,7 +70,7 @@ def build(target_dir=TINY, target_config=None, draft_dir=None, draft_config=None
                                  hf_config=target_config),
         cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=budget),
-        device_config=DeviceConfig(device="cpu"),
+        device_config=DeviceConfig(device=DEVICE),
         speculative_config=SpeculativeConfig(
             method="draft_model", num_speculative_tokens=spec_tokens,
             draft_model_config=None if draft_dir is None else ModelConfig(
@@ -178,7 +182,7 @@ try:
           error is not None and "draft_model_config" in error, first_line(error))
     # ------------------------------------------------ 6. 验收方抓到的四类边界（补成回归用例）
 
-    def one_step(prompt, k=3, budget=16, device="cpu", max_model_len=64):
+    def one_step(prompt, k=3, budget=16, device=DEVICE, max_model_len=64):
         """跑一轮，返回 (是否抛异常, 异常字符串)。"""
         engine = None
         try:
@@ -356,7 +360,7 @@ try:
                                      enable_prefix_caching=prefix),
             scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=budget,
                                              policy=policy),
-            device_config=DeviceConfig(device="cpu"),
+            device_config=DeviceConfig(device=DEVICE),
             speculative_config=None if k is None else SpeculativeConfig(
                 method="draft_model", num_speculative_tokens=k,
                 draft_model_config=ModelConfig(model=draft_dir, dtype="float32",

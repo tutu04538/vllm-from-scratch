@@ -36,10 +36,11 @@
     models/qwen3.py           Qwen3（GQA + q/k norm + RoPE，对应 vLLM 的 qwen2/qwen3）
     layers/* / attention/*    并行线性层、RMSNorm、RoPE、Attention 边界与教学后端（57B）
     sample/metadata.py        按行组织的采样参数（Sampler 不接 Request）
-    sample/sampler.py         顺序：约束 → 惩罚 → greedy/random 分流
+    sample/sampler.py         顺序：惩罚 → 约束 → greedy/random 分流
+    sample/rejection_sampler.py  投机验证：Triton 批量拒绝采样（59）
     sample/ops/*              三种惩罚、top-k/top-p 筛选与指数竞赛抽样
     spec_decode/metadata.py   投机验证的索引（两个坐标系）
-    spec_decode/rejection_sampler.py  验证草稿：min(1,p/q) 接受、max(p-q,0) 恢复
+    testing/torch_rejection_sampler.py  **只给测试**的 Torch 参考版验证
     spec_decode/ngram_proposer.py / draft_model.py  两种提议者（历史匹配 / 小模型）
     testing/fake_runner.py    **只给测试**的脚本化 Runner
 

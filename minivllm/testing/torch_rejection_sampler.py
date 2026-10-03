@@ -1,50 +1,22 @@
-"""`RejectionSampler`：验证草稿（对应 vLLM `v1/sample/rejection_sampler.py` 的 Torch 路径）。
+"""**参考实现**（只给测试）：Torch 逐候选版本的拒绝采样（对应 vLLM `v1/sample/rejection_sampler.py`
+的算法，但**不是**本项目的生产路径）。
 
-输入是"target 模型在 K+1 行上的 logits"和"草稿 token 及其概率 q"，输出是**本轮真正提交的 token
-序列**（每条请求 1 ~ K+1 个）。它不碰 Request、不判停止——截断与结束仍然是 Scheduler 的事。
+为什么要有它（059 §5）：
 
-### 算法（199 §7）
+- 生产路径是 `minivllm/sample/rejection_sampler.py` 的 **Triton 批量内核**（与上游一致）；
+  本文件只是"同一算法的人眼可读版本"，**不允许**被生产代码 import。
+- 用途一：**CPU 上的算法验证**——内核需要 CUDA，而接受/恢复/截断这些语义在 CPU 上也能验。
+- 用途二：与内核**逐值差分**（同一批张量、同一组随机数下必须给出同样的 token 序列），
+  这样"内核写错了"和"算法理解错了"能分开。
 
-```text
-greedy 行：逐位置比对草稿 == target 的 argmax
-           第一个不同处 → 用 target 的 argmax 顶替，**后面全部丢掉**
-           全部相同     → 追加 bonus token（target 在最后一行采出来的那个）
-random 行：草稿 d 来自分布 q，接受概率 = min(1, p[d] / q[d])，用一次均匀随机数判定
-           拒绝 → 用**修正分布** max(p - q, 0) 采一个 token 顶替（recovered token）
-           全部接受 → 追加 bonus
-```
+它与生产内核的已知差异（都只影响速度，不影响结果）：
 
-`q` 必须是**实际提议时用的分布**：ngram/确定性草稿没有分布（点质量），用 `draft_probs=None`
-表示，此时 `q[d] = 1`、接受判定退化成 `p[d] >= u` ✓（**不能**把"没有 q"当"按 p 随便采"）。
-`q[d] == 0` 时按拒绝处理（199 §1 的修正：本机内核也是防御性拒绝）。
+    逐候选 Python 循环 + 标量取值（每个候选位 4~5 次 D2H），内核是每请求一个 program
+    约束（温度/top-k/top-p）用 Torch 的 repeat_interleave 展开，内核用 `expand_kernel`
+    随机数可以注入（`uniforms=` / `recoveries=`），内核只能按 `generators` 抽
 
-### 历史条件（199 §7 点名的一条）
-
-第 j 个验证位置的 p 要按"已确定历史 + 草稿前缀 `[:j]`"应用惩罚与约束——因为**如果前面都接受**，
-这行面对的就是那个历史。bonus 行则按"全部草稿都接受"的历史。被拒绝之后，后面预先算好的结果
-直接丢掉。所以这里临时构造一份**假设历史**（`_combine_outputs_with_spec_tokens`），
-不去动请求镜像里的权威历史。
-
-### 随机数（199 §8）
-
-按 draft 段预生成均匀随机数（K=0 的请求**不消耗**随机数）；recovered token 用指数竞赛采
-（每个请求一行噪声）。bonus、recovered 都可能先算了没用上，**不回滚随机流**。测试可以注入
-固定的 uniform / recovered 值，从而把"实现差异"与"算法错误"分开。
-
-### 提议侧的 q 与验证侧的 p 不必一样（199 §7）
-
-拒绝采样对**任何** q 都成立（接受概率 `min(1, p/q)` 保证边缘分布是 p），所以提议侧可以省掉
-惩罚、top-k/top-p 这些约束——q 离 p 越远只是**接受率**越低，不改变输出分布。
-**验证侧必须施加**：惩罚要按"已提交历史 + 草稿前缀"算（199 §7 的历史条件），
-`min_tokens` 的停止 token 屏蔽也要有（否则草稿可能在 min_tokens 之前把停止 token 送进来）。
-
-### 本关与 vLLM 的差异
-
-| 差异 | 说明 |
-|---|---|
-| 不做 padding 输入 | vLLM 的 `SamplerOutput` 是 `[B, max_spec_len+1]`、无效位置填 -1；本关照做（同一个形状），但**不**为它准备 padded 的中间张量 |
-| 没有 synthetic mode / fp64 Gumbel / logprobs | 前两个是实验与对照用，logprobs 不在 57E 范围 |
-| 只有一条 Torch 路径 | vLLM 走 Triton 内核；本关按 199 §7"第一版先 Torch 可读实现，函数边界对应源码" |
+`uniforms` / `recoveries` 注入的意义（199 §8）：把"算法错"与"随机流不同"分开——测试注入
+固定值，就能对着**独立 CPU 公式**逐值比对接受判定与恢复 token。
 """
 
 import dataclasses
@@ -52,18 +24,17 @@ import dataclasses
 import torch
 
 from ..outputs import SamplerOutput
-from ..sample import SamplingMetadata
+from ..sample.metadata import SAMPLING_EPS, SamplingMetadata
 from ..sample.ops.penalties import apply_all_penalties
-from ..sample.ops.topk_topp_sampler import SAMPLING_EPS, apply_top_k_top_p
-
-# 无效位置的填充值（vLLM 同名常量）：`[B, max_spec_len+1]` 的右边部分填它
-PLACEHOLDER_TOKEN_ID = -1
+from ..sample.ops.topk_topp_sampler import apply_top_k_top_p
+from ..sample.rejection_sampler import PLACEHOLDER_TOKEN_ID
 
 
-def expand_batch_to_tokens(x: torch.Tensor, num_tokens_per_req: list[int]) -> torch.Tensor:
+def torch_expand_batch_to_tokens(x: torch.Tensor, num_tokens_per_req: list[int]) -> torch.Tensor:
     """`[B]` → `[P]`：第 i 条请求的 K_i 个验证行共用同一份参数。
 
-    对应 vLLM 的 `expand_batch_to_tokens` 内核（例：x=[a,b,c]、K=[2,3,1] → [a,a,b,b,b,c]）。
+    对应生产路径的 `expand_batch_to_tokens`（Triton `expand_kernel`）与
+    vLLM 的同名函数：x=[a,b,c]、K=[2,3,1] → [a,a,b,b,b,c]。
     """
     counts = torch.tensor(num_tokens_per_req, dtype=torch.int64, device=x.device)
     return torch.repeat_interleave(x, counts, dim=0)
@@ -73,9 +44,8 @@ def combine_outputs_with_spec_tokens(output_token_ids: list[list[int]],
                                      spec_token_ids: list[list[int]]):
     """验证行的**假设历史**：第 j 行 = 已提交历史 + 草稿前缀 `[:j]`（各请求展开成 K 行）。
 
-    对应 vLLM `RejectionSampler._combine_outputs_with_spec_tokens`（它的写法是"复制上一行再追加
-    一个草稿"，本关直接切片，语义一样）。没有草稿的请求不产出任何行——它的 K=0，
-    target 行本来就是空的。
+    对应生产路径的 `RejectionSampler._combine_outputs_with_spec_tokens`。没有草稿的请求不产出
+    任何行——它的 K=0，target 行本来就是空的。
     """
     result: list[list[int]] = []
     for out, spec in zip(output_token_ids, spec_token_ids):
@@ -84,55 +54,36 @@ def combine_outputs_with_spec_tokens(output_token_ids: list[list[int]],
     return result
 
 
-def bonus_histories(output_token_ids: list[list[int]], spec_token_ids: list[list[int]]):
-    """bonus 行的历史 = 已提交历史 + **全部**草稿（只在全部接受时才走到它）。"""
-    return [list(out) + list(spec) if spec else list(out)
-            for out, spec in zip(output_token_ids, spec_token_ids)]
-
-
-class RejectionSampler:
+class TorchRejectionSampler:
     def __init__(self, sampler) -> None:
         # 复用普通采样器做 bonus 与"修正分布"抽样：bonus 就是一次普通采样
         self.sampler = sampler
 
-    # -------- 入口 --------
+    # -------- 入口（与生产 `RejectionSampler.forward` 同签名）--------
 
-    def forward(self, metadata, logits: torch.Tensor, draft_probs: torch.Tensor | None,
+    def forward(self, metadata, draft_probs: torch.Tensor | None, logits: torch.Tensor,
                 sampling_metadata: SamplingMetadata, *, uniforms: torch.Tensor | None = None,
                 recoveries: torch.Tensor | None = None) -> SamplerOutput:
         """`logits` 是 `[P+B, V]`（`logits_indices` 取完之后的行），行序就是 metadata 的顺序。"""
-        if metadata.num_draft_tokens_total == 0 and metadata.batch_size == 0:
-            raise ValueError("空的投机批次：没有请求就不该走到 RejectionSampler")
-
-        # **行序契约**（2026-10-02 补）：`sampling_metadata` 必须正好覆盖 spec metadata 里的
-        # 那些请求、且顺序一致——验证行的历史、惩罚、min_tokens 全靠它逐请求摊到逐行。
-        # 少了或换了顺序都不会报错，只会把 A 的参数用到 B 的行上（静默错），所以在这里挡住。
-        if len(sampling_metadata.prompt_token_ids) != metadata.batch_size:
+        # 行序契约（与生产路径同一条检查）：元数据与采样参数必须逐请求对应
+        if len(sampling_metadata.prompt_token_ids) != len(metadata.num_draft_tokens):
             raise ValueError(
                 f"采样元数据有 {len(sampling_metadata.prompt_token_ids)} 行，"
-                f"但投机元数据里有 {metadata.batch_size} 条请求：两者必须逐请求对应、顺序一致"
-                f"（不能只对一部分行建元数据）")
+                f"但投机元数据里有 {len(metadata.num_draft_tokens)} 条请求：两者必须逐请求对应")
 
         # ---- 1) bonus token：用"全部草稿都接受"的历史，走一次普通采样 ----
-        bonus_logits = logits[metadata.bonus_logits_indices]
-        bonus_metadata = self._with_histories(
-            sampling_metadata,
-            bonus_histories(sampling_metadata.output_token_ids,
-                            sampling_metadata.spec_token_ids))
-        bonus_token_ids = self.sampler.forward(bonus_logits, bonus_metadata).sampled_token_ids
+        bonus_token_ids = self.sampler.forward(
+            logits[metadata.bonus_logits_indices], sampling_metadata,
+            predict_bonus_token=True).sampled_token_ids
 
-        # ---- 2) 验证行的 p：历史按草稿前缀逐行不同，再应用惩罚与采样约束 ----
+        # ---- 2) 验证行的 p：历史按草稿前缀逐行不同，再施加惩罚与采样约束 ----
         target_logits = logits[metadata.target_logits_indices].to(torch.float32)
         target_metadata = self._with_histories(
             sampling_metadata,
             combine_outputs_with_spec_tokens(sampling_metadata.output_token_ids,
                                              sampling_metadata.spec_token_ids),
             num_tokens_per_req=metadata.num_draft_tokens)
-        # 「会改变 argmax 的约束」也要施加（目前只有 min_tokens 的停止 token 屏蔽）：
-        # 复用普通采样器的同一条逻辑，历史是**假设历史**（已提交 + 草稿前缀）
         target_logits = self.sampler.apply_logits_processors(target_logits, target_metadata)
-        target_logits = self._apply_penalties(target_logits, target_metadata,
-                                              metadata.num_draft_tokens)
         target_logits = self._apply_constraints(target_logits, target_metadata,
                                                 metadata.num_draft_tokens)
 
@@ -148,14 +99,14 @@ class RejectionSampler:
                 bonus_token_ids: torch.Tensor, *, sampling_metadata: SamplingMetadata,
                 uniforms: torch.Tensor | None,
                 recoveries: torch.Tensor | None) -> torch.Tensor:
-        batch_size = metadata.batch_size
+        batch_size = len(metadata.num_draft_tokens)
         max_spec_len = metadata.max_spec_len
         device = target_logits.device
         output = torch.full((batch_size, max_spec_len + 1), PLACEHOLDER_TOKEN_ID,
-                            dtype=torch.int64, device=device)
+                            dtype=torch.int32, device=device)
         if max_spec_len == 0:
             # 全批 K=0：等价于普通解码，最后一行（= bonus 行）就是答案
-            return bonus_token_ids.to(torch.int64)
+            return bonus_token_ids.to(torch.int32)
 
         target_probs = target_logits.softmax(dim=-1, dtype=torch.float32)
         target_argmax = target_logits.argmax(dim=-1)
@@ -167,10 +118,8 @@ class RejectionSampler:
             is_greedy_rows = torch.zeros(target_logits.shape[0], dtype=torch.bool,
                                          device=device)
         else:
-            # 注意用**逐请求**的 `sampling_metadata.temperature`（[B]）来展开成 [P] 行；
-            # `target_metadata.temperature` 已经是展开过的 [P]，再 expand 一次会
-            # "repeats.size(0) != input.size(0)"（K 不一致时当场报错，K 一致时静默算错）
-            is_greedy_rows = expand_batch_to_tokens(
+            # 注意用**逐请求**的 `sampling_metadata.temperature`（[B]）来展开成 [P] 行
+            is_greedy_rows = torch_expand_batch_to_tokens(
                 sampling_metadata.temperature < SAMPLING_EPS, metadata.num_draft_tokens)
 
         if uniforms is None and is_greedy_rows is not None and not bool(is_greedy_rows.all()):
@@ -212,12 +161,12 @@ class RejectionSampler:
             draft_prob = 1.0                     # 点质量提议（ngram）：q[d] = 1
         else:
             draft_prob = float(draft_probs[row, draft_token])
-        # q[d] == 0 防御性拒绝（vLLM 内核同样处理，避免 p/q 得到 NaN）
+        # q[d] == 0 防御性拒绝（生产内核同样处理，避免 p/q 得到 NaN）
         accepted = draft_prob > 0.0 and target_prob / draft_prob >= float(uniforms[row])
         token = draft_token if accepted else int(recoveries[row])
         return token, accepted
 
-    # -------- 三个辅助：历史、惩罚、约束 --------
+    # -------- 三个辅助：历史、约束、随机数 --------
 
     @staticmethod
     def _with_histories(sampling_metadata: SamplingMetadata, histories: list[list[int]],
@@ -226,10 +175,10 @@ class RejectionSampler:
 
         `num_tokens_per_req` 给了就把 `[B]` 的参数展开成 `[P]`（验证行是"每请求 K 行"）。
         """
-        # ---- 契约检查（2026-10-02 补）----
+        # ---- 契约检查 ----
         # 这个方法把"逐请求"的参数摊成"逐验证行"，**行序必须与传入的 sampling_metadata 一致**，
-        # 长度也必须对得上。原来什么都不查、还用 `zip()` 摊平——zip 会按短的那边**静默截断**：
-        # 少给一项 min_tokens，那一行的停止 token 屏蔽就悄悄没了（不报错，只是行为变了）。
+        # 长度也必须对得上。用 `zip()` 摊平会按短的那边**静默截断**：少给一项 min_tokens，
+        # 那一行的停止 token 屏蔽就悄悄没了（不报错，只是行为变了）。
         num_rows = len(sampling_metadata.prompt_token_ids)
         for name in ("min_tokens", "stop_token_ids"):
             if len(getattr(sampling_metadata, name)) != num_rows:
@@ -256,7 +205,7 @@ class RejectionSampler:
                          "frequency_penalties", "repetition_penalties"):
                 tensor = getattr(sampling_metadata, name)
                 if tensor is not None:
-                    updates[name] = expand_batch_to_tokens(tensor, num_tokens_per_req)
+                    updates[name] = torch_expand_batch_to_tokens(tensor, num_tokens_per_req)
             updates["prompt_token_ids"] = [
                 prompt for prompt, count in zip(sampling_metadata.prompt_token_ids,
                                                 num_tokens_per_req)
@@ -267,31 +216,24 @@ class RejectionSampler:
                 sampling_metadata.stop_token_ids, num_tokens_per_req) for _ in range(count)]
             # `generators` **按请求下标留原样**（不展开、也不清空）：抽样按
             # `enumerate(num_draft_tokens)` 的下标取，与 vLLM 的
-            # `generate_uniform_probs(..., generators, ...)` 同一套键。清空的话，
-            # 有 seed 的请求会退化成用全局 RNG → 结果随全局种子变（验收方的独立探针抓到了）
+            # `generate_uniform_probs(..., generators, ...)` 同一套键
         return dataclasses.replace(sampling_metadata, **updates)
-
-    @staticmethod
-    def _apply_penalties(logits: torch.Tensor, sampling_metadata: SamplingMetadata,
-                         num_tokens_per_req: list[int]) -> torch.Tensor:
-        if sampling_metadata.no_penalties:
-            return logits
-        return apply_all_penalties(
-            logits, sampling_metadata.prompt_token_ids, sampling_metadata.output_token_ids,
-            sampling_metadata.presence_penalties, sampling_metadata.frequency_penalties,
-            sampling_metadata.repetition_penalties)
 
     @staticmethod
     def _apply_constraints(logits: torch.Tensor, sampling_metadata: SamplingMetadata,
                            num_tokens_per_req: list[int]) -> torch.Tensor:
-        """温度 + top-k/top-p（贪心行不做温度缩放，与普通采样器同一条规则）。"""
+        """温度 + top-k/top-p 的 Torch 版（对应生产 `apply_sampling_constraints`）。"""
         if sampling_metadata.all_greedy:
             return logits
         temperature = sampling_metadata.temperature
         safe = torch.where(temperature < SAMPLING_EPS, torch.ones_like(temperature),
                            temperature)
         logits = logits.div_(safe.unsqueeze(dim=1))
-        return apply_top_k_top_p(logits, sampling_metadata.top_k, sampling_metadata.top_p)
+        top_k = (None if sampling_metadata.top_k is None else
+                 torch_expand_batch_to_tokens(sampling_metadata.top_k, num_tokens_per_req))
+        top_p = (None if sampling_metadata.top_p is None else
+                 torch_expand_batch_to_tokens(sampling_metadata.top_p, num_tokens_per_req))
+        return apply_top_k_top_p(logits, top_k, top_p)
 
     # -------- 随机数 --------
 
@@ -300,10 +242,9 @@ class RejectionSampler:
                        device) -> torch.Tensor:
         """每个草稿位置一个均匀随机数。**K=0 的请求不消耗随机数**（199 §8）。
 
-        用 float64：float32 下 `rand()` 有非零概率给出精确 0（PyTorch 的老问题），
-        那样 `p/q >= 0` 会无条件接受，破坏分布。
+        用 float64：float32 下 `rand()` 有非零概率给出精确 0，那样 `p/q >= 0` 会无条件接受。
         """
-        uniforms = torch.rand((metadata.num_draft_tokens_total,), dtype=torch.float64,
+        uniforms = torch.rand((metadata.draft_token_ids.shape[0],), dtype=torch.float64,
                               device=device)
         start = 0
         for req_index, num_draft in enumerate(metadata.num_draft_tokens):

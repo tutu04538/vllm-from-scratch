@@ -1,0 +1,191 @@
+{
+  "step": 59,
+  "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/059_GPU批量拒绝采样与投机元数据.md",
+  "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+  "recorded_at": "2026-10-03T17:05:00+00:00",
+  "git": {
+    "baseline_commit_at_record_time": "34b4122944a21d0e2f3a9d3f0b80e5bd0d78f1e6",
+    "note": "环境/命令/轨迹记录于本关实现提交之前（baseline 34b4122，工作区含本关改动）；代码与文档在同一提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算"
+  },
+  "package": {
+    "root": "minivllm/",
+    "python_files": 66,
+    "sha256": "8d5837829b2548e951e891c8cb3b410e3ae85edf1a5a54dd981d486c4500d297",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58 口径）"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0",
+    "transformers": "5.14.1",
+    "cuda_available": true,
+    "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+    "conda_env": "vllm-omni-dev",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+  },
+  "models": "docs/step59_models.json（tiny 测试模型现场生成；无外部权重下载）",
+  "commands": [
+    {
+      "cmd": "python -m pytest tests/step59 -q",
+      "cwd": "项目根",
+      "result": "52 passed, 14 warnings in 8.09s",
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "cmd": "python -m pytest tests/step58 -q",
+      "result": "41 passed, 14 warnings in 5.88s",
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step59_rejection.py",
+      "result": "21 PASS / 0 FAIL（全部通过）",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_input_budget.py",
+      "result": "10 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_draft_inputs.py",
+      "result": "11 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_workspace.py",
+      "result": "15 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step57_*.py（15 个）",
+      "result": "350 PASS / 0 FAIL（基线 354：check_step57_rejection_sampler 22 → 18，见 docs/step59_alignment.md §5）",
+      "failed": 0,
+      "detail": {
+        "block_pool": {"passed": 28, "failed": 0},
+        "draft_model": {"passed": 32, "failed": 0},
+        "engine_protocol": {"passed": 23, "failed": 0},
+        "model_logits": {"passed": 18, "failed": 0},
+        "preemption": {"passed": 23, "failed": 0},
+        "prefix_cache": {"passed": 25, "failed": 0},
+        "rejection_sampler": {"passed": 18, "failed": 0, "note": "59 关重写：注入方式改为 monkeypatch 模块函数，完整用例集在 tests/step59"},
+        "request_progress": {"passed": 29, "failed": 0},
+        "runner_inputs": {"passed": 30, "failed": 0},
+        "sampler": {"passed": 29, "failed": 0, "note": "第 7 项断言随 Sampler.forward 的新参数（predict_bonus_token）更新"},
+        "scheduler_basic": {"passed": 25, "failed": 0},
+        "spec_lifecycle": {"passed": 12, "failed": 0},
+        "spec_metadata": {"passed": 13, "failed": 0, "note": "改为调 Runner._calc_spec_decode_metadata；期望值未改"},
+        "stop_and_outputs": {"passed": 20, "failed": 0},
+        "weight_loading": {"passed": 25, "failed": 0}
+      }
+    },
+    {
+      "cmd": "python /tmp/probe59_speed.py（同一批张量：旧实现 / 新内核 / 上游）",
+      "result": "见 execution_trace.rejection_timing（V=1000、全部张量在 GPU 上）",
+      "note": "对照探针，不进仓库；数字只用于说明 D2H 与量级"
+    }
+  ],
+  "execution_trace": {
+    "rejection_timing": {
+      "unit": "ms/步 与 D2H 次数/步（每格：时间 / D2H）",
+      "columns": ["旧实现（=现在的 Torch 参考实现）", "本关新内核路径", "上游 rejection_sample"],
+      "rows": [
+        {"case": "B=3 K=3 greedy 全接受", "old": "0.614 ms / 11", "new": "0.354 ms / 0", "upstream": "0.100 ms"},
+        {"case": "B=32 K=5 greedy 全接受", "old": "2.705 ms / 73", "new": "0.094 ms / 0", "upstream": "0.145 ms"},
+        {"case": "B=3 K=3 greedy 随机草稿", "old": "0.425 ms / 6", "new": "0.144 ms / 0", "upstream": "0.140 ms"},
+        {"case": "B=32 K=5 greedy 随机草稿", "old": "2.487 ms / 64", "new": "0.213 ms / 0", "upstream": "0.143 ms"},
+        {"case": "B=3 K=3 random 全接受", "old": "2.176 ms / 33", "new": "0.512 ms / 0", "upstream": "0.308 ms"},
+        {"case": "B=32 K=5 random 全接受", "old": "11.428 ms / 385", "new": "0.582 ms / 0", "upstream": "0.314 ms"},
+        {"case": "B=3 K=3 random 随机草稿", "old": "2.258 ms / 42", "new": "0.566 ms / 0", "upstream": "0.178 ms"},
+        {"case": "B=32 K=5 random 随机草稿", "old": "13.496 ms / 419", "new": "0.431 ms / 0", "upstream": "0.316 ms"}
+      ],
+      "note": "上游那一列只调 rejection_sample（不含它自己的 bonus 采样/约束），本关新路径是含 bonus+约束+parse 的 forward，两者不是同一段；只用来标量级"
+    },
+    "profiler": {
+      "d2h_per_step": {"B=1 K=1": 0, "B=32 K=5": 0},
+      "cuda_events_per_step": {"B=1 K=1": 10, "B=32 K=5": 10},
+      "结论": "验证路径没有逐候选 D2H；内核启动数 O(1)，不随 B×K 增长（旧实现 B=32/K=5 random 全接受为 385 次 D2H）"
+    },
+    "metadata_example_abc": {
+      "drafts": [[1, 2, 3], [], [4]],
+      "num_draft_tokens": [3, 0, 1],
+      "cu_num_draft_tokens": [3, 3, 4],
+      "cu_num_sampled_tokens": [4, 5, 7],
+      "logits_indices": [0, 1, 2, 3, 4, 5, 6],
+      "target_logits_indices": [0, 1, 2, 5],
+      "bonus_logits_indices": [3, 4, 6],
+      "output_token_ids": [[1, 0, -1, -1], [3, -1, -1, -1], [4, 1, -1, -1]],
+      "dtype": "int32（索引全部 GPU int32；draft_token_ids 亦为 int32）"
+    },
+    "metadata_upstream_docstring_example": {
+      "cu_num_scheduled_tokens": [4, 104, 107, 207, 209],
+      "num_draft_tokens": [3, 0, 2, 0, 1],
+      "cu_num_draft_tokens": [3, 3, 5, 5, 6],
+      "cu_num_sampled_tokens": [4, 5, 8, 9, 11],
+      "logits_indices": [0, 1, 2, 3, 103, 104, 105, 106, 206, 207, 208],
+      "target_logits_indices": [0, 1, 2, 5, 6, 9],
+      "bonus_logits_indices": [3, 4, 7, 8, 10],
+      "草稿 token": [10, 11, 12, 20, 21, 30],
+      "note": "由 Runner._calc_spec_decode_metadata 实跑得到（tests/step59/test_metadata.py 与 benchmarks/check_step57_spec_metadata.py 都对着这组数）"
+    },
+    "distribution": {
+      "case_1": {
+        "p": [0.2, 0.3, 0.5],
+        "q": [0.6, 0.3, 0.1],
+        "samples": 20000,
+        "threshold": 0.02,
+        "解析输出分布": [0.2, 0.3, 0.5],
+        "实测频率": [0.1978, 0.3048, 0.4974]
+      },
+      "case_2": {
+        "p": [0.3, 0.3, 0.4],
+        "q": [0.6, 0.1, 0.3],
+        "samples": 30000,
+        "threshold": 0.015,
+        "解析恢复分布": [0.0, 0.6666666666666666, 0.3333333333333333],
+        "实测频率": [0.0, 0.6665, 0.3335]
+      }
+    },
+    "differential_vs_upstream": {
+      "greedy": "A/B/C（drafts=[[1,2,3],[],[4]]）逐值一致：[[1,0,-1,-1],[3,-1,-1,-1],[4,1,-1,-1]]",
+      "random_same_seed": "torch.manual_seed(11) 后两边各调一次，逐值一致：[[1,1,-1,-1],[1,-1,-1,-1],[4,0,-1,-1]]",
+      "random_injected": "注入 uniforms=[0.2,0.7,0.5,0.9]、recoveries=[3,1,0,2] 后 我们的内核 == 上游内核 == Torch 参考",
+      "expand_batch_to_tokens": "我们的 expand_kernel 与上游同名函数逐值一致（含 replace_from=0/replace_to=1）"
+    },
+    "end_to_end": {
+      "tiny_draft_model_greedy": {
+        "non_spec": {"A": [7, 1, 1, 1, 1, 1, 1, 1], "B": [7, 2, 4, 4, 4, 4, 4, 4]},
+        "spec_k3": {"A": [7, 1, 1, 1, 1, 1, 1, 1], "B": [7, 2, 4, 4, 4, 4, 4, 4]},
+        "一致": true
+      },
+      "tiny_ngram_greedy": {
+        "prompt": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        "spec_k3_==_non_spec": true,
+        "统计": "轮数=3、验证=3、接受=3"
+      },
+      "stats_draft_model": {
+        "轮数": 4,
+        "验证候选": 12,
+        "接受": 12,
+        "位置接受率": ["4/4", "4/4", "4/4"],
+        "note": "draft 与 target 是同一个 tiny 模型 → 贪心时草稿必被接受，这正是“全接受”路径"
+      }
+    }
+  },
+  "not_run": [
+    {
+      "item": "真实模型（models/Qwen3-1.7B 等）上的投机验证",
+      "reason": "本关交付的是采样器与元数据；真实权重集成在 84 关前的性能/集成关，见 docs/step59_models.json 的 not_run"
+    },
+    {
+      "item": "benchmarks/compare_step57_vllm.py",
+      "reason": "在基线提交 34b4122 上同样失败（vLLM 用 spawn 启 EngineCore，脚本无 __main__ 守卫会被子进程重跑）；本关只更新了它调用拒绝采样的签名，未改其结构"
+    },
+    {
+      "item": "synthetic / V2 block 验证",
+      "reason": "需求 059 §5 明确留给 75 关；本关遇到这些配置直接报错"
+    }
+  ]
+}
