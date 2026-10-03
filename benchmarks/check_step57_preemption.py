@@ -24,10 +24,10 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, RequestStatus,
+from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, RequestStatus,
                     SamplingParams, SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
-from step57.core.kv_cache_utils import init_none_hash
-from step57.testing.fake_runner import FakeRunner
+from minivllm.core.kv_cache_utils import init_none_hash
+from minivllm.testing.fake_runner import FakeRunner
 
 FAIL = []
 TINY_DIR = "fixtures/step30_qwen3/tiny_gqa"

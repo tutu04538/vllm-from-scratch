@@ -17,10 +17,10 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57 import (CacheConfig, FinishReason, ModelConfig, Request, RequestStatus,
+from minivllm import (CacheConfig, FinishReason, ModelConfig, Request, RequestStatus,
                     SamplingParams, SchedulerConfig, VllmConfig)
-from step57.core.kv_cache_manager import KVCacheManager
-from step57.core.sched.scheduler import Scheduler
+from minivllm.core.kv_cache_manager import KVCacheManager
+from minivllm.core.sched.scheduler import Scheduler
 
 FAIL = []
 
@@ -50,7 +50,7 @@ def add(scheduler, request_id, prompt_len, **sampling):
 
 def model_output(scheduler_output, tokens_by_req=None):
     """按包里的请求顺序造一份 ModelRunnerOutput（不经过 FakeRunner，专测调度器自己的账）。"""
-    from step57.outputs import ModelRunnerOutput
+    from minivllm.outputs import ModelRunnerOutput
 
     tokens_by_req = tokens_by_req or {}
     req_ids = list(scheduler_output.num_scheduled_tokens)

@@ -17,9 +17,9 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57.sample import Sampler, SamplingMetadata
-from step57.spec_decode.metadata import SpecDecodeMetadata
-from step57.spec_decode.rejection_sampler import RejectionSampler
+from minivllm.sample import Sampler, SamplingMetadata
+from minivllm.spec_decode.metadata import SpecDecodeMetadata
+from minivllm.spec_decode.rejection_sampler import RejectionSampler
 
 FAIL = []
 V = 5

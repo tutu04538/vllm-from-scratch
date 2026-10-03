@@ -13,10 +13,10 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57 import (EngineCoreRequest, FinishReason, Request, RequestStatus, SamplingParams)
-from step57.core.sched.request_queue import (FCFSRequestQueue, PriorityRequestQueue,
+from minivllm import (EngineCoreRequest, FinishReason, Request, RequestStatus, SamplingParams)
+from minivllm.core.sched.request_queue import (FCFSRequestQueue, PriorityRequestQueue,
                                              create_request_queue)
-from step57.core.sched.utils import check_stop
+from minivllm.core.sched.utils import check_stop
 
 FAIL = []
 

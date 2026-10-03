@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
+from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                     SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 
 TINY = "fixtures/step30_qwen3/tiny_gqa"

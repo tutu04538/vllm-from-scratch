@@ -1,8 +1,15 @@
 # docs —— 改动记录
 
-每次改动一个文件：`docs/stepNN_<主题>.md`，与代码同名对应。
+每次改动一个文件：`docs/stepNN_<主题>.md`（沿用历史命名；这里的 `stepNN` 只表示"第几批工作"，
+目录不再是代码目录名）。
 
-代码放在各自的子目录下：`stepNN/stepNN.py`（第 17 关的重构版是 `step17/step17_refactor.py`）。
+**代码位置（2026-10-03 起）**：唯一实现包是 `minivllm/`（原 `step57/`）。`step01`–`step56` 的代码目录
+已删除，所以旧记录里出现的 `stepNN/...` 路径是**历史路径**，只在 git 历史里能检出；文档本身原样保留。
+
+包名不叫 `vllm` 是刻意的：`benchmarks/` 的对照脚本要在同一进程里 `import vllm`（真 vLLM），同名会遮蔽。
+
+顺带一条：**验收记录里按旧路径写的脚本**（`from step57 import ...`）需要改一行才能再跑，例如
+`sed 's/from step57/from minivllm/g' 脚本.py > /tmp/probe.py`；仓库不再为旧路径保留 alias。
 
 每篇记录固定写这几节：
 

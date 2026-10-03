@@ -29,14 +29,14 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57.attention import AttentionMetadataBuilder, set_forward_context
-from step57.config import CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig, VllmConfig
-from step57.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
-from step57.model_loader import get_model, iter_weights
-from step57.models import Qwen3ForCausalLM
-from step57.request import Request
-from step57.sampling_params import SamplingParams
-from step57.worker import GPUModelRunner
+from minivllm.attention import AttentionMetadataBuilder, set_forward_context
+from minivllm.config import CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig, VllmConfig
+from minivllm.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
+from minivllm.model_loader import get_model, iter_weights
+from minivllm.models import Qwen3ForCausalLM
+from minivllm.request import Request
+from minivllm.sampling_params import SamplingParams
+from minivllm.worker import GPUModelRunner
 
 FAIL = []
 TINY_DIR = "fixtures/step30_qwen3/tiny_gqa"

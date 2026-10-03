@@ -19,9 +19,9 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57 import (CacheConfig, DeviceConfig, FinishReason, LLMEngine, ModelConfig,
+from minivllm import (CacheConfig, DeviceConfig, FinishReason, LLMEngine, ModelConfig,
                     SamplingParams, SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
-from step57.testing.fake_runner import FakeRunner
+from minivllm.testing.fake_runner import FakeRunner
 
 FAIL = []
 TINY_DIR = "fixtures/step30_qwen3/tiny_gqa"

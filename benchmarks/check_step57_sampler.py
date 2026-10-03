@@ -20,12 +20,12 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57.config import CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig, VllmConfig
-from step57.request import Request
-from step57.sample import SAMPLING_EPS, Sampler, SamplingMetadata, apply_all_penalties
-from step57.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
-from step57.sampling_params import SamplingParams
-from step57.worker import CachedRequestState, GPUModelRunner, InputBatch
+from minivllm.config import CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig, VllmConfig
+from minivllm.request import Request
+from minivllm.sample import SAMPLING_EPS, Sampler, SamplingMetadata, apply_all_penalties
+from minivllm.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
+from minivllm.sampling_params import SamplingParams
+from minivllm.worker import CachedRequestState, GPUModelRunner, InputBatch
 
 FAIL = []
 
@@ -262,7 +262,7 @@ for index in range(3):
         f"r{index}", [1, 2, 3, 4], SamplingParams(temperature=1.0, seed=index + 1), None,
         [[index]], num_computed_tokens=0)
     state.generator = input_batch  # 占位：真正的 generator 由 Runner 建，这里手工塞
-    from step57.worker import GPUModelRunner as _R  # noqa: F401
+    from minivllm.worker import GPUModelRunner as _R  # noqa: F401
     generator = torch.Generator()
     generator.manual_seed(index + 1)
     state.generator = generator

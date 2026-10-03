@@ -1,5 +1,0 @@
-"""**只给测试用**的替身（FakeRunner）与共享断言。
-
-生产路径（`step57/engine`、`step57/executor`、`step57/worker`）**不 import 这个包**：
-"没有真模型就退回假执行"是被明确禁止的，替身只能由测试显式注入。
-"""

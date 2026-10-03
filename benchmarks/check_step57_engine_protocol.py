@@ -16,9 +16,9 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57 import (CacheConfig, FinishReason, LLMEngine, ModelConfig, SchedulerConfig,
+from minivllm import (CacheConfig, FinishReason, LLMEngine, ModelConfig, SchedulerConfig,
                     SamplingParams, UniProcExecutor, VllmConfig, Worker)
-from step57.testing.fake_runner import FakeRunner
+from minivllm.testing.fake_runner import FakeRunner
 
 FAIL = []
 

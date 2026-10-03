@@ -24,13 +24,13 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
+from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                     SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
-from step57.core.kv_cache_manager import KVCacheManager
-from step57.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
-from step57.core.sched.scheduler import Scheduler
-from step57.request import Request
-from step57.worker import CachedRequestState, GPUModelRunner
+from minivllm.core.kv_cache_manager import KVCacheManager
+from minivllm.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
+from minivllm.core.sched.scheduler import Scheduler
+from minivllm.request import Request
+from minivllm.worker import CachedRequestState, GPUModelRunner
 
 FAIL = []
 MODEL_DIR = "fixtures/step30_qwen3/tiny_gqa"

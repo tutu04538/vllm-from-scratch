@@ -1,5 +1,8 @@
 # step57：投机收尾——逻辑上限、请求生命周期、失败态
 
+> 代码位置说明（2026-10-03）：这一版之后实现包从 `step57/` 改名为 `minivllm/`（`stepNN/` 目录已删）。
+> 本文里的 `step57/...` 路径按当时的仓库状态写，等价于今天的 `minivllm/...`。
+
 - 对应代码：`step57/spec_decode/{draft_model.py,ngram_proposer.py}`、
   `step57/worker/gpu_model_runner.py`、`step57/core/sched/scheduler.py`、
   `step57/engine/core.py`、`step57/model_loader/base_loader.py`

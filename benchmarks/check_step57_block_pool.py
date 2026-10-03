@@ -16,8 +16,8 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57.core.block_pool import BlockPool
-from step57.core.kv_cache_utils import (BlockHashToBlockMap, FreeKVCacheBlockQueue,
+from minivllm.core.block_pool import BlockPool
+from minivllm.core.kv_cache_utils import (BlockHashToBlockMap, FreeKVCacheBlockQueue,
                                         KVCacheBlock, get_block_hash, hash_block_tokens)
 
 FAIL = []

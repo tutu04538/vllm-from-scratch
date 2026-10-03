@@ -27,12 +27,12 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, Request, SamplingParams,
+from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, Request, SamplingParams,
                     SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
-from step57.core.kv_cache_manager import KVCacheManager
-from step57.core.kv_cache_utils import BlockHasher, init_none_hash
-from step57.testing.fake_runner import FakeRunner
-from step57.worker.block_table import BlockTable
+from minivllm.core.kv_cache_manager import KVCacheManager
+from minivllm.core.kv_cache_utils import BlockHasher, init_none_hash
+from minivllm.testing.fake_runner import FakeRunner
+from minivllm.worker.block_table import BlockTable
 
 FAIL = []
 init_none_hash("check_step57_prefix_cache")

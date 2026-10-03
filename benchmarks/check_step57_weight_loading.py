@@ -24,11 +24,11 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 import torch
 from safetensors.torch import save_file
 
-from step57.config import ModelConfig
-from step57.model_loader import (AutoWeightsLoader, DefaultModelLoader, WeightsMapper,
+from minivllm.config import ModelConfig
+from minivllm.model_loader import (AutoWeightsLoader, DefaultModelLoader, WeightsMapper,
                                  get_model, get_model_loader, iter_weights)
-from step57.model_loader.weight_utils import _check_grouping
-from step57.models import Qwen3ForCausalLM
+from minivllm.model_loader.weight_utils import _check_grouping
+from minivllm.models import Qwen3ForCausalLM
 
 FAIL = []
 TINY_DIR = "fixtures/step30_qwen3/tiny_gqa"

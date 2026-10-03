@@ -61,11 +61,11 @@ def our_logits_by_position(token_ids, chunks=None, model_dir=TINY, hf_config=Non
     与 `check_step57_model_logits.py` 同一套驱动方式（只喂协议包）。
     """
     hf_config = hf_config or TINY_CONFIG
-    from step57.config import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,
+    from minivllm.config import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,
                                VllmConfig)
-    from step57.core.sched.output import (CachedRequestData, NewRequestData, SchedulerOutput)
-    from step57.sampling_params import SamplingParams
-    from step57.worker.gpu_model_runner import GPUModelRunner
+    from minivllm.core.sched.output import (CachedRequestData, NewRequestData, SchedulerOutput)
+    from minivllm.sampling_params import SamplingParams
+    from minivllm.worker.gpu_model_runner import GPUModelRunner
 
     config = VllmConfig(
         model_config=ModelConfig(model=model_dir, dtype=dtype, max_model_len=max_model_len,
@@ -211,7 +211,7 @@ def _rejection_case():
     vocab = 6
     drafts = {"r0": [0, 0], "r1": [0]}
     scheduled = {"r0": 3, "r1": 2}
-    from step57.spec_decode.metadata import SpecDecodeMetadata
+    from minivllm.spec_decode.metadata import SpecDecodeMetadata
 
     meta = SpecDecodeMetadata.from_scheduled(drafts, scheduled, ["r0", "r1"])
     draft_probs = torch.zeros(3, vocab)
@@ -278,9 +278,9 @@ def vllm_rejection_statistics(draws=600):
 
 
 def our_rejection_statistics(draws=600):
-    from step57.sample import Sampler
-    from step57.sample import SamplingMetadata as OurMetadata
-    from step57.spec_decode.rejection_sampler import RejectionSampler
+    from minivllm.sample import Sampler
+    from minivllm.sample import SamplingMetadata as OurMetadata
+    from minivllm.spec_decode.rejection_sampler import RejectionSampler
 
     meta, draft_probs, target_rows, bonus_rows = _rejection_case()
     # 摆成**紧凑 [P+B, V]**：用 metadata 自己的索引，不手摆
@@ -339,7 +339,7 @@ if "--phase" in sys.argv:
 
     from transformers import AutoTokenizer
 
-    from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
+    from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                         SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
 
     real_config = json.load(open(f"{REAL}/config.json"))

@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
-from step57.spec_decode.metadata import SpecDecodeMetadata
+from minivllm.spec_decode.metadata import SpecDecodeMetadata
 
 FAIL = []
 

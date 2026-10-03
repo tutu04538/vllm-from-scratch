@@ -19,7 +19,7 @@ sys.path.insert(0, "/home/user/proj/vllm-from-scratch")
 
 import torch
 
-from step57 import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
+from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                     SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 
 FAIL = []
