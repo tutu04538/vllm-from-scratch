@@ -4,9 +4,9 @@
   "status": "implemented + self-verified (待独立验收)",
   "recorded_at": "2026-10-03T05:47:33+00:00",
   "git": {
-    "commit": "907b00e1d3a2da3569df6032508eb9edadf056fa",
-    "note": "结果记录于实现提交之前；代码改动见同一提交",
-    "worktree_dirty": true
+    "implementation_commit": "7e2a18229db0b40f122ebee15c20e05ce9593083",
+    "baseline_commit_at_record_time": "907b00e1d3a2da3569df6032508eb9edadf056fa",
+    "note": "environment/命令/轨迹 记录于实现提交之前（baseline 907b00e，工作区含本关改动）；代码与文档在同一提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算"
   },
   "package": {
     "root": "minivllm/",
