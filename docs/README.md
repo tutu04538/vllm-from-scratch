@@ -67,3 +67,4 @@
 | [step57_architecture.md](step57_architecture.md) | `step57/`（对照关，无代码改动） | 回到真实源码：分层与状态归属、一条覆盖五种事件的状态轨迹、194 §8 的七问×五事件、与真实 vLLM 的数学对照（logits 2.4e-7 / 端到端 fp32 逐 token 一致） |
 | [step57_alignment.md](step57_alignment.md) | `step57/`（对照关，无代码改动） | 57 关的差异账本汇总：按 vLLM 模块归类、每项九段（本机做法/本项目做法/为何简化/影响/对应测试/何时消除） |
 | [step57_acceptance_fixes.md](step57_acceptance_fixes.md) | `step57/`（验收修复） | 独立探针抓到的 6 个问题：KV 上的 autograd 图（显存随步数涨）、提议者越界写 lookahead 槽位、CUDA 设备、提议与记账顺序、混批 ragged K 的展开、seed 被全局 RNG 污染；逐条按 vLLM 修 + 补回归用例 |
+| [step57_draft_lockstep.md](step57_draft_lockstep.md) | `step57/`（验收修复·续） | 204 §6.2 的第二个选项换成第一个：drafter 每轮与 target 跑同一段位置（中间 prefill 块只同步 KV、不提草稿），于是**撤销**发布边界的 `min(target, draft)` 夹取，回到与 vLLM 相同的"只按 target 发布"；不变量改由用例盯着（发布边界 ≤ draft 进度，且发布位置上的 draft KV 非零） |

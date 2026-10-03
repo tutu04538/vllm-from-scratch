@@ -218,18 +218,32 @@
 ## 5. 采样与投机
 
 ```text
-主题：**发布边界多夹一层 draft 进度**（vLLM 只按 target 发布）
-本机路径 / 类 / 方法：v1/core/sched/scheduler.py::update_from_output、
-                       v1/core/single_type_kv_cache_manager.py::cache_blocks
-本机做法：按 target 的 `num_computed_tokens` 发布完整块（drafter 自己负责补齐它的那一份）
-本项目做法：发布前把边界夹到 `min(target 进度, draft 进度)`——执行侧在 `ModelRunnerOutput` 里
-            回报每条请求的 `draft_computed_tokens`（vLLM 没有这个字段）
-为何简化：不这么做的话，chunked prefill 或"draft 还没追上来"时会把只有 target 算过的块登记成
-          可复用（199 §9 明确不允许：**"不能把只有 target 算过的块作为双模型命中"**）
-影响：命中机会略微减少（发布被推迟到 draft 追上来）；正确性更强（不会命中缺 draft KV 的块）
-对应测试：check_step57_draft_model.py §6（chunked prefill 下 cached_blocks 恒为 0、
-          追上来之后照常发布、prefix 开/关对照、恢复后 draft 进度不落后）
-以后何时消除：如果以后 drafter 能在发布前保证补齐（或 group 拆分成独立池），可以去掉这一层夹取
+主题：**发布边界不夹 draft 进度**（与 vLLM 相同；上一版夹过，2026-10-03 撤销）
+本机路径 / 类 / 方法：v1/core/kv_cache_manager.py::allocate_slots（`num_tokens_to_cache =
+                       min(total_computed_tokens + num_new_tokens, request.num_tokens)`）、
+                       v1/core/sched/scheduler.py::update_from_output / update_draft_token_ids、
+                       v1/spec_decode/llm_base_proposer.py::set_inputs_first_pass
+本机做法：drafter 与 target **每步跑同一段位置**——中间 prefill 块也跑（注释原话："The prefill
+          forward pass above already ran to keep the drafter KV cache in sync"），产出的草稿由
+          `update_draft_token_ids` 丢掉（"Ignore draft tokens for prefill chunks"）。发布只按
+          target 的 `num_computed_tokens` 截断，不改上下限
+本项目做法：**同一条规则**：执行端对每个被调度的请求都同步 draft 的 KV（中间 prefill 块也同步），
+            发布处不夹边界。区别只在"草稿提不提"：本关在提议阶段就不给非 ready 行提，
+            vLLM 提完再丢
+为何上一版要夹（为什么那是错的）：本关原来把"prefill 块忽略草稿"实现成"干脆不跑提议者"，
+            draft 的进度因此停在 0，而 target 这一轮就会发布完整块 → 会把只有 target 算过的块
+            登记成可复用（199 §9 明确不允许：**"不能把只有 target 算过的块作为双模型命中"**）。
+            当时的修法是在控制端夹 `min(target, draft)`；把执行端改成"同步"之后，按 199 §9 的
+            第一个选项做，就不需要这层对账了
+影响：命中机会与 vLLM 相同（中间 prefill 块的完整块也能发布，上一版会推迟到 draft 追平）；
+      正确性由"两边同步"保证，而不是控制端兜底，所以必须有用例盯着
+对应测试：check_step57_draft_model.py §6（中间 prefill 轮次 draft 进度 == target 进度、
+          发布边界 ≤ draft 进度、**发布位置上的 draft KV 确实非零**、prefix 开/关对照、
+          恢复后 draft 进度不落后）、验收探针 review_draft_boundaries.py（6/6，其中一条直接读
+          `_draft_computed` 与 `request.num_computed_tokens`）
+以后何时再动：只同步不提草稿，比 vLLM 少跑 K 次前向。vLLM 在 prefill 块会跑出一个
+            "prefill lookahead token"，它的 KV 会污染该块（vLLM 靠 `num_reprefillable_tokens`
+            排除 + EAGLE/MTP 命中时丢最后一块来兜）；本关不提就不写，所以没有这两处机制
 ```
 
 ```text

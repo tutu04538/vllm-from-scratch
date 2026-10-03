@@ -144,6 +144,11 @@ position 7 的 draft KV = 全零              该块 block_hash = 已登记   �
 **它是"延迟发布"而不是"漏发"**：draft 落后时那个块只是晚一点登记，draft 追上来之后照常发布
 （用例里能看到 `draft=0` 的几轮 `cached_blocks=0`，追上来之后变成 2）。
 
+**后续（2026-10-03，见 [step57_draft_lockstep.md](step57_draft_lockstep.md)）**：这一节的修法
+（控制端夹 `min(target, draft)`）已被**撤销**，改成 199 §9 给的另一条路——执行端让 drafter 每轮
+与 target 跑同一段位置（中间 prefill 块也同步 KV），于是窗口根本不存在，发布回到只按 target 进度
+（与 vLLM 相同）。上面那句"漏发/延迟发布"的区别、以及 `draft_computed_tokens` 这个字段都不再存在。
+
 ## 2. 验证
 
 | 探针 / 脚本 | 修复前 | 修复后 |

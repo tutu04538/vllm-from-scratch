@@ -27,29 +27,26 @@ class NgramProposer:
         self.max_ngram = max_ngram
 
     def propose(self, req_ids: list[str], all_token_ids: dict[str, list[int]],
-                num_tokens_no_spec: dict[str, int], input_batch=None,
+                num_computed_tokens: dict[str, int], input_batch=None,
+                ready_req_ids: set[str] | None = None,
                 reset_req_ids: set[str] | None = None) -> DraftTokenIds:
-        """给每条请求提最多 `num_speculative_tokens` 枚草稿。
+        """给每条**ready** 请求提最多 `num_speculative_tokens` 枚草稿。
 
-        `num_tokens_no_spec` 是"已提交到哪"——**匹配只看已提交的历史**，不看上一轮留下的草稿区
-        （那部分可能刚被覆盖，掺进来会让提议依赖上一轮的运气）。
+        `num_computed_tokens` 是"target 本轮之后算到哪"——**匹配只看这段历史**，不看上一轮
+        留下的草稿区（那部分可能刚被覆盖，掺进来会让提议依赖上一轮的运气）。中间 prefill
+        块拿到的边界只是"target 本轮算完的位置"，而且它们本来就不提（见下）。
 
-        `input_batch` / `reset_req_ids` 是**与 draft_model 提议器统一的接口**：ngram 只看 token
-        历史，用不到块表，也不需要重置自己的进度（它没有进度）。Runner 因此只写一条调用。
+        `ready_req_ids` 是**与 draft_model 提议器统一的接口**：ngram 不写 KV，没有"同步"这
+        件事，所以只对 ready 的请求提；其余请求原样返回空列表。中间 prefill 块的草稿没有可
+        验证的 next token，Scheduler 也会丢掉（vLLM 的 `update_draft_token_ids` 同款规则）。
+        `input_batch` / `reset_req_ids` 同理用不到（ngram 没有块表，也没有自己的进度）。
         """
+        ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
         draft_token_ids: list[list[int]] = []
         for req_id in req_ids:
-            tokens = all_token_ids[req_id][:num_tokens_no_spec[req_id]]
-            draft_token_ids.append(self._propose_one(tokens))
+            tokens = all_token_ids[req_id][:num_computed_tokens[req_id]]
+            draft_token_ids.append(self._propose_one(tokens) if req_id in ready else [])
         return DraftTokenIds(req_ids=list(req_ids), draft_token_ids=draft_token_ids)
-
-    def draft_computed(self, req_id: str) -> int:
-        """ngram **不写 KV**（它没有第二个模型），所以不构成"发布边界"的约束。
-
-        接口与 draft_model 提议器保持一致，返回一个"不夹"的哨兵值：控制端只在
-        `min(target 进度, 这个值)` 上做夹取，返回一个很大的数就等于不夹。
-        """
-        return 1 << 30
 
     def _propose_one(self, tokens: list[int]) -> list[int]:
         for ngram_size in range(min(self.max_ngram, len(tokens)), 0, -1):

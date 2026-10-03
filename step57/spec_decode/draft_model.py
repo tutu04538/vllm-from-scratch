@@ -65,7 +65,9 @@ class SpecDecodeBaseProposer:
         self.metadata_builder = AttentionMetadataBuilder(self.block_size)
         self.sampler = Sampler()
         # draft 模型自己的进度（"它的 KV 已经算到哪"）。与 target 的进度**分开维护**：
-        # 恢复/新请求要重置，否则会拿旧物理编号上的 KV 当历史（199 §5）
+        # 恢复/新请求要重置，否则会拿旧物理编号上的 KV 当历史（199 §5）。
+        # 它正常每轮都追平 target（中间 prefill 块也同步），所以不需要谁去夹发布边界——
+        # 但要有一条用例盯着它（check_step57_draft_model.py §6）
         self._draft_computed: dict[str, int] = {}
         self._draft_generators: dict[str, torch.Generator] = {}
         self.num_drafts_proposed = 0
@@ -78,32 +80,49 @@ class SpecDecodeBaseProposer:
     # -------- 提议 --------
 
     def propose(self, req_ids: list[str], all_token_ids: dict[str, list[int]],
-                num_tokens_no_spec: dict[str, int], input_batch,
+                num_computed_tokens: dict[str, int], input_batch,
+                ready_req_ids: set[str] | None = None,
                 reset_req_ids: set[str] | None = None) -> DraftTokenIds:
-        """给每条请求提最多 `num_speculative_tokens` 枚草稿。
+        """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
+
+        `num_computed_tokens[req_id]` 是"target 本轮之后算到哪"——draft 的 KV 必须覆盖到
+        这个位置（通过第一遍前向补齐）。**中间 prefill 块也要同步**：同一个逻辑块在
+        target/draft 的每一层都有各自的 tensor，draft 没写过的那一层会让这个块不能算
+        "完整可复用"，而 target 的完整块这一轮就会发布出去（199 §9）。vLLM 的做法就是这样
+        ——drafter 与 target 每步跑同一段位置，草案在同一轮里天然同步。
+
+        草稿本身只给 `ready_req_ids` 里的请求提（None = 全提）：中间 prefill 块没有可验证的
+        next token，提了 Scheduler 也会丢（vLLM 的 `update_draft_token_ids` 同款规则），
+        这里更早一步不提，省掉 K 次前向。
 
         `input_batch` 是 target 的批状态：草稿要读**共享的块表**（同一套 slot 编号）与
         每条请求的采样参数。draft 的 KV 写在自己的 tensor 上，但位置与槽位由这里决定。
         """
 
         self._drop_stale(req_ids, reset_req_ids or set())
+        ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
         drafts: dict[str, list[int]] = {req_id: [] for req_id in req_ids}
         probs: dict[str, list[torch.Tensor]] = {req_id: [] for req_id in req_ids}
 
-        # ---- 第一遍：把"上一轮新提交的那段"补进 draft 的 KV ----
+        # ---- 第一遍：把"target 算完、draft 还没算"的那段补进 draft 的 KV ----
         rows: list[tuple[str, int]] = []
         for req_id in req_ids:
-            committed = num_tokens_no_spec[req_id]
-            start = min(self._draft_computed.get(req_id, 0), committed)
-            rows.extend((req_id, position) for position in range(start, committed))
+            boundary = num_computed_tokens[req_id]
+            start = min(self._draft_computed.get(req_id, 0), boundary)
+            rows.extend((req_id, position) for position in range(start, boundary))
         if rows:
             hidden = self._forward(rows, all_token_ids, input_batch)
+            # 进度对**所有**请求推进（包括中间 prefill 块）：它们这一轮的 KV 也写了
+            for req_id, _ in rows:
+                self._draft_computed[req_id] = num_computed_tokens[req_id]
+            # 但只有 ready 的行才取第一枚草稿：其余行的草稿不会被采用（行是同请求连续的，
+            # 所以"最后一行"就是该请求同步到的那一行）
             last_row: dict[str, int] = {}
             for index, (req_id, _) in enumerate(rows):
-                last_row[req_id] = index
-            self._sample(hidden, list(last_row.items()), input_batch, drafts, probs)
-            for req_id in last_row:
-                self._draft_computed[req_id] = num_tokens_no_spec[req_id]
+                if req_id in ready:
+                    last_row[req_id] = index
+            if last_row:
+                self._sample(hidden, list(last_row.items()), input_batch, drafts, probs)
 
         # ---- 自回归补足 K 枚：上一枚当输入，位置接在它后面 ----
         #
@@ -116,16 +135,16 @@ class SpecDecodeBaseProposer:
             for req_id in req_ids:
                 if not 0 < len(drafts[req_id]) < self.num_speculative_tokens:
                     continue
-                position = num_tokens_no_spec[req_id] + len(drafts[req_id]) - 1
+                position = num_computed_tokens[req_id] + len(drafts[req_id]) - 1
                 row = input_batch.req_id_to_index[req_id]
                 if not input_batch.block_table.covers(row, position):
                     continue
                 pending.append(req_id)
             if not pending:
                 break
-            rows = [(req_id, num_tokens_no_spec[req_id] + len(drafts[req_id]) - 1)
+            rows = [(req_id, num_computed_tokens[req_id] + len(drafts[req_id]) - 1)
                     for req_id in pending]
-            tokens = {req_id: list(all_token_ids[req_id][:num_tokens_no_spec[req_id]])
+            tokens = {req_id: list(all_token_ids[req_id][:num_computed_tokens[req_id]])
                       + drafts[req_id] for req_id in pending}
             hidden = self._forward(rows, tokens, input_batch)
             self._sample(hidden, [(req_id, index) for index, (req_id, _) in enumerate(rows)],
@@ -137,16 +156,6 @@ class SpecDecodeBaseProposer:
             req_ids=list(req_ids),
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
-
-    def draft_computed(self, req_id: str) -> int:
-        """draft 侧**已经算过 KV 的位置数**（0 = 还没算过）。
-
-        它决定"这条请求的块能不能发布进前缀缓存"：同一个逻辑块在 target/draft 的每一层都有
-        各自的 tensor，**只要有一层没写完，这个 group 的块就不能声明完整可复用**
-        （199 §9；验收报告 204 §6.2）。所以发布边界取 `min(target 进度, 这个值)`——
-        它落后时只是**延迟发布**，不会漏掉（draft 追上来之后照常发布）。
-        """
-        return self._draft_computed.get(req_id, 0)
 
     def _drop_stale(self, req_ids: list[str], reset_req_ids: set[str]) -> None:
         """丢掉不再成立的 draft 侧进度：请求结束、或它刚被恢复（块表整表换过）。

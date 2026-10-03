@@ -534,11 +534,7 @@ class GPUModelRunner:
         # 否则草稿是基于"少一个 token 的历史"算出来的，draft 侧的进度也会比 target 落后一格，
         # 于是发布出去的完整块可能还没被 draft 算过（验收方的独立探针分别抓到了这两点）
         output = self._bookkeeping_sync(state, sampled)
-        # 只对**本轮已 ready**（历史算完）的请求提草稿：中间 prefill 块既没有"next token"，
-        # 它的 KV 槽位也还没分配完（草稿要写在 target query 之外）。
-        # vLLM 在 Scheduler.update_draft_token_ids 里同样跳过 prefill 块
-        # （"Ignore draft tokens for prefill chunks"）——这里更早一步就不提。
-        self.pending_draft_token_ids = self._propose_draft_tokens(ready_rows=state.sample_rows)
+        self.pending_draft_token_ids = self._propose_draft_tokens(state)
         return output
 
     # -------- 投机（57E）--------
@@ -566,29 +562,42 @@ class GPUModelRunner:
                 [token for token in rows[index] if token != -1] if row in ready else [])
         return [sampled_by_row[row] for row in state.sample_rows]
 
-    def _propose_draft_tokens(self, ready_rows=None):
+    def _propose_draft_tokens(self, state):
         """按配置提**下一轮**的草稿（199 §4：轮 t 验证时顺手提，轮 t+1 才采用）。
 
         提议的输入只看**已提交历史**（不看本轮自己的草稿区）；返回的草稿与概率只留到
         下一轮的 `sample_tokens`，届时按实际采用的条数重排 q。
-        `ready_rows` 非空时只给这些行提（中间 prefill 块不提）。
+
+        **每个被调度的请求都要过一遍提议者，包括中间 prefill 块**：它们这一轮也要把 draft 的
+        KV 同步到 target 算完的位置。不同步的话，target 这一轮发布的完整块会带着一层没写过的
+        draft KV——同一个逻辑块在两边各层都有 tensor，缺一层就不算"完整可复用"（199 §9）。
+        vLLM 就是这样：drafter 与 target 每步跑同一段位置，草案天然同步。
+
+        草稿本身只给 **ready 行**提：中间 prefill 块没有可验证的 next token，提了也会被
+        Scheduler 丢掉（vLLM 的 `update_draft_token_ids` 同款规则），这里更早一步不提。
         """
         if self.proposer is None:
             return None
-        if ready_rows is None:
-            req_ids = list(self.input_batch.req_ids)
-        else:
-            req_ids = [self.input_batch.req_id_at(row) for row in ready_rows]
-            if not req_ids:
-                return None
+        req_ids = list(self.input_batch.req_ids)
+        if not req_ids:
+            return None
+        ready_req_ids = {self.input_batch.req_id_at(row) for row in state.sample_rows}
         all_token_ids = {req_id: self.requests[req_id].all_token_ids for req_id in req_ids}
-        num_tokens_no_spec = {}
+        num_computed_tokens = {}
         for req_id in req_ids:
             row = self.input_batch.req_id_to_index[req_id]
-            num_tokens_no_spec[req_id] = self.input_batch.num_tokens(row)
+            if req_id in ready_req_ids:
+                # 记账已经做完：**已提交历史**就是 target 本轮之后的有效边界
+                num_computed_tokens[req_id] = self.input_batch.num_tokens(row)
+            else:
+                # 中间 prefill 块：只同步到 target 本轮**算完**的位置（已提交历史里那些还没算的
+                # 位置，KV 槽位也还没分配，同步过去就是越界写）
+                num_computed_tokens[req_id] = (
+                    int(self.input_batch.num_computed_tokens_cpu[row])
+                    + int(state.scheduler_output.num_scheduled_tokens[req_id]))
         # 恢复过的请求：它的块表整表换过，draft 侧的历史进度不再成立 → 重置
-        drafts = self.proposer.propose(req_ids, all_token_ids, num_tokens_no_spec,
-                                       self.input_batch,
+        drafts = self.proposer.propose(req_ids, all_token_ids, num_computed_tokens,
+                                       self.input_batch, ready_req_ids=ready_req_ids,
                                        reset_req_ids=set(self._resumed_req_ids))
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
@@ -659,10 +668,6 @@ class GPUModelRunner:
             req_ids=req_ids,
             req_id_to_index={req_id: index for index, req_id in enumerate(req_ids)},
             sampled_token_ids=[sampled_by_req.get(req_id, []) for req_id in req_ids],
-            draft_computed_tokens=(
-                {req_id: self.proposer.draft_computed(req_id)
-                 for req_id in self.input_batch.req_ids}
-                if self.proposer is not None else None),
         )
 
     def _commit_tokens_to_mirror(self, req_id: str, row: int, token_ids: list[int]) -> None:

@@ -203,8 +203,14 @@ try:
         engine.shutdown()
 
     error, engine = one_step([1, 2, 3, 4, 5, 6], k=1, budget=2)
-    check("6. 中间 prefill 块不提草稿（它的 KV 槽位还没分配完；vLLM 同样跳过 prefill 块）",
-          error is None, error or "正常")
+    synced = None
+    if engine is not None:
+        runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+        synced = (runner.proposer._draft_computed.get("r", 0),
+                  runner.proposer.num_drafts_proposed)
+    check("6. 中间 prefill 块：不提草稿（没有可验证的 next token），但 draft 的 KV 照常同步"
+          "（提了 Scheduler 也会丢，vLLM 的 update_draft_token_ids 同款规则）",
+          error is None and synced == (2, 0), error or f"（draft 进度, 累计提议数）={synced}")
     if engine is not None:
         engine.shutdown()
 
@@ -225,6 +231,10 @@ try:
         engine.shutdown()
 
     # ---- 6.2：chunked prefill 下的**发布边界**（199 §9：group 各层都写完才能发布）----
+    # 做法与 vLLM 相同：drafter 每轮与 target 跑同一段位置（中间 prefill 块只同步 KV、不提
+    # 草稿），所以 target 算完的块在 draft 那一层也已经写完。发布处因此**不夹** draft 进度
+    # （vLLM 也不夹），不变量改由这里的用例盯着——既查进度，也查发布位置上的 draft KV 真的
+    # 被写过（验收探针 204 §6.2 抓的就是"draft KV 全零、block_hash 却已登记"）。
     def run_with_draft(prompt, budget, prefix, blocks=32, max_tokens=6, max_model_len=64):
         config = build(draft_dir=draft_dir, draft_config=dict(TINY_CONFIG, num_hidden_layers=1),
                        spec_tokens=1, budget=budget, blocks=blocks,
@@ -246,22 +256,40 @@ try:
             request = scheduler.requests.get("r")
             if request is None:
                 continue
+            # 最后一个完整块的最后一位：它属于"发布范围"（发布的是完整块），所以 draft 那一层
+            # 必须已经有 KV——只对齐计数器不算数，要看 tensor 里的值
+            last_published = request.num_computed_tokens // 4 * 4 - 1
+            draft_kv_sum = None
+            if last_published >= 0:
+                physical = scheduler.kv_cache_manager.get_blocks("r").get_block_ids()[0][
+                    last_published // 4]
+                layer = sorted(runner.proposer.kv_caches)[0]
+                draft_kv_sum = float(runner.proposer.kv_caches[layer][
+                    :, physical, last_published % 4].abs().sum())
             observations.append((request.num_computed_tokens,
-                                 runner.proposer.draft_computed("r"),
-                                 scheduler.kv_cache_manager.num_cached_blocks()))
+                                 runner.proposer._draft_computed.get("r", 0),
+                                 scheduler.kv_cache_manager.num_cached_blocks(),
+                                 draft_kv_sum))
         engine.shutdown()
         return observations, runner
 
     # budget=2 → 强制 chunked prefill；前缀缓存开着才可能"提前发布"
     observations, _ = run_with_draft([1, 2, 3, 4, 5, 6, 7, 8], budget=2, prefix=True)
-    early = [(computed, draft, cached) for computed, draft, cached in observations if draft == 0]
-    check("6. 中间 prefill 块：draft 还没算过，**一个完整块都不发布**"
-          "（同一 group 的各层都写完才算有效；预留的 lookahead 更不算）",
-          all(cached == 0 for _computed, _draft, cached in early) and bool(early),
-          f"draft=0 的轮次观察={early}")
-    check("6. draft 追上来之后照常发布（**延迟**发布，不是漏发）",
+    mid_prefill = [obs for obs in observations if obs[0] < 8]      # prompt 8 个 token 还没算完
+    check("6. 中间 prefill 块：draft 的 KV 也同步到 target 算完的位置（不是原地不动）",
+          bool(mid_prefill) and all(draft == computed and draft > 0
+                                    for computed, draft, _cached, _kv in mid_prefill),
+          f"中间 prefill 轮次（target 进度, draft 进度, ...）={mid_prefill}")
+    check("6. 发布的完整块不超过 draft 侧进度"
+          "（发布处不夹边界，靠的是两边每轮同步；199 §9 的不变量仍要成立）",
+          all(computed // 4 * 4 <= draft for computed, draft, _cached, _kv in observations),
+          f"观察={observations}")
+    check("6. 发布范围里的 draft KV 确实被写过（不是只有计数器对齐）",
+          all(kv is None or kv > 0 for _computed, _draft, _cached, kv in observations),
+          f"最后一位的 draft KV 绝对值和={[kv for *_x, kv in observations]}")
+    check("6. draft 追上来之后照常发布",
           observations[-1][2] > 0 and observations[-1][1] >= observations[-1][0],
-          f"最后一轮={observations[-1]}（target 进度, draft 进度, 缓存块数）")
+          f"最后一轮={observations[-1]}（target 进度, draft 进度, 缓存块数, draft KV 和）")
 
     # prefix 开/关：输出必须一致（缓存只该改变速度）
     on, _ = run_with_draft([1, 2, 3, 4, 5, 6], budget=16, prefix=True)
