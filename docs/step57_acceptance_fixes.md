@@ -149,6 +149,23 @@ position 7 的 draft KV = 全零              该块 block_hash = 已登记   �
 与 target 跑同一段位置（中间 prefill 块也同步 KV），于是窗口根本不存在，发布回到只按 target 进度
 （与 vLLM 相同）。上面那句"漏发/延迟发布"的区别、以及 `draft_computed_tokens` 这个字段都不再存在。
 
+### 1.10 再补：逻辑上限、请求生命周期、失败态（205）
+
+205 复验判定上一轮的"每轮同步"成立、保留，但列出三类收尾问题。逐条修法与设计说明见
+[step57_lifecycle.md](step57_lifecycle.md)，这里只记结论：
+
+| 205 的阻塞 | 现象 | 修法 |
+|---|---|---|
+| §3 物理块覆盖 ≠ 逻辑位置合法 | `max_model_len=10`、prompt 8、K=3：草稿要写 position=10，被 `_forward()` 的断言抓住，正常生成在末尾失败 | 自回归循环每写一枚前同时检查 `0 <= position < max_model_len` 与 `block_table.covers()`，过不了就少提；`_forward()` 的断言降级为内部错误检查 |
+| §4.1 未调度请求被清 generator | 预算不够没排上的 B 丢了随机流，再入批从 seed 重开 | `_drop_stale()` 拆成 `_reset_requests()`（只处理恢复）+ `remove_requests()`（只处理 finished）；"不在 batch 里"不再等于"结束" |
+| §4.2 草稿还在、q 却丢了 | `'B' 本轮采用了草稿，但上一轮没有为它提过：q 对不上` | **草稿只活一轮**：`schedule()` 在算采用数之前，把"上一轮没被调度"的请求的 `spec_token_ids` 作废，它本轮按 K=0 算一次再重新提 |
+| §4.3 finished 没清干净、ID 复用污染 prefix | 旧进度 9 套到新请求上 → `start == boundary` 跳过 draft 前向 → draft KV 全零的块被登记为命中 | `finished_req_ids` 一到就在 `_update_states()` 里 `proposer.remove_requests()`；0-token 的结束清理轮也会执行 |
+| §5 提议异常没有失败态 | 注入一次 `_forward()` 异常后 `runner.failure=None`，下一轮照常返回 `[]` | `sample_tokens()` 包一层失败处理（清未交付的草稿/概率、记 `failure`、重抛）；`EngineCore.step()` 在 `schedule()` **之前**检查失败标记并拒绝 |
+
+§6 的整理项：`draft_model.py` 顶部改成实际规则（有 lookahead、双边界）；`input_budget` 明确
+记为**对齐差异**（动态张量 ≠ 有输入预算）；`load_model()` 补 `model.eval()`；
+`check_step57_draft_model.py` §7 把这次的复现场景做成回归。
+
 ## 2. 验证
 
 | 探针 / 脚本 | 修复前 | 修复后 |

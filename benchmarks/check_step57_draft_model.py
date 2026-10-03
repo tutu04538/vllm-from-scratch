@@ -340,6 +340,187 @@ try:
           published_boundary is not None and published_boundary <= draft_boundary,
           f"发布到 {published_boundary}、draft 算到 {draft_boundary}")
 
+    # ------------------------------------------------ 7. 205 复验：逻辑上限与请求生命周期
+
+    def build_engine(*, k=3, max_model_len=64, budget=16, blocks=32, prefix=False,
+                     policy="fcfs"):
+        """与验收补测同一套构造：可配 k=None（不投机）、prefix、policy。"""
+        model = ModelConfig(model=TINY, dtype="float32", max_model_len=max_model_len,
+                            hf_config=TINY_CONFIG)
+        config = VllmConfig(
+            model_config=model,
+            cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks,
+                                     enable_prefix_caching=prefix),
+            scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=budget,
+                                             policy=policy),
+            device_config=DeviceConfig(device="cpu"),
+            speculative_config=None if k is None else SpeculativeConfig(
+                method="draft_model", num_speculative_tokens=k,
+                draft_model_config=ModelConfig(model=draft_dir, dtype="float32",
+                                               max_model_len=64,
+                                               hf_config=dict(TINY_CONFIG,
+                                                              num_hidden_layers=1))))
+        engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+        core = engine.engine_core.engine_core
+        return engine, core, core.model_executor.driver_worker.model_runner
+
+    def run_to_end(engine, limit=100):
+        final = {}
+        for _ in range(limit):
+            if not engine.has_unfinished_requests():
+                break
+            for out in engine.step():
+                final[out.request_id] = list(out.token_ids)
+        return final
+
+    # 7.1 逻辑上界：块表容量按块向上取整（10 个位置 → 12 个槽位），不能拿它当模型长度。
+    #     prompt 8 + max_tokens 2 会正好走到"最后两个位置"，草稿要在这里少提而不是越界写。
+    bound_ok, bound_detail = True, []
+    for max_len in (9, 10, 11, 12):
+        results = {}
+        for k in (None, 3):
+            engine, _core, _runner = build_engine(k=k, max_model_len=max_len)
+            engine.add_request("r", [1, 2, 3, 4, 5, 6, 7, 8],
+                               SamplingParams(max_tokens=2, temperature=0.0, eos_token_id=999))
+            try:
+                results[k] = run_to_end(engine)["r"]
+            except Exception as exc:                 # noqa: BLE001
+                results[k] = f"{type(exc).__name__}: {exc}"
+            engine.shutdown()
+        bound_ok &= results[None] == results[3] and isinstance(results[3], list) and bool(results[3])
+        bound_detail.append(f"max_len={max_len}: 非投机={results[None]}、K=3={results[3]}")
+    check("7. 逻辑上限 9/10/11/12：草稿到边界就少提，正常收尾且与非投机输出一致",
+          bound_ok, "；".join(bound_detail))
+
+    # 最后一轮刚好生成到上限（prompt 7 + 3 = max_model_len 10）
+    results = {}
+    for k in (None, 3):
+        engine, _core, _runner = build_engine(k=k, max_model_len=10)
+        engine.add_request("r", [1, 2, 3, 4, 5, 6, 7],
+                           SamplingParams(max_tokens=3, temperature=0.0, eos_token_id=999))
+        results[k] = run_to_end(engine)["r"]
+        engine.shutdown()
+    check("7. 最后一轮刚好生成到上下文上限：输出与非投机一致、长度正好等于剩余额度",
+          results[None] == results[3] and len(results[3]) == 3,
+          f"非投机={results[None]}、K=3={results[3]}")
+
+    # 7.2 本轮没被调度的请求：**不是结束**——进度与随机流必须保留，再入批不能拿旧草稿配新 q
+    engine, core, runner = build_engine(k=3, budget=4)
+    for req, seed in (("A", 10), ("B", 20)):
+        engine.add_request(req, [1, 2], SamplingParams(max_tokens=3, temperature=1.0,
+                                                       seed=seed, eos_token_id=999))
+    engine.step()
+    before = runner.proposer._draft_generators["B"]
+    before_state = before.get_state().clone()
+    engine.step()
+    scheduled_second = list(runner.input_batch.req_ids)
+    after = runner.proposer._draft_generators.get("B")
+    generator_kept = after is before and torch.equal(after.get_state(), before_state)
+    outputs = run_to_end(engine)
+    engine.shutdown()
+    check("7. 本轮没排上的 B：draft generator 保留（同一对象、状态不动），再入批不报 q 对不上",
+          scheduled_second == ["A"] and generator_kept and len(outputs.get("B", [])) == 3,
+          f"第二轮 batch={scheduled_second}、generator 保留={generator_kept}、输出={outputs}")
+
+    # 7.3 最后一条请求结束后的空清理轮也要清 proposer 状态；ID 复用不能继承旧进度
+    engine, core, runner = build_engine(k=1, prefix=True)
+    engine.add_request("reuse", [1, 2, 3, 4, 5, 6, 7, 8],
+                       SamplingParams(max_tokens=1, temperature=1.0, seed=20, eos_token_id=999))
+    run_to_end(engine)
+    stale = (dict(runner.proposer._draft_computed), list(runner.proposer._draft_generators))
+    calls = []
+    original_forward = runner.proposer._forward
+
+    def observed_forward(rows, *args, **kwargs):
+        calls.append(list(rows))
+        return original_forward(rows, *args, **kwargs)
+
+    runner.proposer._forward = observed_forward
+    engine.add_request("reuse", [8, 7, 6, 5, 4, 3, 2, 1],
+                       SamplingParams(max_tokens=2, temperature=1.0, seed=30, eos_token_id=999))
+    engine.step()
+    block = core.scheduler.kv_cache_manager.get_blocks("reuse").blocks[0][0]
+    layer = sorted(runner.proposer.kv_caches)[0]
+    slot_kv = float(runner.proposer.kv_caches[layer][:, block.block_id, 3].abs().sum())
+    runner.proposer._forward = original_forward
+    engine.shutdown()
+    check("7. 结束清理轮清空 draft 进度/随机流；复用同一 ID 的新请求会重建状态并重算 KV",
+          not stale[0] and not stale[1] and bool(calls) and slot_kv > 0,
+          f"清理后={stale}、新请求 draft forward={calls}、新 prefix 第 3 位 draft KV={slot_kv:.3f}")
+
+    # 7.4 提议异常 → 明确失败态：下一轮必须在调度之前被拒绝（不能返回空输出继续跑）
+    engine, core, runner = build_engine(k=1)
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
+    original_forward = runner.proposer._forward
+
+    def injected_failure(*args, **kwargs):
+        raise RuntimeError("review-injected-draft-forward-failure")
+
+    runner.proposer._forward = injected_failure
+    first_error = None
+    try:
+        engine.step()
+    except Exception as exc:                         # noqa: BLE001
+        first_error = f"{type(exc).__name__}: {exc}"
+    runner.proposer._forward = original_forward
+    history_at_failure = list(core.scheduler.requests["r"].all_token_ids)
+    second_error = None
+    try:
+        engine.step()
+    except Exception as exc:                         # noqa: BLE001
+        second_error = f"{type(exc).__name__}: {exc}"
+    check("7. 提议异常 → 失败态：runner.failure 记录原因，下一轮在调度之前被拒绝且不再推进",
+          first_error is not None and runner.failure is not None and second_error is not None
+          and list(core.scheduler.requests["r"].all_token_ids) == history_at_failure,
+          f"首次={first_error}；failure={runner.failure}；下一轮={second_error}")
+    engine.shutdown()
+
+    # 7.5 真实抢占 + 恢复：要求确实抢占，且输出与非投机 greedy 完全一致
+    def preemption_run(k):
+        engine, core, _runner = build_engine(k=k, budget=4, blocks=4, policy="priority")
+        for req, priority in (("A", 0), ("B", 5)):
+            engine.add_request(req, [1, 2], SamplingParams(max_tokens=8, temperature=0.0,
+                                                           eos_token_id=999),
+                               priority=priority)
+        outputs = run_to_end(engine)
+        preemptions = core.scheduler.num_preemptions
+        engine.shutdown()
+        return outputs, preemptions
+
+    reference, speculative = preemption_run(None), preemption_run(3)
+    check("7. 真实抢占 + 恢复（num_preemptions>0）：draft 与非投机 greedy 输出一致",
+          speculative[1] > 0 and reference[0] == speculative[0],
+          f"非投机={reference}、投机={speculative}")
+
+    # 7.6 prefix：必须真的命中（初始 computed>0），且开/关两种情况的输出完全一致
+    def prefix_run(enabled):
+        engine, _core, runner = build_engine(k=3, prefix=enabled, budget=4)
+        hits = []
+        original_update = runner._update_states
+
+        def observe(packet):
+            hits.extend((req.req_id, req.num_computed_tokens)
+                        for req in packet.scheduled_new_reqs)
+            return original_update(packet)
+
+        runner._update_states = observe
+        outputs = []
+        prompt = [1, 2, 3, 4, 5, 6, 7, 8]
+        for req in ("first", "reuse"):
+            engine.add_request(req, prompt, SamplingParams(max_tokens=6, temperature=0.0,
+                                                           eos_token_id=999))
+            outputs.append(run_to_end(engine)[req])
+        runner._update_states = original_update
+        engine.shutdown()
+        return outputs, hits
+
+    enabled, disabled = prefix_run(True), prefix_run(False)
+    check("7. prefix 二次请求真的命中（初始 computed>0），且输出与关闭缓存完全一致",
+          any(req == "reuse" and num > 0 for req, num in enabled[1])
+          and enabled[0] == disabled[0],
+          f"开={enabled}、关={disabled}")
+
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

@@ -60,4 +60,8 @@ class BaseModelLoader:
         if loaded is None:
             raise ValueError(f"{type(model).__name__}.load_weights() 必须返回已加载参数名集合"
                              f"（本关靠它做覆盖检查，不能静默返回 None）")
+        # 加载完就切推理模式（对应 vLLM 的 `model.eval()`；204 §6 要求的收尾项）。
+        # 与 Runner 的 `torch.inference_mode()` 分工不同：eval 改的是模块自身的**行为**
+        # （dropout/BN 等训练态分支），inference_mode 管的是**梯度记录**。两者都不能省。
+        model.eval()
         return model

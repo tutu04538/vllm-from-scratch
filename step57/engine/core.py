@@ -25,6 +25,10 @@ class EngineCore:
         self.vllm_config = vllm_config
         self.speculative_config = vllm_config.speculative_config
         self.model_executor = executor
+        # 失败态（205 §5）：一旦某一轮在"执行/采样/提议"里抛过异常，引擎就**停摆**。
+        # 半轮状态（镜像已更新、权威输出未提交）不可能靠重试自愈，所以下一轮必须在
+        # **调度之前**拒绝，而不是返回空输出假装这一轮正常。
+        self.failure: str | None = None
         # Scheduler 与 KVCacheManager 由执行侧交回容量之后一起创建：容量来自执行侧，
         # 不能先建调度器再问容量（初始化顺序见 195 §8）。
         from ..core.kv_cache_manager import KVCacheManager
@@ -99,17 +103,34 @@ class EngineCore:
         `total_num_scheduled_tokens == 0` 的轮（结束清理轮、或暂时没东西可排）**也会**调用
         `execute_model`：执行侧看到 0 token 就不碰 GPU、直接回一个空结果——"空轮不执行模型"
         这条约束落在执行侧（vLLM 的 runner 也是这么分的），Scheduler 不必知道。
+
+        **失败即停摆**（205 §5）：只要有一轮抛过异常，这里就记下原因；之后每次 `step()`
+        都在 `schedule()` **之前**直接拒绝——不推进请求、不改状态、也不返回空输出。
+        执行侧的 `ModelRunner` 自己也会记 `failure`（它的 `_check_usable()` 是第二道门）。
         """
+        self._check_alive()
         if not self.scheduler.has_requests():
             return EngineCoreOutputs(), False
 
-        scheduler_output = self.scheduler.schedule()
-        model_output = self.model_executor.execute_model(scheduler_output)
-        if model_output is None:
-            # 执行侧说"我先把状态存下了，你来采"——采样在这一步做
-            model_output = self.model_executor.sample_tokens(grammar_output=None)
-        outputs = self.scheduler.update_from_output(scheduler_output, model_output)
+        try:
+            scheduler_output = self.scheduler.schedule()
+            model_output = self.model_executor.execute_model(scheduler_output)
+            if model_output is None:
+                # 执行侧说"我先把状态存下了，你来采"——采样在这一步做
+                model_output = self.model_executor.sample_tokens(grammar_output=None)
+            outputs = self.scheduler.update_from_output(scheduler_output, model_output)
+        except Exception as exc:                     # noqa: BLE001 —— 半轮状态不可重试
+            self.failure = f"{type(exc).__name__}: {exc}"
+            raise
         return outputs, scheduler_output.total_num_scheduled_tokens > 0
+
+    def _check_alive(self) -> None:
+        """下一轮开始前先看失败标记：**在调度之前**拒绝，别让 Scheduler 的状态再往前走。"""
+        if self.failure is not None:
+            raise RuntimeError(
+                f"EngineCore 已经失败，不再接受新的 step()：{self.failure}。"
+                f"半轮状态（镜像已更新、权威输出未提交）不能靠继续调度自愈；"
+                f"本关不做故障恢复，请重建引擎（197 §9 的失败策略）")
 
     def post_step(self, model_executed: bool) -> None:
         """执行之后的收尾。57A 无投机，所以是空操作（接口按 195 §7 保留）。"""

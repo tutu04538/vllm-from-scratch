@@ -30,13 +30,16 @@ draft 与 target 共用**逻辑块表**与分配生命周期（同一张块表�
 
 ### 本关的简化（写清楚，不假装已实现）
 
-- 没有 `num_lookahead_tokens` 预留：本关草稿的槽位在**本轮的调度范围之内**（`num_tokens_with_spec`
-  已经把草稿算进去了），所以不需要额外预留。
-- **没有预分配的定长输入缓冲**：每轮按"实际要补多少 token"现搭张量（vLLM 预分配缓冲，并用
-  `input_budget` / `max_num_new_slots_for_drafting` 单独算它的容量）。所以我们不需要给缓冲定容量，
-  只做一条**位置边界**检查：草稿要算的位置必须落在 `[0, max_model_len)` 内。
-  代价是每轮可能重建张量；好处是代码短，而且不存在"缓冲不够"这类越界。
-  一轮的行数并不小：**恢复（抢占）之后 draft 要重算整段历史**，行数可以到 prompt 那么长。
+- **有** `num_lookahead_tokens` 预留（204 §4 之后补上的）：草稿里"下一轮才验证"的那 K 枚写在
+  target 本轮 query **之外**，所以 Scheduler 分配块时按 `num_lookahead_tokens=K` 多留 K 个槽位
+  （`Scheduler.__init__` → `allocate_slots`）。预留块**不等于** token 已计算，发布 prefix 时不算。
+  上下文快满时预留会被 `max_model_len` 截掉，所以自回归循环每写一枚前还要过
+  逻辑上界 + `BlockTable.covers` 两道检查（205 §3），过不了就少提几枚。
+- **没有预分配的定长输入缓冲**，也**没有** vLLM 的 `input_budget` / `max_num_new_slots_for_drafting`
+  核算：每轮按"实际要补多少 token"现搭张量。它避免了定长缓冲的写越界，但**不等于**有了输入预算
+  ——普通 draft 同样需要那份核算，只是本关用动态张量绕开了容量维度（对齐差异，见
+  `docs/step57_alignment.md`）。代价是每轮重建张量，而且 **prefix 命中之后 draft 要整段重算**
+  （命中省的是 target 的 prefill，draft 第一次同步仍要写满命中的位置）。
 - 不做 EAGLE/MTP 的"左移一位"输入（本关只有普通自回归 draft）。
 - draft 不共享 target 的 random stream：自己按 `seed` 建 generator（可复现），
   与 target 的采样流相互独立（vLLM 也把 draft 的随机数分开算）。
@@ -60,6 +63,9 @@ class SpecDecodeBaseProposer:
         self.device = device
         self.num_speculative_tokens = spec_config.num_speculative_tokens
         self.block_size = vllm_config.cache_config.block_size
+        # **逻辑**上界。块表容量是按块向上取整的（10 个位置可能给 12 个槽位），
+        # 所以"物理槽位够"不等于"模型允许写这个位置"——两个边界要分别检查（205 §3）。
+        self.max_model_len = vllm_config.model_config.max_model_len
         self.model = None                     # 子类加载
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.metadata_builder = AttentionMetadataBuilder(self.block_size)
@@ -97,9 +103,16 @@ class SpecDecodeBaseProposer:
 
         `input_batch` 是 target 的批状态：草稿要读**共享的块表**（同一套 slot 编号）与
         每条请求的采样参数。draft 的 KV 写在自己的 tensor 上，但位置与槽位由这里决定。
+
+        **生命周期**（205 §4.4，与 Controller 的分工）：
+
+        - 本轮没被调度的请求：它根本不进 `req_ids`，这里什么都不做——进度与随机流由
+          `_draft_computed` / `_draft_generators` 保留（块仍然有效，"没排上"≠"结束"）；
+        - 抢占恢复（`reset_req_ids`）：块表整表换过 → 进度作废重算，随机流**继续**；
+        - 结束/abort：由 `remove_requests()` 显式删除（不在 batch 里不能当结束）。
         """
 
-        self._drop_stale(req_ids, reset_req_ids or set())
+        self._reset_requests(reset_req_ids or set())
         ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
         drafts: dict[str, list[int]] = {req_id: [] for req_id in req_ids}
         probs: dict[str, list[torch.Tensor]] = {req_id: [] for req_id in req_ids}
@@ -128,8 +141,10 @@ class SpecDecodeBaseProposer:
         #
         # 每一枚草稿都写在"已提交历史之后"（位置 = 已提交 + j - 1），那是 target 本轮 query
         # **之外**的位置：调度侧为此预留了 `num_lookahead_tokens` 个槽位（vLLM 同款规则）。
-        # 但上下文快满时预留会被 `max_model_len` 截掉，所以**先问块表这个位置有没有槽位**，
-        # 没有就少提几枚——不能写到块表覆盖不到的地方（那会覆盖别人的 KV 或报越界）。
+        # 但预留可能被 `max_model_len` 截掉、上下文也可能刚好走到尽头，所以每写一枚都要过
+        # **两个**边界：模型自己的位置范围（逻辑）与块表覆盖（物理）。少一个就会在"10 个
+        # 位置、3 个块（12 槽）"这种配置下写出 position=10（205 §3）。过不了就少提几枚——
+        # 草稿只是候选，不写就不会越界，也不会让这一轮失败。
         while True:
             pending: list[str] = []
             for req_id in req_ids:
@@ -137,6 +152,8 @@ class SpecDecodeBaseProposer:
                     continue
                 position = num_computed_tokens[req_id] + len(drafts[req_id]) - 1
                 row = input_batch.req_id_to_index[req_id]
+                if not 0 <= position < self.max_model_len:
+                    continue
                 if not input_batch.block_table.covers(row, position):
                     continue
                 pending.append(req_id)
@@ -157,17 +174,28 @@ class SpecDecodeBaseProposer:
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
 
-    def _drop_stale(self, req_ids: list[str], reset_req_ids: set[str]) -> None:
-        """丢掉不再成立的 draft 侧进度：请求结束、或它刚被恢复（块表整表换过）。
+    def _reset_requests(self, reset_req_ids: set[str]) -> None:
+        """丢掉不再成立的 draft 侧**进度**：请求刚被抢占恢复（块表整表换过）。
 
         恢复之后旧物理编号上的 KV 已经不属于它了，**必须**从头补，不能接着用。
+        随机流**不重置**：请求还活着，只是换了块，重新 seed 会改变它的采样序列
+        （205 §4.4：抢占恢复 ≠ 新请求）。
         """
-        for req_id in list(self._draft_computed):
-            if req_id not in req_ids:
-                self._draft_computed.pop(req_id, None)
-                self._draft_generators.pop(req_id, None)
         for req_id in reset_req_ids:
             self._draft_computed.pop(req_id, None)
+
+    def remove_requests(self, req_ids) -> None:
+        """请求**结束/abort**：进度与随机流一并删除（草稿概率 q 存在 Runner 上、
+        每轮整体重算，不需要按请求清）。
+
+        只有控制端明确说"这条结束了"才调它。**不能**用"不在本轮的 req_ids 里"代替：
+        预算不够没排上、被抢占等待恢复的请求都不在 batch 里，但它们的状态必须留着
+        （205 §4.1/§4.3 就是这两种情况混在一起造成的）。
+        0-token 的结束清理轮也要调——否则最后一条请求结束后，复用的 ID 会继承旧进度。
+        """
+        for req_id in req_ids:
+            self._draft_computed.pop(req_id, None)
+            self._draft_generators.pop(req_id, None)
 
     # -------- 单次 forward --------
 

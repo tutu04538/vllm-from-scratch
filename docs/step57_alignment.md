@@ -123,13 +123,19 @@
           scheduler 在 `allocate_slots` 时一律带上；token 预算与输入预算分开算
 本项目做法：**同一条规则**（`Scheduler.num_lookahead_tokens`：draft_model → K，ngram → 0），
             `num_tokens_need_slot = min(computed + new + lookahead, max_model_len)`；
-            提议者仍然问 `BlockTable.covers()`，没有槽位就少提几枚；
-            仍然没有 input_budget——draft 前向的输入不预分配缓冲，只检查位置在
-            `[0, max_model_len)` 内
+            提议者仍然问 `BlockTable.covers()`，**再叠一条逻辑上界**
+            （`0 <= position < max_model_len`；205 §3：块表容量按块向上取整，
+            不能当模型长度用），过不了就少提几枚；
+            仍然没有 input_budget——draft 前向的输入不预分配缓冲
 为何简化：本关只有普通自回归 draft（不是 EAGLE/MTP 那种"提议者就是 target 自己"），
-          输入预算不预分配也能保证不越界
-影响：功能（EAGLE/MTP 接不进来）；性能（每轮可能重建输入张量）
-对应测试：check_step57_draft_model.py §6（prompt 恰好占满整块 / 中间 prefill / CUDA 设备）
+          本关用**动态张量**绕开了"定长缓冲写越界"这一个容量维度
+影响：功能（EAGLE/MTP 接不进来）；性能（每轮可能重建输入张量；prefix 命中后 draft 仍要
+      整段重算——命中省的是 target 的 prefill，不是 draft 的同步）
+**注意**：动态张量只解决"缓冲写越界"，**不等于有了输入预算**，也不能说普通 draft 天然
+      不需要 `input_budget`——vLLM 对普通 draft 同样要算它（205 §6 要求把这条保留为对齐差异，
+      不许记成"已完成"）
+对应测试：check_step57_draft_model.py §6/§7（prompt 恰好占满整块 / 中间 prefill / CUDA 设备 /
+      逻辑上限 9/10/11/12 / 最后一轮刚好到上限）
 以后何时消除：接 EAGLE/MTP 之前必须补 input_budget
 ```
 

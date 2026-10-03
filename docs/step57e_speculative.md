@@ -124,9 +124,11 @@ random 行：接受概率 min(1, p[d]/q[d])，用一次均匀随机数判定；
 
 | 差异 | 说明 |
 |---|---|
-| `num_lookahead_tokens` 按 vLLM 规则实现（draft_model → K，ngram → 0）；仍没有 `input_budget` | 提议者写 target query 之外的 K 个位置，必须预留；输入缓冲不预分配，只检查位置边界（见对齐账本） |
+| `num_lookahead_tokens` 按 vLLM 规则实现（draft_model → K，ngram → 0）；仍没有 `input_budget` | 提议者写 target query 之外的 K 个位置，必须预留；草稿写入同时过**逻辑上界**（`0 <= position < max_model_len`）与物理槽位 `covers()`，过不了就少提几枚（块表容量向上取整，不能当模型长度）；输入缓冲不预分配，只检查位置边界（见对齐账本） |
 | **发布边界不夹 draft 进度**（与 vLLM 相同） | vLLM 让 drafter 与 target 每步跑同一段位置，中间 prefill 块跑完再把草稿丢掉（"Ignore draft tokens for prefill chunks"）；本关**在提议阶段就不提**（少跑 K 次前向），但那一轮的 KV 照样同步。两边因此都不需要夹边界（见对齐账本 §5） |
-| 没有独立的输入预算（`input_budget` / `max_num_new_slots_for_drafting`），也**没有预分配的定长输入缓冲** | 每轮按"实际要补多少 token"现搭张量，只检查位置落在 `[0, max_model_len)`。一轮的行数不小：**恢复之后 draft 要重算整段历史** |
+| 没有独立的输入预算（`input_budget` / `max_num_new_slots_for_drafting`），也**没有预分配的定长输入缓冲** | 每轮按"实际要补多少 token"现搭张量。这是**对齐差异而不是"不需要"**：动态张量只免掉定长缓冲的写越界，vLLM 对普通 draft 同样要算 `input_budget`（205 §6 要求保留这条）。一轮的行数不小：**恢复之后 draft 要重算整段历史**，prefix 命中也一样 |
+| 请求生命周期：未调度保留 / 恢复重置 / finished 删除；**草稿只活一轮** | vLLM 的 `_update_states()` 同样把"finished 删除"与"unscheduled 移出 batch"分开；q 与草稿同寿命（错过采用轮次就作废，下一轮 K=0 重来），不保留跨轮草稿（205 §4.4） |
+| sample/propose 异常 → 引擎失败态，下一轮在调度前拒绝 | vLLM 在 runner/core 也有 failure 标记的拒绝路径；本关不做故障恢复，失败即停摆（205 §5） |
 | `RejectionSampler` 返回 padded `[B, max_spec_len+1]`（无效位 -1），Runner 裁掉 | 与 vLLM 同形；本关照做，但**不**为它准备 padded 的中间张量 |
 | `draft_probs` 由执行侧按请求存、下一轮按"实际采用的前缀"重排（`_align_draft_probs`） | 199 §5 要求的 q 对齐。vLLM 也存概率并按请求重排（`take_last_draft_probs`），只是它按**批行号**索引，本关按**请求 ID**（并因此给 `SpecDecodeMetadata` 加了 `req_ids`，vLLM 没有这个字段） |
 | 没有 synthetic mode / fp64 Gumbel / logprobs / 结构化输出过滤 | 实验与对照用途，或不属于 57E |

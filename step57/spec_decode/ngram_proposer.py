@@ -40,6 +40,8 @@ class NgramProposer:
         件事，所以只对 ready 的请求提；其余请求原样返回空列表。中间 prefill 块的草稿没有可
         验证的 next token，Scheduler 也会丢掉（vLLM 的 `update_draft_token_ids` 同款规则）。
         `input_batch` / `reset_req_ids` 同理用不到（ngram 没有块表，也没有自己的进度）。
+        **生命周期**：请求没被调度时什么都不留；抢占恢复不需要重置；只有"结束/abort"由
+        Runner 调 `remove_requests()`——ngram 无状态，那个方法是空操作（205 §4.4）。
         """
         ready = set(req_ids) if ready_req_ids is None else set(ready_req_ids)
         draft_token_ids: list[list[int]] = []
@@ -47,6 +49,13 @@ class NgramProposer:
             tokens = all_token_ids[req_id][:num_computed_tokens[req_id]]
             draft_token_ids.append(self._propose_one(tokens) if req_id in ready else [])
         return DraftTokenIds(req_ids=list(req_ids), draft_token_ids=draft_token_ids)
+
+    def remove_requests(self, req_ids) -> None:
+        """与 draft_model 提议者统一的接口：ngram 没有自己的进度与随机流，所以是空操作。
+
+        留着它是为了**生命周期契约一致**：Runner 在"请求结束/abort"时只调这一个方法，
+        不需要知道用的是哪种提议者。
+        """
 
     def _propose_one(self, tokens: list[int]) -> list[int]:
         for ngram_size in range(min(self.max_ngram, len(tokens)), 0, -1):

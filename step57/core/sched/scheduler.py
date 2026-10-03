@@ -134,6 +134,24 @@ class Scheduler:
 
     # -------- 一轮调度 --------
 
+    def _invalidate_stale_drafts(self) -> None:
+        """作废"跨了轮次"的草稿：请求上一轮没被调度，它的草稿与 q 已经不同源。
+
+        契约（205 §4.2 的建议，本关选"作废"这条简单路径）：**草稿只活一轮**。
+        轮 t 提的草稿只允许在轮 t+1 被采用；如果 t+1 因为预算/抢占没排到这条请求，
+        那么 t+1 的执行端只保留"t+1 提的那批"概率 q，t 的 q 已经丢了——token IDs 还在
+        请求上，q 却没了，采用它就会在拒绝采样里拿错误的 q 去算接受率。
+
+        所以这里在**计算采用数、打包 SchedulerOutput 之前**把旧草稿清掉：该请求本轮按
+        K=0 正常算一次，之后执行端会重新提议一批同源的草稿。代价是少一轮投机机会，
+        换来的是"草稿与 q 要么成对存在、要么成对消失"。
+
+        只清 running：抢占走 `_preempt_request()`（那里已经清过），新请求本来就没有草稿。
+        """
+        for request in self.running:
+            if request.spec_token_ids and request.request_id not in self.prev_step_scheduled_req_ids:
+                request.spec_token_ids = []
+
     def schedule(self) -> SchedulerOutput:
         self.num_steps += 1
         scheduled_new_reqs: list[Request] = []
@@ -145,6 +163,9 @@ class Scheduler:
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         preempted_reqs: list[Request] = []
         token_budget = self.max_num_batched_tokens
+
+        # ---- 0) 先作废"断代"的草稿（必须在算采用数之前）----
+        self._invalidate_stale_drafts()
 
         # ---- 1) 先排 running（用下标遍历而不是 for：抢占要在循环里删元素）----
         req_index = 0

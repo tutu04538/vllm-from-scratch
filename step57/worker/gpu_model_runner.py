@@ -237,7 +237,13 @@ class GPUModelRunner:
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
             self.input_batch.remove_request(req_id)
-            # 57E：这里还要丢掉它的草稿/提议状态与随机流
+        # 57E：提议者的状态也要按"结束"显式删除（进度 + 随机流）。
+        # **这里必须用控制端的结束通知，不能拿"不在本轮 batch 里"当结束**：预算不够没排上、
+        # 被抢占等待恢复的请求都不在 batch 里，但它们的状态得留着（205 §4.1/§4.3）。
+        # 0-token 的结束清理轮也会走到这里——最后一条请求结束后复用 ID 才不会继承旧进度。
+        # （草稿概率 q 存在 `pending_draft_probs` 上、每轮整体重算，所以它不需要按请求清。）
+        if scheduler_output.finished_req_ids and self.proposer is not None:
+            self.proposer.remove_requests(scheduler_output.finished_req_ids)
 
         # 2) 本轮没被调度的活跃请求：**移出批，但保留 CachedRequestState**
         #    （未调度 ≠ 结束：它可能是被抢占、或者这一轮预算不够）
@@ -506,6 +512,11 @@ class GPUModelRunner:
 
         `grammar_output`（结构化输出）本关不用，但接口留着：执行与采样分开的意义之一就是给
         这类"采样前还要改一遍 logits"的路径留位置。
+
+        **异常 → 明确失败态**（205 §5 / 204 §9.1）：采样与提议（尤其是提议）失败时，这一轮
+        已经处在"镜像更新了、权威输出还没提交"的半截状态。`inference_mode()` 只管梯度记录，
+        不会处理这种事务中断，所以这里统一记 `failure`、清掉未交付的状态再抛出去；
+        `EngineCore.step()` 在下一轮**调度之前**就会拒绝执行，不会带着半轮状态继续推进。
         """
         self._check_usable()
         state = self.execute_model_state
@@ -514,6 +525,17 @@ class GPUModelRunner:
                                "返回 None 的 execute_model() 之后")
         self.execute_model_state = None
 
+        try:
+            return self._sample_and_propose(state)
+        except Exception as exc:                     # noqa: BLE001 —— 任何异常都让 Runner 停摆
+            # 未交付的草稿/概率不能留着：下一轮若被消费，会把失败轮的假设当成有效提议
+            self.pending_draft_token_ids = None
+            self.pending_draft_probs = None
+            self.failure = f"{type(exc).__name__}: {exc}"
+            raise
+
+    def _sample_and_propose(self, state):
+        """`sample_tokens()` 的正常路径（单独一层，好让失败态只包一层 try）。"""
         scheduled_spec = state.scheduler_output.scheduled_spec_decode_tokens
         spec_metadata = state.spec_metadata
         if spec_metadata is not None and spec_metadata.num_draft_tokens_total > 0:
