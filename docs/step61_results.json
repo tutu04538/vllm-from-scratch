@@ -5,8 +5,8 @@
   "recorded_at": "2026-10-04T18:40:00+00:00",
   "git": {
     "baseline_commit_at_record_time": "12c7316",
-    "implementation_commit": "见本文件所在提交之后补记（step60 同款做法）",
-    "note": "命令与轨迹在本关实现提交之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（68 个文件）"
+    "implementation_commit": "5556ea5478145c945289c12a97606acb5dd18981",
+    "note": "命令与轨迹在本关实现提交（5556ea5）之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（68 个文件）；提交号在实现提交之后补记（step60 同款做法）"
   },
   "package": {
     "root": "minivllm/",
@@ -94,64 +94,300 @@
       ]
     },
     "request_local": {
-      "prompt": [1, 2, 3, 4, 1, 2, 3, 4],
+      "prompt": [
+        1,
+        2,
+        3,
+        4,
+        1,
+        2,
+        3,
+        4
+      ],
       "steps_and_drafts": [
-        {"sampled": [1], "draft": [2, 3, 4, 1]},
-        {"sampled": [2], "draft": [3, 4, 1, 2]},
-        {"sampled": [3], "draft": [4, 1, 2, 3]},
-        {"sampled": [4], "draft": [1, 2, 3, 4]},
-        {"sampled": [1], "draft": [2, 3, 4, 1, 2]}
+        {
+          "sampled": [
+            1
+          ],
+          "draft": [
+            2,
+            3,
+            4,
+            1
+          ]
+        },
+        {
+          "sampled": [
+            2
+          ],
+          "draft": [
+            3,
+            4,
+            1,
+            2
+          ]
+        },
+        {
+          "sampled": [
+            3
+          ],
+          "draft": [
+            4,
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "sampled": [
+            4
+          ],
+          "draft": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "sampled": [
+            1
+          ],
+          "draft": [
+            2,
+            3,
+            4,
+            1,
+            2
+          ]
+        }
       ]
     },
     "cross_request": {
-      "A_prompt": [1, 2, 3, 9, 9, 1, 2, 3],
-      "A_responses": [[4], [5]],
-      "B_prompt": [7, 8, 1, 2, 3],
-      "B_sampled": [4],
-      "suffix_draft_for_B": [5],
+      "A_prompt": [
+        1,
+        2,
+        3,
+        9,
+        9,
+        1,
+        2,
+        3
+      ],
+      "A_responses": [
+        [
+          4
+        ],
+        [
+          5
+        ]
+      ],
+      "B_prompt": [
+        7,
+        8,
+        1,
+        2,
+        3
+      ],
+      "B_sampled": [
+        4
+      ],
+      "suffix_draft_for_B": [
+        5
+      ],
       "ngram_draft_for_B_same_history": [],
       "suffix_draft_for_B_global_tree_disabled": [],
       "解释": "B 自己的历史里 \"1 2 3\" 只出现一次 → ngram / 关掉全局树都拿不到；A 的响应进了全局树后 B 才能拿到 [5]"
     },
     "capacity_and_eviction": {
-      "容量 2": {"cached_after_each_step": [["A"], ["A"], ["A", "B"], ["B", "C"]], "C_draft": []},
-      "容量 3": {"cached_after_each_step": [["A"], ["A"], ["A", "B"], ["A", "B", "C"]], "C_draft": [5]},
+      "容量 2": {
+        "cached_after_each_step": [
+          [
+            "A"
+          ],
+          [
+            "A"
+          ],
+          [
+            "A",
+            "B"
+          ],
+          [
+            "B",
+            "C"
+          ]
+        ],
+        "C_draft": []
+      },
+      "容量 3": {
+        "cached_after_each_step": [
+          [
+            "A"
+          ],
+          [
+            "A"
+          ],
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B",
+            "C"
+          ]
+        ],
+        "C_draft": [
+          5
+        ]
+      },
       "规则": "超出容量按 FIFO 淘汰最早的请求（这是**请求条数**的淘汰，与 KV BlockPool 的块淘汰无关）"
     },
     "id_reuse": {
       "第一轮": "P1=[1,2,3,4,1,2,3,4] 采样 [9] 再 [5] → 全局序列 P1+[9,5]",
       "第二轮同 ID 新请求": "P2=[7,7,1,2,3,4] 采样 [9]",
       "evict 生效（正常路径）": [],
-      "evict 被 monkeypatch 成空操作（反证）": [5],
+      "evict 被 monkeypatch 成空操作（反证）": [
+        5
+      ],
       "解释": "不 evict 时上一轮那条**无关请求**的序列还留在全局树里，新请求会沿它继续猜"
     },
     "call_order": {
-      "首次进入": ["start_request", "add_active_response", "speculate"],
+      "首次进入": [
+        "start_request",
+        "add_active_response",
+        "speculate"
+      ],
       "空采样行": [],
-      "离批的活跃请求": ["stop_request"],
-      "同 ID 重用": ["evict_cached_response", "start_request", "add_active_response", "speculate"],
+      "离批的活跃请求": [
+        "stop_request"
+      ],
+      "同 ID 重用": [
+        "evict_cached_response",
+        "start_request",
+        "add_active_response",
+        "speculate"
+      ],
       "speculate 参数": {
-        "context": [1, 2, 3, 4, 1, 2, 3, 4, 1],
+        "context": [
+          1,
+          2,
+          3,
+          4,
+          1,
+          2,
+          3,
+          4,
+          1
+        ],
         "max_spec_tokens": "min(K=8, max_model_len 64 - num_tokens 9 - 1) = 8",
         "max_spec_factor": 1.0,
         "min_token_prob": 0.1
       }
     },
     "parameter_effects": {
-      "max_spec_factor": {"1.0": [2, 3, 4, 1], "0.5": [2, 3], "0.1": []},
-      "min_token_prob": {"0.1": [5], "0.5": [5], "0.51": []},
-      "max_tree_depth": {"24": [2, 3, 4, 1], "3": [2]},
-      "num_speculative_tokens": {"1": [2], "2": [2, 3], "8": [2, 3, 4, 1]}
+      "max_spec_factor": {
+        "1.0": [
+          2,
+          3,
+          4,
+          1
+        ],
+        "0.5": [
+          2,
+          3
+        ],
+        "0.1": []
+      },
+      "min_token_prob": {
+        "0.1": [
+          5
+        ],
+        "0.5": [
+          5
+        ],
+        "0.51": []
+      },
+      "max_tree_depth": {
+        "24": [
+          2,
+          3,
+          4,
+          1
+        ],
+        "3": [
+          2
+        ]
+      },
+      "num_speculative_tokens": {
+        "1": [
+          2
+        ],
+        "2": [
+          2,
+          3
+        ],
+        "8": [
+          2,
+          3,
+          4,
+          1
+        ]
+      }
     },
     "end_to_end": {
       "model": "tiny Qwen3（现场生成，float32，2 层，hidden 32，vocab 11）",
       "device": "cuda:0",
-      "prompts": {"a": [1, 2, 3, 4, 1, 2, 3, 4], "b": [5, 6, 5, 6, 5, 6]},
+      "prompts": {
+        "a": [
+          1,
+          2,
+          3,
+          4,
+          1,
+          2,
+          3,
+          4
+        ],
+        "b": [
+          5,
+          6,
+          5,
+          6,
+          5,
+          6
+        ]
+      },
       "max_tokens": 8,
       "temperature": 0.0,
-      "spec_outputs": {"a": [4, 4, 4, 6, 0, 6, 0, 6], "b": [10, 4, 4, 4, 4, 4, 4, 4]},
+      "spec_outputs": {
+        "a": [
+          4,
+          4,
+          4,
+          6,
+          0,
+          6,
+          0,
+          6
+        ],
+        "b": [
+          10,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ]
+      },
       "non_spec_outputs_equal": true,
-      "stats": {"num_drafts": 6, "num_draft_tokens": 8, "num_accepted_tokens": 6},
+      "stats": {
+        "num_drafts": 6,
+        "num_draft_tokens": 8,
+        "num_accepted_tokens": 6
+      },
       "解释": "greedy 下投机与非投机输出逐 token 相同（草稿只是猜测）；候选确实被 target 采纳（6/8）"
     },
     "dependency_substitution_evidence": {
