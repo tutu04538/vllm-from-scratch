@@ -215,6 +215,25 @@
         ]
       },
       "一致": true
+    },
+    "gpu_ngram_cost": {
+      "环境": "RTX 5090 Laptop（WSL2；单次 CUDA launch 开销偏高 ~17 µs）",
+      "形状": "B=32、历史 4096、prompt_lookup_min=1、prompt_lookup_max=5、K=3",
+      "未融合（本机现状）": {
+        "µs/步": 2095,
+        "CUDA 事件/步": 127,
+        "注": "与形状几乎无关（B=1/L=64 也是 2238 µs、128 次）→ 启动受限"
+      },
+      "torch.compile 融合（上游路径，本机试跑）": {
+        "µs/步": 126,
+        "CUDA 事件/步": 8,
+        "编译耗时": "3.7 s",
+        "与未融合结果一致": true
+      },
+      "CPU KMP（同一批 32 条 / 历史 4096）": {
+        "µs/步": 16301
+      },
+      "结论": "上游的 NgramGPUKernel 也是 torch 算子，靠 @support_torch_compile 融合；本机没有编译基础设施，所以 ngram_gpu 是启动受限的（~2.2 ms/步）。这是已知差异（alignment §3 第 2 条），不是算法差异。"
     }
   },
   "not_run": [

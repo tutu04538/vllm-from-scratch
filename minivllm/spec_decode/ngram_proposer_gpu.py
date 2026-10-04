@@ -30,7 +30,13 @@ from .utils import TargetRows, update_scheduler_for_invalid_drafts  # noqa: F401
 
 
 class NgramGPUKernel(nn.Module):
-    """匹配 + 提取（上游同名类）：全程 torch 张量运算，一个 batch 一次算完。"""
+    """匹配 + 提取（上游同名类）：全程 torch 张量运算，一个 batch 一次算完。
+
+    **上游的"kernel"也是 torch 算子**（不是手写 Triton）：它靠 `@support_torch_compile()` 让 inductor
+    把几十个小算子融合成几个内核，并把批 padding 到 `max_num_reqs` 以拿到固定形状。本机没有编译基础设施，
+    跑的是未融合版本 → **启动受限**：实测 B=32/历史 4096 时 127 次 CUDA 事件、约 2.2 ms/步，且与形状几乎无关；
+    融合后是 8 次事件、约 0.13 ms/步（结果逐值相同）。见 docs/step60_alignment.md §3 第 2 条。
+    """
 
     def __init__(self, vllm_config, prefix: str = "", device: str = "cuda") -> None:
         super().__init__()

@@ -74,8 +74,20 @@
    本机不引入 numba JIT 依赖，`batch_propose` 是逐请求循环调同一个匹配函数。语义逐值一致
    （测试直接拿上游 `_find_longest_matched_ngram_and_propose_tokens` 与 `batch_propose_numba` 差分）；
    差别只在 CPU 大 batch 的吞吐。
-2. **不做 torch.compile / CUDA Graph**：上游 `NgramGPUKernel` 带 `@support_torch_compile()`；
-   本机不编译（69 关做固定形状与图捕获时再谈）。
+2. **不做 torch.compile / CUDA Graph**：上游 `NgramGPUKernel` 带 `@support_torch_compile()`——
+   它的"kernel"其实也是 **torch 张量算子**，靠 inductor 把几十个小算子融合成几个内核；本机没有编译基础设施，
+   所以跑的是**未融合**版本。代价实测（B=32、历史 4096、min_n=1/max_n=5）：
+
+   | 版本 | 每步耗时 | CUDA 事件/步 |
+   |---|---|---|
+   | 未融合（本机现状） | **2095 µs** | **127** |
+   | `torch.compile` 融合后（上游路径，本机试跑） | **126 µs** | **8** |
+   | CPU KMP（同一批 32 条） | 16301 µs | — |
+
+   未融合版本是**启动受限**的：~127 次 launch × ~17 µs（WSL2 上单次 launch 偏贵）≈ 2.2 ms，与历史长度几乎无关
+   （B=1/L=64 也是 2238 µs / 128 次）。融合版结果与未融合逐值一致（`torch.equal` 通过）。
+   这也解释了上游为什么把批 **padding 到 `max_num_reqs`**：编译后的内核需要固定形状，否则每种批大小都要重编译；
+   本机没走这条路，所以采样矩阵是 `num_reqs` 行的参差 list（见 §5 的切片修复）。
 3. **不做 pinned + 异步拷贝**：上游用 `copy_num_valid_draft_tokens` / `_copy_draft_token_ids_to_cpu`
    把草稿与有效数异步挪回 CPU（为异步调度服务）；本机是同步引擎、草稿最终要落到 CPU 交给
    Scheduler，所以直接同步取（数据量 `B×K + B` 个整数，不是整段历史）。
@@ -116,6 +128,8 @@
 - **两个缓冲的时机不变量**：多请求 + 中途插入 + prefill 块的混合跑，`gpu_len + counts == cpu_len`
   每次都成立（实测 15/15；用例化后由 `test_gpu_length_is_round_start_snapshot` 守着）。
 - **批没填满**：`max_num_seqs=4` + 2/1 条请求、`max_num_seqs=3` + 2 条请求都跑通（修复前会报错）。
+- **融合/未融合对照**（本机实测，仅作口径记录）：未融合 2095 µs / 127 个 CUDA 事件；`torch.compile`
+  之后 126 µs / 8 个事件，两者结果逐值相同；CPU KMP 同批 16301 µs。
 - **端到端**：tiny 模型上 `ngram` 与 `ngram_gpu` 的 greedy 投机都 == 非投机，且两条路径输出一致。
 
 ## 5. 开发中发现并修掉的问题（60 关内）
