@@ -156,3 +156,22 @@ def extend_all_queries_by_N(query_start_loc: list[int], seq_lens: list[int],
     """
     return ([loc + num_new_tokens * index for index, loc in enumerate(query_start_loc)],
             [length + num_new_tokens for length in seq_lens])
+
+
+def update_scheduler_for_invalid_drafts(spec_token_ids: list[int],
+                                        num_valid_draft_tokens: int | None) -> list[int]:
+    """把"占位草稿"裁到有效个数（上游 `update_scheduler_for_invalid_drafts` 的核心效应）。
+
+    上游在 Runner 侧对 `scheduler_output` 做这件事（`num_scheduled_tokens[req] -= 占位-有效`、
+    `scheduled_spec_decode_tokens[req] = spec[:valid]`、有效数 0 就 pop），因为异步调度让
+    Scheduler 手里的计划是**乐观**的（按固定宽度 K 占位），必须等 GPU 的有效个数异步回来再裁。
+    本机没有异步调度，所以在**草稿交接给 Scheduler 时**做同样的事：裁完之后的计划、预算、统计
+    都只包含真实候选（见 docs/step60_alignment.md §3）。
+
+    除了按有效数截断，还**再滤一遍 -1**：需求 059 §3.5 的不变量是"哨兵永远不能变成真实 token"，
+    就算有效个数算错了也不许漏出去。
+    """
+    if num_valid_draft_tokens is None:
+        return list(spec_token_ids)
+    valid = max(0, min(int(num_valid_draft_tokens), len(spec_token_ids)))
+    return [token for token in spec_token_ids[:valid] if token >= 0]

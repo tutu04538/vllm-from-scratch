@@ -53,6 +53,9 @@ def build(spec_tokens=3, method="ngram", blocks=16, budget=16, model=TINY_DIR,
         device_config=DeviceConfig(device=DEVICE),
         speculative_config=None if spec_tokens == 0 else SpeculativeConfig(
             method=method, num_speculative_tokens=spec_tokens,
+            # 60 关起：ngram 的匹配窗口默认跟上游一样是 5/5（短 prompt 找不到 5-gram 重复），
+            # 本脚本要考的是"提 → 采用"的时序，所以显式给个小窗口（57 时代本机用的是 1..3）
+            prompt_lookup_min=1, prompt_lookup_max=3,
             draft_model_config=draft_config))
     engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
     return engine, engine.engine_core.engine_core.scheduler
@@ -67,8 +70,12 @@ class Recorder:
         self._schedule = scheduler.schedule
         scheduler.schedule = self.schedule
         if runner.proposer is not None:
-            self._propose = runner.proposer.propose
-            runner.proposer.propose = self.propose
+            # 60 关：ngram 提议者的协议入口是 `propose_drafts`（`propose` 现在是上游同签名的
+            # 批量匹配入口，返回的是 list[list[int]]）。draft_model 提议者仍是 `propose`。
+            self._entry = ("propose_drafts" if hasattr(runner.proposer, "propose_drafts")
+                           else "propose")
+            self._propose = getattr(runner.proposer, self._entry)
+            setattr(runner.proposer, self._entry, self.propose)
 
     def schedule(self):
         packet = self._schedule()

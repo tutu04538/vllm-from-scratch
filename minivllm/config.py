@@ -81,30 +81,60 @@ class DeviceConfig:
 
 @dataclass(frozen=True)
 class SpeculativeConfig:
-    """投机配置（57E 接进调度；58 增加输入槽位派生量）。"""
+    """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口）。"""
 
     method: str = "ngram"
     num_speculative_tokens: int = 0
     draft_model_config: ModelConfig | None = None
     # 验证方式（上游 `SpeculativeConfig.rejection_sample_method`，59 关只接 standard）
     rejection_sample_method: str = "standard"
+    # ngram 的匹配窗口（上游 `prompt_lookup_min/max`）：长度落在 [min, max] 的后缀 ngram
+    # 才会被拿去匹配。**默认 5/5**（上游注释："arbitrarily chosen"），只在给了一个时对齐另一个。
+    prompt_lookup_max: int | None = None
+    prompt_lookup_min: int | None = None
 
     def __post_init__(self):
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
-        if self.method not in ("ngram", "draft_model"):
+        if self.method not in ("ngram", "ngram_gpu", "draft_model"):
             raise ValueError(
-                f"本关只支持 method='ngram' / 'draft_model'，收到 {self.method!r}"
+                f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model'，收到 {self.method!r}"
                 "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
                 f"本关只支持 rejection_sample_method='standard'，收到 "
                 f"{self.rejection_sample_method!r}：synthetic（合成接受率）与 block"
                 f"（V2 块验证）按需求顺序在 75 关实现，不要用 standard 的结果冒充它们")
+        if self.method in ("ngram", "ngram_gpu"):
+            self._resolve_prompt_lookup()
+
+    def _resolve_prompt_lookup(self) -> None:
+        """把 `prompt_lookup_min/max` 补全成上游那套（config/speculative.py:804-829）。
+
+        规则逐条照抄：都没给 → `5/5`；只给一个 → 另一个取同一个值；最后校验 `min ≤ max`。
+        `dataclass(frozen=True)` 里不能直接赋值，所以走 `object.__setattr__`——上游这里是普通
+        赋值，效果一样（构造完之后读到的就是补全后的值）。
+        """
+        minimum, maximum = self.prompt_lookup_min, self.prompt_lookup_max
+        if minimum is None and maximum is None:
+            minimum = maximum = 5
+        elif minimum is None:
+            minimum = maximum
+        elif maximum is None:
+            maximum = minimum
+        if minimum > maximum:
+            raise ValueError(
+                f"prompt_lookup_min={minimum} 不能大于 prompt_lookup_max={maximum}")
+        object.__setattr__(self, "prompt_lookup_min", minimum)
+        object.__setattr__(self, "prompt_lookup_max", maximum)
 
     def uses_draft_model(self) -> bool:
         """是否用独立的 draft 模型提议（上游同名方法）。"""
         return self.method == "draft_model"
+
+    def use_ngram_gpu(self) -> bool:
+        """是否用 GPU 版 ngram 提议者（上游同名方法）。"""
+        return self.method == "ngram_gpu"
 
     @property
     def max_num_new_slots_for_drafting(self) -> int:

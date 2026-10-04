@@ -96,6 +96,11 @@ class DraftTokenIds:
     req_ids: list[str]
     draft_token_ids: list[list[int]]
     draft_probs: torch.Tensor | None = None
+    # 60 关：GPU 提议者的输出是**固定宽度**的（`[B, K]`，尾部用 -1 占位），所以"宽度"不等于
+    # "有几枚真草稿"——这个字段给出每行的**有效前缀长度**（CPU 提议者给 None = 每一枚都有效）。
+    # Scheduler 在收下草稿时按它裁一遍（`update_scheduler_for_invalid_drafts`），
+    # 保证哨兵 `-1` 不会变成真实 token。
+    num_valid_draft_tokens: list[int] | None = None
 
 
 @dataclass

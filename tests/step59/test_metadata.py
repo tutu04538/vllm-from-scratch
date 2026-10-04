@@ -11,7 +11,7 @@
 import numpy as np
 import pytest
 import torch
-from helpers import meta_drafts, metadata_for
+from spec_helpers import meta_drafts, metadata_for
 
 from minivllm.testing.spec_metadata import make_metadata
 

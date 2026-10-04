@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样）。旧的 `stepNN/` 代码目录已经
+这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 
 它不自己发明协议，而是做一个**能逐层映射到本机 vLLM（0.28.0）的、可运行的文本生成子集**。
@@ -19,7 +19,8 @@
 57F 的两篇对照见 [`docs/step57_architecture.md`](../docs/step57_architecture.md)（与真实 vLLM 的
 结构/数值对照）与 [`docs/step57_alignment.md`](../docs/step57_alignment.md)（差异账本）；
 第五十八/五十九关见 [`docs/step58_alignment.md`](../docs/step58_alignment.md)（draft 输入与双预算）、
-[`docs/step59_alignment.md`](../docs/step59_alignment.md)（GPU 批量拒绝采样、投机元数据口径、接受率统计）。
+[`docs/step59_alignment.md`](../docs/step59_alignment.md)（GPU 批量拒绝采样、投机元数据口径、接受率统计）、
+[`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -38,7 +39,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机验证 | `sample/rejection_sampler.py`（Triton 批量内核） | `v1/sample/rejection_sampler.py` |
-| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,draft_model}.py` | `v1/spec_decode/*` |
+| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model}.py` | `v1/spec_decode/*` |
 | 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py`、`testing/torch_rejection_sampler.py`、`testing/spec_metadata.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
@@ -138,8 +139,10 @@ python benchmarks/check_step58_input_budget.py       # 10 项：双预算（toke
 python benchmarks/check_step58_draft_inputs.py       # 11 项：第一遍输入逐值 + prefix 复用 + 与上游 kernel 差分
 python benchmarks/check_step58_workspace.py          # 15 项：固定工作区（地址稳定/只读有效切片）与端到端
 python benchmarks/check_step59_rejection.py          # 21 项：元数据口径、内核语义、上游/参考差分、分布、统计、profiler
+python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
+python -m pytest tests/step60 -q                     # 91 项：step60 的单测 + 集成（总纲要求的入口）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

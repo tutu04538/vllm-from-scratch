@@ -12,7 +12,7 @@
 import numpy as np
 import pytest
 import torch
-from helpers import (DRAFTS_ABC, meta_drafts, metadata_for, run_ours, run_reference,
+from spec_helpers import (DRAFTS_ABC, meta_drafts, metadata_for, run_ours, run_reference,
                      run_upstream, sampling_metadata)
 
 from minivllm.sample import expand_batch_to_tokens

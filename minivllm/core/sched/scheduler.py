@@ -36,6 +36,7 @@ prompt、已提交输出、优先级、采样配置、**块 hash 链**都保留�
 
 from ...request import Request, RequestStatus
 from ...spec_decode.metrics import SpecDecodingStats
+from ...spec_decode.utils import update_scheduler_for_invalid_drafts
 from ..kv_cache_utils import BlockHasher
 from .output import CachedRequestData, NewRequestData, SchedulerOutput
 from .request_queue import create_request_queue
@@ -607,8 +608,13 @@ class Scheduler:
         """
         if draft_token_ids is None:
             return
-        for req_id, spec_token_ids in zip(draft_token_ids.req_ids,
-                                          draft_token_ids.draft_token_ids):
+        # 60 关：GPU 提议者的草稿是**固定宽度**的（尾部 -1 占位），所以要按每行的有效个数裁一遍。
+        # 上游在 Runner 侧裁（异步调度让 Scheduler 的计划是乐观的），本机在交接处裁——
+        # 效应相同：`-1` 从不进入 `spec_token_ids`/计划/预算/统计。详见
+        # `spec_decode/ngram_proposer_gpu.py::update_scheduler_for_invalid_drafts` 与 alignment §3。
+        valid_counts = draft_token_ids.num_valid_draft_tokens
+        for index, (req_id, spec_token_ids) in enumerate(zip(draft_token_ids.req_ids,
+                                                            draft_token_ids.draft_token_ids)):
             request = self.requests.get(req_id)
             if request is None or request.is_finished():
                 continue
@@ -616,7 +622,9 @@ class Scheduler:
                 if request.spec_token_ids:
                     request.spec_token_ids = []
                 continue
-            request.spec_token_ids = list(spec_token_ids)
+            num_valid = None if valid_counts is None else valid_counts[index]
+            request.spec_token_ids = update_scheduler_for_invalid_drafts(
+                list(spec_token_ids), num_valid)
 
     # -------- 结束与清理 --------
 

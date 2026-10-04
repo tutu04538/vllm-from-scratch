@@ -145,6 +145,9 @@ class GPUModelRunner:
         self.pending_draft_probs = None
         # 本轮协议里"整表替换过块表"的请求（draft 侧据此重置自己的进度）
         self._resumed_req_ids: set[str] = set()
+        # 60 关：ngram_gpu 的显存历史缓冲在 `_build_proposer()` 里分配（只有这个方法用得到）
+        self.num_tokens_no_spec_gpu: torch.Tensor | None = None
+        self.token_ids_gpu_tensor: torch.Tensor | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.execute_model_state: ExecuteModelState | None = None
         self.failure: str | None = None
@@ -175,14 +178,26 @@ class GPUModelRunner:
         if config.method == "ngram":
             from ..spec_decode.ngram_proposer import NgramProposer
 
-            return NgramProposer(config.num_speculative_tokens)
+            return NgramProposer(self.vllm_config)
+        if config.method == "ngram_gpu":
+            from ..spec_decode.ngram_proposer_gpu import NgramProposerGPU
+
+            # 60 关：GPU 提议者要一份**常驻显存**的历史 + 长度表，每步只增量写新采样的 token
+            # （上游在 Runner 里分配同样两个张量）
+            self.num_tokens_no_spec_gpu = torch.zeros(
+                self.input_batch.max_num_reqs, dtype=torch.int32, device=self.device)
+            self.token_ids_gpu_tensor = torch.zeros(
+                self.input_batch.max_num_reqs, self.max_model_len, dtype=torch.int32,
+                device=self.device)
+            return NgramProposerGPU(self.vllm_config, self.device, self)
         if config.method == "draft_model":
             from ..spec_decode.draft_model import DraftModelProposer
 
             proposer = DraftModelProposer(config, self.vllm_config, self.device)
             proposer.load_model()
             return proposer
-        raise ValueError(f"未知的投机方法 {config.method!r}（本关支持 'ngram' / 'draft_model'）")
+        raise ValueError(f"未知的投机方法 {config.method!r}"
+                         f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model'）")
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
@@ -240,6 +255,11 @@ class GPUModelRunner:
         状态盖掉；**镜像重建（6）在入批（7）之前**，因为 `InputBatch.add_request` 要读
         `all_token_ids` 写缓冲。
         """
+        # 60 关：ngram_gpu 的历史缓冲按**行**索引，而行号会因为结束/压实/新请求而变，
+        # 所以要拿"上一轮的行号映射"来判断哪些行搬了家。上游把它存在 InputBatch 上，
+        # 本机在进入 `_update_states` 时快照一份（此时还是上一轮结束后的状态）。
+        prev_req_id_to_index = dict(self.input_batch.req_id_to_index)
+
         # 1) 结束的请求：删镜像 + 删批行（本轮结束的请求，执行侧不再为它保留任何状态）
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
@@ -346,6 +366,17 @@ class GPUModelRunner:
         for req_id in scheduled_req_ids:
             self.input_batch.update_req_spec_token_ids(
                 req_id, scheduler_output.scheduled_spec_decode_tokens)
+
+        # 60 关：批已经稳定（增删/压实都做完）→ 增量维护 ngram_gpu 的显存历史。
+        # 顺序与上游一致（上游也在 `_update_states` 末尾做）。搬运规则见
+        # `ngram_proposer_gpu.update_ngram_gpu_tensors_incremental`。
+        if self.speculative_config is not None and self.speculative_config.use_ngram_gpu():
+            from ..spec_decode.ngram_proposer_gpu import update_ngram_gpu_tensors_incremental
+
+            update_ngram_gpu_tensors_incremental(
+                self.input_batch, self.token_ids_gpu_tensor, self.num_tokens_no_spec_gpu,
+                new_req_ids={state.req_id for state in reqs_to_add},
+                prev_req_id_to_index=prev_req_id_to_index, device=self.device)
 
         assert set(self.input_batch.req_id_to_index) == scheduled_req_ids, (
             "批里的请求与本轮被调度的请求必须一致："
@@ -767,9 +798,19 @@ class GPUModelRunner:
                                    target_rows=target_rows, num_rejected=num_rejected,
                                    history_end=history_end, next_token_id=next_token_id,
                                    ready=bool(tokens)))
-        # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
-        drafts = self.proposer.propose(rows, all_token_ids, self.input_batch,
-                                       reset_req_ids=set(self._resumed_req_ids))
+        # 按方法分派（三条路径的草稿来源不同：CPU/GPU 的 ngram 与 draft 模型）
+        if self.speculative_config is not None and self.speculative_config.use_ngram_gpu():
+            # 60 关：GPU 提议者收显存里的历史与长度，交回**固定宽度**的草稿 + 每行有效个数
+            drafts = self.proposer.propose_drafts(
+                rows, all_token_ids, self.input_batch, sampled_by_row=sampled_by_row,
+                sample_rows=state.sample_rows, token_ids_gpu=self.token_ids_gpu_tensor,
+                num_tokens_no_spec_gpu=self.num_tokens_no_spec_gpu)
+        elif self.speculative_config is not None and self.speculative_config.method == "ngram":
+            drafts = self.proposer.propose_drafts(rows, all_token_ids, self.input_batch)
+        else:
+            # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
+            drafts = self.proposer.propose(rows, all_token_ids, self.input_batch,
+                                           reset_req_ids=set(self._resumed_req_ids))
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
         return drafts

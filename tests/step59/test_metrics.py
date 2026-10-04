@@ -6,7 +6,7 @@
 """
 
 import torch
-from helpers import make_engine, run_prompts, sampling_metadata
+from spec_helpers import make_engine, run_prompts, sampling_metadata
 
 from minivllm import SpeculativeConfig
 from minivllm.sample import Sampler

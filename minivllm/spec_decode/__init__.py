@@ -2,7 +2,8 @@
 
     metadata.py           一轮验证的索引：两个坐标系（forward 行 / 取完的 logits）
     metrics.py            接受率统计（只统计已验证的候选）
-    ngram_proposer.py     从历史里找重复片段当草稿（确定性，没有 q）
+    ngram_proposer.py     从历史里找重复片段当草稿（确定性，没有 q；CPU）
+    ngram_proposer_gpu.py 同一套匹配的 GPU 版：显存常驻历史 + 增量写入 + 有效个数
     draft_model.py        用小模型提议（SpecDecodeBaseProposer + DraftModelProposer）
 
 **时序**（199 §4）：轮 t 验证时顺手提草稿 → `post_step` 取回 → 轮 t+1 才采用。
@@ -20,6 +21,7 @@ from .draft_model import DraftModelProposer, SpecDecodeBaseProposer
 from .metadata import SpecDecodeMetadata
 from .metrics import SpecDecodingStats
 from .ngram_proposer import NgramProposer
+from .ngram_proposer_gpu import NgramProposerGPU
 
-__all__ = ["SpecDecodeMetadata", "SpecDecodingStats", "NgramProposer",
+__all__ = ["SpecDecodeMetadata", "SpecDecodingStats", "NgramProposer", "NgramProposerGPU",
            "SpecDecodeBaseProposer", "DraftModelProposer"]
