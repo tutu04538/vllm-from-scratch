@@ -1,0 +1,72 @@
+{
+  "step": 62,
+  "说明": "本关不引入新模型：验证的是**接口与分派边界**。测试用现场生成的 tiny Qwen3（固定 seed），教学入口用本机真实权重 Qwen3-1.7B；没有 draft 模型——候选来自用户自己的类。",
+  "target_draft_pairs": [
+    {
+      "用途": "端到端（tests/step62/test_custom_proposer.py 的 C/D 段、benchmarks/check_step62_custom_proposer.py 的 D/E/F 段）",
+      "target": {
+        "来源_tiny": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+        "来源_demo": "models/Qwen3-1.7B（本机权重，未跟踪）",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "model_type": "qwen3",
+        "tiny规格": {
+          "hidden_size": 32,
+          "num_hidden_layers": 2,
+          "num_attention_heads": 4,
+          "num_key_value_heads": 2,
+          "head_dim": 16,
+          "vocab_size": 11,
+          "max_position_embeddings": 64,
+          "dtype": "float32"
+        },
+        "demo规格": {
+          "num_hidden_layers": 28,
+          "hidden_size": 2048,
+          "num_attention_heads": 16,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "dtype": "bfloat16",
+          "参数量": "1.72 G",
+          "tokenizer": "Qwen3-1.7B 自带"
+        },
+        "权重来源": "tiny：随机初始化（固定 seed）；demo：本机已有权重（不提交）"
+      },
+      "draft": {
+        "说明": "**没有 draft 模型**：候选来自 `speculative_config.model` 指向的**用户类**（`examples/custom_proposer.py` 是教学示例，测试里还有 4 个别名类做行为/违约用例）",
+        "q": "自定义插件不提供 q → `DraftTokenIds.draft_probs=None`（点质量 q，接受判定退化成 p[d] >= u；与 ngram/suffix 同档）",
+        "K": "由 `num_speculative_tokens` 给（测试用 2/3/4）"
+      },
+      "device": "cuda:0（真引擎；投机验证是 Triton 内核，只在 CUDA 上有——与 59/60/61 关一致）"
+    },
+    {
+      "用途": "冻结源码对照（调用参数与分派）",
+      "上游": "vllm 0.28.0 的 `v1/spec_decode/custom_class_proposer.py` 与 `v1/worker/gpu_model_runner.py` 的 custom_class 分支",
+      "权重": "不需要",
+      "note": "只读源码文本做参数序列对照，不在生产路径 import 上游"
+    },
+    {
+      "用途": "插件类清单（都在 tests/step62/test_custom_proposer.py 里，按点号路径导入）",
+      "classes": {
+        "RepeatLastTokenProposer（examples/）": "常规：重复最后一个 token，确定性",
+        "EmptyProposer": "全空候选",
+        "AllWrongProposer": "永远猜 token 0（全错候选）",
+        "VariableLengthProposer": "每行长度不同（变长候选）",
+        "RecordingProposer": "记录构造参数与每次调用参数",
+        "BufferShapeProposer": "记录定长缓冲的形状与有效前缀",
+        "TooFewRowsProposer / TooManyRowsProposer": "协议违约（行数不匹配）",
+        "BoomOnInitProposer / NoProposeProposer / NotCallableProposeProposer": "构造失败 / 缺 propose / propose 不可调用"
+      }
+    },
+    {
+      "用途": "真实模型集成",
+      "state": "demo.py 用 Qwen3-1.7B 跑通（--spec-method custom_class）",
+      "reason": "本关只验证接口；真实收益与吞吐矩阵按总纲在 84 关统一测"
+    }
+  ],
+  "randomness": {
+    "自定义插件": "示例与测试类都是确定性的（不含随机数、不依赖模型）→ 同一输入同一候选",
+    "端到端": "temperature=0.0（greedy）：开/不开投机的输出必须逐 token 相同"
+  }
+}

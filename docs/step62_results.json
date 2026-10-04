@@ -1,0 +1,188 @@
+{
+  "step": 62,
+  "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/062_自定义Proposer接入与配置分派边界.md",
+  "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+  "recorded_at": "2026-10-04T21:10:00+00:00",
+  "git": {
+    "baseline_commit_at_record_time": "96c305c",
+    "implementation_commit": "见本文件所在提交之后补记（step60/61 同款做法）",
+    "note": "命令与轨迹在本关实现提交之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（69 个文件）"
+  },
+  "package": {
+    "root": "minivllm/",
+    "python_files": 69,
+    "sha256": "910090255c87a1aeabcdfa90253f77feca7a880543caa42155d5885c2b125b21",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57-61 口径）"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（只作冻结源码对照，生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop, WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+  },
+  "models": "docs/step62_models.json（tiny Qwen3 现场生成；demo 用本机 Qwen3-1.7B；无 draft 模型）",
+  "commands": [
+    {
+      "cmd": "python -m pytest tests/step62 -q",
+      "result": "37 passed in 4.87s",
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 tests/step62 -q",
+      "result": "280 passed, 16 warnings in 13.80s",
+      "failed": 0,
+      "skipped": 0,
+      "note": "41 + 52 + 95 + 55 + 37；五个目录可一次跑完"
+    },
+    {
+      "cmd": "python benchmarks/check_step62_custom_proposer.py",
+      "result": "34 PASS / 0 FAIL",
+      "failed": 0,
+      "note": "A 方法推断 6 / B 接口 2 / C 错误分类 7 / D Runner 接线 7 / E 行为 10 / F 端到端 2"
+    },
+    {
+      "cmd": "python benchmarks/check_step61_suffix.py",
+      "result": "27 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step60_ngram.py",
+      "result": "17 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step59_rejection.py",
+      "result": "21 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py",
+      "result": "10 + 11 + 15 = 36 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python minivllm/demo.py --device cuda --max-new-tokens 4 --spec-method custom_class --spec-model examples.custom_proposer.RepeatLastTokenProposer --spec-k 3 测试",
+      "result": "exit 0；加载 1.72G 模型，输出 4 token，日志含『提议者=RepeatLastTokenProposer（examples.custom_proposer）』",
+      "failed": 0
+    }
+  ],
+  "execution_trace": {
+    "method_inference": {
+      "examples.custom_proposer.RepeatLastTokenProposer": "custom_class",
+      "pkg.sub.Class": "custom_class",
+      "ngram": "ngram",
+      "[ngram]": "ngram",
+      "Qwen/Qwen3-0.6B": "draft_model",
+      "https://huggingface.co/a.b": "draft_model",
+      "single": "draft_model",
+      "my-module.Class": "draft_model"
+    },
+    "error_classification": {
+      "NoDots": "ValueError（full module path）",
+      "no_such_module_xyz.Klass": "ImportError（Cannot import module…，__cause__ = ModuleNotFoundError）",
+      "examples.custom_proposer.NoSuchClass": "AttributeError（has no attribute）",
+      "test_custom_proposer.BoomOnInitProposer": "RuntimeError（must accept VllmConfig，__cause__ = 原始 RuntimeError）",
+      "test_custom_proposer.NoProposeProposer": "AttributeError（must have a 'propose' method）",
+      "test_custom_proposer.NotCallableProposeProposer": "AttributeError（not callable）"
+    },
+    "runner_call": {
+      "对象身份": "num_tokens_no_spec / token_ids_cpu 就是 InputBatch 自己的缓冲（is 比较为真）",
+      "行对齐": "sampled_token_ids 行数 == 调用当刻批行数（观测 [1,1,1,1]）",
+      "定长缓冲": "len(num_tokens_no_spec) == max_num_reqs == 2；token_ids_cpu 形状 (2, 64)；只有前 N 行有效",
+      "slot_mappings": null,
+      "冻结源码对照": "上游 v1/worker/gpu_model_runner.py 的 custom_class 分支含 propose( / sampled_token_ids, / num_tokens_no_spec, / token_ids_cpu, / slot_mappings=slot_mappings,"
+    },
+    "greedy_equivalence": {
+      "prompts": {
+        "a": [
+          1,
+          2,
+          3,
+          4,
+          1,
+          2,
+          3,
+          4
+        ],
+        "b": [
+          5,
+          6,
+          5,
+          6,
+          5,
+          6
+        ]
+      },
+      "baseline_non_spec": {
+        "a": [
+          4,
+          4,
+          4,
+          6,
+          0,
+          6
+        ],
+        "b": [
+          10,
+          4,
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      "常规插件（重复最后一个 token）": {
+        "outputs_equal": true,
+        "num_draft_tokens": 15
+      },
+      "空候选插件": {
+        "outputs_equal": true,
+        "num_draft_tokens": 0,
+        "插件调用次数": ">0"
+      },
+      "全错候选插件（永远猜 0）": {
+        "outputs_equal": true,
+        "num_draft_tokens": 27
+      },
+      "变长候选插件（行号越大越长）": {
+        "outputs_equal": true,
+        "num_draft_tokens": 10
+      }
+    },
+    "protocol_violation": {
+      "TooFewRowsProposer": "RuntimeError: 自定义提议者 … 返回了 0 行草稿，但本轮批里有 1 行：必须按批行逐行返回",
+      "TooManyRowsProposer": "同上（多一行）",
+      "说明": "上游不检查；本仓库有意加严（差异记在 docs/step62_alignment.md §3.4）"
+    },
+    "optional_hook": {
+      "现象": "示例插件没有 remove_requests；请求结束那一轮（finished_req_ids 非空）曾被 AttributeError 打断",
+      "处理": "Runner 侧改成『有才调』（getattr 取 None 则跳过），并在 check_step62 D6/D7 里固定住"
+    }
+  },
+  "not_run": [
+    "真实权重的投机吞吐/加速比：本关只是接口与分派边界，不做性能结论（总纲把性能矩阵放在 84 关）",
+    "异步调度组合：本仓库还没有异步调度（70 关），没有可拒绝的 async 组合要测",
+    "slot_mappings 的真实传参：本仓库还没有该对象（69 关 CUDA Graph 时引入）",
+    "plugins 的多进程/远程加载：需求明确不做插件发现平台"
+  ],
+  "fixed_during_step": [
+    {
+      "现象": "示例插件在请求结束后仍被 Runner 调 remove_requests → AttributeError",
+      "原因": "57E 的结束清理钩子假定提议者一定有 remove_requests；而 62 关的契约只有 propose",
+      "处理": "Runner 改成可选钩子（有才调），并补 D6/D7 两条用例盯住"
+    },
+    {
+      "现象": "测试里按『缓冲长度 == 批行数』写断言，实测不成立",
+      "原因": "两个缓冲是定长（长度 = max_num_reqs），不是按批行数裁的（上游 vLLM 的 InputBatch 同样定长）",
+      "处理": "断言改成『sampled_token_ids 行数 == 批行数；缓冲长度 == max_num_reqs；只有前 N 行有效』，并把这条契约写进示例插件 docstring 与 alignment §2"
+    },
+    {
+      "现象": "插件返回行数与批行数不一致时静默通过（少给几行只是没草稿）",
+      "原因": "上游不检查；本仓库原先也没有检查",
+      "处理": "在插件↔Runner 边界加 RuntimeError（有意加严），文档 §3.4 记录理由"
+    }
+  ]
+}

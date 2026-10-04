@@ -92,9 +92,14 @@ class DeviceConfig:
 @dataclass(frozen=True)
 class SpeculativeConfig:
     """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口；
-    61 增加 suffix decoding 参数）。"""
+    61 增加 suffix decoding 参数；62 增加自定义 proposer 的接入与**方法推断**）。"""
 
-    method: str = "ngram"
+    # 上游 `SpeculativeConfig.method: str | None = None`：**不给**时由 `__post_init__` 推出来，
+    # 这样"用哪种投机"只有一个判定点（62 关需求 §3.1：不让 CLI 判一次、Runner 再猜一次）。
+    method: str | None = None
+    # 上游注释：`method` 是给"非模型类提议者"用的新参数，而 `model` 用来放 draft 模型 /
+    # EAGLE head / 额外权重；`method="custom_class"` 时它装的是**完整 module.Class 路径**。
+    model: str | None = None
     num_speculative_tokens: int = 0
     draft_model_config: ModelConfig | None = None
     # 验证方式（上游 `SpeculativeConfig.rejection_sample_method`，59 关只接 standard）
@@ -114,13 +119,31 @@ class SpeculativeConfig:
     # 只推测"按频次估计的概率" ≥ 该值的 token。
     suffix_decoding_min_token_prob: float = 0.1
 
+    @staticmethod
+    def _is_custom_proposer_path(model: str | None) -> bool:
+        """`model` 是不是"自定义提议者类的点号路径"（上游 `config/speculative.py:721-730`）。
+
+        判定逐条照抄：`http(s)://` / `file://` 前缀不算（那是模型地址）；带 `/` 不算
+        （`Qwen/Qwen3-0.6B` 这类 HF 模型名要走 draft_model）；必须至少两段且**每段都是
+        合法标识符**（`module.Class`、`pkg.sub.Class` 都行，`my-module.Class` 不行）。
+        """
+        if model is None:
+            return False
+        if model.startswith(("http://", "https://", "file://")):
+            return False
+        if "/" in model:
+            return False
+        parts = model.split(".")
+        return len(parts) >= 2 and all(part.isidentifier() for part in parts)
+
     def __post_init__(self):
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
-        if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix"):
+        self._resolve_method()
+        if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class"):
             raise ValueError(
-                f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix'，"
-                f"收到 {self.method!r}"
+                f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
+                f"'custom_class'，收到 {self.method!r}"
                 "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
@@ -131,6 +154,39 @@ class SpeculativeConfig:
             self._resolve_prompt_lookup()
         elif self.method == "suffix":
             self._resolve_suffix_decoding()
+        elif self.method == "custom_class":
+            self._resolve_custom_class()
+
+    def _resolve_method(self) -> None:
+        """`method` 没给时按上游规则推出来（`config/speculative.py:741-756`）。
+
+        顺序也是照抄的：**先看 `model` 是不是自定义类的点号路径**（是 → `custom_class`），
+        否则 `model` 是 `ngram`/`[ngram]` → `ngram`，其余一律 `draft_model`（连 `model` 都没给
+        也算 draft_model，因为"没写方法"的默认语义是"给一个 draft 模型"）。
+
+        这一步是本关的"分派边界"：**同一条事实只在这里判定一次**，Runner 只按
+        `speculative_config.method` 分派，不再自己猜第二遍（否则 CLI 与 Runner 可能各判一套，
+        出现"配置说 A、运行时走 B"的静默错）。
+        """
+        if self.method is None:
+            if self._is_custom_proposer_path(self.model):
+                object.__setattr__(self, "method", "custom_class")
+            elif self.model in ("ngram", "[ngram]"):
+                object.__setattr__(self, "method", "ngram")
+            else:
+                object.__setattr__(self, "method", "draft_model")
+
+    def _resolve_custom_class(self) -> None:
+        """`method="custom_class"` 的取值校验（上游 `config/speculative.py:787-793`）。
+
+        上游只在这里校验"`model` 不能为空"（**明确报错，不回退**）；点号路径、模块/类是否存在、
+        能不能构造、`propose` 可不可调用，一律由 `create_custom_proposer()` 在**启动期**分类报错
+        （见 `minivllm/spec_decode/custom_class_proposer.py`）。
+        """
+        if not self.model:
+            raise ValueError(
+                "method='custom_class' requires 'model' to contain the "
+                "custom proposer module path (e.g. 'my_module.MyProposer').")
 
     def _resolve_prompt_lookup(self) -> None:
         """把 `prompt_lookup_min/max` 补全成上游那套（config/speculative.py:804-829）。

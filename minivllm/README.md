@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议、第六十一关的 Suffix Decoding）。旧的 `stepNN/` 代码目录已经
+这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议、第六十一关的 Suffix Decoding、第六十二关的自定义 Proposer 接入）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 
 它不自己发明协议，而是做一个**能逐层映射到本机 vLLM（0.28.0）的、可运行的文本生成子集**。
@@ -22,7 +22,8 @@
 [`docs/step59_alignment.md`](../docs/step59_alignment.md)（GPU 批量拒绝采样、投机元数据口径、接受率统计）、
 [`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）、
 [`docs/step61_alignment.md`](../docs/step61_alignment.md)（Suffix Decoding：请求内 + 跨请求后缀树，外部依赖见
-[`docs/step61_dependencies.json`](../docs/step61_dependencies.json)）。
+[`docs/step61_dependencies.json`](../docs/step61_dependencies.json)）、
+[`docs/step62_alignment.md`](../docs/step62_alignment.md)（自定义 Proposer 与分派边界）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -41,7 +42,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机验证 | `sample/rejection_sampler.py`（Triton 批量内核） | `v1/sample/rejection_sampler.py` |
-| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding}.py` | `v1/spec_decode/*` |
+| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding,custom_class_proposer}.py` | `v1/spec_decode/*` |
 | 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py`、`testing/torch_rejection_sampler.py`、`testing/spec_metadata.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
@@ -129,6 +130,24 @@ step scheduled                    hits           preempted    running           
 依赖锁定记录见 [`docs/step61_dependencies.json`](../docs/step61_dependencies.json)，
 实测记录见 [`docs/step61_results.json`](../docs/step61_results.json)。
 
+## 第六十二关：自定义 Proposer（插件接口与分派边界）
+
+- **换候选算法不用动 Engine**：`SpeculativeConfig.model` 给一个 `module.Class` 点号路径，
+  `method` 会被推成 `custom_class`（**推断只在配置期做一次**，Runner 只按 `method` 分派，
+  不再自己判第二遍）。
+- **插件契约**：`__init__(vllm_config)` + `propose(sampled_token_ids, num_tokens_no_spec,
+  token_ids_cpu, slot_mappings=None) -> list[list[int]]`。行数必须等于批行数（未采样的行给空列表）；
+  每行枚数随意（0..K，可变长）；候选内容错了不影响正确性（target 逐个验证）。
+  两个缓冲是**定长**的（`max_num_reqs` / `max_num_reqs × max_model_len`），只有前 N 行有效。
+- **越权边界**：插件只拿到只读的 `VllmConfig` 与三个 CPU 缓冲，拿不到 Scheduler 的 `Request`、
+  `KVCacheManager` 或 `InputBatch`，改不了状态；`remove_requests` 是可选的（有才调）。
+- **错误在启动期分类**：无点号 / 模块不存在 / 类不存在 / 构造失败 / `propose` 缺失或不可调用，
+  五类各报各的（保留原始异常链），不静默回退成 ngram。
+
+示例插件见 [`examples/custom_proposer.py`](../examples/custom_proposer.py)，
+设计与差异见 [`docs/step62_alignment.md`](../docs/step62_alignment.md)，
+实测记录见 [`docs/step62_results.json`](../docs/step62_results.json)。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -162,10 +181,12 @@ python benchmarks/check_step58_workspace.py          # 15 项：固定工作区�
 python benchmarks/check_step59_rejection.py          # 21 项：元数据口径、内核语义、上游/参考差分、分布、统计、profiler
 python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
 python benchmarks/check_step61_suffix.py             # 27 项：依赖接入、请求内/跨请求候选、容量与 FIFO、同 ID 重用、调用顺序、参数生效、端到端
+python benchmarks/check_step62_custom_proposer.py    # 34 项：方法推断、接口、错误分类、Runner 接线、行为等价、demo 端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
+python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

@@ -171,10 +171,20 @@ class GPUModelRunner:
 
         没有投机配置 → 没有提议器 → `take_draft_token_ids()` 恒为 None，
         Scheduler 那边也不会收到草稿（整条路径是关的）。
+
+        **分派只在这里做一次**，而且只认 `speculative_config.method`——"用哪种投机"的推断
+        已经在配置期归一化完了（62 关需求 §3.1：不让 CLI 判一次、Runner 再猜一次）。
+        `custom_class` 放在最前，与上游 `gpu_model_runner.py:645` 的分支顺序一致。
         """
         config = self.speculative_config
         if config is None:
             return None
+        if config.method == "custom_class":
+            # 62 关：用户类直接就是 Runner 持有的提议者（不包 Adapter）。
+            # 上游同款：构造参数只有 `VllmConfig`，拿不到 Request / KVCacheManager。
+            from ..spec_decode.custom_class_proposer import create_custom_proposer
+
+            return create_custom_proposer(self.vllm_config)
         if config.method == "ngram":
             from ..spec_decode.ngram_proposer import NgramProposer
 
@@ -203,7 +213,8 @@ class GPUModelRunner:
 
             return SuffixDecodingProposer(self.vllm_config)
         raise ValueError(f"未知的投机方法 {config.method!r}"
-                         f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model' / 'suffix'）")
+                         f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
+                         f"'custom_class'）")
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
@@ -275,8 +286,14 @@ class GPUModelRunner:
         # 被抢占等待恢复的请求都不在 batch 里，但它们的状态得留着（205 §4.1/§4.3）。
         # 0-token 的结束清理轮也会走到这里——最后一条请求结束后复用 ID 才不会继承旧进度。
         # （草稿概率 q 存在 `pending_draft_probs` 上、每轮整体重算，所以它不需要按请求清。）
+        #
+        # 62 关：**自定义提议者不保证有 `remove_requests`**（上游对 `propose` 之外的钩子没有任何
+        # 契约，`create_custom_proposer` 只检查 `propose`），所以这里按"有才调"处理。这不是静默
+        # 降级：插件本来就没有状态要清，缺这个方法只是"没有可选钩子"，不影响草稿正确性。
         if scheduler_output.finished_req_ids and self.proposer is not None:
-            self.proposer.remove_requests(scheduler_output.finished_req_ids)
+            remove_requests = getattr(self.proposer, "remove_requests", None)
+            if remove_requests is not None:
+                remove_requests(scheduler_output.finished_req_ids)
 
         # 2) 本轮没被调度的活跃请求：**移出批，但保留 CachedRequestState**
         #    （未调度 ≠ 结束：它可能是被抢占、或者这一轮预算不够）
@@ -804,8 +821,40 @@ class GPUModelRunner:
                                    target_rows=target_rows, num_rejected=num_rejected,
                                    history_end=history_end, next_token_id=next_token_id,
                                    ready=bool(tokens)))
-        # 按方法分派（三条路径的草稿来源不同：CPU/GPU 的 ngram 与 draft 模型）
-        if self.speculative_config is not None and self.speculative_config.use_ngram_gpu():
+        # 按方法分派（草稿来源不同：用户类 / CPU、GPU 的 ngram / draft 模型）
+        if self.speculative_config is not None and \
+                self.speculative_config.method == "custom_class":
+            # 62 关：**照上游 `custom_class` 分支的参数**调用用户类，一个都不多、一个都不少：
+            #     drafter.propose(sampled_token_ids, num_tokens_no_spec, token_ids_cpu,
+            #                     slot_mappings=slot_mappings)
+            # 三个对象就是 InputBatch 自己的缓冲（不做拷贝、不转格式）；返回 `list[list[int]]`
+            # 再包成本仓库 Runner 的 `DraftTokenIds`（协议出口只有这一个，插件不需要知道它）。
+            #
+            # 行对齐：`sampled_token_ids` 必须**按批行**给满（未采样的行给空列表），
+            # 因为用户类会拿它和 `num_tokens_no_spec[row]` 配对——只有长度 == 批行数时
+            # "第 i 项 ↔ 第 i 行"才成立（61 关讨论过 i 与 req_id_to_index 的关系）。
+            num_reqs = len(self.input_batch.req_ids)
+            sampled_token_ids: list[list[int]] = [[] for _ in range(num_reqs)]
+            for row, tokens in sampled_by_row.items():
+                sampled_token_ids[row] = list(tokens)
+            draft_token_ids = self.proposer.propose(
+                sampled_token_ids,
+                self.input_batch.num_tokens_no_spec,
+                self.input_batch.token_ids_cpu,
+                slot_mappings=None,  # 本仓库还没有 slot_mappings 对象（69 关 CUDA Graph 时才有）
+            )
+            # 插件契约：逐行返回，行数 == 批行数（每行枚数随意，可为 0）。
+            # 上游不检查这一条；本仓库按"协议违约立刻报错"处理——因为外部插件的行错位
+            # 在这里是**静默**的：少给几行只会让那几条请求没草稿（看起来"能用"），
+            # 报错比让人以为插件写对了更省事（差异记在 docs/step62_alignment.md §3）。
+            if len(draft_token_ids) != num_reqs:
+                raise RuntimeError(
+                    f"自定义提议者 {type(self.proposer).__name__} 返回了 "
+                    f"{len(draft_token_ids)} 行草稿，但本轮批里有 {num_reqs} 行："
+                    f"必须按批行逐行返回（未采样的行给空列表）")
+            drafts = DraftTokenIds(req_ids=list(self.input_batch.req_ids),
+                                   draft_token_ids=[list(draft) for draft in draft_token_ids])
+        elif self.speculative_config is not None and self.speculative_config.use_ngram_gpu():
             # 60 关：GPU 提议者收显存里的历史与长度，交回**固定宽度**的草稿 + 每行有效个数
             drafts = self.proposer.propose_drafts(
                 rows, all_token_ids, self.input_batch, sampled_by_row=sampled_by_row,

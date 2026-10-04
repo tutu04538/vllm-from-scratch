@@ -74,6 +74,14 @@ def main(argv=None):
                         help="至少生成这么多个 token 才允许出现停止 token（采样侧屏蔽）")
     parser.add_argument("--seed", type=int, default=None, help="随机种子（同 seed 可复现）")
     parser.add_argument("--ignore-eos", action="store_true")
+    parser.add_argument("--spec-method", default=None,
+                        help="投机方法：ngram / ngram_gpu / suffix / custom_class"
+                             "（不填 = 不开投机；只给 --spec-model 的点号路径时会自动推断成"
+                             " custom_class，62 关的方法推断边界）")
+    parser.add_argument("--spec-model", default=None,
+                        help="custom_class 的完整 module.Class 路径，例如"
+                             " examples.custom_proposer.RepeatLastTokenProposer")
+    parser.add_argument("--spec-k", type=int, default=4, help="每轮最多猜几枚草稿")
     parser.add_argument("--trace", action="store_true", help="打印第一轮真正喂给模型的数字")
     parser.add_argument("--scheduler-trace", action="store_true",
                         help="打印每轮的调度决策（scheduler_trace）")
@@ -84,7 +92,7 @@ def main(argv=None):
     from transformers import AutoTokenizer
 
     from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
-                        SchedulerConfig, UniProcExecutor, VllmConfig, Worker)
+                        SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
 
     model_dir = pathlib.Path(args.model_dir)
     if not model_dir.is_dir():
@@ -101,7 +109,12 @@ def main(argv=None):
                                  enable_prefix_caching=not args.no_prefix_caching),
         scheduler_config=SchedulerConfig(max_num_seqs=args.max_num_seqs,
                                          max_num_batched_tokens=args.max_num_batched_tokens),
-        device_config=DeviceConfig(device=device))
+        device_config=DeviceConfig(device=device),
+        # 投机：不给任何 spec 参数就是关闭（`speculative_config=None`）；给了就交给
+        # `SpeculativeConfig` 在**配置期**完成方法推断与校验（62 关：只说一次）
+        speculative_config=(None if args.spec_method is None and args.spec_model is None
+                            else SpeculativeConfig(method=args.spec_method, model=args.spec_model,
+                                                   num_speculative_tokens=args.spec_k)))
 
     started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
@@ -123,6 +136,12 @@ def main(argv=None):
           f"{args.block_size} 槽 = {kv_bytes / 1e6:.0f} MB；加载 {load_seconds:.2f}s（含 tokenizer）")
     print(f"  前缀缓存：{'开' if config.cache_config.enable_prefix_caching else '关'}"
           f"（块 hash 链 + 引用计数 + LRU 逐出；两条相同 prompt 的请求会命中同一批块）")
+    if config.speculative_config is not None:
+        spec = config.speculative_config
+        print(f"  投机：method={spec.method!r}"
+              + (f" model={spec.model!r}" if spec.model else "")
+              + f" K={spec.num_speculative_tokens}，提议者={type(runner.proposer).__name__}"
+              f"（{type(runner.proposer).__module__}）")
 
     # --trace：只记第一轮。这是"协议 → 模型输入"这一段的真实数字，后面的轮次结构相同
     original_prepare = runner._prepare_inputs
