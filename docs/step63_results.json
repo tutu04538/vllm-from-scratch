@@ -5,7 +5,7 @@
   "recorded_at": "2026-10-04T22:35:00+00:00",
   "git": {
     "baseline_commit_at_record_time": "c0fd8c9",
-    "implementation_commit": "本轮提交（阶段 A）"
+    "implementation_commit": "798dc00（阶段 A：输入对齐；阶段 B/C 待做）"
   },
   "package": {
     "root": "minivllm/",
