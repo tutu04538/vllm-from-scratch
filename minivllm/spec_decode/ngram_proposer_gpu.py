@@ -306,6 +306,13 @@ class NgramProposerGPU:
         sampled_by_row = sampled_by_row or {}
         sample_rows = list(range(num_reqs)) if sample_rows is None else list(sample_rows)
 
+        # 只取**批里这 num_reqs 行**：`propose()` 里的 `write_positions`/`in_bounds` 是按长度表的
+        # 行数展开的，而采样矩阵只有批行那么多。批没填满（num_reqs < max_num_reqs）时两者对不上，
+        # 广播要么报错（2 ≤ num_reqs < max）要么把第 0 行的采样数据广播到空闲行上（num_reqs==1）。
+        # 切片是视图 → 就地 scatter 仍然写进真正的历史缓冲。
+        token_ids_gpu = token_ids_gpu[:num_reqs]
+        num_tokens_no_spec_gpu = num_tokens_no_spec_gpu[:num_reqs]
+
         sampled = [list(sampled_by_row.get(row, [])) for row in range(num_reqs)]
         discard_mask = torch.tensor([row not in set(sample_rows) for row in range(num_reqs)],
                                     dtype=torch.bool, device=self.device)
@@ -316,10 +323,10 @@ class NgramProposerGPU:
         drafts, num_valid = self.propose(self.k, num_tokens_no_spec_gpu, token_ids_gpu,
                                          valid_ids, counts)
 
-        padded = drafts[:num_reqs].cpu().tolist()
+        padded = drafts.cpu().tolist()
         return DraftTokenIds(req_ids=[target.req_id for target in rows],
                              draft_token_ids=padded,
-                             num_valid_draft_tokens=num_valid[:num_reqs].cpu().tolist())
+                             num_valid_draft_tokens=num_valid.cpu().tolist())
 
     def remove_requests(self, req_ids) -> None:
         """ngram_gpu 没有按请求的状态（历史缓冲按行索引，行由 Runner 维护）→ 空操作。"""

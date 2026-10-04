@@ -56,6 +56,8 @@
 | 长度同步 | `_sync_num_tokens`（`index_copy_` 到显存） | 同左（显式转 int32：本机 CPU 真值是 int64） |
 | 上一轮行号映射 | 存在 `InputBatch.prev_req_id_to_index` | Runner 在 `_update_states()` 进入时快照一份局部变量（同一语义，不动 InputBatch） |
 | 每步搬运量 | 新增 token + 长度（与历史长度无关） | 同左：**每步 2 次 D2H（草稿 `[B,K]` + 有效数 `[B]`），与历史长度无关**（实测历史 32 / 256 / 2048 token 都是 2 次）；"整段搬回"的方案是 `B×L×4` 字节（B=32/L=4000 → 500 KiB、约 0.066 ms/步，59 关实测） |
+| **两个缓冲的更新时机** | 长度表：每步在 `_update_states` 里由 CPU 真值同步（`_sync_num_tokens`）；token 内容：每步在 `propose()` 里 `scatter_` 追加 | 同左（上游同款）。含义：提议那一刻"长度表 = **本轮起点**，token 内容 = 起点 + 本轮新 token"，两者要**配上本轮的 `counts`** 才等于权威的 CPU 镜像；不变量 `gpu_len + counts == cpu_len` 由 `test_gpu_length_is_round_start_snapshot` 盯着 |
+| 批没填满（`num_reqs < max_num_reqs`） | 上游把采样结果也 padding 到 `max_num_reqs`，两边行数一致 | 本机采样结果是 `num_reqs` 行的参差 list，所以 `propose_drafts` 把两个 GPU 缓冲**切片到 `num_reqs`**（视图，就地 scatter 仍写进原缓冲）。漏了这一步的后果见 §5 的修复记录 |
 
 ### 2.4 调度侧：占位 ↔ 有效（`update_scheduler_for_invalid_drafts`）
 
@@ -90,10 +92,10 @@
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest tests/step60 -q` | **91 passed** |
+| `python -m pytest tests/step60 -q` | **95 passed** |
 | `python -m pytest tests/step59 -q` | **52 passed** |
 | `python -m pytest tests/step58 -q` | **41 passed** |
-| 三个目录一次跑（`pytest tests/step60 tests/step59 tests/step58 -q`） | **184 passed**（见 §5 的模块改名） |
+| 三个目录一次跑（`pytest tests/step60 tests/step59 tests/step58 -q`） | **187 passed**（见 §6 的模块改名） |
 | `python benchmarks/check_step60_ngram.py` | **17 PASS / 0 FAIL** |
 | `check_step58_*` / `check_step59_rejection` | 10 + 11 + 15 + 21 = **57 PASS** |
 | 15 个 `check_step57_*.py` | **350 PASS / 0 FAIL** |
@@ -111,9 +113,19 @@
 - **不整段 D2H**：`propose()` 自身 0 次 D2H；整条 `propose_drafts()` 每步 2 次（草稿+有效数），
   历史 32 / 256 / 2048 token 时都是 2 次。
 - **哨兵不出门**：端到端跑 `ngram_gpu`，Scheduler 的 `spec_token_ids` 里 18 个草稿全部 `≥ 0`。
+- **两个缓冲的时机不变量**：多请求 + 中途插入 + prefill 块的混合跑，`gpu_len + counts == cpu_len`
+  每次都成立（实测 15/15；用例化后由 `test_gpu_length_is_round_start_snapshot` 守着）。
+- **批没填满**：`max_num_seqs=4` + 2/1 条请求、`max_num_seqs=3` + 2 条请求都跑通（修复前会报错）。
 - **端到端**：tiny 模型上 `ngram` 与 `ngram_gpu` 的 greedy 投机都 == 非投机，且两条路径输出一致。
 
-## 5. 与之前关卡的行为差异
+## 5. 开发中发现并修掉的问题（60 关内）
+
+| 问题 | 症状 | 修法 |
+|---|---|---|
+| `propose_drafts` 把**整块** GPU 缓冲（`max_num_reqs` 行）传给 `propose()`，而采样矩阵只有批里那 `num_reqs` 行 | 批没填满时 `write_positions` 是 `max_num_reqs` 行、采样 mask 是 `num_reqs` 行：`2 ≤ num_reqs < max_num_reqs` 时广播直接报错（`The size of tensor a (2) must match ... (3)`）；`num_reqs == 1` 更隐蔽——第 0 行的采样数据被广播进空闲行（当时没人读，但那一行被新请求占用后就是脏数据） | `propose_drafts` 开头把 `token_ids_gpu` / `num_tokens_no_spec_gpu` 切片到 `num_reqs`（视图，不影响就地写）；补两条回归：`test_partially_filled_batch_is_sliced`、`test_underfilled_batch_runs_end_to_end` |
+| 端到端用例恰好都是"请求数 == `max_num_seqs`"，把上面那个组合躲开了 | — | 新增的端到端用例固定用 `max_num_seqs=4` + 2 条请求 |
+
+## 6. 与之前关卡的行为差异
 
 | 改动 | 原因 | 影响 |
 |---|---|---|
@@ -124,7 +136,7 @@
 | `tests/step59/helpers.py` → `spec_helpers.py`、`tests/step60/helpers.py` → `ngram_helpers.py` | 三个测试目录同名 `helpers` 会在一次 pytest 里互相覆盖（59 关引入的坑） | 现在 `pytest tests/step60 tests/step59 tests/step58` 能一次跑完（184 passed） |
 | `DraftTokenIds` 增加 `num_valid_draft_tokens`（CPU 提议者为 None） | GPU 提议者是固定宽度输出 | Scheduler 收草稿时裁"占位 → 有效" |
 
-## 6. 留待后续
+## 7. 留待后续
 
 - **61 关**：suffix decoding 的请求内与跨请求历史（本关只做 ngram 的 CPU/GPU 两条路）。
 - **62 关**：自定义 proposer 接入与配置分派边界（本关的 `method` 仍是白名单三分支）。

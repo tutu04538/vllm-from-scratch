@@ -142,7 +142,7 @@ python benchmarks/check_step59_rejection.py          # 21 项：元数据口径�
 python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
-python -m pytest tests/step60 -q                     # 91 项：step60 的单测 + 集成（总纲要求的入口）
+python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

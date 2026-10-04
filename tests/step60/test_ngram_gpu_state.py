@@ -24,12 +24,14 @@ MAX_MODEL_LEN = 64
 
 
 class _Config:
-    def __init__(self, k=3, min_n=2, max_n=4, max_model_len=MAX_MODEL_LEN, max_num_seqs=4):
+    def __init__(self, k=3, min_n=2, max_n=4, max_model_len=MAX_MODEL_LEN, max_num_seqs=4,
+                 max_num_reqs=None):
         self.speculative_config = SpeculativeConfig(
             method="ngram_gpu", num_speculative_tokens=k,
             prompt_lookup_min=min_n, prompt_lookup_max=max_n)
         self.model_config = type("M", (), {"max_model_len": max_model_len})()
-        self.scheduler_config = type("S", (), {"max_num_seqs": max_num_seqs})()
+        self.scheduler_config = type("S", (), {
+            "max_num_seqs": max_num_reqs or max_num_seqs})()
 
 
 def make_gpu_proposer(device="cpu", **kwargs) -> NgramProposerGPU:
@@ -317,3 +319,106 @@ def test_d2h_is_independent_of_history_length(cuda_device):
         return sum(1 for event in prof.events() if "DtoH" in event.name)
 
     assert d2h_bytes(64) == d2h_bytes(1024) == 0, "提议本身不该有 D2H（草稿由调用方一次性取回）"
+
+
+def test_partially_filled_batch_is_sliced(device):
+    """回归：`num_reqs < max_num_reqs`（批没填满）时，两个 GPU 缓冲必须按批行数切片。
+
+    不切片的症状：`write_positions` 按 `max_num_reqs` 展开、采样矩阵只有 `num_reqs` 行 →
+    2 ≤ num_reqs < max 时广播报错；num_reqs == 1 时更隐蔽——第 0 行的采样数据会被广播写进
+    空闲行的历史里（当前没人读，但一旦那个行被新请求占用就撞上脏数据）。
+    """
+    proposer = make_gpu_proposer(device, k=2, min_n=1, max_n=1, max_num_reqs=4)
+    histories = [[1, 2, 1, 2], [3, 4, 3, 4]]
+    batch = FakeInputBatch(histories, proposer.max_model_len, dtype=torch.int32,
+                           max_num_reqs=4)
+    token_ids = torch.zeros(4, proposer.max_model_len, dtype=torch.int32, device=device)
+    lengths = torch.zeros(4, dtype=torch.int32, device=device)
+    for index, tokens in enumerate(histories):
+        token_ids[index, :len(tokens)] = torch.tensor(tokens, dtype=torch.int32,
+                                                      device=device)
+        lengths[index] = len(tokens)
+    free_rows_before = token_ids[2:].clone()
+
+    rows = make_rows(histories)
+    drafts = proposer.propose_drafts(
+        rows, {}, input_batch=batch, sampled_by_row={0: [5], 1: [6]},
+        sample_rows=[0, 1], token_ids_gpu=token_ids, num_tokens_no_spec_gpu=lengths)
+
+    assert drafts.req_ids == ["r0", "r1"]
+    assert len(drafts.draft_token_ids) == 2                  # 只回批里那两行
+    assert token_ids[0, 4].item() == 5 and token_ids[1, 4].item() == 6
+    assert torch.equal(token_ids[2:], free_rows_before), "空闲行不许被写到"
+
+
+def test_underfilled_batch_runs_end_to_end(cuda_device, tiny_dir, hf_config):
+    """回归（端到端）：`max_num_seqs` 大于实际请求数时，ngram_gpu 必须照常跑。
+
+    这个组合在开发期漏掉了——之前的端到端用例都是"请求数 == max_num_seqs"，正好躲开。
+    """
+    from ngram_helpers import make_config
+    from minivllm import LLMEngine, UniProcExecutor, Worker
+
+    def run(spec_k, n_prompts):
+        config = make_config(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=spec_k,
+                             method="ngram_gpu", device=cuda_device, max_num_seqs=4)
+        if spec_k is not None:
+            object.__setattr__(config.speculative_config, "prompt_lookup_min", 1)
+            object.__setattr__(config.speculative_config, "prompt_lookup_max", 3)
+        engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+        for index in range(n_prompts):
+            engine.add_request(f"r{index}", [1] * 8,
+                               SamplingParams(max_tokens=6, temperature=0.0,
+                                              eos_token_id=999))
+        outputs, stats = {}, []
+        for _ in range(40):
+            if not engine.has_unfinished_requests():
+                break
+            for out in engine.step():
+                outputs[out.request_id] = list(out.token_ids)
+            stats.append(engine.engine_core.engine_core.scheduler.spec_decoding_stats)
+        engine.shutdown()
+        return outputs, [entry for entry in stats if entry is not None]
+
+    plain, _ = run(None, 2)
+    spec, stats = run(3, 2)
+    assert spec == plain
+    assert stats and sum(entry.num_draft_tokens for entry in stats) > 0
+
+
+def test_gpu_length_is_round_start_snapshot(cuda_device, tiny_dir, hf_config):
+    """不变量：提议那一刻，`num_tokens_no_spec_gpu + 本轮有效采样数 == CPU 真值`。
+
+    这条把"两个缓冲的更新时机差一个 counts"钉住：长度表是**本轮起点**（`_update_states` 里同步），
+    token 内容由 `propose()` 追加；两者只在"配上本轮的 counts"之后才等于权威的 CPU 镜像。
+    哪天有人把同步挪错时机（比如记账后再同步长度），这条会立刻失败。
+    """
+    engine, core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
+                                       method="ngram_gpu", device=cuda_device, max_num_seqs=3)
+    proposer = runner.proposer
+    original = proposer.propose
+    checks = {"ok": 0, "bad": []}
+
+    def spy(k, lengths_gpu, token_ids_gpu, valid_ids, counts):
+        ib = runner.input_batch
+        gpu_lengths = lengths_gpu.tolist()
+        cpu_truth = ib.num_tokens_no_spec[:len(gpu_lengths)].tolist()
+        for row in range(len(gpu_lengths)):
+            if gpu_lengths[row] + int(counts[row]) == cpu_truth[row]:
+                checks["ok"] += 1
+            else:
+                checks["bad"].append((row, gpu_lengths[row], int(counts[row]), cpu_truth[row]))
+        return original(k, lengths_gpu, token_ids_gpu, valid_ids, counts)
+
+    proposer.propose = spy
+    engine.add_request("r0", [1] * 6,
+                       SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+    engine.add_request("r1", [2, 3] * 4,
+                       SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+    steps = 0
+    while engine.has_unfinished_requests():
+        engine.step()
+        steps += 1
+    engine.shutdown()
+
+    assert checks["ok"] > 0 and not checks["bad"], checks

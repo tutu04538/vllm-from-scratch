@@ -11,7 +11,7 @@
   "package": {
     "root": "minivllm/",
     "python_files": 67,
-    "sha256": "b5e7d936927b7ac5ae6be6726a9071483cabc2dfbc942bbda89f0245d20ba808",
+    "sha256": "5a64895ba54f20a05db639c2a1c821d4b97a6c1587015b746bc6a3e19d079d0e",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59 口径）"
   },
   "environment": {
@@ -30,7 +30,7 @@
   "commands": [
     {
       "cmd": "python -m pytest tests/step60 -q",
-      "result": "91 passed, 2 warnings in 7.59s",
+      "result": "95 passed, 2 warnings in 8.12s",
       "failed": 0,
       "skipped": 0
     },
@@ -48,7 +48,7 @@
     },
     {
       "cmd": "python -m pytest tests/step60 tests/step59 tests/step58 -q",
-      "result": "184 passed（模块改名后三个目录可一次跑完）",
+      "result": "187 passed（模块改名后三个目录可一次跑完）",
       "failed": 0
     },
     {
@@ -134,6 +134,12 @@
         "propose 自身": "0 次（历史 512 token）",
         "propose_drafts 整条路径": "每步 2 次（草稿 [B,K] + 有效数 [B]）；历史 32 / 256 / 2048 token 都是 2 次",
         "对照：整段搬回": "B×L×4 字节（B=32/L=4000 → 500 KiB、约 0.066 ms/步，59 关实测）"
+      },
+      "buffer_update_timing": {
+        "长度表 num_tokens_no_spec_gpu": "每步在 _update_states() 里由 CPU 真值同步（= 本轮起点）",
+        "token 内容 token_ids_gpu_tensor": "每步在 propose() 里 scatter 追加；另外新请求/恢复时整段拷一次、行号变化时整行搬家",
+        "不变量": "gpu_len + counts == cpu_len（提议那一刻），实测混合场景 15/15 成立，用例 test_gpu_length_is_round_start_snapshot",
+        "d2h": "propose() 自身 0 次；整条 propose_drafts() 每步 2 次（草稿 + 有效数），与历史长度无关"
       }
     },
     "scheduler_alignment": {
@@ -223,6 +229,13 @@
     {
       "item": "torch.compile 与 CUDA Graph 路径下的 ngram_gpu",
       "reason": "69 关"
+    }
+  ],
+  "fixed_during_step": [
+    {
+      "问题": "propose_drafts 给 propose() 传了整块 GPU 缓冲（max_num_reqs 行），采样矩阵只有 num_reqs 行",
+      "症状": "2 ≤ num_reqs < max_num_seqs 时广播报错；num_reqs == 1 时第 0 行数据被广播进空闲行",
+      "修法": "propose_drafts 开头把两个缓冲切片到 num_reqs（视图）；补 test_partially_filled_batch_is_sliced / test_underfilled_batch_runs_end_to_end"
     }
   ]
 }
