@@ -5,8 +5,8 @@
   "recorded_at": "2026-10-04T21:10:00+00:00",
   "git": {
     "baseline_commit_at_record_time": "96c305c",
-    "implementation_commit": "见本文件所在提交之后补记（step60/61 同款做法）",
-    "note": "命令与轨迹在本关实现提交之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（69 个文件）"
+    "implementation_commit": "ed09d3a048b8e9c2cc70fd1ebc749c8b5cb7a4fb",
+    "note": "命令与轨迹在本关实现提交（ed09d3a）之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（69 个文件）；提交号在实现提交之后补记（step60/61 同款做法）"
   },
   "package": {
     "root": "minivllm/",
