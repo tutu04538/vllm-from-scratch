@@ -16,7 +16,17 @@ step56 把二十多个参数平铺在 `Engine.__init__` 上，既看不出哪些
 `num_gpu_blocks` 先手动配置：真实 vLLM 的显存 profiling 自动定容属于"明确延后"的部分。
 """
 
+import importlib.util
 from dataclasses import dataclass, field
+
+
+def has_arctic_inference() -> bool:
+    """是否装了外部包 `arctic_inference`（上游 `vllm/utils/import_utils.py:542` 同名函数）。
+
+    suffix decoding 的树与匹配是**上游依赖包的实现**（61 关明确要求"接入"而不是自研），
+    所以这里只做"在不在"的判断，不在就由 `_resolve_suffix_decoding` 显式报错。
+    """
+    return importlib.util.find_spec("arctic_inference") is not None
 
 
 @dataclass(frozen=True)
@@ -81,7 +91,8 @@ class DeviceConfig:
 
 @dataclass(frozen=True)
 class SpeculativeConfig:
-    """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口）。"""
+    """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口；
+    61 增加 suffix decoding 参数）。"""
 
     method: str = "ngram"
     num_speculative_tokens: int = 0
@@ -92,13 +103,24 @@ class SpeculativeConfig:
     # 才会被拿去匹配。**默认 5/5**（上游注释："arbitrarily chosen"），只在给了一个时对齐另一个。
     prompt_lookup_max: int | None = None
     prompt_lookup_min: int | None = None
+    # suffix decoding（61 关；上游 `config/speculative.py:195-210`，注释也照抄）
+    # 全局树与 prompt 树的**最大深度**：它同时限制"前缀匹配长度 + 推测长度"之和。
+    suffix_decoding_max_tree_depth: int = 24
+    # 全局树里最多缓存多少条请求，超了按 FIFO 淘汰。**0 = 关掉全局树**
+    # （过去响应不再缓存，但每条请求自己的 prompt 树仍然用）。
+    suffix_decoding_max_cached_requests: int = 10000
+    # 推测长度相对前缀匹配长度的倍数上限：`max_spec_tokens = factor * match_len + offset`。
+    suffix_decoding_max_spec_factor: float = 1.0
+    # 只推测"按频次估计的概率" ≥ 该值的 token。
+    suffix_decoding_min_token_prob: float = 0.1
 
     def __post_init__(self):
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
-        if self.method not in ("ngram", "ngram_gpu", "draft_model"):
+        if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix"):
             raise ValueError(
-                f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model'，收到 {self.method!r}"
+                f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix'，"
+                f"收到 {self.method!r}"
                 "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
@@ -107,6 +129,8 @@ class SpeculativeConfig:
                 f"（V2 块验证）按需求顺序在 75 关实现，不要用 standard 的结果冒充它们")
         if self.method in ("ngram", "ngram_gpu"):
             self._resolve_prompt_lookup()
+        elif self.method == "suffix":
+            self._resolve_suffix_decoding()
 
     def _resolve_prompt_lookup(self) -> None:
         """把 `prompt_lookup_min/max` 补全成上游那套（config/speculative.py:804-829）。
@@ -131,6 +155,43 @@ class SpeculativeConfig:
     def uses_draft_model(self) -> bool:
         """是否用独立的 draft 模型提议（上游同名方法）。"""
         return self.method == "draft_model"
+
+    def _resolve_suffix_decoding(self) -> None:
+        """suffix decoding 的缺包检查、默认值与取值校验（照抄上游
+        `config/speculative.py:1146-1181::_validate_suffix_decoding`）。
+
+        唯一的差异写在 `num_speculative_tokens` 那一条上：上游的字段是 `int | None`
+        （`None` = 没设 → 取树深），本仓库是 `int`（`0` = 没设），所以把 `0` 当"没设"。
+        显式传 `0` 想"一枚都不猜"时，直接别开 suffix 就行。
+        """
+        if not has_arctic_inference():
+            raise ImportError(
+                "suffix decoding 需要外部包 Arctic Inference（本关要求接入依赖实现，"
+                "不自己写一棵后缀树）。上游钉的是 `pip install arctic-inference==0.1.1`；"
+                "本机 torch 2.13.0 下 0.1.1 的构建依赖（torch==2.7.0）装不上，改装的 0.3.0 "
+                "`suffix_decoding/cache.py` 与 0.1.1 逐行相同（安装命令与校验见 "
+                "docs/step61_alignment.md §2）。")
+        if self.num_speculative_tokens == 0:
+            # 上游这里还打一条 warning（"Defaulted num_speculative_tokens to %s"）；
+            # 本仓库不引 logger，把默认值写进 alignment 文档代替。
+            object.__setattr__(self, "num_speculative_tokens",
+                               self.suffix_decoding_max_tree_depth)
+        if self.suffix_decoding_max_tree_depth < 1:
+            raise ValueError(
+                f"suffix_decoding_max_tree_depth="
+                f"{self.suffix_decoding_max_tree_depth} must be >= 1")
+        if self.suffix_decoding_max_cached_requests < 0:
+            raise ValueError(
+                f"suffix_decoding_max_cached_requests="
+                f"{self.suffix_decoding_max_cached_requests} must be >= 0")
+        if self.suffix_decoding_max_spec_factor < 0:
+            raise ValueError(
+                f"suffix_decoding_max_spec_factor="
+                f"{self.suffix_decoding_max_spec_factor} must be >= 0")
+        if not 0 <= self.suffix_decoding_min_token_prob <= 1:
+            raise ValueError(
+                f"suffix_decoding_min_token_prob="
+                f"{self.suffix_decoding_min_token_prob} must be in [0, 1]")
 
     def use_ngram_gpu(self) -> bool:
         """是否用 GPU 版 ngram 提议者（上游同名方法）。"""

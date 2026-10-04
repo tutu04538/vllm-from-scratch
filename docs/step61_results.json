@@ -1,0 +1,182 @@
+{
+  "step": 61,
+  "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/061_SuffixDecoding的请求内与跨请求历史.md",
+  "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+  "recorded_at": "2026-10-04T18:40:00+00:00",
+  "git": {
+    "baseline_commit_at_record_time": "12c7316",
+    "implementation_commit": "见本文件所在提交之后补记（step60 同款做法）",
+    "note": "命令与轨迹在本关实现提交之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（68 个文件）"
+  },
+  "package": {
+    "root": "minivllm/",
+    "python_files": 68,
+    "sha256": "57471c2c0a505eabcb13403b485759fdb35b536ba5d3efccb23b595717ba18df",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59/60 口径）"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（只作差分基准，生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop, WSL2）；CPU 也跑得通（真引擎投机验证只在 CUDA 上）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "new_dependency": {
+      "name": "arctic_inference",
+      "version": "0.3.0",
+      "sdist_sha256": "7f22e3e1b1071c6061c0d6951be17c0fb50b08d06d6e543144c8f52faba60a36",
+      "deviation_from_source_pin": "源码钉 0.1.1（其构建系统钉 torch==2.7.0，本机 torch 2.13.0 装不上）；0.3.0 的 suffix_decoding 子系统源码与 0.1.1 **逐字节相同**，详见 docs/step61_dependencies.json",
+      "lock_record": "docs/step61_dependencies.json"
+    }
+  },
+  "models": "docs/step61_models.json（tiny Qwen3 现场生成；本关没有 draft 模型）",
+  "commands": [
+    {
+      "cmd": "python -m pytest tests/step61 -q",
+      "result": "55 passed in 7.22s",
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 -q",
+      "result": "243 passed, 16 warnings in 10.39s",
+      "failed": 0,
+      "skipped": 0,
+      "note": "41 + 52 + 95 + 55；四个目录各自辅助模块名唯一，可一次跑完"
+    },
+    {
+      "cmd": "python benchmarks/check_step61_suffix.py",
+      "result": "27 PASS / 0 FAIL（A 依赖接入 3 / B 请求内 5 / C 跨请求 8 / D 边界与调用顺序 4 / E 参数生效 4 / F 端到端 3）",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step60_ngram.py",
+      "result": "17 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step59_rejection.py",
+      "result": "21 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py",
+      "result": "10 + 11 + 15 = 36 PASS / 0 FAIL",
+      "failed": 0
+    },
+    {
+      "cmd": "python benchmarks/check_step57_*.py（15 个）",
+      "result": "350 PASS / 0 FAIL（28+32+23+18+23+25+18+29+30+29+25+12+13+20+25）",
+      "failed": 0,
+      "note": "本关未改任何 step57 期望值"
+    },
+    {
+      "cmd": "python -c \"from arctic_inference.suffix_decoding import SuffixDecodingCache; print('ok')\"",
+      "result": "ok（依赖可导入性检查）",
+      "failed": 0
+    }
+  ],
+  "execution_trace": {
+    "differential_vs_upstream": {
+      "method": "把**上游** `vllm/v1/spec_decode/suffix_decoding.py::SuffixDecodingProposer` 用鸭子类型的 config/InputBatch 原样实例化（它的 __init__ 只读 6 个字段、propose 只读 5 个属性，不碰 Runner），与我们的实现吃同一串事件，逐步比对 `draft_token_ids` 与 `active_requests`/`cached_requests`",
+      "buffer_types": "上游侧喂 int32 numpy 视图（vLLM InputBatch 的真实形态），我们侧喂 int64 torch 缓冲（本仓库 InputBatch 的真实形态）；逻辑内容由同一段驱动代码写入",
+      "traces_compared": 21,
+      "mismatches": 0,
+      "covered": [
+        "单请求 5 步（候选长度动态）",
+        "批行序反转 / 请求中途离批再回来",
+        "中间 prefill 行（空采样）",
+        "到达 max_model_len 的行",
+        "跨请求全局树 / 全局树关闭（max_cached_requests=0）",
+        "容量 1 / 2（FIFO 淘汰）/ 10000",
+        "同 ID 重用（evict → 重建）",
+        "K / max_spec_factor / min_token_prob / max_tree_depth 四组参数"
+      ]
+    },
+    "request_local": {
+      "prompt": [1, 2, 3, 4, 1, 2, 3, 4],
+      "steps_and_drafts": [
+        {"sampled": [1], "draft": [2, 3, 4, 1]},
+        {"sampled": [2], "draft": [3, 4, 1, 2]},
+        {"sampled": [3], "draft": [4, 1, 2, 3]},
+        {"sampled": [4], "draft": [1, 2, 3, 4]},
+        {"sampled": [1], "draft": [2, 3, 4, 1, 2]}
+      ]
+    },
+    "cross_request": {
+      "A_prompt": [1, 2, 3, 9, 9, 1, 2, 3],
+      "A_responses": [[4], [5]],
+      "B_prompt": [7, 8, 1, 2, 3],
+      "B_sampled": [4],
+      "suffix_draft_for_B": [5],
+      "ngram_draft_for_B_same_history": [],
+      "suffix_draft_for_B_global_tree_disabled": [],
+      "解释": "B 自己的历史里 \"1 2 3\" 只出现一次 → ngram / 关掉全局树都拿不到；A 的响应进了全局树后 B 才能拿到 [5]"
+    },
+    "capacity_and_eviction": {
+      "容量 2": {"cached_after_each_step": [["A"], ["A"], ["A", "B"], ["B", "C"]], "C_draft": []},
+      "容量 3": {"cached_after_each_step": [["A"], ["A"], ["A", "B"], ["A", "B", "C"]], "C_draft": [5]},
+      "规则": "超出容量按 FIFO 淘汰最早的请求（这是**请求条数**的淘汰，与 KV BlockPool 的块淘汰无关）"
+    },
+    "id_reuse": {
+      "第一轮": "P1=[1,2,3,4,1,2,3,4] 采样 [9] 再 [5] → 全局序列 P1+[9,5]",
+      "第二轮同 ID 新请求": "P2=[7,7,1,2,3,4] 采样 [9]",
+      "evict 生效（正常路径）": [],
+      "evict 被 monkeypatch 成空操作（反证）": [5],
+      "解释": "不 evict 时上一轮那条**无关请求**的序列还留在全局树里，新请求会沿它继续猜"
+    },
+    "call_order": {
+      "首次进入": ["start_request", "add_active_response", "speculate"],
+      "空采样行": [],
+      "离批的活跃请求": ["stop_request"],
+      "同 ID 重用": ["evict_cached_response", "start_request", "add_active_response", "speculate"],
+      "speculate 参数": {
+        "context": [1, 2, 3, 4, 1, 2, 3, 4, 1],
+        "max_spec_tokens": "min(K=8, max_model_len 64 - num_tokens 9 - 1) = 8",
+        "max_spec_factor": 1.0,
+        "min_token_prob": 0.1
+      }
+    },
+    "parameter_effects": {
+      "max_spec_factor": {"1.0": [2, 3, 4, 1], "0.5": [2, 3], "0.1": []},
+      "min_token_prob": {"0.1": [5], "0.5": [5], "0.51": []},
+      "max_tree_depth": {"24": [2, 3, 4, 1], "3": [2]},
+      "num_speculative_tokens": {"1": [2], "2": [2, 3], "8": [2, 3, 4, 1]}
+    },
+    "end_to_end": {
+      "model": "tiny Qwen3（现场生成，float32，2 层，hidden 32，vocab 11）",
+      "device": "cuda:0",
+      "prompts": {"a": [1, 2, 3, 4, 1, 2, 3, 4], "b": [5, 6, 5, 6, 5, 6]},
+      "max_tokens": 8,
+      "temperature": 0.0,
+      "spec_outputs": {"a": [4, 4, 4, 6, 0, 6, 0, 6], "b": [10, 4, 4, 4, 4, 4, 4, 4]},
+      "non_spec_outputs_equal": true,
+      "stats": {"num_drafts": 6, "num_draft_tokens": 8, "num_accepted_tokens": 6},
+      "解释": "greedy 下投机与非投机输出逐 token 相同（草稿只是猜测）；候选确实被 target 采纳（6/8）"
+    },
+    "dependency_substitution_evidence": {
+      "diff_method": "解开 arctic_inference 0.1.1 与 0.3.0 的 sdist，逐文件 diff",
+      "byte_identical_files": 8,
+      "differing_files": 0,
+      "cache_py_sha256_both": "91c48e6cb335edbd202c8f440e5766df54315ea2d8e40decf8f7a130f3a5e126"
+    }
+  },
+  "not_run": [
+    "真实权重（models/）上的 suffix decoding：本关不要求吞吐评测（需求 061 §5），也未做加速倍数声称",
+    "tree attention / use_tree_spec=True 分支：需求 061 §5 明确不引入",
+    "SuffixDecodingDraft.probs/parents：本关只取 token_ids（跨请求概率口径不属于 59 关的 q 对齐）",
+    "benchmarks/compare_step57_vllm.py：与基线一样因 vLLM spawn + 缺 __main__ 保护而失败，与本关无关"
+  ],
+  "fixed_during_step": [
+    {
+      "现象": "初始测试期望『候选总是非空』",
+      "原因": "读源码 + 实测后确认依赖包语义：`speculate` 的 match_len 从 1 递增且**全长 context 不参与匹配**，所以『上下文正好等于历史末尾』时末尾那次出现没有后继 → 候选常为空",
+      "处理": "按真实语义重设用例（重复模式 / 跨请求模式 / 锚点 token），并把语义写进 docs/step61_alignment.md §4"
+    },
+    {
+      "现象": "测试驱动器把『同 ID 新请求』当成同一条请求继续累积历史",
+      "原因": "驱动器的 `prompts` 同时承担『prompt 长度』与『历史起点』两个角色",
+      "处理": "给驱动器加 `history` 覆盖与分段能力（`run_segments_on`），用真实路径（remove_requests/stop_request → 新请求重新 prefill）重写该用例"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议）。旧的 `stepNN/` 代码目录已经
+这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议、第六十一关的 Suffix Decoding）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 
 它不自己发明协议，而是做一个**能逐层映射到本机 vLLM（0.28.0）的、可运行的文本生成子集**。
@@ -20,7 +20,9 @@
 结构/数值对照）与 [`docs/step57_alignment.md`](../docs/step57_alignment.md)（差异账本）；
 第五十八/五十九关见 [`docs/step58_alignment.md`](../docs/step58_alignment.md)（draft 输入与双预算）、
 [`docs/step59_alignment.md`](../docs/step59_alignment.md)（GPU 批量拒绝采样、投机元数据口径、接受率统计）、
-[`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）。
+[`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）、
+[`docs/step61_alignment.md`](../docs/step61_alignment.md)（Suffix Decoding：请求内 + 跨请求后缀树，外部依赖见
+[`docs/step61_dependencies.json`](../docs/step61_dependencies.json)）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -39,7 +41,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机验证 | `sample/rejection_sampler.py`（Triton 批量内核） | `v1/sample/rejection_sampler.py` |
-| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model}.py` | `v1/spec_decode/*` |
+| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding}.py` | `v1/spec_decode/*` |
 | 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py`、`testing/torch_rejection_sampler.py`、`testing/spec_metadata.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
@@ -108,6 +110,25 @@ step scheduled                    hits           preempted    running           
 设计与对照见 [`docs/step58_alignment.md`](../docs/step58_alignment.md)，
 实测记录见 [`docs/step58_results.json`](../docs/step58_results.json)。
 
+## 第六十一关：Suffix Decoding（请求内 + 跨请求历史）
+
+- **外部依赖，不自研**：候选来自 `arctic_inference.suffix_decoding.SuffixDecodingCache`
+  （Snowflake ArcticInference 的官方实现）；上游 vLLM 也是 import 它。没装时
+  `SpeculativeConfig(method="suffix")` 在配置期直接 `ImportError`，不会退回别的提议者。
+- **两棵树**：每条请求一棵 prompt 树（`start_request` 时把 prompt 全量入树），
+  外加一棵**跨请求全局树**（请求的输出按 FIFO 缓存，`max_cached_requests` 条，0 = 关掉）。
+  A 学到的"…1 2 3 → 4 5"能被 B 直接用来猜——这是 ngram 提议者（只看本请求历史）拿不到的。
+- **候选长度动态**：`speculate()` 从 1 开始递增地匹配 context 后缀（**全长 context 不参与匹配**，
+  最后一个 token 只当锚点），按 `match_len * max_spec_factor` 限长、按频次概率过 `min_token_prob`；
+  同一批里每条请求的候选长度可以不同（ngram 是等宽 K）。
+- **生命周期**：本轮空采样（中间 prefill）跳过；离开 input batch 的活跃请求在 `propose` 末尾
+  `stop_request`（≠ Scheduler 的 FINISHED）；请求结束时 Runner 调 `remove_requests` 补齐
+  "批为空"那一轮；同 ID 重用先 `evict_cached_response` 再 `start_request`。
+
+设计与对照见 [`docs/step61_alignment.md`](../docs/step61_alignment.md)，
+依赖锁定记录见 [`docs/step61_dependencies.json`](../docs/step61_dependencies.json)，
+实测记录见 [`docs/step61_results.json`](../docs/step61_results.json)。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -140,9 +161,11 @@ python benchmarks/check_step58_draft_inputs.py       # 11 项：第一遍输入�
 python benchmarks/check_step58_workspace.py          # 15 项：固定工作区（地址稳定/只读有效切片）与端到端
 python benchmarks/check_step59_rejection.py          # 21 项：元数据口径、内核语义、上游/参考差分、分布、统计、profiler
 python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
+python benchmarks/check_step61_suffix.py             # 27 项：依赖接入、请求内/跨请求候选、容量与 FIFO、同 ID 重用、调用顺序、参数生效、端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
+python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

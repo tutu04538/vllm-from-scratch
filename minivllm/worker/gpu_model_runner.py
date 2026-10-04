@@ -196,8 +196,14 @@ class GPUModelRunner:
             proposer = DraftModelProposer(config, self.vllm_config, self.device)
             proposer.load_model()
             return proposer
+        if config.method == "suffix":
+            # 61 关：suffix decoding 没有模型要装（`load_model()` 是空操作，上游同款），
+            # 树与匹配全在外部包 `arctic_inference.suffix_decoding` 里
+            from ..spec_decode.suffix_decoding import SuffixDecodingProposer
+
+            return SuffixDecodingProposer(self.vllm_config)
         raise ValueError(f"未知的投机方法 {config.method!r}"
-                         f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model'）")
+                         f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model' / 'suffix'）")
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
@@ -807,6 +813,12 @@ class GPUModelRunner:
                 num_tokens_no_spec_gpu=self.num_tokens_no_spec_gpu)
         elif self.speculative_config is not None and self.speculative_config.method == "ngram":
             drafts = self.proposer.propose_drafts(rows, all_token_ids, self.input_batch)
+        elif self.speculative_config is not None and self.speculative_config.method == "suffix":
+            # 61 关：suffix decoding 的输入就是 InputBatch 的三个 CPU 缓冲
+            # （token_ids_cpu / num_tokens_no_spec / num_prompt_tokens），
+            # `sampled_by_row` 告诉它本轮哪些行真的采到了 token（空 = 中间 prefill 块）。
+            drafts = self.proposer.propose_drafts(
+                rows, all_token_ids, self.input_batch, sampled_by_row=sampled_by_row)
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             drafts = self.proposer.propose(rows, all_token_ids, self.input_batch,

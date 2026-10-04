@@ -1,0 +1,81 @@
+{
+  "step": 61,
+  "说明": "本关的目标模型仍是**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）；suffix decoding 的候选/缓存/生命周期测试**不需要模型**（纯 token 数组 + 外部后缀树）。",
+  "target_draft_pairs": [
+    {
+      "用途": "端到端（tests/step61/test_suffix_engine.py、benchmarks/check_step61_suffix.py F 段）：method='suffix' 的完整链路",
+      "target": {
+        "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+        "repository": null,
+        "revision": null,
+        "本地路径": "临时目录（进程内缓存）",
+        "architectures": ["Qwen3ForCausalLM"],
+        "model_type": "qwen3",
+        "hidden_size": 32,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 16,
+        "intermediate_size": 48,
+        "vocab_size": 11,
+        "max_position_embeddings": 64,
+        "dtype": "float32",
+        "tie_word_embeddings": false,
+        "tokenizer": "无（只用 token id）",
+        "权重来源": "随机初始化（固定 seed，确定性）"
+      },
+      "draft": {
+        "说明": "**没有 draft 模型**：候选来自外部包 `arctic_inference.suffix_decoding.SuffixDecodingCache` 的后缀树（请求内 prompt 树 + 跨请求全局树）",
+        "q": "确定性提议 → 没有分布，验证时 `draft_probs=None`（点质量 q，接受判定退化成 p[d] >= u）",
+        "K": "测试用 num_speculative_tokens=8 作为**上限**（每步实际候选长度由匹配长度决定，可为 0）",
+        "默认 K": "不传时取 suffix_decoding_max_tree_depth=24（上游同款默认）"
+      },
+      "device": "cuda:0（RTX 5090 Laptop）跑端到端；候选/缓存/生命周期测试在 CPU 上跑（外部树是 CPU 实现，且不涉及 KV）"
+    },
+    {
+      "用途": "与上游冻结实现差分（tests/step61/test_suffix_lifecycle.py 全部用例）",
+      "上游": "vllm 0.28.0 的 `v1/spec_decode/suffix_decoding.py::SuffixDecodingProposer`（鸭子类型 config + InputBatch 实例化，见 tests/step61/suffix_helpers.py::upstream_proposer）",
+      "权重": "不需要（纯 token 数组）",
+      "note": "两侧调用**同一个**外部前缀树实现（本机安装的 arctic_inference 0.3.0），所以差分验证的是『提议者这一层』的调用顺序/参数/生命周期与上游一致"
+    },
+    {
+      "用途": "痛点对照：ngram（60 关）看不到跨请求模式",
+      "上游/本仓库": "minivllm.spec_decode.ngram_proposer.NgramProposer（生产路径，非 mock）",
+      "构造": "B 的历史 = prompt [7,8,1,2,3] + 本轮采样 [4]；A 的全局树里已有『1 2 3 → 4 5』",
+      "结果": "ngram（min=max=3 与 5/5 两种窗口）都给 []；suffix decoding 给 [5]"
+    },
+    {
+      "用途": "prompt / token 序列设计（候选可控的关键）",
+      "请求内": {
+        "prompt": [1, 2, 3, 4, 1, 2, 3, 4],
+        "为什么": "「1 2 3 4」在 prompt 里出现两次 → 锚点 token=1 时能匹配到更早那次出现并给出后续 [2,3,4,1]"
+      },
+      "跨请求": {
+        "A": [1, 2, 3, 9, 9, 1, 2, 3],
+        "B": [7, 8, 1, 2, 3],
+        "为什么": "B 自己的历史里「1 2 3」只出现一次（拿不到候选），A 的响应把「1 2 3 → 4 5」写进全局树后 B 才有候选"
+      },
+      "概率阈值": {
+        "prompt": [7, 7, 1, 2, 3, 1, 2, 3, 5, 1, 2, 3, 5],
+        "为什么": "节点「1 2 3」有两个分支 4(1 次)/5(2 次) → 估计概率 2/3，用来验证 min_token_prob 与 max_spec_factor"
+      }
+    },
+    {
+      "用途": "真实模型集成",
+      "state": "集成待验（本关未跑）",
+      "reason": "需求 061 §5 明确本关不要求吞吐评测；真实权重的投机收益按总纲在 84 关统一测"
+    }
+  ],
+  "external_dependency": {
+    "name": "arctic_inference",
+    "version": "0.3.0",
+    "module": "arctic_inference.suffix_decoding",
+    "lock_record": "docs/step61_dependencies.json",
+    "source_pin_deviation": "上游钉 0.1.1，但其构建系统钉 torch==2.7.0；本机 torch 2.13.0 → 装 0.3.0（suffix_decoding 子系统源码与 0.1.1 逐字节相同）"
+  },
+  "randomness": {
+    "suffix_decoding": "完全确定性：同一 token 历史 + 同一参数 → 同一候选（这也是它不需要 q 的原因）",
+    "端到端": "temperature=0.0（greedy），投机与非投机必须逐 token 相同",
+    "测试固定源": "端到端种子固定；候选/差分用例全部是确定的 token 序列，失败可直接复现"
+  }
+}
