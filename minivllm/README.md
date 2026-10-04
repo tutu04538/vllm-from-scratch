@@ -148,6 +148,18 @@ step scheduled                    hits           preempted    running           
 设计与差异见 [`docs/step62_alignment.md`](../docs/step62_alignment.md)，
 实测记录见 [`docs/step62_results.json`](../docs/step62_results.json)。
 
+## 第六十三关（进行中·第一阶段）：EAGLE 的第一遍输入对齐
+
+> **只有第一阶段完成**：输入对齐机制与上游内核差分已过；EAGLE3 模型适配、提议者/Runner 接线与端到端
+> 还没做，清单见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。**不要当成本关已通过。**
+
+EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；于是第一遍输入要满足：
+
+- **token 逐请求错开一格**：整体左移 + 每条请求的最后一格换成这条请求新采出的 token
+  （`query_start_loc[1:] - 1` 是补丁下标）；算错一位就会让 A 的最后一格留着 B 的 token；
+- **特征与 positions 不动**（`(h_i, t_{i+1}) → t_{i+2}` 的配对），扩容行用该请求最后一行的特征/位置；
+- 被拒行仍占工作区（padding + mask），默认 EAGLE 通路不需要额外槽位（`net_num_new_slots == 0`）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -182,11 +194,13 @@ python benchmarks/check_step59_rejection.py          # 21 项：元数据口径�
 python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
 python benchmarks/check_step61_suffix.py             # 27 项：依赖接入、请求内/跨请求候选、容量与 FIFO、同 ID 重用、调用顺序、参数生效、端到端
 python benchmarks/check_step62_custom_proposer.py    # 34 项：方法推断、接口、错误分类、Runner 接线、行为等价、demo 端到端
+python benchmarks/check_step63_eagle_inputs.py       # 17 项：EAGLE 第一遍输入对齐（含与上游内核 shift=True 的差分）——第一阶段
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
 python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
+python -m pytest tests/step63 -q                     # 12 项：step63 第一阶段（EAGLE 输入对齐）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

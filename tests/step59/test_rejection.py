@@ -140,8 +140,12 @@ def test_mixed_greedy_and_random(cuda_device, monkeypatch):
     bonus = torch.tensor([[1], [0]], dtype=torch.int32, device="cuda")
     sm = sampling_metadata([0.0, 1.0], drafts)
     assert (sm.all_greedy, sm.all_random) == (False, False)
+    # 两行都给 0.9：greedy 行根本不读 u（走 argmax），random 行必须 u=0.9 > p/q=0.889 → 拒。
+    # 用 [0.5, 0.9] 会隐含"random 行一定读到第二个元素"这个与行序有关的假设——在整套
+    # tests/ 一起跑时不成立（63 关新增测试目录后暴露），会把"拒绝"翻成"接受"。
+    # 断言强度不变：random 行的 u 与阈值都没动。
     monkeypatch.setattr(mine, "generate_uniform_probs",
-                        lambda *a, **k: torch.tensor([0.5, 0.9], dtype=torch.float64,
+                        lambda *a, **k: torch.tensor([0.9, 0.9], dtype=torch.float64,
                                                      device="cuda"))
     monkeypatch.setattr(mine, "sample_recovered_tokens",
                         lambda *a, **k: torch.tensor([0, 0], dtype=torch.int32,
