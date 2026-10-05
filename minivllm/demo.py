@@ -48,6 +48,28 @@ def scheduler_of(engine):
     return engine.engine_core.engine_core.scheduler
 
 
+def _make_spec_config(args, model_dir: str):
+    """CLI 参数 → `SpeculativeConfig`（不给任何 spec 参数 = 关掉投机）。
+
+    64 关的 `extract_hidden_states` 需要 `eagle_aux_hidden_state_layer_ids`（要缓存哪几层），
+    上游同样要求它出现在 draft 配置里；CLI 用 `--spec-aux-layers` 提供，落成一份
+    "target 目录 + 辅助层编号"的 draft 配置（cache-only 模型没有权重，目录只是载体）。
+    """
+    if args.spec_method is None and args.spec_model is None:
+        return None
+    from minivllm import ModelConfig, SpeculativeConfig
+
+    draft_model_config = None
+    if args.spec_aux_layers:
+        layers = [int(part) for part in args.spec_aux_layers.split(",") if part.strip()]
+        draft_model_config = ModelConfig(
+            model=model_dir, dtype=args.dtype, max_model_len=args.max_model_len,
+            hf_config={"eagle_aux_hidden_state_layer_ids": layers})
+    return SpeculativeConfig(method=args.spec_method, model=args.spec_model,
+                             num_speculative_tokens=args.spec_k,
+                             draft_model_config=draft_model_config)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="对齐 vLLM 架构的引擎：真实模型短生成")
     parser.add_argument("questions", nargs="*", default=None, help="要问的问题，可以给多条")
@@ -75,13 +97,17 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=None, help="随机种子（同 seed 可复现）")
     parser.add_argument("--ignore-eos", action="store_true")
     parser.add_argument("--spec-method", default=None,
-                        help="投机方法：ngram / ngram_gpu / suffix / custom_class"
-                             "（不填 = 不开投机；只给 --spec-model 的点号路径时会自动推断成"
-                             " custom_class，62 关的方法推断边界）")
+                        help="投机方法：ngram / ngram_gpu / suffix / custom_class /"
+                             " extract_hidden_states（不填 = 不开投机；只给 --spec-model 的点号"
+                             "路径时会自动推断成 custom_class，62 关的方法推断边界）")
     parser.add_argument("--spec-model", default=None,
                         help="custom_class 的完整 module.Class 路径，例如"
                              " examples.custom_proposer.RepeatLastTokenProposer")
-    parser.add_argument("--spec-k", type=int, default=4, help="每轮最多猜几枚草稿")
+    parser.add_argument("--spec-k", type=int, default=4,
+                        help="每轮最多猜几枚草稿（extract_hidden_states 必须为 1：那个方法不猜 token）")
+    parser.add_argument("--spec-aux-layers", default=None,
+                        help="extract_hidden_states（64 关）要缓存哪几层特征，逗号分隔，"
+                             "例如 2,14,25；也可以写进 draft 目录的 config.json")
     parser.add_argument("--trace", action="store_true", help="打印第一轮真正喂给模型的数字")
     parser.add_argument("--scheduler-trace", action="store_true",
                         help="打印每轮的调度决策（scheduler_trace）")
@@ -93,6 +119,9 @@ def main(argv=None):
 
     from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
                         SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
+
+    if args.spec_aux_layers and args.spec_method != "extract_hidden_states":
+        parser.error("--spec-aux-layers 只对 --spec-method extract_hidden_states 有意义（64 关）")
 
     model_dir = pathlib.Path(args.model_dir)
     if not model_dir.is_dir():
@@ -112,9 +141,7 @@ def main(argv=None):
         device_config=DeviceConfig(device=device),
         # 投机：不给任何 spec 参数就是关闭（`speculative_config=None`）；给了就交给
         # `SpeculativeConfig` 在**配置期**完成方法推断与校验（62 关：只说一次）
-        speculative_config=(None if args.spec_method is None and args.spec_model is None
-                            else SpeculativeConfig(method=args.spec_method, model=args.spec_model,
-                                                   num_speculative_tokens=args.spec_k)))
+        speculative_config=_make_spec_config(args, str(model_dir)))
 
     started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
@@ -141,7 +168,15 @@ def main(argv=None):
         print(f"  投机：method={spec.method!r}"
               + (f" model={spec.model!r}" if spec.model else "")
               + f" K={spec.num_speculative_tokens}，提议者={type(runner.proposer).__name__}"
-              f"（{type(runner.proposer).__module__}）")
+              f"（{type(runner.proposer).__module__}）"
+              + (f"，辅助层={list(runner.eagle_aux_hidden_state_layers)}"
+                 if runner.capture_aux_hidden_states else ""))
+        if spec.uses_extract_hidden_states():
+            cache = next(iter(runner.proposer.kv_caches.values()))
+            print(f"  特征缓存（cache-only 层）：{tuple(cache.shape)} "
+                  f"= [blocks, block_size, L, H]，每块 "
+                  f"{cache.shape[1] * cache.shape[2] * cache.shape[3] * cache.element_size() / 1024:.0f} KB"
+                  f"，槽位与本轮 KV 同源（64 关）")
 
     # --trace：只记第一轮。这是"协议 → 模型输入"这一段的真实数字，后面的轮次结构相同
     original_prepare = runner._prepare_inputs

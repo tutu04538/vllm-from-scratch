@@ -178,6 +178,13 @@ EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；
 - **验收靠读物理 slot**：两请求 × 两辅助层塞可辨认值，逐槽位对照"同权重 + 同元数据重跑一次"的
   独立参考；真实 Qwen3-1.7B（fp16、辅助层 (2,14,25)、每块 196,608 B）上 max|Δ|=0.0、greedy 逐 token 一致。
 
+跑一段（真实 Qwen3-1.7B，辅助层 (2,14,25)，每块特征 192 KB）：
+
+```bash
+python minivllm/demo.py --device cuda --max-new-tokens 8 --spec-method extract_hidden_states \
+    --spec-k 1 --spec-aux-layers 2,14,25 "The capital of France is"
+```
+
 设计与差异（含"0 号块留白"这个 69 关前提）见 [`docs/step64_alignment.md`](../docs/step64_alignment.md)，
 实测记录见 [`docs/results.json`](../docs/results.json)（`step64.results`）。
 

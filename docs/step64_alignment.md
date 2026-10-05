@@ -43,6 +43,11 @@ slot，和 target 的 KV 共用同一份 `slot_mapping`、同一张逻辑块表�
 | `worker/gpu_model_runner.py::_propose_extract_hidden_states` / `_padded_sampled_token_ids` | `v1/worker/gpu_model_runner.py:5233-5258`（`propose_draft_token_ids()` 的 extract 分支） | Runner 的**特殊协议分支**：把本轮采样摊成 `[B, K+1]`（无效 `-1`）→ 调 `propose()` → 只取第 0 列当草稿 |
 | `worker/gpu_model_runner.py`（`load_model` / `initialize_kv_cache` / `ExecuteModelState.common_attn_metadata`） | 同文件 `:695-700, 5620-5636, 7800-7805` | 辅助层采集开关、`validate_same_kv_cache_group()`、把本轮元数据留给提议者 |
 | `models/qwen3.py`（63 关就有的 `set_aux_hidden_state_layers` / 辅助层输出） | `model_executor/models/qwen3.py` 的 EAGLE3 接口 | extract 复用同一条采集路径（`capture_aux_hidden_states`） |
+| `demo.py --spec-method extract_hidden_states --spec-k 1 --spec-aux-layers 2,14,25` | 上游把辅助层编号放在 `draft_model_config.hf_config` 里 | CLI 入口（上游同样要求"辅助层编号出现在 draft 配置里"；`--spec-k` 必须 1，配置期校验） |
+
+> 需求 §5 点名的 `step64/` 代码目录**不建**：本项目 2026-10-03 起代码只放 `minivllm/`
+> （AGENTS §2.5），本关的落点是 `minivllm/models/extract_hidden_states.py` +
+> `minivllm/spec_decode/extract_hidden_states.py`。
 
 ## 2. 设计要点（改动时不要破坏）
 
@@ -93,6 +98,17 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step64 -q          # 
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step64_hidden_cache.py   # 18 项 PASS
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step58 tests/step59 tests/step60 \
     tests/step61 tests/step62 tests/step63 tests/step64 -q                    # 314 passed
+```
+
+另外，真实模型上跑过一次 demo 入口（CLI 从 0 到输出都能走通）：
+
+```bash
+python minivllm/demo.py --device cuda --dtype bfloat16 --max-model-len 128 --num-kv-blocks 64 \
+    --max-new-tokens 8 --spec-method extract_hidden_states --spec-k 1 \
+    --spec-aux-layers 2,14,25 "The capital of France is"
+#   投机：method='extract_hidden_states' … K=1，提议者=ExtractHiddenStatesProposer，辅助层=[2, 14, 25]
+#   特征缓存（cache-only 层）：(64, 16, 3, 2048) = [blocks, block_size, L, H]，每块 192 KB
+#   答[q0]: The capital of France is **Paris**   （9 轮调度、8 个 token、0.99s）
 ```
 
 设备 `cuda:0`（RTX 5090 Laptop / WSL2），torch 2.13.0+cu130，tiny target `tiny_gqa`

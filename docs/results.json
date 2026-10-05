@@ -2412,6 +2412,10 @@
         {
           "cmd": "python benchmarks/check_step63_eagle_inputs.py",
           "result": "8 PASS（回归）"
+        },
+        {
+          "cmd": "python minivllm/demo.py --device cuda --max-new-tokens 8 --spec-method extract_hidden_states --spec-k 1 --spec-aux-layers 2,14,25 \"The capital of France is\"",
+          "result": "真实 Qwen3-1.7B：特征缓存 (64,16,3,2048)、每块 192 KB；9 轮调度 8 个 token，答 “The capital of France is **Paris**”"
         }
       ],
       "execution_trace": {
@@ -2509,6 +2513,20 @@
           ],
           "与非投机一致": true,
           "调度统计": "7 轮 ×（草稿 1、接受 0）"
+        },
+        "demo_cli": {
+          "command": "minivllm/demo.py --spec-method extract_hidden_states --spec-k 1 --spec-aux-layers 2,14,25",
+          "cache_only_layer": "(64, 16, 3, 2048) = [blocks, block_size, L, H]，每块 196608 B",
+          "aux_layers": [
+            2,
+            14,
+            25
+          ],
+          "K": 1,
+          "scheduler_rounds": 9,
+          "tokens": 8,
+          "answer": "The capital of France is **Paris**",
+          "回归": "check_step61_suffix.py / check_step62_custom_proposer.py（用 demo 起引擎）改动后仍全通过"
         }
       },
       "fixed_during_step": [
