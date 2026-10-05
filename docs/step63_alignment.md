@@ -107,6 +107,12 @@ no-extra-slots 通路不带这些行（被拒位置本来就是本轮 target 查
    并断言草稿 id 全部落在 `t2d` 集合里（含"不映射就会大量落在集合外"的反证）。
    **注意**：这条是"draft 缩小词表 + 偏移映射"（同一个 tokenizer）；67 关的 TLI 是**两套 tokenizer
    的 token 级交集**（`VocabMapping`），两件事分开做、分开测（需求 067 §3.6）。
+   映射放在 `compute_logits()` 里还顺带解决了 `q`（草稿概率）的宽度问题：映射发生在 **softmax 之前**，
+   所以 `softmax(32000 个值)` 与"scatter 到 151936 宽再 softmax"逐位相同（非 d2t 位置是 `-inf` →
+   概率恰好 0），`draft_probs` 天然就是 target 宽度的、**不需要事后换算**；实测
+   `pending_draft_probs.draft_probs.shape == (2, 151936)`，贪心行的 q 是点质量（一行一个非零）。
+   （若把映射放在 id 阶段，就得把 32000 宽的 q 重排成 151936 宽：拒绝采样内核按 **target 词表**步长
+   索引 `draft_probs`，宽度不符是**越界读**——内核只断言了 ndim。）
 2. **草稿质量（接受长度）还没对齐**：真实权重下实测 K=2、单个 prompt 的接受长度 ≈ **1.07**
    （14 个请求·轮 drafted=28 / accepted=1），而官方模型卡（`AngelSlim/Qwen3-1.7B_eagle3`）在
    Qwen3-1.7B 上写的是 **2.13~2.2**。id 空间已经正确（第 1 条钉住了），所以差距更可能出在
@@ -124,7 +130,7 @@ no-extra-slots 通路不带这些行（被拒位置本来就是本轮 target 查
 ## 6. 验证命令（实测，2026-10-05）
 
 ```bash
-python -m pytest tests/step63 -q                                   # 23 passed（含 66 关收尾补的真实 checkpoint 端到端 2 项）
+python -m pytest tests/step63 -q                                   # 24 passed（含 66 关收尾补的真实 checkpoint 端到端 3 项）
 python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 \
                  tests/step62 tests/step63 tests/step64 -q         # 314 passed（含 64 关）
 python benchmarks/check_step63_eagle_inputs.py                     # 8 项 PASS（只测生产路径）

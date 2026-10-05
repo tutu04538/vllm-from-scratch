@@ -141,6 +141,31 @@ def test_real_checkpoint_greedy_matches_non_speculative(real_run):
     assert real_run["drafts"], "一枚草稿都没提出来？这条端到端就没验到 d2t 那条路"
 
 
+def test_real_draft_probs_are_in_target_space(real_run):
+    """草稿概率 `q` 也必须是 **target 空间**的（宽度 = target 词表）——不需要再做事后换算。
+
+    原因：`d2t` 的映射发生在 `compute_logits()` 里、也就是 **softmax 之前**，所以
+    `softmax(32000 个值)` 与"scatter 到 151936 宽再 softmax"逐位相同（非 d2t 位置是 -inf → 概率恰好 0）。
+    拒绝采样器按 **target 词表**的步长索引 `draft_probs`，宽度对不上就是越界读（内核里是
+    `draft_probs_ptr + token_idx * vocab_size + vocab_offset`，只断言了 ndim），所以这条必须有断言盯着。
+    """
+    runner_engine, _, runner = make_engine(with_spec=True)
+    try:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(str(TARGET_DIR), local_files_only=True)
+        prompt_ids = tokenizer(PROMPT)["input_ids"]
+        _, totals = run(runner_engine, runner_engine.engine_core.engine_core, prompt_ids)
+        pending = runner.pending_draft_probs
+        assert pending is not None and pending.draft_probs is not None
+        assert tuple(pending.draft_probs.shape)[1] == runner.input_batch.vocab_size == 151936
+        # 贪心草稿的 q 是**点质量**（一行只有一个非零），这正是 `draft_probs=None` 那条分支的等价物
+        assert int((pending.draft_probs[0] > 0).sum()) == 1
+        assert totals["drafted"] > 0
+    finally:
+        runner_engine.shutdown()
+
+
 def test_real_draft_ids_live_in_target_space(real_run):
     """草稿 id 必须是 **target 空间**、且落在 `t2d` 标记的集合里（映射接对了的直接证据）。
 

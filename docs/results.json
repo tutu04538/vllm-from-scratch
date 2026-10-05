@@ -2374,11 +2374,12 @@
         "修复": "Eagle3ForCausalLM.compute_logits() 改为与上游 llama_eagle3.py:339-356 一致：targets = arange(draft_vocab_size) + d2t 后 scatter 到 target 宽度、其余位置 -inf（没有 d2t 时保持原样并断言宽度）；draft 宽度那份改名成 draft_vocab_logits()（只给断言用，生产路径不调）；删掉没有生产调用方的 compute_logits_to_target() / map_draft_ids_to_target()。",
         "测试": "tests/step63/test_eagle3_real_e2e.py（新增 2 项，真实 models/Qwen3-1.7B + Qwen3-1.7B-eagle3，CUDA）：greedy 16 token 与非投机逐 token 相同；草稿 id 全部落在 t2d 集合内，且把它们用 d2t 的逆表退回 draft 空间后大量落在集合外（反证）。test_eagle_model.py / test_eagle3_upstream_diff.py 的期望值随之更新（compute_logits 现在返回 151936 宽；与上游同名方法的对照从 compute_logits_to_target 改成 compute_logits，断言强度不变）。",
         "实测": {
-          "pytest tests/step63 -q": "23 passed（原 21 + 新增 2）",
+          "pytest tests/step63 -q": "24 passed（原 21 + 新增真实端到端 3 项）",
           "真实端到端": "非投机 16 token == 投机(K=2) 16 token；草稿 30 枚全部在 t2d 内",
           "接受长度（本 prompt，K=2）": "≈1.07（14 个请求·轮 drafted=28 / accepted=1）",
           "官方模型卡参考": "AngelSlim/Qwen3-1.7B_eagle3 在 Qwen3-1.7B 上报 accept length 2.13~2.2（K=2/4）",
-          "上游引擎对照不可用": "本机 WSL2 上 vllm.LLM(...) 直接 RuntimeError: UVA is not available，所以只能与模型卡/上游类比，不能与上游引擎比接受率"
+          "上游引擎对照不可用": "本机 WSL2 上 vllm.LLM(...) 直接 RuntimeError: UVA is not available，所以只能与模型卡/上游类比，不能与上游引擎比接受率",
+          "草稿概率 q 的宽度": "pending_draft_probs.draft_probs.shape == (2, 151936)：映射在 softmax 之前，q 不需要事后换算（非 d2t 位置概率恰好 0；贪心行是点质量，一行一个非零）"
         },
         "仍然没对齐": "草稿接受长度（≈1.07 vs 2.13~2.2）→ 疑在 draft decoder layer，见 not_run 第 1 条",
         "package_sha256_at_fix": "1a20623154a199aa0414afd1ebd40156c0561403309ca89d8d7b9f081377d974",
@@ -2827,7 +2828,7 @@
         "为什么记在 66 关": "用户在本关收尾时确认「现在做最小修复 + 真实 checkpoint 端到端」；与 65 关把 63 关的 upload bug 记在 step65 同例。",
         "细节见": "docs/results.json → step63.results.后续补齐 / docs/step63_alignment.md §5",
         "实测": {
-          "pytest tests/step58..66 -q": "414 passed（412 + 真实 e2e 2 项）",
+          "pytest tests/step58..66 -q": "415 passed（412 + 真实 e2e 3 项）",
           "真实端到端": "非投机 16 token == 投机(K=2) 16 token；草稿接受长度 ≈1.07（模型卡 2.13~2.2，未对齐）"
         }
       }
