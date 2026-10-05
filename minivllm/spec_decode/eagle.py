@@ -23,21 +23,42 @@ from .utils import FirstPassPlan, TargetRows
 
 
 class EagleProposer(DraftModelProposer):
-    """EAGLE/EAGLE3：draft 额外吃 target 本轮算出来的 hidden states。"""
+    """EAGLE/EAGLE3/**MTP**：draft 额外吃 target 本轮算出来的 hidden states。
+
+    MTP 走的就是这个类（上游 `config.use_eagle()` 把 `mtp` 也算进来，Runner 同样建
+    `EagleProposer`）：差别只有三处，都由配置/模型自己回答，提议循环一行都不用改——
+    **第一遍的 hidden 是哪一份**（EAGLE3：多个辅助层拼起来再 `combine_hidden_states`；
+    MTP：target 的**最后一层** hidden，原样）、**模型返回一个还是两个 hidden**（见
+    `model_returns_tuple()`）、以及 **draft 配置从哪来**（EAGLE3：用户给的 draft 目录；
+    MTP：从 target 配置派生，权重就在 target 的 checkpoint 里）。
+    """
 
     pass_hidden_states_to_model = True
-    model_returns_tuple = True          # EAGLE3 的 forward 返回 (hidden, prenorm)
+
+    def model_returns_tuple(self) -> bool:
+        """上游 `llm_base_proposer.py:1015-1023` 的规则：
+
+            if method == "mtp": 只有 DeepSeekMTPModel / KimiK3MTPModel 返回两个
+            return method not in ("mtp", "draft_model", "dflash")
+
+        本仓库的 MTP 是 Qwen3 家族（上游 `Qwen3NextMTP.forward` **只返回一个** hidden，
+        与它的 `compute_logits` 直接把 lm_head 套在那个 hidden 上一致），所以 mtp → False；
+        EAGLE/EAGLE3 的 draft 返回 `(hidden, hidden_prenorm)` → True。
+        """
+        return self.method != "mtp"
 
     # -------- 模型加载 --------
 
     def load_model(self) -> None:
-        """按 draft 目录的 `architectures` 建 EAGLE3 模型，并把 target 的嵌入接过来。
+        """按 draft 配置的 `architectures` 建 draft 模型（EAGLE3 或 MTP 同一个入口）。
 
-        与普通 draft 的区别只有两点（需求 §3.5/§3.6）：
-          - 用**模型注册表**按 `architectures[0]` 取类（`Eagle3Qwen3ForCausalLM` /
-            `LlamaForCausalLMEEagle3` → 本仓库的 `Eagle3ForCausalLM`），不写死成 Qwen3；
-          - 检查点里**没有** `embed_tokens` 时与 target 共享（不是"shape 相同就共享"，
-            而是"检查点里缺这一份"，对应上游 `_maybe_share_embeddings`）。
+        EAGLE3 与 MTP 的区别只有"配置从哪来"：
+          - EAGLE3：用户给的 draft 目录（用**模型注册表**按 `architectures[0]` 取类）；
+            检查点里**没有** `embed_tokens` 时与 target 共享（不是"shape 相同就共享"，
+            而是"检查点里缺这一份"，对应上游 `_maybe_share_embeddings`）；
+          - MTP：`_build_proposer()` 里用 `SpeculativeConfig.derive_mtp_draft_config()` 从
+            **target 配置**派生（`architectures=["Qwen3MTPModel"]`、模型目录 = target 目录），
+            于是加载器读的是 target 那份 checkpoint，而 MTP 的 `load_weights()` 只挑 spec 层。
         """
         from ..model_loader import get_model
 
@@ -72,6 +93,15 @@ class EagleProposer(DraftModelProposer):
         我们之前按 `expand_eagle_inputs_shifted`（内核的**扩容分支**，额外槽位那套）重建了行，
         才引入"位置用紧凑布局、特征取另一行"的混用错误；现在按本函数改回上游口径：
         输入 token/positions 由 Runner 直接给本轮的原始缓冲（含被拒草稿），我们只做左移与打补丁。
+
+        **特征的形态由方法决定**（上游 `llm_base_proposer.py:532-549`）：
+
+            if self.method in ("eagle3", "dflash"):
+                target_hidden_states = self.model.combine_hidden_states(target_hidden_states)
+
+        也就是"只有 EAGLE3 那一族才在提议者里做多层融合投影"；**MTP 与 EAGLE-1 收的是已经
+        可用的单份 hidden**（MTP 是 target 最后一层，宽度就是 draft 的 hidden_size），原样写进
+        缓冲即可——MTP 自己的 `fc`/`eh_proj` 才是做拼接投影的地方（在模型里，不在提议者里）。
         """
         if target_hidden_states is None:
             raise ValueError(
@@ -103,11 +133,13 @@ class EagleProposer(DraftModelProposer):
         for index, target in zip(token_indices_to_sample, rows):
             input_ids[index] = target.next_token_id
 
-        # 3) 特征：**逐行原样**（多辅助层先各自投影，再按行拼回来）
+        # 3) 特征：**逐行原样**（EAGLE3 先做多层融合投影；MTP 收的就是最终 hidden）
         hidden_rows: list[torch.Tensor] = []
         for target, index in zip(rows, token_indices_to_sample):
-            hidden = self.model.model.combine_hidden_states(target_hidden_states[target.req_id])
-            hidden_rows.extend(hidden[i] for i in range(target.target_rows))
+            rows_hidden = target_hidden_states[target.req_id]
+            if self.method == "eagle3":
+                rows_hidden = self.model.model.combine_hidden_states(rows_hidden)
+            hidden_rows.extend(rows_hidden[i] for i in range(target.target_rows))
         if len(hidden_rows) != num_tokens:
             raise RuntimeError(
                 f"特征行数 {len(hidden_rows)} 与输入行数 {num_tokens} 不一致："

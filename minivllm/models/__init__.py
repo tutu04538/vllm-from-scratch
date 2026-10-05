@@ -7,6 +7,7 @@
 from .extract_hidden_states import (CacheOnlyAttentionBackend, CacheOnlyAttentionLayer,
                                     CacheOnlyAttentionMetadata, ExtractHiddenStatesModel)
 from .qwen3 import Qwen2MLP, Qwen3Attention, Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3Model
+from .qwen3_mtp import Qwen3MTP, Qwen3MultiTokenPredictor
 from .qwen3_eagle3 import Eagle3Attention, Eagle3DecoderLayer, Eagle3ForCausalLM, Eagle3Model
 from .registry import get_model_class, register_model
 
@@ -14,4 +15,5 @@ __all__ = ["Qwen3ForCausalLM", "Qwen3Model", "Qwen3DecoderLayer", "Qwen3Attentio
            "Eagle3ForCausalLM", "Eagle3Model", "Eagle3DecoderLayer", "Eagle3Attention",
            "ExtractHiddenStatesModel", "CacheOnlyAttentionLayer", "CacheOnlyAttentionBackend",
            "CacheOnlyAttentionMetadata",
+           "Qwen3MTP", "Qwen3MultiTokenPredictor",
            "get_model_class", "register_model"]

@@ -147,6 +147,47 @@ class MergedColumnParallelLinear(nn.Module):
         return F.linear(x, self.weight, self.bias), None
 
 
+class ColumnParallelLinear(nn.Module):
+    """按输出维分片的线性层（TP=1 时就是普通 Linear；对应 vLLM 同名类）。
+
+    存在的理由与 `MergedColumnParallelLinear` 一样（权重加载 + 源码映射），但它是**单个**输出片，
+    所以不需要 `shard_id`。65 关的 MTP `fc`（`2H → H` 的拼接投影）用的是它——上游
+    `Qwen3NextMultiTokenPredictor` 就是 `ColumnParallelLinear(..., return_bias=False)`。
+
+    `return_bias` 与上游同义：默认 `True` 时返回 `(output, bias)`（vLLM 的 LinearBase 约定），
+    置 `False` 时只返回 output——MTP 的调用点要写成 `hidden = self.fc(x)`（与上游逐字一致）。
+    """
+
+    def __init__(self, input_size: int, output_size: int, bias: bool = False,
+                 return_bias: bool = True, prefix: str = "") -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.return_bias = return_bias
+        self.weight = Parameter(torch.empty(output_size, input_size))
+        self.weight.weight_loader = self.weight_loader
+        if bias:
+            self.bias = Parameter(torch.empty(output_size))
+            self.bias.weight_loader = self.weight_loader
+        else:
+            self.register_parameter("bias", None)
+
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
+                      shard_id=None) -> None:
+        _reject_shard_id(type(self).__name__, shard_id)
+        if tuple(loaded_weight.shape) != tuple(param.shape):
+            raise ValueError(f"权重形状不匹配：目标 {tuple(param.shape)}，"
+                             f"收到 {tuple(loaded_weight.shape)}")
+        with torch.no_grad():
+            param.copy_(loaded_weight)
+
+    def forward(self, x: torch.Tensor):
+        output = F.linear(x, self.weight, self.bias)
+        if not self.return_bias:
+            return output
+        return output, None
+
+
 class RowParallelLinear(nn.Module):
     """按输入维分片的线性层（TP=1 时就是普通 Linear）。没有通信，没有 all-reduce。"""
 

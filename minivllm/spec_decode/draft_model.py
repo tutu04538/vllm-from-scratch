@@ -82,15 +82,15 @@ def _dtype(name) -> torch.dtype:
 class SpecDecodeBaseProposer:
     """提议步骤的骨架：**没有调度、没有请求状态**，只有"本轮哪些行进、草稿怎么出"。
 
-    63 关：EAGLE 系的提议者还吃 target 的 hidden states，所以这里留了两个开关——
-    `pass_hidden_states_to_model`（第一遍要传特征）与 `model_returns_tuple`（模型返回
-    `(hidden_for_lm_head, hidden_for_next_step)` 两个张量，上游 `model_returns_tuple()` 同义）。
+    63/65 关：EAGLE 系（含 MTP）的提议者还吃 target 的 hidden states，所以这里留了两个开关——
+    `pass_hidden_states_to_model`（第一遍要传特征，上游是构造参数）与
+    `model_returns_tuple()`（模型返回 `(hidden_for_logits, hidden_for_next_step)` 两个张量还是
+    一个，上游同名方法；**按家族不同**：EAGLE3 与 DeepSeek/Kimi 的 MTP 是两个，
+    Qwen3-Next 的 MTP 是一个）。
     """
 
     # 普通 draft 只吃 token；EAGLE 子类改成 True（上游 `EagleProposer.__init__` 传的就是它）
     pass_hidden_states_to_model = False
-    # 模型是否返回 tuple（EAGLE3 的 forward 返回 `(hidden_states, hidden_prenorm)`）
-    model_returns_tuple = False
 
     def __init__(self, spec_config, vllm_config, device: str) -> None:
         self.spec_config = spec_config
@@ -167,6 +167,15 @@ class SpecDecodeBaseProposer:
     def load_model(self) -> None:
         raise NotImplementedError
 
+    def model_returns_tuple(self) -> bool:
+        """模型是否返回 `(for_logits, for_next_step)` 两个 hidden（上游 `llm_base_proposer.py:1015`）。
+
+        上游的规则：`method == "mtp"` 时只有 `DeepSeekMTPModel`/`KimiK3MTPModel` 返回两个；
+        其余 EAGLE 系都返回两个，`draft_model`/`dflash` 返回一个。本仓库实现了
+        EAGLE3（两个）与 Qwen3 家族的 MTP（一个，与上游 `Qwen3NextMTP` 一致）。
+        """
+        return False
+
     # -------- 提议 --------
 
     def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]], input_batch,
@@ -231,11 +240,19 @@ class SpecDecodeBaseProposer:
                 break
             self._set_autoregressive_inputs(pending, drafts, input_batch)
             hidden = self._forward(len(pending), len(pending))
-            if self.model_returns_tuple:
+            if self.model_returns_tuple():
                 logits_hidden, next_hidden = hidden
                 for index, (target, _) in enumerate(pending):
                     self._ar_hidden[target.req_id] = next_hidden[index]
                 hidden = logits_hidden
+            elif self.pass_hidden_states_to_model:
+                # 单返回值的 EAGLE 系（本仓库的 MTP-Qwen3）：**同一个张量既是下一步要回灌的
+                # hidden，也是过 lm_head 的那份**（上游 base proposer 里
+                # `last_hidden_states = hidden_states = ret_hidden_states`）。
+                # 不记下来的话，AR 步会一直用第一遍的 hidden——草稿仍然"能跑"，但第 2 枚起
+                # 就不再条件于第 1 枚了（最典型的一类静默错，tests/step65 用错位反证盯着）。
+                for index, (target, _) in enumerate(pending):
+                    self._ar_hidden[target.req_id] = hidden[index]
             self._sample_draft_tokens(
                 hidden, [(target.req_id, index) for index, (target, _) in enumerate(pending)],
                 input_batch, drafts, probs)
@@ -248,12 +265,15 @@ class SpecDecodeBaseProposer:
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
 
     def _split_hidden(self, hidden, plan: FirstPassPlan, rows: list[TargetRows]):
-        """`model_returns_tuple` 时拆开 `(for_lm_head, for_next_step)` 并记住 AR 要用的那份。
+        """拆开 `(for_logits, for_next_step)`（tuple 模型）／记住 AR 要用的那份（单返回值模型）。
 
-        第一遍每请求的采样行在 `plan.sample_rows`（= 扩容行的全局行号），AR 步用的特征就是
-        这一行对应请求的 `for_next_step`。
+        第一遍每请求的采样行在 `plan.sample_rows`（= 扩容行的全局行号），AR 步用的 hidden 就是
+        这一行对应请求的那份。
         """
-        if not self.model_returns_tuple:
+        if not self.model_returns_tuple():
+            if self.pass_hidden_states_to_model:
+                for req_id, row in zip(plan.sample_req_ids, plan.sample_rows):
+                    self._ar_hidden[req_id] = hidden[row]
             return hidden
         logits_hidden, next_hidden = hidden
         for req_id, row in zip(plan.sample_req_ids, plan.sample_rows):
@@ -386,6 +406,14 @@ class SpecDecodeBaseProposer:
         self.query_start_loc[:num_reqs + 1].copy_(self.query_start_loc_cpu[:num_reqs + 1])
         self.seq_lens[:num_reqs].copy_(self.seq_lens_cpu[:num_reqs])
         self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs])
+        if self.pass_hidden_states_to_model:
+            # **特征也必须上传**（63/65 关；这是 65 关的错位反证用例抓出来的一个真 bug）。
+            # 漏了这一步，CUDA 上 `_forward()` 传进模型的 `self.hidden_states` 就是 device 侧
+            # 那份**从没被写过**的缓冲（全零），而 `hidden_states_cpu` 上 staging 的特征永远
+            # 到不了模型：草稿照样出、不报错，只是完全没吃到 target 的 hidden（EAGLE3/MTP 一起
+            # 退化成"只看 token"）。CPU 上 staging 与 device 是同一份张量，所以只在 CPU 跑
+            # 测试永远发现不了——必须在 CUDA 上比"模型实际收到的特征"。
+            self.hidden_states[:num_tokens].copy_(self.hidden_states_cpu[:num_tokens])
 
     def _forward(self, num_tokens: int, num_reqs: int, hidden_states=None):
         """把工作区的前 `num_tokens` / `num_reqs` 行交给 draft 模型，返回 hidden states。
@@ -406,7 +434,7 @@ class SpecDecodeBaseProposer:
                 features = self.hidden_states if hidden_states is None else hidden_states
                 out = self.model(self.input_ids[:num_tokens], self.positions[:num_tokens],
                                  features[:num_tokens])
-                if self.model_returns_tuple:
+                if self.model_returns_tuple():
                     # 上游：`last_hidden_states, hidden_states = ret_hidden_states`
                     # —— lm_head 用前者，下一步 draft 用后者（EAGLE3 的 prenorm）
                     for_logits, for_next = out

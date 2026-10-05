@@ -12,7 +12,8 @@
     "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
-    "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）"
+    "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）",
+    "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）"
   },
   "step58": {
     "results": {
@@ -2573,6 +2574,117 @@
         "max_num_seqs": 2,
         "max_num_batched_tokens": 128,
         "num_speculative_tokens": 1
+      }
+    },
+    "dependencies": null
+  },
+  "step65": {
+    "results": {
+      "step": 65,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/065_原生MTP模型加载与通用迭代提议.md",
+      "status": "implemented + self-verified（tiny 两派命名 × K=1/2 端到端；与上游真实 Qwen3NextMTP 的胶水 forward / compute_logits 逐位相同）",
+      "recorded_at": "2026-10-05T08:22:10+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "7ea66e3",
+        "implementation_commit": "见本轮提交（step65：原生 MTP 加载与通用迭代提议）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 75,
+        "sha256": "168841f60b285eac0f32b3a9b63e0468015328a9d0a046bd10d8532e868dda66",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/上游类数值对照）",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step65 -q",
+          "result": "47 passed（config 11 + loader 14 + forward 8 + e2e 11 + 特征上传回归 3）"
+        },
+        {
+          "cmd": "python benchmarks/check_step65_mtp.py",
+          "result": "17 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step58..65 -q",
+          "result": "361 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step58..64 + check_step57_*.py",
+          "result": "全通过（回归）"
+        }
+      ],
+      "execution_trace": {
+        "upstream_numeric_diff": {
+          "对象": "vllm.model_executor.models.qwen3_next_mtp.Qwen3NextMTP（本进程实例化，tiny Qwen3-Next 配置，CUDA）",
+          "做法": "两侧都把 decoder 层换成直通块（上游 Qwen3-Next 是 GatedDeltaNet+MoE，本仓库是稠密 Qwen3），加载同一份胶水权重",
+          "glue_forward_max_abs_delta": 0.0,
+          "compute_logits_max_abs_delta": 0.0,
+          "归一化口味差异": "上游 Qwen3-Next 用 GemmaRMSNorm（x*(1+w)），本仓库用 Qwen3 式（x*w）→ 对照时按两种语义对齐权重"
+        },
+        "loader": {
+          "命名派别": [
+            "mtp.*",
+            "model.layers.{N+i}.*"
+          ],
+          "加载参数数": 14,
+          "target_side_loaded": 19,
+          "反证": "MTP 的 layers.0.* ≠ target 第 0 层同名权重（层号没搞混）",
+          "不支持家族": "DeepSeek 的 q_a_proj → 加载器明确报「没有这个参数」"
+        },
+        "e2e": {
+          "greedy_vs_non_spec": "两派命名 × K=1/2 共 4 组全部逐 token 相同，草稿进过调度器",
+          "hidden_feedback_frozen_logits_delta": 0.38,
+          "misaligned_hidden_logits_delta": 0.48,
+          "preemption": "num_gpu_blocks=6 触发抢占后仍与非投机一致"
+        },
+        "alias_table": {
+          "总数": 24,
+          "归一": "全部 → method='mtp'",
+          "已实现": [
+            "mtp"
+          ],
+          "归一但块结构未实现": [
+            "qwen3_next_mtp"
+          ],
+          "未适配": "其余 22 个（缺 MLA/MoE/混合层；加载期明确报错，不静默退化）"
+        }
+      },
+      "fixed_during_step": [
+        "**63 关的真 bug**：`SpecDecodeBaseProposer._upload()` 漏传 `hidden_states` → CUDA 上 EAGLE3/MTP 的 draft 一直吃的是**全零的 device 缓冲**（CPU 上 staging 与 device 是同一份张量，所以只在 CPU 跑测试永远发现不了）。修复：`pass_hidden_states_to_model` 时补一次 `hidden_states[:n].copy_(hidden_states_cpu[:n])`；回归用例 `tests/step65/test_feature_upload_regression.py`（EAGLE3 与 MTP 各一条 + 一条把 CPU/CUDA 的缓冲差异钉在真实构造路径上）。发现方式：65 关的错位反证用例第一次跑就报 logits 差 0.0。",
+        "测试基建：step63/step65 的上游数值对照都要初始化 vLLM 的进程组，一起跑时第二次初始化会 assert 失败 → 两处 fixture 改成幂等（`model_parallel_is_initialized()` 判断），并让上游 MTP 用稠密配置 + 跳过 MoE 记账，去掉对 EP 组的依赖（顺序无关）。"
+      ],
+      "not_run": [
+        "其它 23 个 MTP 别名（缺 MLA/MoE/GatedDeltaNet 等块结构）",
+        "多模块 MTP（n_predict>1 且 K>1）的调度/状态行为 → 80 关",
+        "真实 MTP checkpoint 的 greedy 对照（本机没有权重）",
+        "与上游 DeepSeekMTP 的 forward 对照（需要 MLA+MoE）",
+        "index sharing（set_skip_topk/compact_topk_indices）→ 80 关",
+        "CUDA Graph / 异步调度下的 MTP（69/70 关）"
+      ]
+    },
+    "models": {
+      "tiny_target_with_spec_layers": {
+        "生成器": "minivllm/testing/tiny_models.py::tiny_mtp_dir('tiny_gqa', naming='mtp'|'absolute')",
+        "内容": "target 的 2 层权重 + 排在后面的 spec 层（胶水 fc/pre_fc_norm_*/norm + 1 层 decoder）+ 共享 embed_tokens/lm_head",
+        "config": "num_hidden_layers=2、num_nextn_predict_layers=1、vocab 11、hidden 32、architectures=['Qwen3ForCausalLM']（保持 target 的样子；draft 架构由派生改写）",
+        "dtype": "float32"
+      },
+      "upstream_draft_for_diff": {
+        "类": "vllm.model_executor.models.qwen3_next_mtp.Qwen3NextMTP",
+        "配置": "tiny Qwen3-Next（hidden 64 = heads×head_dim、vocab 64（64 的倍数）、num_experts=0）",
+        "用途": "胶水 forward / compute_logits 的逐值对照（两侧 decoder 层都换成直通）"
+      },
+      "mtp_model": {
+        "架构名": "Qwen3MTPModel（本仓库自己的名字，不冒充 Qwen3NextMTP）",
+        "块": "Qwen3DecoderLayer（稠密；上游 Qwen3-Next 是混合注意力）",
+        "共享": "embed_tokens / lm_head 从同一份 checkpoint 加载（各自是参数，不共享对象）"
       }
     },
     "dependencies": null

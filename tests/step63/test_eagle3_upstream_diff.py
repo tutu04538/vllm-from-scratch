@@ -81,11 +81,16 @@ def models():
         scheduler_config=UpSchedulerConfig(max_num_seqs=1, max_num_batched_tokens=64,
                                            max_model_len=64, is_encoder_decoder=False))
     with set_current_vllm_config(vllm_config):
-        init_distributed_environment(world_size=1, rank=0, local_rank=0,
-                                     distributed_init_method="tcp://127.0.0.1:29781",
-                                     backend="gloo")
-        initialize_model_parallel(tensor_model_parallel_size=1,
-                                  pipeline_model_parallel_size=1)
+        # 幂等：同一个 pytest 进程里可能已有别的用例初始化过（vLLM 的
+        # `initialize_model_parallel()` 对"重复初始化"是 assert 失败）
+        from vllm.distributed.parallel_state import model_parallel_is_initialized
+
+        if not model_parallel_is_initialized():
+            init_distributed_environment(world_size=1, rank=0, local_rank=0,
+                                         distributed_init_method="tcp://127.0.0.1:29781",
+                                         backend="gloo")
+            initialize_model_parallel(tensor_model_parallel_size=1,
+                                      pipeline_model_parallel_size=1)
         upstream = Eagle3LlamaForCausalLM(vllm_config=vllm_config, prefix="")
         upstream.load_weights(iter(state.items()))
     upstream = upstream.float().to("cuda").eval()

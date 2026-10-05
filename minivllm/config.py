@@ -113,11 +113,44 @@ class DeviceConfig:
     device: str = "cpu"
 
 
+# 上游 `MTPModelTypes`（`config/speculative.py:37-61`）：这一长串**别名**在配置期一律归一到
+# `method="mtp"`（上游 L748-756：打个 deprecation 警告然后改写）。归一的理由：它们在引擎里
+# 是**同一件事**——"MTP 权重就在 target checkpoint 里，用 target 的最后一层 hidden 迭代提议"，
+# 差别只在模型结构（哪个家族的 decoder layer）与权重命名。别把每个别名做成一种独立算法。
+MTP_MODEL_TYPES = (
+    "deepseek_mtp",
+    "dots3_note_mtp",
+    "mimo_mtp",
+    "mimo_v2_mtp",
+    "glm4_moe_mtp",
+    "glm4_moe_lite_mtp",
+    "glm_ocr_mtp",
+    "ernie_mtp",
+    "nemotron_h_mtp",
+    "exaone_moe_mtp",
+    "exaone4_5_mtp",
+    "qwen3_next_mtp",
+    "qwen3_5_mtp",
+    "longcat_flash_mtp",
+    "bailing_hybrid_v3_mtp",
+    "minimax_m3_mtp",
+    "bailing_hybrid_mtp",
+    "mtp",
+    "kimi_k3_mtp",
+    "pangu_ultra_moe_mtp",
+    "step3p5_mtp",
+    "hy_v3_mtp",
+    "gemma4_mtp",
+    "inkling_mtp",
+)
+
+
 @dataclass(frozen=True)
 class SpeculativeConfig:
     """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口；
     61 增加 suffix decoding 参数；62 增加自定义 proposer 的接入与**方法推断**；
-    64 增加 `extract_hidden_states`——一个**不做投机、只借 KV 缓存存特征**的方法）。"""
+    64 增加 `extract_hidden_states`——一个**不做投机、只借 KV 缓存存特征**的方法；
+    65 增加 `mtp`——权重在 target checkpoint 里的原生多 token 预测层）。"""
 
     # 上游 `SpeculativeConfig.method: str | None = None`：**不给**时由 `__post_init__` 推出来，
     # 这样"用哪种投机"只有一个判定点（62 关需求 §3.1：不让 CLI 判一次、Runner 再猜一次）。
@@ -165,13 +198,18 @@ class SpeculativeConfig:
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
         self._resolve_method()
+        if self.method in MTP_MODEL_TYPES and self.method != "mtp":
+            # 上游 `config/speculative.py:748-756`：别名一律归一到 "mtp"（那里还打一条
+            # "method `x` is deprecated and replaced with mtp" 的 warning；本仓库不引 logger，
+            # 把这条写进 docs/step65_alignment.md 的别名表）。
+            object.__setattr__(self, "method", "mtp")
         if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
-                               "eagle", "eagle3", "extract_hidden_states"):
+                               "eagle", "eagle3", "extract_hidden_states", "mtp"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states'，收到 "
+                f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / 'mtp'，收到 "
                 f"{self.method!r}"
-                "（MTP/PARD/DFlash 等按需求顺序在后续关卡实现）")
+                "（PARD/DFlash/DSpark 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
                 f"本关只支持 rejection_sample_method='standard'，收到 "
@@ -183,6 +221,11 @@ class SpeculativeConfig:
             self._resolve_suffix_decoding()
         elif self.method == "custom_class":
             self._resolve_custom_class()
+        elif self.method == "mtp":
+            # **必须排在 use_eagle() 之前**：上游的 `use_eagle()` 把 mtp 也算进"吃 target hidden
+            # 的 EAGLE 系"（L1477-1481），但 MTP 的 draft 配置是从 target 派生的、不需要用户给
+            # draft_model_config，所以校验规则与 EAGLE 不同（见 _resolve_mtp）。
+            self._resolve_mtp()
         elif self.use_eagle():
             self._resolve_eagle()
         elif self.uses_extract_hidden_states():
@@ -286,8 +329,89 @@ class SpeculativeConfig:
                 f"{self.suffix_decoding_min_token_prob} must be in [0, 1]")
 
     def use_eagle(self) -> bool:
-        """是否走 EAGLE 系提议者（EAGLE-1/2 与 EAGLE3 共用一套提议流程，只差模型类）。"""
-        return self.method in ("eagle", "eagle3")
+        """是否走 EAGLE 系提议者（EAGLE-1/2、EAGLE3 与 **MTP** 共用一套提议流程）。
+
+        上游 `config/speculative.py:1477-1481` 逐字如此（那里的注释也写明："这个方法是
+        '用 target hidden 做投机'的统称"）：`("eagle", "eagle3", "mtp", "dflash", "dspark")`。
+        本仓库实现了前三者。
+
+        **后果**（调度侧依赖它）：`num_lookahead_tokens` = K（它们都要往 target query 之外写
+        K 个位置的 KV）、Runner 建 `EagleProposer`、`capture_aux_hidden_states` 之外还要给
+        MTP 留 target 的最后一层 hidden。
+        """
+        return self.method in ("eagle", "eagle3", "mtp")
+
+    def uses_mtp(self) -> bool:
+        """是否为原生 MTP（权重在 target checkpoint 里）。"""
+        return self.method == "mtp"
+
+    def use_multi_module_mtp(self) -> bool:
+        """是否用到**多个** MTP 模块（上游 `config/speculative.py:1501-1507`）。
+
+        `min(num_nextn_predict_layers, K) > 1` 就是多模块。通用 V1 提议路径里
+        `spec_step_idx` 恒为 0（只有 step3p5 的专用提议者会递进），所以多模块的调度/状态行为
+        属 **80 关**；本关只把判定做出来并在文档里标出边界。
+        """
+        if self.method != "mtp" or self.draft_model_config is None:
+            return False
+        num_mtp_layers = int(self.draft_model_config.hf_config.get(
+            "num_nextn_predict_layers", 1) or 1)
+        return min(num_mtp_layers, self.num_speculative_tokens) > 1
+
+    def _resolve_mtp(self) -> None:
+        """`method="mtp"` 的校验（上游 `config/speculative.py:759-772` 与 L1046-1084 的 K 约束）。
+
+        上游在这个分支里做三件事：要求 `target_model_config` 存在、把 `model` 换成 target 的
+        模型目录（**MTP 权重就在 target checkpoint 里**，没有第二个模型目录）、对齐量化。
+        本仓库的 `SpeculativeConfig` 拿不到 target 配置（上游有这个字段），所以"派生 draft 配置"
+        这一步做成 `derive_mtp_draft_config()`，由同时持有两者的提议者调用——与 64 关同一个做法。
+
+        K 的约束：上游"没给 K 就取 `n_predict`"、"K > n_predict 时必须能被 n_predict 整除
+        （模块复用）"两条都需要 target 配置里的 `num_nextn_predict_layers`，所以也在
+        `derive_mtp_draft_config()` 里判；这里只挡住"根本没给 K"。
+        """
+        if self.num_speculative_tokens <= 0:
+            raise ValueError(
+                "MTP 的 num_speculative_tokens 必须 > 0：上游在没给时会取 target 的 "
+                "num_nextn_predict_layers 当默认值，本仓库的配置拿不到 target（见 "
+                "derive_mtp_draft_config），所以必须显式给")
+        object.__setattr__(self, "prompt_lookup_max", 0)
+        object.__setattr__(self, "prompt_lookup_min", 0)
+
+    def derive_mtp_draft_config(self, target_model_config: "ModelConfig") -> "ModelConfig":
+        """从 **target 配置**派生 MTP 的 draft 配置（上游 `hf_config_override` + `ModelConfig(...)`）。
+
+        上游做的事（`config/speculative.py:342-687` 的 `hf_config_override` + L897-924 的
+        `ModelConfig(model=self.target_model_config.model, hf_overrides=...)`）：
+
+            model_type     →  "<家族>_mtp"（按 target 的 model_type/architectures 查表）
+            n_predict      →  num_nextn_predict_layers
+            architectures  →  ["<家族>MTPModel"]（让加载器去建 MTP 模型而不是 target 模型）
+            model          →  target 的模型目录（同一个 checkpoint 文件）
+
+        本仓库的差异（逐条记在 docs/step65_alignment.md §3）：**架构名用我们自己的
+        `Qwen3MTPModel`**——本仓库的 MTP 层是稠密 Qwen3 解码层，而 Qwen3-Next 的 MTP 用的是
+        混合注意力（GatedDeltaNet），注册成上游名字会让真 checkpoint 静默跑错结构。
+        `num_speculative_tokens` 与 `n_predict` 的整除关系也在这里判（上游在配置期判，
+        理由同上：本仓库要等拿到 target 配置）。
+        """
+        target_hf = dict(target_model_config.hf_config or {})
+        n_predict = int(target_hf.get("num_nextn_predict_layers") or 0)
+        if n_predict <= 0:
+            raise ValueError(
+                f"MTP 的权重在 target checkpoint 里，但 target 配置里没有 "
+                f"num_nextn_predict_layers（收到 {target_hf.get('num_nextn_predict_layers')!r}）："
+                f"没有这个字段就无法知道 target 后面附了几层 MTP，无法加载")
+        num_drafts = self.num_speculative_tokens
+        if num_drafts > n_predict and num_drafts % n_predict != 0:
+            # 上游原话：Ensure divisibility for MTP module reuse.
+            raise ValueError(
+                f"num_speculative_tokens:{num_drafts} 必须能被 n_predict={n_predict} 整除"
+                f"（MTP 模块复用：每枚草稿都要落到某一个 MTP 层上）")
+        hf_config = {**target_hf,
+                     "n_predict": n_predict,
+                     "architectures": ["Qwen3MTPModel"]}
+        return replace(target_model_config, hf_config=hf_config)
 
     def _resolve_eagle(self) -> None:
         """EAGLE 的取值校验：必须有 draft 模型目录、K > 0（上游同样要求）。

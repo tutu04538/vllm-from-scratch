@@ -262,10 +262,22 @@ class Qwen3ForCausalLM(nn.Module):
 
         名字路由（q/k/v → qkv_proj）不在这里，而在 `Qwen3Model.load_weights`：`model.` 这一组
         会被 AutoWeightsLoader 整组交给子模块，映射写在与参数最近的那一层。
+
+        **65 关：MTP 的权重与 target 在同一个 checkpoint 里，target 要跳过它们**（两派命名各一条）：
+
+            `mtp.*`                     → `skip_prefixes=["mtp."]`
+                                          （上游 `qwen3_next.py:846` 的 Qwen3NextForCausalLM）
+            `model.layers.{N+i}.*`      → `skip_spec_layer_weights()`
+                                          （上游 `deepseek_v2.py:1575-1577` 的 DeepseekV2ForCausalLM）
+
+        跳过它们不影响本模型的覆盖检查（那些名字既不是本模型的参数，也不是本模型该加载的东西）；
+        不跳过的话加载器会当场报"没有这个参数"——这也是**故意**的：静默忽略未知名字会让
+        "权重名写错"永远发现不了。
         """
         from ..model_loader.auto_weights_loader import AutoWeightsLoader
+        from .utils import skip_spec_layer_weights
 
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=["lm_head."] if self.tie_word_embeddings else None)
-        return loader.load_weights(weights)
+        skip_prefixes = ["lm_head."] if self.tie_word_embeddings else []
+        skip_prefixes.append("mtp.")
+        weights = skip_spec_layer_weights(self.config, weights)
+        return AutoWeightsLoader(self, skip_prefixes=skip_prefixes).load_weights(weights)

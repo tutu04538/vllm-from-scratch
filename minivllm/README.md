@@ -188,6 +188,32 @@ python minivllm/demo.py --device cuda --max-new-tokens 8 --spec-method extract_h
 设计与差异（含"0 号块留白"这个 69 关前提）见 [`docs/step64_alignment.md`](../docs/step64_alignment.md)，
 实测记录见 [`docs/results.json`](../docs/results.json)（`step64.results`）。
 
+## 第六十五关：原生 MTP（多 token 预测）
+
+MTP 是模型**训练时**多长出来的一层预测头，权重就排在 **target checkpoint 的最后一层之后**。
+这一关把它接成草稿机，三件事：
+
+- **别名归一**：`deepseek_mtp` / `qwen3_next_mtp` / `glm4_moe_mtp` … 24 个名字一律归一到
+  `method="mtp"`（与上游 `MTPModelTypes` 逐项一致）——它们在引擎里是同一件事；
+- **同文件、两套权重**：target 加载时跳过 spec 层（`mtp.*` 用 `skip_prefixes`、
+  `model.layers.{N+i}.*` 用 `get_spec_layer_idx_from_weight_name`），MTP 加载时只挑 spec 层 + 共享的
+  `embed_tokens`/`lm_head`；认不出的参数名（例如 MLA 的 `q_a_proj`）**当场报错**，不静默跳过；
+- **通用迭代提议**：MTP 复用 `EagleProposer`（上游 `use_eagle()` 就把 `mtp` 算进来）。它吃的是 target 的
+  **最后一层 hidden**（不是辅助层），每一步 `hidden_t = norm(block(fc([norm_emb(embed(token_t)) ‖
+  norm_hidden(hidden_{t-1})])))` —— 所以第 2 枚草稿真的条件在第 1 枚之上。
+
+```bash
+python -m pytest tests/step65 -q                      # 47 项
+python benchmarks/check_step65_mtp.py                 # 17 项（含与上游 Qwen3NextMTP 的逐值对照）
+```
+
+> 与上游真实 `Qwen3NextMTP` 的胶水 forward / `compute_logits`：**max|Δ| = 0.0**（两侧 decoder 层都换成直通，
+> 比的是 MTP 特有的那部分）。本仓库的 MTP 块是**稠密 Qwen3**，所以架构名用我们自己的 `Qwen3MTPModel`，
+> 不冒充 `Qwen3NextMTP`；其余 22 个别名（缺 MLA/MoE/混合层）在加载期明确报错。
+
+设计与差异（含别名表与"顺带修掉的 63 关 bug"）见 [`docs/step65_alignment.md`](../docs/step65_alignment.md)，
+实测记录见 [`docs/results.json`](../docs/results.json)（`step65.results`）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -224,6 +250,7 @@ python benchmarks/check_step61_suffix.py             # 27 项：依赖接入、�
 python benchmarks/check_step62_custom_proposer.py    # 34 项：方法推断、接口、错误分类、Runner 接线、行为等价、demo 端到端
 python benchmarks/check_step63_eagle_inputs.py       # 8 项：EAGLE 第一遍输入对齐（只测生产路径）
 python benchmarks/check_step64_hidden_cache.py       # 18 项：cache-only 路径（物理 slot、协议、chunked/prefix/拒绝尾部/复用、端到端）
+python benchmarks/check_step65_mtp.py                # 17 项：MTP 别名/加载（两派命名）/胶水与上游逐值对照/端到端反证
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -231,6 +258,7 @@ python -m pytest tests/step61 -q                     # 55 项：step61 的单测
 python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
 python -m pytest tests/step63 -q                     # 21 项：step63（EAGLE3 模型 + 端到端 + 与上游的数值对照）
 python -m pytest tests/step64 -q                     # 13 项：step64（cache-only 层/提议者/Runner 接线与物理 slot 校验）
+python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配置/加载/前向/端到端 + 特征上传回归）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

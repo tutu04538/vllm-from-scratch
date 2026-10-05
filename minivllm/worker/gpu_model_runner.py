@@ -29,7 +29,7 @@
 失败状态，不再接受新的一轮（不做没有依据的回滚）。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
 import numpy as np
@@ -157,6 +157,9 @@ class GPUModelRunner:
         # 60 关：ngram_gpu 的显存历史缓冲在 `_build_proposer()` 里分配（只有这个方法用得到）
         self.capture_aux_hidden_states = False
         self.aux_hidden_states: torch.Tensor | None = None
+        # 65 关（MTP）：提议者吃的是 target 的**最后一层** hidden（不是辅助层），所以这里留一份
+        # `_run_model()` 每轮算出来的 hidden 引用（同一轮 execute→sample 之间有效）
+        self.target_hidden_states: torch.Tensor | None = None
         self.eagle_aux_hidden_state_layers: tuple[int, ...] = ()
         # 本轮那份 attention 元数据（`_build_attn_metadata()` 每轮重设）。64 关的 cache-only
         # 提议者要用它的 `slot_mapping`（与 target 的 KV 同一份槽位），所以留一个引用。
@@ -187,6 +190,9 @@ class GPUModelRunner:
         if self.speculative_config is not None and (
                 self.speculative_config.eagle3_use_aux_hidden_state()
                 or self.speculative_config.uses_extract_hidden_states()):
+            # 注意：**MTP 不走这里**——它吃的是 target 的最后一层 hidden（`_run_model` 本来就会
+            # 算出来），不需要 target 顺带输出辅助层（上游 `use_aux_hidden_state_outputs` 同样是
+            # False）。把 MTP 塞进这条分支会让 target 白算几层特征。
             self.capture_aux_hidden_states = True
             layers = self.speculative_config.eagle_aux_hidden_state_layers() \
                 or self.model.get_eagle3_default_aux_hidden_state_layers()
@@ -194,21 +200,27 @@ class GPUModelRunner:
             self.eagle_aux_hidden_state_layers = tuple(layers)
         return self.model
 
-    def _aux_hidden_states_by_req(self, scheduler_output, num_reqs: int):
-        """把本轮 target 的辅助特征按**请求**切片（EAGLE 的第一遍要逐行配对）。
+    def _target_hidden_states_by_req(self, scheduler_output, num_reqs: int):
+        """把本轮 target 的 hidden states 按**请求**切片（EAGLE/MTP 的第一遍要逐行配对）。
+
+        两份来源，取决于方法（上游 `gpu_model_runner.py:5325-5365` 的同一个判断）：
+
+            use_aux_hidden_state_outputs（EAGLE3）：多个辅助层拼在最后一维 → [T, L*H]
+            否则（**MTP** / EAGLE-1）      ：target 本轮每个 query 行的**最后一层 hidden** → [T, H]
 
         行序与 `_prepare_inputs` 的展平顺序一致（批行序 × 每请求 `num_scheduled_tokens`），
         所以偏移量就是 `num_scheduled_tokens` 的前缀和。特征只是**本轮快照**：抢占/重排之后
         必须由 target 重新算，不能长期留着（需求 063 §2）。
         """
-        aux = self.aux_hidden_states
-        if aux is None:
+        features = (self.aux_hidden_states if self.capture_aux_hidden_states
+                    else self.target_hidden_states)
+        if features is None:
             return None
         hidden_by_req = {}
         offset = 0
         for req_id in self.input_batch.req_ids[:num_reqs]:
             length = int(scheduler_output.num_scheduled_tokens[req_id])
-            hidden_by_req[req_id] = aux[offset:offset + length]
+            hidden_by_req[req_id] = features[offset:offset + length]
             offset += length
         return hidden_by_req
 
@@ -232,10 +244,19 @@ class GPUModelRunner:
 
             return create_custom_proposer(self.vllm_config)
         if config.use_eagle():
-            # 63 关：EAGLE 的 draft 额外吃 target 的 hidden states；提议流程与 draft_model
-            # 共用基类（上游 `EagleProposer(SpecDecodeBaseProposer)` 同款结构）。
+            # 63/65 关：EAGLE3 与 MTP 都走 `EagleProposer`（上游 `use_eagle()` 就把 mtp 算进来，
+            # Runner 同样建 EagleProposer）——它们都是"吃 target hidden 的迭代提议"，
+            # 提议循环一行都不用改。
             from ..spec_decode.eagle import EagleProposer
 
+            if config.uses_mtp() and config.draft_model_config is None:
+                # MTP 的权重在 target 的 checkpoint 里，draft 配置由 target 配置派生
+                # （上游在 `SpeculativeConfig.__post_init__` 里做，本仓库拿到 target 的时机在这里；
+                # `replace` 会重跑配置校验，K 与 n_predict 的整除关系也在这一步判）
+                config = replace(
+                    config,
+                    draft_model_config=config.derive_mtp_draft_config(
+                        self.vllm_config.model_config))
             proposer = EagleProposer(config, self.vllm_config, self.device)
             proposer.load_model()
             if self.model is not None:
@@ -685,6 +706,10 @@ class GPUModelRunner:
                 self.aux_hidden_states = torch.cat(list(aux), dim=-1)
             else:
                 hidden_states = self.model(input_ids, positions)
+        # 65 关：MTP 要的就是这份"本轮每个 query 行的最后一层 hidden"（上游
+        # `target_hidden_states = hidden_states[:total_num_tokens]`，因为它的
+        # `use_aux_hidden_state_outputs` 是 False）。留引用不复制。
+        self.target_hidden_states = hidden_states
         return hidden_states
 
     def _build_attn_metadata(self, inputs: PreparedInputs) -> dict:
@@ -751,11 +776,16 @@ class GPUModelRunner:
             self.execute_model_state = None
             self.failure = f"{type(exc).__name__}: {exc}"
             raise
+        # 63/65 关：EAGLE 系（EAGLE3 与 **MTP**）的第一遍都要"本轮 target 真正喂进去的那两行"
+        # 做整体左移 + 打补丁，所以要把它们留到提议时刻。判据是**方法**而不是
+        # `capture_aux_hidden_states`：MTP 不吃辅助层（那个开关是 False），但同样需要这两份输入。
+        needs_target_rows = (self.speculative_config is not None
+                             and self.speculative_config.use_eagle())
         self.execute_model_state = ExecuteModelState(
             scheduler_output=scheduler_output, logits=logits, sample_rows=inputs.sample_rows,
             spec_metadata=inputs.spec_metadata,
-            target_token_ids_cpu=(inputs.input_ids if self.capture_aux_hidden_states else None),
-            target_positions_cpu=(inputs.positions if self.capture_aux_hidden_states else None),
+            target_token_ids_cpu=(inputs.input_ids if needs_target_rows else None),
+            target_positions_cpu=(inputs.positions if needs_target_rows else None),
             # 64 关：只有 cache-only 提议者需要本轮的元数据（槽位）；别的方法不用，就不留引用
             common_attn_metadata=(self.attn_metadata
                                   if self.speculative_config is not None
@@ -962,10 +992,10 @@ class GPUModelRunner:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
             if getattr(self.proposer, "pass_hidden_states_to_model", False):
-                # EAGLE 系的提议者才收特征；普通 draft/假提议者的签名不变。
+                # EAGLE 系（含 MTP）的提议者才收特征；普通 draft/假提议者的签名不变。
                 # `target_token_ids` / `target_positions` 就是**本轮 target 真正喂进去的行**
                 # （含被拒草稿）：上游 `set_inputs_first_pass` 拿的正是这两份 + 特征。
-                kwargs["target_hidden_states"] = self._aux_hidden_states_by_req(
+                kwargs["target_hidden_states"] = self._target_hidden_states_by_req(
                     state.scheduler_output, len(self.input_batch.req_ids))
                 kwargs["target_token_ids"] = state.target_token_ids_cpu
                 kwargs["target_positions"] = state.target_positions_cpu

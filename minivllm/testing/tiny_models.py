@@ -196,6 +196,87 @@ def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
     return str(out)
 
 
+def tiny_mtp_dir(target_name: str = "tiny_gqa", *, naming: str = "mtp",
+                 num_mtp_layers: int = 1, seed: int = 0) -> str:
+    """生成一份"**含 target 层 + spec 层**"的 MTP checkpoint（随机但确定；只给测试）。
+
+    这就是 65 关要对付的真实形态：MTP 权重与 target 在**同一个文件**里。两种命名约定各生成一份
+    （需求 §3.1 要求"loader 按源码识别并改写 spec 层权重名"，两派都要能认）：
+
+        naming="mtp"       `mtp.fc.weight` / `mtp.layers.0.*` / `mtp.norm.weight` …
+                           （上游 `qwen3_next_mtp.py` 那一派；本仓库的 MTP 用这套）
+        naming="absolute"  `model.layers.{N+i}.fc.weight` / `…self_attn.q_proj.weight` …
+                           （上游 DeepSeek 那一派：spec 层排在 target 最后一层后面，
+                            用**绝对层号**，加载时改成相对层号）
+
+    配置里带 `num_nextn_predict_layers`（MTP 层数）——没有它就无法知道 target 后面附了几层，
+    上游也是靠它做别名归一与 K 的整除校验。
+    """
+    if naming not in ("mtp", "absolute"):
+        raise ValueError(f"naming 只能是 'mtp' / 'absolute'，收到 {naming!r}")
+    target_config = tiny_qwen3_config(target_name)
+    hidden = target_config["hidden_size"]
+    inter = target_config["intermediate_size"]
+    heads = target_config["num_attention_heads"]
+    kv_heads = target_config["num_key_value_heads"]
+    head_dim = target_config["head_dim"]
+    vocab = target_config["vocab_size"]
+    base = target_config["num_hidden_layers"]
+
+    # 配置里**保持 target 的样子**（architectures 仍指向 target 的类）：真实 MTP checkpoint 就是
+    # 这样——"draft 是 MTP 模型"这件事由 `SpeculativeConfig.derive_mtp_draft_config()` 在派生
+    # 配置时改写（上游 `hf_config_override` 也是改写 draft 配置，不动 target 的）。
+    config = dict(target_config)
+    config["num_nextn_predict_layers"] = num_mtp_layers
+
+    generator = torch.Generator().manual_seed(seed + 1000)
+
+    def normal(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, target_config["initializer_range"], generator=generator)
+
+    def ones(*shape):
+        return torch.ones(*shape, dtype=torch.float32)
+
+    # 先放 target 自己的权重（MTP 与它同一个文件）
+    weights = _weights(target_config, seed)
+    # target 那份 embed/lm_head 就是 MTP 共享的那两份（上游 `shared_weight_names`）
+    weights[".mtp_shared_marker"] = torch.zeros(0)     # 占位，稍后删掉
+    for index in range(num_mtp_layers):
+        if naming == "mtp":
+            # 上游 qwen3_next_mtp.py 那一派：predictor 的前缀是 `mtp`，它内部的层是
+            # `mtp.layers.{i}.*`，胶水（fc/norm/pre_fc_norm_*/embed_tokens）在 `mtp.` 下
+            glue = "mtp."
+            block = f"mtp.layers.{index}."
+        else:
+            # 上游 DeepSeek 那一派：spec 层用**绝对层号**，block 直接挂在 `model.layers.{base+i}.` 下，
+            # 胶水也挂在那下面（加载时按"是不是胶水"决定提到顶层还是改层号）
+            glue = block = f"model.layers.{base + index}."
+        # 胶水：embedding 侧的归一化、hidden 侧的归一化、拼接投影、最终归一化
+        weights[glue + "pre_fc_norm_embedding.weight"] = ones(hidden)
+        weights[glue + "pre_fc_norm_hidden.weight"] = ones(hidden)
+        weights[glue + "fc.weight"] = normal(hidden, hidden * 2)
+        weights[glue + "norm.weight"] = ones(hidden)
+        # 一层解码器（与 target 同规格）
+        weights[block + "input_layernorm.weight"] = ones(hidden)
+        weights[block + "post_attention_layernorm.weight"] = ones(hidden)
+        weights[block + "self_attn.q_proj.weight"] = normal(heads * head_dim, hidden)
+        weights[block + "self_attn.k_proj.weight"] = normal(kv_heads * head_dim, hidden)
+        weights[block + "self_attn.v_proj.weight"] = normal(kv_heads * head_dim, hidden)
+        weights[block + "self_attn.o_proj.weight"] = normal(hidden, heads * head_dim)
+        weights[block + "self_attn.q_norm.weight"] = ones(head_dim)
+        weights[block + "self_attn.k_norm.weight"] = ones(head_dim)
+        weights[block + "mlp.gate_proj.weight"] = normal(inter, hidden)
+        weights[block + "mlp.up_proj.weight"] = normal(inter, hidden)
+        weights[block + "mlp.down_proj.weight"] = normal(hidden, inter)
+    del weights[".mtp_shared_marker"]
+
+    out = Path(tempfile.mkdtemp(prefix=f"minivllm_mtp_{target_name}_"))
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
 def _weights(config: dict, seed: int) -> dict:
     """按 HF 的初始化方式生成权重：线性/嵌入 ~ N(0, initializer_range)，RMSNorm 全 1。
 
