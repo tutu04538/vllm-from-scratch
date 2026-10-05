@@ -113,6 +113,15 @@ no-extra-slots 通路不带这些行（被拒位置本来就是本轮 target 查
    `pending_draft_probs.draft_probs.shape == (2, 151936)`，贪心行的 q 是点质量（一行一个非零）。
    （若把映射放在 id 阶段，就得把 32000 宽的 q 重排成 151936 宽：拒绝采样内核按 **target 词表**步长
    索引 `draft_probs`，宽度不符是**越界读**——内核只断言了 ndim。）
+
+   **顺带记一条给 67 关的结论**（"TLI 为什么不能照 d2t 这么做？"）：**能做**。把"交集掩码 + scatter"
+   放到 softmax **之前**，与"draft 空间 mask→softmax→把 probs 搬过去"逐位等价（实测 max|Δ|=6e-8、和=1；
+   argmax 也可交换：draft 空间 argmax 3 → 经映射表 = target 7 = target 空间 argmax 7），greedy 下这就是
+   上游 `_greedy_sample()` 现在的做法。上游只是**没做**概率那条路：`compute_probs_and_sample_next_token()`
+   只用了 `temperature`（NOTE：忽略其它采样参数不影响最终分布），`use_heterogeneous_vocab` 在配置期强制
+   `draft_sample_method="greedy"`，代码里留着 TODO "remap draft_probs to target-vocab space"；本仓库按
+   需求 067 §3.5 照抄这条边界。**真正的坑是顺序**：先对整份 draft 词表 softmax、再掩码搬运而不重新
+   归一化时，q 的和 ≠ 1（实测 0.9548）→ q 与实际提议分布不一致 → 采样分布不再精确等于 target 的分布。
 2. **草稿质量（接受长度）还没对齐**：真实权重下实测 K=2、单个 prompt 的接受长度 ≈ **1.07**
    （14 个请求·轮 drafted=28 / accepted=1），而官方模型卡（`AngelSlim/Qwen3-1.7B_eagle3`）在
    Qwen3-1.7B 上写的是 **2.13~2.2**。id 空间已经正确（第 1 条钉住了），所以差距更可能出在
