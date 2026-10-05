@@ -177,3 +177,46 @@ def test_first_pass_inputs_follow_eagle_alignment():
         assert torch.allclose(entry["hidden"][index].float(), source[index].float()), \
             f"第 {index} 行的特征必须取 target 同一行（上游就是逐行原样拷贝）"
     assert entry["plan"].sample_rows[0] == row.target_rows - 1, "采样行 = 每请求最后一行"
+
+
+def test_rejected_positions_are_recomputed_next_round():
+    """“把本轮被拒草稿也喂进 draft”无害的**前提**：被拒位置下一轮一定会被重算。
+
+    上游简单通路不屏蔽被拒行（照抄本轮输入），依赖的就是这条：轮次推进时
+    `start` 只前进 `num_valid`（= 接受数 + 1 个纠正/新 token），所以上一轮写在被拒位置上的
+    KV 下一轮会被 target 与 draft 一起覆盖——它没有机会被当成"正确上下文"读下去。
+    实测（K=3，max_num_seqs=1）：轮1 `start=8, rows@[8,9,10,11], valid=1` → 轮2 `start=9, rows@[9,..]`。
+
+    如果哪天这条不变量被破坏（比如 prefix 发布边界或抢占恢复让 `start` 跳过被拒位置），
+    "喂被拒 token"就会从无害变成真错——所以在这里钉住。
+    """
+    engine, core, runner = make_engine(spec_k=3, max_num_seqs=1)
+    seen = []
+    original = runner.proposer.set_inputs_first_pass
+
+    def spy(rows, all_token_ids, target_hidden_states=None, target_token_ids=None,
+            target_positions=None):
+        plan = original(rows, all_token_ids, target_hidden_states, target_token_ids,
+                        target_positions)
+        for target in rows:
+            seen.append((target.req_id, target.start, target.num_valid, target.num_rejected))
+        return plan
+
+    runner.proposer.set_inputs_first_pass = spy
+    try:
+        engine.add_request("a", [1, 2, 3, 4, 1, 2, 3, 4],
+                           SamplingParams(max_tokens=10, temperature=0.0, eos_token_id=999))
+        for _ in range(200):
+            if not engine.has_unfinished_requests():
+                break
+            engine.step()
+    finally:
+        engine.shutdown()
+
+    rounds = [entry for entry in seen if entry[0] == "a"]
+    assert len(rounds) >= 3, rounds
+    assert any(num_rejected > 0 for _, _, _, num_rejected in rounds), "本例必须真的出现被拒"
+    for (_, start, num_valid, _), (_, next_start, _, _) in zip(rounds, rounds[1:]):
+        assert next_start == start + num_valid, (
+            f"轮次推进必须只前进 num_valid（{start} + {num_valid} != {next_start}）："
+            f"否则被拒位置上写的 KV 会被当成已计算上下文读下去")

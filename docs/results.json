@@ -2084,16 +2084,8 @@
       },
       "commands": [
         {
-          "cmd": "python -m pytest tests/step63 -q",
-          "result": "32 passed（输入对齐 + EAGLE3 模型 + 端到端 + 上游数值对照）"
-        },
-        {
           "cmd": "python -m pytest tests/step58..63 -q",
           "result": "312 passed"
-        },
-        {
-          "cmd": "python benchmarks/check_step63_eagle_inputs.py",
-          "result": "17 PASS / 0 FAIL"
         },
         {
           "cmd": "python benchmarks/check_step62 / 61 / 59",
@@ -2102,6 +2094,10 @@
         {
           "cmd": "python benchmarks/check_step57_*.py（15 个）",
           "result": "350 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step63 -q",
+          "result": "33 passed（输入对齐 + EAGLE3 模型 + 端到端 + 上游数值对照 + 被拒位置重算不变量）"
         }
       ],
       "execution_trace": {
@@ -2298,6 +2294,12 @@
           "输入来源": "Runner 把本轮的 CPU 输入缓冲（target_token_ids / target_positions，含被拒草稿）当场交给提议者",
           "被拒行": "token 是真的被拒草稿（上游同款），不掩码；其 KV 由 Scheduler 下一轮丢弃",
           "采样行": "每请求最后一行（上游 token_indices_to_sample = query_start_loc[1:] - 1）"
+        },
+        "rejected_rows_are_recomputed": {
+          "为什么喂被拒草稿无害": "轮次推进时 start 只前进 num_valid（接受数 + 1 个纠正/新 token），被拒位置下一轮被 target 与 draft 一起重算，上一轮写在那里的 KV 没有机会被当成正确上下文读下去",
+          "实测": "K=3, max_num_seqs=1：轮1 start=8/rows@[8,9,10,11]/valid=1/rejected=3 → 轮2 start=9/rows@[9,10,11,12]",
+          "对照": "上游**扩容分支**（额外槽位，needs_extra_input_slots=True）会屏蔽被拒行（query_end_loc -= num_rejected、padding+mask+slot 哨兵），即那条通路不喂被拒 token；本仓库的 expand_eagle_inputs_shifted 对照的就是它",
+          "钉住的用例": "tests/step63/test_eagle_e2e.py::test_rejected_positions_are_recomputed_next_round（断言 next_start == start + num_valid）"
         }
       },
       "fixed_during_step": [
