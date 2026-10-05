@@ -10,7 +10,7 @@
 
 1. **token 逐请求错开一格**：整体左移 + 每条请求的最后一格换成它自己的新 token
    （`query_start_loc[1:] - 1`）。最后一格留着谁由这个下标决定，算错一位就会把下一条请求的
-   token 留给自己（`utils.py::eagle_first_pass_input_ids` 里有反证）。
+   token 留给自己（`minivllm/testing/eagle_inputs_ref.py::eagle_first_pass_input_ids` 里有反证（参考实现，生产路径不调））。
 2. **hidden states 不跟着移**：第 i 行的特征还是 target 第 i 行的特征，扩容行（最后一格）用
    这条请求**采样行**的特征——于是配对是 `(h_i, t_{i+1}) → t_{i+2}`。
 """

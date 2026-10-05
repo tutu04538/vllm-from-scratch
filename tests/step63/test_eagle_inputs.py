@@ -19,9 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from minivllm.spec_decode.utils import (PADDING_TOKEN_ID, DraftInputRows,  # noqa: E402
-                                        eagle_first_pass_input_ids,
-                                        expand_draft_inputs, expand_eagle_inputs_shifted)
+from minivllm.spec_decode.utils import expand_draft_inputs  # noqa: E402
+from minivllm.testing.eagle_inputs_ref import (PADDING_TOKEN_ID, DraftInputRows,  # noqa: E402
+                                               eagle_first_pass_input_ids,
+                                               expand_eagle_inputs_shifted)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
