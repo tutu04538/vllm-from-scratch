@@ -1,7 +1,7 @@
 # 61 关对齐记录：Suffix Decoding 的请求内与跨请求历史
 
 需求：[`061_SuffixDecoding的请求内与跨请求历史.md`](../../vllm-omni/learning_notes/14_vllm_from_scratch/投机解码完整需求/061_SuffixDecoding的请求内与跨请求历史.md)
-基线：本机 `vllm==0.28.0` 文件快照；依赖：`arctic_inference==0.3.0`（见 §2 偏差说明与 `docs/step61_dependencies.json`）。
+基线：本机 `vllm==0.28.0` 文件快照；依赖：`arctic_inference==0.3.0`（见 §2 偏差说明与 `docs/results.json` → `step61.dependencies`）。
 
 本关解决什么痛点（一句话）：**ngram 只看当前这条请求自己的历史**——A 已经证明过 "1 2 3 后面跟 4 5"，
 B 的结尾也是 "1 2 3" 却拿不到任何候选；suffix decoding 用一棵**跨请求全局树**把 A 的输出也纳入匹配，
@@ -27,7 +27,7 @@ B 的结尾也是 "1 2 3" 却拿不到任何候选；suffix decoding 用一棵**
 | `minivllm/config.py::SpeculativeConfig._resolve_suffix_decoding` | `vllm/config/speculative.py:1146-1181::_validate_suffix_decoding` | 缺包 ImportError + 4 条取值校验逐条照抄（文案相同）；`num_speculative_tokens` 的"没设"判定见 §3 |
 | `minivllm/config.py::has_arctic_inference` | `vllm/utils/import_utils.py:542` | 同义（`importlib.util.find_spec`） |
 | `minivllm/worker/gpu_model_runner.py::_build_proposer` / `_propose_draft_tokens` / `_update_states→remove_requests` | Runner 的分派与生命周期钩子 | 接入（suffix 分支用 `propose_drafts(..., sampled_by_row=...)`） |
-| 后缀树 / 匹配 / 淘汰 | `arctic_inference.suffix_decoding.SuffixDecodingCache`（**外部包，未自研**） | 直接使用，见 `docs/step61_dependencies.json` |
+| 后缀树 / 匹配 / 淘汰 | `arctic_inference.suffix_decoding.SuffixDecodingCache`（**外部包，未自研**） | 直接使用，见 `docs/results.json` → `step61.dependencies` |
 
 ## 2. 依赖接入与版本偏差（需求 §2）
 
@@ -37,7 +37,7 @@ B 的结尾也是 "1 2 3" 却拿不到任何候选；suffix decoding 用一棵**
   `csrc/suffix_decoding/{suffix_tree.cc,suffix_tree.h,bindings.cc,int32_map.h,CMakeLists.txt}` **全部逐字节相同**；
   `cache.py` 两版 sha256 都是 `91c48e6c…`。差异只在构建依赖与包内其它模块（不在本关路径上）。
 - sdist sha256 `7f22e3e1…` 与 PyPI 官方 digest 一致；安装命令、扩展 `.so` 的 sha256、用到的 API 面全部记在
-  `docs/step61_dependencies.json`。
+  `docs/results.json` → `step61.dependencies`。
 - 未安装时：`SpeculativeConfig(method="suffix")` 在**配置构造期**抛 `ImportError`（附 `pip install arctic-inference==0.1.1`
   与本次偏差说明），运行期不会退回别的提议者。
 
@@ -99,7 +99,7 @@ B 的结尾也是 "1 2 3" 却拿不到任何候选；suffix decoding 用一棵**
 
 ## 7. 实测命令与结果
 
-见 `docs/step61_results.json`（命令、设备、依赖版本、包摘要 hash、逐项 passed/failed、真实执行轨迹）。
+见 `docs/results.json` → `step61.results`（命令、设备、依赖版本、包摘要 hash、逐项 passed/failed、真实执行轨迹）。
 
 ## 8. 已知限制 / 未做
 

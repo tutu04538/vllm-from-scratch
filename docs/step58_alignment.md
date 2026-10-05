@@ -10,7 +10,7 @@
 - 目录映射：本项目顶层 `minivllm/` ↔ 上游 `vllm/v1/`（`models/` ↔ `model_executor/models/`），
   这是 2026-10-03 重构后的约定（`stepNN/` 目录已取消，历史见 git 与 `docs/`）
 - 交付：`tests/step58/`（41 项 pytest）、`benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py`
-  （10 + 11 + 15 项）、`docs/step58_results.json`、`docs/step58_models.json`
+  （10 + 11 + 15 项）、`docs/results.json` → `step58.results`、`docs/results.json` → `step58.models`
 
 ## 1. 三个数字（本关最容易混的地方）
 

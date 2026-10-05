@@ -22,7 +22,7 @@
 [`docs/step59_alignment.md`](../docs/step59_alignment.md)（GPU 批量拒绝采样、投机元数据口径、接受率统计）、
 [`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）、
 [`docs/step61_alignment.md`](../docs/step61_alignment.md)（Suffix Decoding：请求内 + 跨请求后缀树，外部依赖见
-[`docs/step61_dependencies.json`](../docs/step61_dependencies.json)）、
+[`docs/results.json`](../docs/results.json)（`step61.dependencies`））、
 [`docs/step62_alignment.md`](../docs/step62_alignment.md)（自定义 Proposer 与分派边界）。
 
 | 层 | 文件 | 对应 vLLM |
@@ -109,7 +109,7 @@ step scheduled                    hits           preempted    running           
   `data_ptr()` 稳定（69 关的编译/CUDA Graph 地基）。
 
 设计与对照见 [`docs/step58_alignment.md`](../docs/step58_alignment.md)，
-实测记录见 [`docs/step58_results.json`](../docs/step58_results.json)。
+实测记录见 [`docs/results.json`](../docs/results.json)（`step58.results`）。
 
 ## 第六十一关：Suffix Decoding（请求内 + 跨请求历史）
 
@@ -127,8 +127,8 @@ step scheduled                    hits           preempted    running           
   "批为空"那一轮；同 ID 重用先 `evict_cached_response` 再 `start_request`。
 
 设计与对照见 [`docs/step61_alignment.md`](../docs/step61_alignment.md)，
-依赖锁定记录见 [`docs/step61_dependencies.json`](../docs/step61_dependencies.json)，
-实测记录见 [`docs/step61_results.json`](../docs/step61_results.json)。
+依赖锁定记录见 [`docs/results.json`](../docs/results.json)（`step61.dependencies`），
+实测记录见 [`docs/results.json`](../docs/results.json)（`step61.results`）。
 
 ## 第六十二关：自定义 Proposer（插件接口与分派边界）
 
@@ -146,7 +146,7 @@ step scheduled                    hits           preempted    running           
 
 示例插件见 [`examples/custom_proposer.py`](../examples/custom_proposer.py)，
 设计与差异见 [`docs/step62_alignment.md`](../docs/step62_alignment.md)，
-实测记录见 [`docs/step62_results.json`](../docs/step62_results.json)。
+实测记录见 [`docs/results.json`](../docs/results.json)（`step62.results`）。
 
 ## 第六十三关（进行中·第一阶段）：EAGLE 的第一遍输入对齐
 

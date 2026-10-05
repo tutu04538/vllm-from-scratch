@@ -28,7 +28,7 @@ def hf_config():
 def cuda_device():
     """验证内核只在 CUDA 上跑（上游同样只有 GPU 路径）。
 
-    没有 CUDA 的机器上**跳过**这些用例（它们在本机一定实跑，见 docs/step59_results.json）；
+    没有 CUDA 的机器上**跳过**这些用例（它们在本机一定实跑，见 docs/results.json → step59.results）；
     算法语义在 CPU 上由 `minivllm/testing/torch_rejection_sampler.py` 覆盖。
     """
     if not torch.cuda.is_available():

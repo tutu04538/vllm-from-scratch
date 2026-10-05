@@ -11,7 +11,7 @@
   `config/speculative.py`（L804–829、L1498）
 - 需求：`投机解码完整需求/060_CPU与GPU的Ngram提议及历史增量维护.md`
 - 交付：`tests/step60/`（91 项 pytest：`test_ngram.py` + `test_ngram_gpu_state.py`）、
-  `benchmarks/check_step60_ngram.py`（17 项）、`docs/step60_results.json`、`docs/step60_models.json`
+  `benchmarks/check_step60_ngram.py`（17 项）、`docs/results.json` → `step60.results`、`docs/results.json` → `step60.models`
 
 ## 1. 这一关解决什么
 

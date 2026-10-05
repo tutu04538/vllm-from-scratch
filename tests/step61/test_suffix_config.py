@@ -37,7 +37,7 @@ def test_dependency_is_installed_and_detected():
     import importlib.metadata
 
     assert has_arctic_inference() is True
-    # 具体版本/来源/sha256 记在 docs/step61_dependencies.json（含 0.1.1 → 0.3.0 的偏差说明）
+    # 具体版本/来源/sha256 记在 docs/results.json → step61.dependencies（含 0.1.1 → 0.3.0 的偏差说明）
     assert importlib.metadata.version("arctic_inference") == "0.3.0"
 
 

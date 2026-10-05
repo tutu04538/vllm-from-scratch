@@ -1,0 +1,2264 @@
+{
+  "_说明": "各关自检证据的合并文件（原 docs/stepNN_{results,models,dependencies}.json 已删除）。按关分键：stepNN.results = 命令/环境/包摘要 hash/passed-failed/真实执行轨迹；stepNN.models = 用到的模型与权重 manifest；stepNN.dependencies = 外部依赖锁定记录（61 关要求）。**交付物位置与格式偏离需求总纲 §4**（总纲点名 docs/stepNN_results.json 与 docs/stepNN_models.json，这里合并成一份，目的是让 docs/ 根目录只留一个 json）；字段口径不变，逐字沿用各关原文。每个 stepNN.results 里的 commands/execution_trace/not_run 都是**当时的实测回显**，不是需求里的预期值。",
+  "_结构": {
+    "stepNN.results": "命令、依赖版本、设备、源码 hash（包摘要）、passed/failed/skipped、真实执行轨迹、未跑项、当关修掉的问题",
+    "stepNN.models": "target/draft 路径或仓库、revision、architectures、tokenizer、dtype、辅助层/词表/共享配置、权重来源",
+    "stepNN.dependencies": "外部包版本、来源与 sha256、安装命令、API 面、等价性证据"
+  },
+  "_各关状态": {
+    "step58": "implemented + self-verified (待独立验收)",
+    "step59": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+    "step60": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+    "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+    "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+    "step63": "进行中：第一阶段（第一遍输入对齐）已完成并实跑；模型适配与端到端待做（见 docs/step63_alignment.md §5）"
+  },
+  "step58": {
+    "results": {
+      "step": 58,
+      "requirement": "learning_notes/14_vllm_from_scratch/207_第五十八关_对齐Draft输入与双预算调度.md",
+      "status": "implemented + self-verified (待独立验收)",
+      "recorded_at": "2026-10-03T05:47:33+00:00",
+      "git": {
+        "implementation_commit": "7e2a18229db0b40f122ebee15c20e05ce9593083",
+        "baseline_commit_at_record_time": "907b00e1d3a2da3569df6032508eb9edadf056fa",
+        "note": "environment/命令/轨迹 记录于实现提交之前（baseline 907b00e，工作区含本关改动）；代码与文档在同一提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 63,
+        "sha256": "31fbc5e79d7415cab19408b472dd95d5f031456b83b4210cadf389ed4a545fad",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57 口径）"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "vllm": "0.28.0",
+        "transformers": "5.14.1",
+        "triton": "3.7.1",
+        "cuda_available": true,
+        "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+        "conda_env": "vllm-omni-dev"
+      },
+      "models": "docs/results.json → step58.models（tiny 测试模型现场生成；无外部权重下载）",
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step58 -q",
+          "cwd": "项目根",
+          "result": "41 passed, 14 warnings in 5.41s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_input_budget.py",
+          "result": "10 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_draft_inputs.py",
+          "result": "11 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_workspace.py",
+          "result": "15 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "354 PASS / 0 FAIL",
+          "failed": 0,
+          "detail": {
+            "block_pool": {
+              "passed": 28,
+              "failed": 0
+            },
+            "draft_model": {
+              "passed": 32,
+              "failed": 0
+            },
+            "engine_protocol": {
+              "passed": 23,
+              "failed": 0
+            },
+            "model_logits": {
+              "passed": 18,
+              "failed": 0
+            },
+            "preemption": {
+              "passed": 23,
+              "failed": 0
+            },
+            "prefix_cache": {
+              "passed": 25,
+              "failed": 0
+            },
+            "rejection_sampler": {
+              "passed": 22,
+              "failed": 0
+            },
+            "request_progress": {
+              "passed": 29,
+              "failed": 0
+            },
+            "runner_inputs": {
+              "passed": 30,
+              "failed": 0
+            },
+            "sampler": {
+              "passed": 29,
+              "failed": 0
+            },
+            "scheduler_basic": {
+              "passed": 25,
+              "failed": 0
+            },
+            "spec_lifecycle": {
+              "passed": 12,
+              "failed": 0
+            },
+            "spec_metadata": {
+              "passed": 13,
+              "failed": 0
+            },
+            "stop_and_outputs": {
+              "passed": 20,
+              "failed": 0
+            },
+            "weight_loading": {
+              "passed": 25,
+              "failed": 0
+            }
+          }
+        }
+      ],
+      "execution_trace": {
+        "双预算": {
+          "M=8 两条请求各要 4 行": "计划 {A: 4, B: 2}（6 行 target + 2 行 draft 额外 = 8）；没有输入预算时会是 {A: 4, B: 4}，draft 第一遍需要 10 行",
+          "ngram": "draft_slots=0 → {A: 4, B: 4}，不占额外输入",
+          "input_budget<=draft_slots": "守卫生效，本轮不排（target 还想排 7 行也只排 1 行）",
+          "抢占已排入的 victim": "两条预算都返还（token += n、input += n+1），草稿计划同步删除",
+          "非法配置": "M=1 + 普通 draft → Scheduler 初始化 ValueError（不进空转）"
+        },
+        "第一遍输入": {
+          "prefill": "prompt 6 → 7 行（6 有效 + 1 扩容），positions 0..6，无被拒行",
+          "首拒绝": "K=1、草稿被拒 → 3 行 = [b, 纠正 token, 被拒(pad,pos=0,slot=-1)]",
+          "中拒绝": "K=3、第 2 枚被拒 → 5 行 = 2 有效 + 1 扩容 + 2 被拒",
+          "全接受": "K=3 全中 → 无被拒行，行数 = target 行数 + 1",
+          "prefix 命中": "命中 12 个 token → 第一遍只写位置 [12, 13]（57 的实现是 [0..13]）",
+          "chunked prefill": "只同步被安排的那一段（如 [0,3)、[3,3)），不提草稿",
+          "抢占恢复": "num_preemptions=2、输出与非投机一致、每轮仍满足 rows ≤ target_rows+1",
+          "与上游 kernel 差分": "copy_and_expand_eagle_inputs_kernel(shift_input_ids=False) 的 input_ids/positions/is_rejected/token_indices_to_sample/is_masked 与本地实现逐值相同"
+        },
+        "工作区": {
+          "地址稳定": "input_ids/positions/slot_mapping/masks/query_start_loc/seq_lens/block_table 的 data_ptr 在多轮、多请求、batch 缩了又涨之后都不变",
+          "只读有效切片": "把工作区尾部灌成 999/-1 后输出与参考运行完全一致",
+          "端到端": "greedy 投机(k=1/3, prefix 开/关) == 非投机；CPU 与 CUDA 各一组",
+          "生命周期": "abort / ID 复用 / 失败态 / 上下文上限 / 请求暂停后再入批 全部通过",
+          "可复现": "同一 seed 两次运行逐 token 一致"
+        },
+        "回归": {
+          "step57 的 15 个脚本": "354 项全过；其中 check_step57_draft_model.py 的期望值按双预算与 blocks=3 抢占配置同步",
+          "57 时代的验收探针": "review_rejection_boundaries 2/2、review_inference_boundary 1/1 仍通过；review_draft_boundaries 与 review_remaining_boundaries 因为按旧接口（propose 签名、_draft_generators['B'] 的预算假设）写死而无法直接复跑，对应场景已由 check_step58_draft_inputs.py 与 check_step58_workspace.py 覆盖"
+        }
+      },
+      "not_run": [
+        "真实 vLLM / Qwen3-1.7B 的端到端对照（compare_step57_vllm.py、check_step57_vllm_boundaries.py）",
+        "性能测量（本关不要求吞吐目标；总纲把统一性能矩阵放在 84 关）",
+        "CUDA Graph / 编译（69 关）"
+      ]
+    },
+    "models": {
+      "step": 58,
+      "说明": "本关的测试全部用**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）；真实模型的端到端对照留给需要真实 vLLM/Qwen3 的脚本，见 not_run。",
+      "target_draft_pairs": [
+        {
+          "用途": "全部 CPU 功能测试与 pytest（双预算 / 第一遍输入 / 工作区 / 端到端）",
+          "target": {
+            "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+            "repository": null,
+            "revision": null,
+            "本地路径": "临时目录（进程内缓存）",
+            "architectures": [
+              "Qwen3ForCausalLM"
+            ],
+            "model_type": "qwen3",
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "intermediate_size": 48,
+            "vocab_size": 11,
+            "rms_norm_eps": 1e-06,
+            "rope_theta": 10000.0,
+            "max_position_embeddings": 64,
+            "dtype": "float32",
+            "tie_word_embeddings": false,
+            "tokenizer": "无（只用 token id）",
+            "权重来源": "随机初始化（固定 seed，确定性；与 57 时代提交的 fixtures 权重无关）"
+          },
+          "draft": {
+            "说明": "与 target 同一份 tiny 模型（贪心时草稿必被接受，用来覆盖“全接受”路径）",
+            "共享配置": [
+              "vocab_size",
+              "num_key_value_heads",
+              "head_dim",
+              "dtype"
+            ]
+          }
+        },
+        {
+          "用途": "B 组“与上游 kernel 差分”与 C 组 CUDA 端到端",
+          "target": {
+            "同": "tiny_gqa（同一份）",
+            "device": "cuda:0（RTX 5090 Laptop）"
+          },
+          "draft": {
+            "同": "tiny_gqa（同一份）"
+          },
+          "备注": "差分测试另外直接调用上游 vllm 0.28.0 的 copy_and_expand_eagle_inputs_kernel"
+        },
+        {
+          "用途": "真实模型集成为**待验**（本关未跑）",
+          "target": {
+            "本地路径": "models/Qwen3-1.7B",
+            "repository": null,
+            "revision": null,
+            "dtype": "bfloat16 / float32",
+            "tokenizer": "模型目录自带",
+            "state": "集成待验：需要 GPU 与真实 vLLM 对照脚本，本关只做 CPU/CUDA tiny 验证"
+          },
+          "draft": {
+            "说明": "真实 draft 组合留给后续关卡（63 EAGLE / 65 MTP / 82 draft 配置）",
+            "state": "未接入"
+          }
+        }
+      ],
+      "generation_config": {
+        "command": "python -m minivllm.testing.tiny_models --out <目录>",
+        "seed": 0,
+        "确定性": "同一 seed 生成的 model.safetensors 字节一致"
+      },
+      "上游参考": {
+        "vllm": "0.28.0（site-packages 安装版）",
+        "相关文件": [
+          "vllm/v1/spec_decode/llm_base_proposer.py",
+          "vllm/v1/spec_decode/utils.py",
+          "vllm/v1/spec_decode/draft_model.py",
+          "vllm/v1/core/sched/scheduler.py",
+          "vllm/config/speculative.py"
+        ]
+      }
+    }
+  },
+  "step59": {
+    "results": {
+      "step": 59,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/059_GPU批量拒绝采样与投机元数据.md",
+      "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+      "recorded_at": "2026-10-03T17:05:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "34b412275946882e1cf64975afa167193dc63e8a",
+        "implementation_commit": "dab4f4ed08b098d5922900987f2e62aa1e71821d",
+        "note": "命令与轨迹在本关实现提交（dab4f4e）之前实跑并记录；代码与文档随该提交落地，包摘要 sha256 按实现后的 minivllm/*.py 计算（66 个文件）；本文件里的提交号在实现提交之后补记"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 66,
+        "sha256": "6f46015cd92213e8163fcb91a95257f397f6182d0f8d4d7138770d540f06ed1a",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58 口径）"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0",
+        "transformers": "5.14.1",
+        "cuda_available": true,
+        "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+        "conda_env": "vllm-omni-dev",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "models": "docs/results.json → step59.models（tiny 测试模型现场生成；无外部权重下载）",
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step59 -q",
+          "cwd": "项目根",
+          "result": "52 passed, 14 warnings in 8.09s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step58 -q",
+          "result": "41 passed, 14 warnings in 5.88s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step59_rejection.py",
+          "result": "21 PASS / 0 FAIL（全部通过）",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_input_budget.py",
+          "result": "10 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_draft_inputs.py",
+          "result": "11 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_workspace.py",
+          "result": "15 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "350 PASS / 0 FAIL（基线 354：check_step57_rejection_sampler 22 → 18，见 docs/step59_alignment.md §5）",
+          "failed": 0,
+          "detail": {
+            "block_pool": {
+              "passed": 28,
+              "failed": 0
+            },
+            "draft_model": {
+              "passed": 32,
+              "failed": 0
+            },
+            "engine_protocol": {
+              "passed": 23,
+              "failed": 0
+            },
+            "model_logits": {
+              "passed": 18,
+              "failed": 0
+            },
+            "preemption": {
+              "passed": 23,
+              "failed": 0
+            },
+            "prefix_cache": {
+              "passed": 25,
+              "failed": 0
+            },
+            "rejection_sampler": {
+              "passed": 18,
+              "failed": 0,
+              "note": "59 关重写：注入方式改为 monkeypatch 模块函数，完整用例集在 tests/step59"
+            },
+            "request_progress": {
+              "passed": 29,
+              "failed": 0
+            },
+            "runner_inputs": {
+              "passed": 30,
+              "failed": 0
+            },
+            "sampler": {
+              "passed": 29,
+              "failed": 0,
+              "note": "第 7 项断言随 Sampler.forward 的新参数（predict_bonus_token）更新"
+            },
+            "scheduler_basic": {
+              "passed": 25,
+              "failed": 0
+            },
+            "spec_lifecycle": {
+              "passed": 12,
+              "failed": 0
+            },
+            "spec_metadata": {
+              "passed": 13,
+              "failed": 0,
+              "note": "改为调 Runner._calc_spec_decode_metadata；期望值未改"
+            },
+            "stop_and_outputs": {
+              "passed": 20,
+              "failed": 0
+            },
+            "weight_loading": {
+              "passed": 25,
+              "failed": 0
+            }
+          }
+        },
+        {
+          "cmd": "python /tmp/probe59_speed.py（同一批张量：旧实现 / 新内核 / 上游）",
+          "result": "见 execution_trace.rejection_timing（V=1000、全部张量在 GPU 上）",
+          "note": "对照探针，不进仓库；数字只用于说明 D2H 与量级"
+        }
+      ],
+      "execution_trace": {
+        "rejection_timing": {
+          "unit": "ms/步 与 D2H 次数/步（每格：时间 / D2H）",
+          "columns": [
+            "旧实现（=现在的 Torch 参考实现）",
+            "本关新内核路径",
+            "上游 rejection_sample"
+          ],
+          "rows": [
+            {
+              "case": "B=3 K=3 greedy 全接受",
+              "old": "0.614 ms / 11",
+              "new": "0.354 ms / 0",
+              "upstream": "0.100 ms"
+            },
+            {
+              "case": "B=32 K=5 greedy 全接受",
+              "old": "2.705 ms / 73",
+              "new": "0.094 ms / 0",
+              "upstream": "0.145 ms"
+            },
+            {
+              "case": "B=3 K=3 greedy 随机草稿",
+              "old": "0.425 ms / 6",
+              "new": "0.144 ms / 0",
+              "upstream": "0.140 ms"
+            },
+            {
+              "case": "B=32 K=5 greedy 随机草稿",
+              "old": "2.487 ms / 64",
+              "new": "0.213 ms / 0",
+              "upstream": "0.143 ms"
+            },
+            {
+              "case": "B=3 K=3 random 全接受",
+              "old": "2.176 ms / 33",
+              "new": "0.512 ms / 0",
+              "upstream": "0.308 ms"
+            },
+            {
+              "case": "B=32 K=5 random 全接受",
+              "old": "11.428 ms / 385",
+              "new": "0.582 ms / 0",
+              "upstream": "0.314 ms"
+            },
+            {
+              "case": "B=3 K=3 random 随机草稿",
+              "old": "2.258 ms / 42",
+              "new": "0.566 ms / 0",
+              "upstream": "0.178 ms"
+            },
+            {
+              "case": "B=32 K=5 random 随机草稿",
+              "old": "13.496 ms / 419",
+              "new": "0.431 ms / 0",
+              "upstream": "0.316 ms"
+            }
+          ],
+          "note": "上游那一列只调 rejection_sample（不含它自己的 bonus 采样/约束），本关新路径是含 bonus+约束+parse 的 forward，两者不是同一段；只用来标量级"
+        },
+        "profiler": {
+          "d2h_per_step": {
+            "B=1 K=1": 0,
+            "B=32 K=5": 0
+          },
+          "cuda_events_per_step": {
+            "B=1 K=1": 10,
+            "B=32 K=5": 10
+          },
+          "结论": "验证路径没有逐候选 D2H；内核启动数 O(1)，不随 B×K 增长（旧实现 B=32/K=5 random 全接受为 385 次 D2H）"
+        },
+        "metadata_example_abc": {
+          "drafts": [
+            [
+              1,
+              2,
+              3
+            ],
+            [],
+            [
+              4
+            ]
+          ],
+          "num_draft_tokens": [
+            3,
+            0,
+            1
+          ],
+          "cu_num_draft_tokens": [
+            3,
+            3,
+            4
+          ],
+          "cu_num_sampled_tokens": [
+            4,
+            5,
+            7
+          ],
+          "logits_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "target_logits_indices": [
+            0,
+            1,
+            2,
+            5
+          ],
+          "bonus_logits_indices": [
+            3,
+            4,
+            6
+          ],
+          "output_token_ids": [
+            [
+              1,
+              0,
+              -1,
+              -1
+            ],
+            [
+              3,
+              -1,
+              -1,
+              -1
+            ],
+            [
+              4,
+              1,
+              -1,
+              -1
+            ]
+          ],
+          "dtype": "int32（索引全部 GPU int32；draft_token_ids 亦为 int32）"
+        },
+        "metadata_upstream_docstring_example": {
+          "cu_num_scheduled_tokens": [
+            4,
+            104,
+            107,
+            207,
+            209
+          ],
+          "num_draft_tokens": [
+            3,
+            0,
+            2,
+            0,
+            1
+          ],
+          "cu_num_draft_tokens": [
+            3,
+            3,
+            5,
+            5,
+            6
+          ],
+          "cu_num_sampled_tokens": [
+            4,
+            5,
+            8,
+            9,
+            11
+          ],
+          "logits_indices": [
+            0,
+            1,
+            2,
+            3,
+            103,
+            104,
+            105,
+            106,
+            206,
+            207,
+            208
+          ],
+          "target_logits_indices": [
+            0,
+            1,
+            2,
+            5,
+            6,
+            9
+          ],
+          "bonus_logits_indices": [
+            3,
+            4,
+            7,
+            8,
+            10
+          ],
+          "草稿 token": [
+            10,
+            11,
+            12,
+            20,
+            21,
+            30
+          ],
+          "note": "由 Runner._calc_spec_decode_metadata 实跑得到（tests/step59/test_metadata.py 与 benchmarks/check_step57_spec_metadata.py 都对着这组数）"
+        },
+        "distribution": {
+          "case_1": {
+            "p": [
+              0.2,
+              0.3,
+              0.5
+            ],
+            "q": [
+              0.6,
+              0.3,
+              0.1
+            ],
+            "samples": 20000,
+            "threshold": 0.02,
+            "解析输出分布": [
+              0.2,
+              0.3,
+              0.5
+            ],
+            "实测频率": [
+              0.1978,
+              0.3048,
+              0.4974
+            ]
+          },
+          "case_2": {
+            "p": [
+              0.3,
+              0.3,
+              0.4
+            ],
+            "q": [
+              0.6,
+              0.1,
+              0.3
+            ],
+            "samples": 30000,
+            "threshold": 0.015,
+            "解析恢复分布": [
+              0.0,
+              0.6666666666666666,
+              0.3333333333333333
+            ],
+            "实测频率": [
+              0.0,
+              0.6665,
+              0.3335
+            ]
+          }
+        },
+        "differential_vs_upstream": {
+          "greedy": "A/B/C（drafts=[[1,2,3],[],[4]]）逐值一致：[[1,0,-1,-1],[3,-1,-1,-1],[4,1,-1,-1]]",
+          "random_same_seed": "torch.manual_seed(11) 后两边各调一次，逐值一致：[[1,1,-1,-1],[1,-1,-1,-1],[4,0,-1,-1]]",
+          "random_injected": "注入 uniforms=[0.2,0.7,0.5,0.9]、recoveries=[3,1,0,2] 后 我们的内核 == 上游内核 == Torch 参考",
+          "expand_batch_to_tokens": "我们的 expand_kernel 与上游同名函数逐值一致（含 replace_from=0/replace_to=1）"
+        },
+        "end_to_end": {
+          "tiny_draft_model_greedy": {
+            "non_spec": {
+              "A": [
+                7,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "B": [
+                7,
+                2,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ]
+            },
+            "spec_k3": {
+              "A": [
+                7,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "B": [
+                7,
+                2,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ]
+            },
+            "一致": true
+          },
+          "tiny_ngram_greedy": {
+            "prompt": [
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4
+            ],
+            "spec_k3_==_non_spec": true,
+            "统计": "轮数=3、验证=3、接受=3"
+          },
+          "stats_draft_model": {
+            "轮数": 4,
+            "验证候选": 12,
+            "接受": 12,
+            "位置接受率": [
+              "4/4",
+              "4/4",
+              "4/4"
+            ],
+            "note": "draft 与 target 是同一个 tiny 模型 → 贪心时草稿必被接受，这正是“全接受”路径"
+          }
+        }
+      },
+      "not_run": [
+        {
+          "item": "真实模型（models/Qwen3-1.7B 等）上的投机验证",
+          "reason": "本关交付的是采样器与元数据；真实权重集成在 84 关前的性能/集成关，见 docs/results.json → step59.models 的 not_run"
+        },
+        {
+          "item": "benchmarks/compare_step57_vllm.py",
+          "reason": "在基线提交 34b4122 上同样失败（vLLM 用 spawn 启 EngineCore，脚本无 __main__ 守卫会被子进程重跑）；本关只更新了它调用拒绝采样的签名，未改其结构"
+        },
+        {
+          "item": "synthetic / V2 block 验证",
+          "reason": "需求 059 §5 明确留给 75 关；本关遇到这些配置直接报错"
+        }
+      ]
+    },
+    "models": {
+      "step": 59,
+      "说明": "本关全部测试用**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）。拒绝采样的语义测试只用合成张量（p/q/随机数都是构造出来的），不需要任何模型。",
+      "target_draft_pairs": [
+        {
+          "用途": "端到端（tests/step59/test_metrics.py、benchmarks/check_step59_rejection.py E 段）：GPU 上跑真引擎",
+          "target": {
+            "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+            "repository": null,
+            "revision": null,
+            "本地路径": "临时目录（进程内缓存）",
+            "architectures": [
+              "Qwen3ForCausalLM"
+            ],
+            "model_type": "qwen3",
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "intermediate_size": 48,
+            "vocab_size": 11,
+            "max_position_embeddings": 64,
+            "dtype": "float32",
+            "tie_word_embeddings": false,
+            "tokenizer": "无（只用 token id）",
+            "权重来源": "随机初始化（固定 seed，确定性；与 57 时代提交的 fixtures 无关）"
+          },
+          "draft": {
+            "说明": "draft_model 路径用与 target **同一份** tiny 模型：贪心时草稿必被接受（覆盖“全接受”），随机采样时 q == p（接受概率恒为 1）",
+            "共享配置": [
+              "vocab_size",
+              "num_key_value_heads",
+              "head_dim",
+              "dtype"
+            ]
+          },
+          "device": "cuda:0（RTX 5090 Laptop）"
+        },
+        {
+          "用途": "ngram 提议（点质量 q，`draft_probs=None`）端到端",
+          "target": {
+            "同": "tiny_gqa（同一份）"
+          },
+          "draft": {
+            "说明": "没有 draft 模型：NgramProposer 从历史里找重复片段（prompt=[1,2,3,4,1,2,3,4,1,2,3,4]）",
+            "q": "无概率 → 内核走 `NO_DRAFT_PROBS` 分支，判定退化成 p[d] >= u"
+          }
+        },
+        {
+          "用途": "与上游 vLLM 的差分（同层函数注入同一张量/随机数）",
+          "上游": "vllm 0.28.0 的 `v1/sample/rejection_sampler.py`（`rejection_sample` / `expand_batch_to_tokens`）",
+          "权重": "不需要（纯合成张量）",
+          "随机数": "uniforms=[0.2,0.7,0.5,0.9]、recoveries=[3,1,0,2]（注入）或同一 torch seed（real RNG）"
+        },
+        {
+          "用途": "真实模型集成",
+          "state": "集成待验（本关未跑）",
+          "reason": "本关交付采样器与元数据；真实权重（models/Qwen3-1.7B 等）的投机端到端与性能矩阵按总纲在后续关卡（84 关统一性能矩阵）"
+        }
+      ],
+      "device_note": "拒绝采样是 Triton 内核（上游同款），只在 CUDA 上可用：CPU 上的算法语义由 minivllm/testing/torch_rejection_sampler.py 覆盖（tests/step59 里与内核逐值差分）",
+      "randomness": {
+        "uniform": "float64 的 torch.rand（上游同款，避免 float32 抽到精确 0 导致无条件接受）",
+        "recovered": "每个请求一行指数噪声的指数竞赛（不需要归一化）",
+        "reproducibility": "K=0 的请求不消耗随机数（同 seed 下结果不随批组成变化），tests/step59/test_rejection.py::test_zero_draft_requests_do_not_consume_randomness 盯着"
+      }
+    }
+  },
+  "step60": {
+    "results": {
+      "step": 60,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/060_CPU与GPU的Ngram提议及历史增量维护.md",
+      "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+      "recorded_at": "2026-10-04T10:15:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "400d261",
+        "implementation_commit": "2844434317646d7d303d3cc8e0939d6a4ebc1160",
+        "note": "命令与轨迹在本关实现提交（2844434）之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（67 个文件）；本文件里的提交号在实现提交之后补记"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 67,
+        "sha256": "5a64895ba54f20a05db639c2a1c821d4b97a6c1587015b746bc6a3e19d079d0e",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59 口径）"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0",
+        "transformers": "5.14.1",
+        "numba": "0.65.0（只用于测试里对照上游 numba 实现，生产路径不用）",
+        "cuda_available": true,
+        "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+        "conda_env": "vllm-omni-dev",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "models": "docs/results.json → step60.models（tiny 测试模型现场生成；无外部权重下载）",
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step60 -q",
+          "result": "95 passed, 2 warnings in 8.12s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step59 -q",
+          "result": "52 passed",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step58 -q",
+          "result": "41 passed",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step60 tests/step59 tests/step58 -q",
+          "result": "187 passed（模块改名后三个目录可一次跑完）",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step60_ngram.py",
+          "result": "17 PASS / 0 FAIL（全部通过）",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step59_rejection.py",
+          "result": "21 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py",
+          "result": "10 + 11 + 15 = 36 PASS",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "350 PASS / 0 FAIL",
+          "failed": 0,
+          "note": "check_step57_spec_lifecycle.py 改成显式传 ngram 窗口 1/3（60 关起默认跟上游一样是 5/5），项数仍是 12"
+        }
+      ],
+      "execution_trace": {
+        "differential_vs_upstream": {
+          "single_sequence": "75 组（tie / min_n / max_model_len 边界）逐值一致，差异 0",
+          "batch_propose": "与上游 batch_propose_numba 逐值一致（同一 num_tokens_no_spec / token_ids_cpu，只算 valid 行）",
+          "gpu_kernel": "同一批历史（6 组形状）与上游冻结的 CPU 参考实现逐值一致",
+          "tie_rule": "[1,2,3,1,2,9,1,2]、n=2、k=3 → [3,1,2]（最早那处）"
+        },
+        "config": {
+          "prompt_lookup 默认": "5/5（上游 arbitrary choice）",
+          "只给一个": "另一个跟随",
+          "min > max": "ValueError"
+        },
+        "gpu_state": {
+          "width_vs_valid": {
+            "tokens": [
+              1,
+              2,
+              9,
+              1,
+              2
+            ],
+            "k": 4,
+            "draft_tokens": [
+              9,
+              1,
+              2,
+              -1
+            ],
+            "num_valid": 3
+          },
+          "length_read_only": "propose() 写入新 token 后 num_tokens_no_spec 一位不变",
+          "reorder": {
+            "序列": "[A,B,C] → [C,A] → [D,C,A]",
+            "历史": {
+              "D": [
+                4,
+                4,
+                4,
+                4
+              ],
+              "C": [
+                3,
+                3,
+                3
+              ],
+              "A": [
+                1,
+                1,
+                1
+              ]
+            },
+            "长度": [
+              4,
+              3,
+              3
+            ]
+          },
+          "d2h": {
+            "propose 自身": "0 次（历史 512 token）",
+            "propose_drafts 整条路径": "每步 2 次（草稿 [B,K] + 有效数 [B]）；历史 32 / 256 / 2048 token 都是 2 次",
+            "对照：整段搬回": "B×L×4 字节（B=32/L=4000 → 500 KiB、约 0.066 ms/步，59 关实测）"
+          },
+          "buffer_update_timing": {
+            "长度表 num_tokens_no_spec_gpu": "每步在 _update_states() 里由 CPU 真值同步（= 本轮起点）",
+            "token 内容 token_ids_gpu_tensor": "每步在 propose() 里 scatter 追加；另外新请求/恢复时整段拷一次、行号变化时整行搬家",
+            "不变量": "gpu_len + counts == cpu_len（提议那一刻），实测混合场景 15/15 成立，用例 test_gpu_length_is_round_start_snapshot",
+            "d2h": "propose() 自身 0 次；整条 propose_drafts() 每步 2 次（草稿 + 有效数），与历史长度无关"
+          }
+        },
+        "scheduler_alignment": {
+          "函数": "update_scheduler_for_invalid_drafts（本机在草稿交接处裁；上游在 Runner 侧裁，见 alignment §2.4/§3）",
+          "用例": "[1,2,3,-1] + valid=2 → [1,2]；valid=4 → [1,2,3]（-1 被滤掉）；valid=0 → []",
+          "端到端": "Scheduler 的 spec_token_ids 里 18 个草稿全部 ≥ 0"
+        },
+        "end_to_end": {
+          "非投机": {
+            "A": [
+              4,
+              4,
+              4,
+              4,
+              4,
+              4,
+              6,
+              0
+            ],
+            "B": [
+              10,
+              2,
+              9,
+              10,
+              2,
+              0,
+              3,
+              6
+            ]
+          },
+          "ngram": {
+            "A": [
+              4,
+              4,
+              4,
+              4,
+              4,
+              4,
+              6,
+              0
+            ],
+            "B": [
+              10,
+              2,
+              9,
+              10,
+              2,
+              0,
+              3,
+              6
+            ]
+          },
+          "ngram_gpu": {
+            "A": [
+              4,
+              4,
+              4,
+              4,
+              4,
+              4,
+              6,
+              0
+            ],
+            "B": [
+              10,
+              2,
+              9,
+              10,
+              2,
+              0,
+              3,
+              6
+            ]
+          },
+          "一致": true
+        },
+        "gpu_ngram_cost": {
+          "环境": "RTX 5090 Laptop（WSL2；单次 CUDA launch 开销偏高 ~17 µs）",
+          "形状": "B=32、历史 4096、prompt_lookup_min=1、prompt_lookup_max=5、K=3",
+          "未融合（本机现状）": {
+            "µs/步": 2095,
+            "CUDA 事件/步": 127,
+            "注": "与形状几乎无关（B=1/L=64 也是 2238 µs、128 次）→ 启动受限"
+          },
+          "torch.compile 融合（上游路径，本机试跑）": {
+            "µs/步": 126,
+            "CUDA 事件/步": 8,
+            "编译耗时": "3.7 s",
+            "与未融合结果一致": true
+          },
+          "CPU KMP（同一批 32 条 / 历史 4096）": {
+            "µs/步": 16301
+          },
+          "结论": "上游的 NgramGPUKernel 也是 torch 算子，靠 @support_torch_compile 融合；本机没有编译基础设施，所以 ngram_gpu 是启动受限的（~2.2 ms/步）。这是已知差异（alignment §3 第 2 条），不是算法差异。"
+        }
+      },
+      "not_run": [
+        {
+          "item": "真实模型上的 ngram_gpu 吞吐/延迟对比",
+          "reason": "84 关才做统一性能矩阵；本关只报与历史长度无关的 D2H 口径"
+        },
+        {
+          "item": "suffix decoding / 自定义 proposer / 动态 K",
+          "reason": "61 / 62 / 71 关"
+        },
+        {
+          "item": "torch.compile 与 CUDA Graph 路径下的 ngram_gpu",
+          "reason": "69 关"
+        }
+      ],
+      "fixed_during_step": [
+        {
+          "问题": "propose_drafts 给 propose() 传了整块 GPU 缓冲（max_num_reqs 行），采样矩阵只有 num_reqs 行",
+          "症状": "2 ≤ num_reqs < max_num_seqs 时广播报错；num_reqs == 1 时第 0 行数据被广播进空闲行",
+          "修法": "propose_drafts 开头把两个缓冲切片到 num_reqs（视图）；补 test_partially_filled_batch_is_sliced / test_underfilled_batch_runs_end_to_end"
+        }
+      ]
+    },
+    "models": {
+      "step": 60,
+      "说明": "本关的测试用**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）；ngram 的匹配测试不需要任何模型（纯 token 数组）。",
+      "target_draft_pairs": [
+        {
+          "用途": "端到端（tests/step60/test_ngram.py 的 E 段、benchmarks/check_step60_ngram.py E 段）：CPU ngram 与 GPU ngram 两条路径",
+          "target": {
+            "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+            "repository": null,
+            "revision": null,
+            "本地路径": "临时目录（进程内缓存）",
+            "architectures": [
+              "Qwen3ForCausalLM"
+            ],
+            "model_type": "qwen3",
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "intermediate_size": 48,
+            "vocab_size": 11,
+            "max_position_embeddings": 64,
+            "dtype": "float32",
+            "tie_word_embeddings": false,
+            "tokenizer": "无（只用 token id）",
+            "权重来源": "随机初始化（固定 seed，确定性）"
+          },
+          "draft": {
+            "说明": "**没有 draft 模型**：ngram / ngram_gpu 都只用历史里的重复片段",
+            "q": "确定性提议 → 没有分布，验证时 `draft_probs=None`（点质量 q，接受判定退化成 p[d] >= u）"
+          },
+          "device": "cuda:0（RTX 5090 Laptop）用于端到端；匹配/状态测试在 cpu 与 cuda 上都跑"
+        },
+        {
+          "用途": "prompt 设计",
+          "target": {
+            "prompts": {
+              "A": [
+                1,
+                2,
+                3,
+                4,
+                1,
+                2,
+                3,
+                4,
+                1,
+                2,
+                3,
+                4
+              ],
+              "B": [
+                2,
+                3,
+                2,
+                3,
+                2,
+                3,
+                9,
+                9
+              ]
+            },
+            "ngram 窗口": "测试显式传 prompt_lookup_min=1 / prompt_lookup_max=3（默认是上游的 5/5，短 prompt 找不到 5-gram 重复）"
+          }
+        },
+        {
+          "用途": "与上游冻结实现差分",
+          "上游": "vllm 0.28.0 的 `v1/spec_decode/ngram_proposer.py`（`_find_longest_matched_ngram_and_propose_tokens`、`batch_propose_numba`）",
+          "权重": "不需要（纯 token 数组）",
+          "note": "`batch_propose_numba` 会在首次调用时 JIT 编译（本机 numba 0.65.0，约 1 秒）；生产路径不使用 numba"
+        },
+        {
+          "用途": "真实模型集成",
+          "state": "集成待验（本关未跑）",
+          "reason": "本关交付提议者与历史维护；真实权重的投机吞吐与延迟按总纲在 84 关统一测"
+        }
+      ],
+      "randomness": {
+        "ngram": "完全确定性：同一历史 + 同一窗口 → 同一草稿（这也是它不需要 q 的原因）",
+        "测试固定源": "差分用例里随机序列用 np.random.default_rng(0/7) 生成，失败可复现"
+      }
+    }
+  },
+  "step61": {
+    "results": {
+      "step": 61,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/061_SuffixDecoding的请求内与跨请求历史.md",
+      "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+      "recorded_at": "2026-10-04T18:40:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "12c7316",
+        "implementation_commit": "5556ea5478145c945289c12a97606acb5dd18981",
+        "note": "命令与轨迹在本关实现提交（5556ea5）之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（68 个文件）；提交号在实现提交之后补记（step60 同款做法）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 68,
+        "sha256": "57471c2c0a505eabcb13403b485759fdb35b536ba5d3efccb23b595717ba18df",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59/60 口径）"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作差分基准，生产路径不 import）",
+        "device": "cuda:0（RTX 5090 Laptop, WSL2）；CPU 也跑得通（真引擎投机验证只在 CUDA 上）",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+        "new_dependency": {
+          "name": "arctic_inference",
+          "version": "0.3.0",
+          "sdist_sha256": "7f22e3e1b1071c6061c0d6951be17c0fb50b08d06d6e543144c8f52faba60a36",
+          "deviation_from_source_pin": "源码钉 0.1.1（其构建系统钉 torch==2.7.0，本机 torch 2.13.0 装不上）；0.3.0 的 suffix_decoding 子系统源码与 0.1.1 **逐字节相同**，详见 docs/results.json → step61.dependencies",
+          "lock_record": "docs/results.json → step61.dependencies"
+        }
+      },
+      "models": "docs/results.json → step61.models（tiny Qwen3 现场生成；本关没有 draft 模型）",
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step61 -q",
+          "result": "55 passed in 7.22s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 -q",
+          "result": "243 passed, 16 warnings in 10.39s",
+          "failed": 0,
+          "skipped": 0,
+          "note": "41 + 52 + 95 + 55；四个目录各自辅助模块名唯一，可一次跑完"
+        },
+        {
+          "cmd": "python benchmarks/check_step61_suffix.py",
+          "result": "27 PASS / 0 FAIL（A 依赖接入 3 / B 请求内 5 / C 跨请求 8 / D 边界与调用顺序 4 / E 参数生效 4 / F 端到端 3）",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step60_ngram.py",
+          "result": "17 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step59_rejection.py",
+          "result": "21 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py",
+          "result": "10 + 11 + 15 = 36 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "350 PASS / 0 FAIL（28+32+23+18+23+25+18+29+30+29+25+12+13+20+25）",
+          "failed": 0,
+          "note": "本关未改任何 step57 期望值"
+        },
+        {
+          "cmd": "python -c \"from arctic_inference.suffix_decoding import SuffixDecodingCache; print('ok')\"",
+          "result": "ok（依赖可导入性检查）",
+          "failed": 0
+        }
+      ],
+      "execution_trace": {
+        "differential_vs_upstream": {
+          "method": "把**上游** `vllm/v1/spec_decode/suffix_decoding.py::SuffixDecodingProposer` 用鸭子类型的 config/InputBatch 原样实例化（它的 __init__ 只读 6 个字段、propose 只读 5 个属性，不碰 Runner），与我们的实现吃同一串事件，逐步比对 `draft_token_ids` 与 `active_requests`/`cached_requests`",
+          "buffer_types": "上游侧喂 int32 numpy 视图（vLLM InputBatch 的真实形态），我们侧喂 int64 torch 缓冲（本仓库 InputBatch 的真实形态）；逻辑内容由同一段驱动代码写入",
+          "traces_compared": 21,
+          "mismatches": 0,
+          "covered": [
+            "单请求 5 步（候选长度动态）",
+            "批行序反转 / 请求中途离批再回来",
+            "中间 prefill 行（空采样）",
+            "到达 max_model_len 的行",
+            "跨请求全局树 / 全局树关闭（max_cached_requests=0）",
+            "容量 1 / 2（FIFO 淘汰）/ 10000",
+            "同 ID 重用（evict → 重建）",
+            "K / max_spec_factor / min_token_prob / max_tree_depth 四组参数"
+          ]
+        },
+        "request_local": {
+          "prompt": [
+            1,
+            2,
+            3,
+            4,
+            1,
+            2,
+            3,
+            4
+          ],
+          "steps_and_drafts": [
+            {
+              "sampled": [
+                1
+              ],
+              "draft": [
+                2,
+                3,
+                4,
+                1
+              ]
+            },
+            {
+              "sampled": [
+                2
+              ],
+              "draft": [
+                3,
+                4,
+                1,
+                2
+              ]
+            },
+            {
+              "sampled": [
+                3
+              ],
+              "draft": [
+                4,
+                1,
+                2,
+                3
+              ]
+            },
+            {
+              "sampled": [
+                4
+              ],
+              "draft": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            {
+              "sampled": [
+                1
+              ],
+              "draft": [
+                2,
+                3,
+                4,
+                1,
+                2
+              ]
+            }
+          ]
+        },
+        "cross_request": {
+          "A_prompt": [
+            1,
+            2,
+            3,
+            9,
+            9,
+            1,
+            2,
+            3
+          ],
+          "A_responses": [
+            [
+              4
+            ],
+            [
+              5
+            ]
+          ],
+          "B_prompt": [
+            7,
+            8,
+            1,
+            2,
+            3
+          ],
+          "B_sampled": [
+            4
+          ],
+          "suffix_draft_for_B": [
+            5
+          ],
+          "ngram_draft_for_B_same_history": [],
+          "suffix_draft_for_B_global_tree_disabled": [],
+          "解释": "B 自己的历史里 \"1 2 3\" 只出现一次 → ngram / 关掉全局树都拿不到；A 的响应进了全局树后 B 才能拿到 [5]"
+        },
+        "capacity_and_eviction": {
+          "容量 2": {
+            "cached_after_each_step": [
+              [
+                "A"
+              ],
+              [
+                "A"
+              ],
+              [
+                "A",
+                "B"
+              ],
+              [
+                "B",
+                "C"
+              ]
+            ],
+            "C_draft": []
+          },
+          "容量 3": {
+            "cached_after_each_step": [
+              [
+                "A"
+              ],
+              [
+                "A"
+              ],
+              [
+                "A",
+                "B"
+              ],
+              [
+                "A",
+                "B",
+                "C"
+              ]
+            ],
+            "C_draft": [
+              5
+            ]
+          },
+          "规则": "超出容量按 FIFO 淘汰最早的请求（这是**请求条数**的淘汰，与 KV BlockPool 的块淘汰无关）"
+        },
+        "id_reuse": {
+          "第一轮": "P1=[1,2,3,4,1,2,3,4] 采样 [9] 再 [5] → 全局序列 P1+[9,5]",
+          "第二轮同 ID 新请求": "P2=[7,7,1,2,3,4] 采样 [9]",
+          "evict 生效（正常路径）": [],
+          "evict 被 monkeypatch 成空操作（反证）": [
+            5
+          ],
+          "解释": "不 evict 时上一轮那条**无关请求**的序列还留在全局树里，新请求会沿它继续猜"
+        },
+        "call_order": {
+          "首次进入": [
+            "start_request",
+            "add_active_response",
+            "speculate"
+          ],
+          "空采样行": [],
+          "离批的活跃请求": [
+            "stop_request"
+          ],
+          "同 ID 重用": [
+            "evict_cached_response",
+            "start_request",
+            "add_active_response",
+            "speculate"
+          ],
+          "speculate 参数": {
+            "context": [
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4,
+              1
+            ],
+            "max_spec_tokens": "min(K=8, max_model_len 64 - num_tokens 9 - 1) = 8",
+            "max_spec_factor": 1.0,
+            "min_token_prob": 0.1
+          }
+        },
+        "parameter_effects": {
+          "max_spec_factor": {
+            "1.0": [
+              2,
+              3,
+              4,
+              1
+            ],
+            "0.5": [
+              2,
+              3
+            ],
+            "0.1": []
+          },
+          "min_token_prob": {
+            "0.1": [
+              5
+            ],
+            "0.5": [
+              5
+            ],
+            "0.51": []
+          },
+          "max_tree_depth": {
+            "24": [
+              2,
+              3,
+              4,
+              1
+            ],
+            "3": [
+              2
+            ]
+          },
+          "num_speculative_tokens": {
+            "1": [
+              2
+            ],
+            "2": [
+              2,
+              3
+            ],
+            "8": [
+              2,
+              3,
+              4,
+              1
+            ]
+          }
+        },
+        "end_to_end": {
+          "model": "tiny Qwen3（现场生成，float32，2 层，hidden 32，vocab 11）",
+          "device": "cuda:0",
+          "prompts": {
+            "a": [
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4
+            ],
+            "b": [
+              5,
+              6,
+              5,
+              6,
+              5,
+              6
+            ]
+          },
+          "max_tokens": 8,
+          "temperature": 0.0,
+          "spec_outputs": {
+            "a": [
+              4,
+              4,
+              4,
+              6,
+              0,
+              6,
+              0,
+              6
+            ],
+            "b": [
+              10,
+              4,
+              4,
+              4,
+              4,
+              4,
+              4,
+              4
+            ]
+          },
+          "non_spec_outputs_equal": true,
+          "stats": {
+            "num_drafts": 6,
+            "num_draft_tokens": 8,
+            "num_accepted_tokens": 6
+          },
+          "解释": "greedy 下投机与非投机输出逐 token 相同（草稿只是猜测）；候选确实被 target 采纳（6/8）"
+        },
+        "dependency_substitution_evidence": {
+          "diff_method": "解开 arctic_inference 0.1.1 与 0.3.0 的 sdist，逐文件 diff",
+          "byte_identical_files": 8,
+          "differing_files": 0,
+          "cache_py_sha256_both": "91c48e6cb335edbd202c8f440e5766df54315ea2d8e40decf8f7a130f3a5e126"
+        }
+      },
+      "not_run": [
+        "真实权重（models/）上的 suffix decoding：本关不要求吞吐评测（需求 061 §5），也未做加速倍数声称",
+        "tree attention / use_tree_spec=True 分支：需求 061 §5 明确不引入",
+        "SuffixDecodingDraft.probs/parents：本关只取 token_ids（跨请求概率口径不属于 59 关的 q 对齐）",
+        "benchmarks/compare_step57_vllm.py：与基线一样因 vLLM spawn + 缺 __main__ 保护而失败，与本关无关"
+      ],
+      "fixed_during_step": [
+        {
+          "现象": "初始测试期望『候选总是非空』",
+          "原因": "读源码 + 实测后确认依赖包语义：`speculate` 的 match_len 从 1 递增且**全长 context 不参与匹配**，所以『上下文正好等于历史末尾』时末尾那次出现没有后继 → 候选常为空",
+          "处理": "按真实语义重设用例（重复模式 / 跨请求模式 / 锚点 token），并把语义写进 docs/step61_alignment.md §4"
+        },
+        {
+          "现象": "测试驱动器把『同 ID 新请求』当成同一条请求继续累积历史",
+          "原因": "驱动器的 `prompts` 同时承担『prompt 长度』与『历史起点』两个角色",
+          "处理": "给驱动器加 `history` 覆盖与分段能力（`run_segments_on`），用真实路径（remove_requests/stop_request → 新请求重新 prefill）重写该用例"
+        }
+      ]
+    },
+    "models": {
+      "step": 61,
+      "说明": "本关的目标模型仍是**现场生成**的 tiny Qwen3（固定 seed、写临时目录、不下载、不提交权重）；suffix decoding 的候选/缓存/生命周期测试**不需要模型**（纯 token 数组 + 外部后缀树）。",
+      "target_draft_pairs": [
+        {
+          "用途": "端到端（tests/step61/test_suffix_engine.py、benchmarks/check_step61_suffix.py F 段）：method='suffix' 的完整链路",
+          "target": {
+            "来源": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+            "repository": null,
+            "revision": null,
+            "本地路径": "临时目录（进程内缓存）",
+            "architectures": [
+              "Qwen3ForCausalLM"
+            ],
+            "model_type": "qwen3",
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "intermediate_size": 48,
+            "vocab_size": 11,
+            "max_position_embeddings": 64,
+            "dtype": "float32",
+            "tie_word_embeddings": false,
+            "tokenizer": "无（只用 token id）",
+            "权重来源": "随机初始化（固定 seed，确定性）"
+          },
+          "draft": {
+            "说明": "**没有 draft 模型**：候选来自外部包 `arctic_inference.suffix_decoding.SuffixDecodingCache` 的后缀树（请求内 prompt 树 + 跨请求全局树）",
+            "q": "确定性提议 → 没有分布，验证时 `draft_probs=None`（点质量 q，接受判定退化成 p[d] >= u）",
+            "K": "测试用 num_speculative_tokens=8 作为**上限**（每步实际候选长度由匹配长度决定，可为 0）",
+            "默认 K": "不传时取 suffix_decoding_max_tree_depth=24（上游同款默认）"
+          },
+          "device": "cuda:0（RTX 5090 Laptop）跑端到端；候选/缓存/生命周期测试在 CPU 上跑（外部树是 CPU 实现，且不涉及 KV）"
+        },
+        {
+          "用途": "与上游冻结实现差分（tests/step61/test_suffix_lifecycle.py 全部用例）",
+          "上游": "vllm 0.28.0 的 `v1/spec_decode/suffix_decoding.py::SuffixDecodingProposer`（鸭子类型 config + InputBatch 实例化，见 tests/step61/suffix_helpers.py::upstream_proposer）",
+          "权重": "不需要（纯 token 数组）",
+          "note": "两侧调用**同一个**外部前缀树实现（本机安装的 arctic_inference 0.3.0），所以差分验证的是『提议者这一层』的调用顺序/参数/生命周期与上游一致"
+        },
+        {
+          "用途": "痛点对照：ngram（60 关）看不到跨请求模式",
+          "上游/本仓库": "minivllm.spec_decode.ngram_proposer.NgramProposer（生产路径，非 mock）",
+          "构造": "B 的历史 = prompt [7,8,1,2,3] + 本轮采样 [4]；A 的全局树里已有『1 2 3 → 4 5』",
+          "结果": "ngram（min=max=3 与 5/5 两种窗口）都给 []；suffix decoding 给 [5]"
+        },
+        {
+          "用途": "prompt / token 序列设计（候选可控的关键）",
+          "请求内": {
+            "prompt": [
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4
+            ],
+            "为什么": "「1 2 3 4」在 prompt 里出现两次 → 锚点 token=1 时能匹配到更早那次出现并给出后续 [2,3,4,1]"
+          },
+          "跨请求": {
+            "A": [
+              1,
+              2,
+              3,
+              9,
+              9,
+              1,
+              2,
+              3
+            ],
+            "B": [
+              7,
+              8,
+              1,
+              2,
+              3
+            ],
+            "为什么": "B 自己的历史里「1 2 3」只出现一次（拿不到候选），A 的响应把「1 2 3 → 4 5」写进全局树后 B 才有候选"
+          },
+          "概率阈值": {
+            "prompt": [
+              7,
+              7,
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              5,
+              1,
+              2,
+              3,
+              5
+            ],
+            "为什么": "节点「1 2 3」有两个分支 4(1 次)/5(2 次) → 估计概率 2/3，用来验证 min_token_prob 与 max_spec_factor"
+          }
+        },
+        {
+          "用途": "真实模型集成",
+          "state": "集成待验（本关未跑）",
+          "reason": "需求 061 §5 明确本关不要求吞吐评测；真实权重的投机收益按总纲在 84 关统一测"
+        }
+      ],
+      "external_dependency": {
+        "name": "arctic_inference",
+        "version": "0.3.0",
+        "module": "arctic_inference.suffix_decoding",
+        "lock_record": "docs/results.json → step61.dependencies",
+        "source_pin_deviation": "上游钉 0.1.1，但其构建系统钉 torch==2.7.0；本机 torch 2.13.0 → 装 0.3.0（suffix_decoding 子系统源码与 0.1.1 逐字节相同）"
+      },
+      "randomness": {
+        "suffix_decoding": "完全确定性：同一 token 历史 + 同一参数 → 同一候选（这也是它不需要 q 的原因）",
+        "端到端": "temperature=0.0（greedy），投机与非投机必须逐 token 相同",
+        "测试固定源": "端到端种子固定；候选/差分用例全部是确定的 token 序列，失败可直接复现"
+      }
+    },
+    "dependencies": {
+      "step": 61,
+      "subject": "Suffix Decoding 的请求内与跨请求历史（外部依赖锁定记录）",
+      "why": "需求 061 §2 要求：源码使用外部 suffix cache 实现，按源码 import 的依赖及其版本接入，不自行写另一种树算法；把外部包版本、可导入性写入依赖清单；未安装时显式失败。",
+      "upstream_reference": {
+        "vllm_version": "0.28.0",
+        "config_validator": "vllm/config/speculative.py:1146-1181::_validate_suffix_decoding",
+        "config_fields": "vllm/config/speculative.py:195-210",
+        "proposer": "vllm/v1/spec_decode/suffix_decoding.py:9-103::SuffixDecodingProposer",
+        "pinned_by_source": "arctic-inference==0.1.1",
+        "pinned_message_in_upstream": "Install via `pip install arctic-inference==0.1.1`."
+      },
+      "installed": {
+        "name": "arctic_inference",
+        "version": "0.3.0",
+        "import_module": "arctic_inference.suffix_decoding",
+        "import_check": "python -c \"from arctic_inference.suffix_decoding import SuffixDecodingCache; print('ok')\" -> ok",
+        "detected_by": "minivllm.config.has_arctic_inference() -> True（importlib.util.find_spec('arctic_inference')）",
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "extension_module": {
+          "path": "site-packages/arctic_inference/suffix_decoding/_C.cpython-312-x86_64-linux-gnu.so",
+          "sha256": "4a52f545194e9bc74497569fffea84af2fc45d324d55fd37c21b473c0d54ce36",
+          "size_bytes": 201568,
+          "built_locally": true
+        },
+        "installed_cache_py_sha256": "91c48e6cb335edbd202c8f440e5766df54315ea2d8e40decf8f7a130f3a5e126"
+      },
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/63/c1/573fa2f00097cd9cc1167b31fd900b2482f58f3491867cebdd5516626533/arctic_inference-0.3.0.tar.gz",
+        "sha256": "7f22e3e1b1071c6061c0d6951be17c0fb50b08d06d6e543144c8f52faba60a36",
+        "sha256_verified_against": "https://pypi.org/pypi/arctic-inference/json -> releases['0.3.0'][0].digests.sha256（一致）"
+      },
+      "install_commands": [
+        "pip install nanobind==2.9.2   # 0.3.0 的构建期依赖，本机原先没有",
+        "pip install --no-build-isolation arctic_inference==0.3.0   # 用本机 torch 2.13.0 编译 _C 扩展"
+      ],
+      "version_deviation": {
+        "source_pins": "arctic-inference==0.1.1",
+        "installed_instead": "0.3.0",
+        "reason": "0.1.1 的构建系统把 torch 钉成 `torch == 2.7.0`（pyproject.toml:11），本机 torch 是 2.13.0+cu130，装不上也编不出扩展；0.3.0 的构建系统是 `torch>=2.10.0`（pyproject.toml:16），可用本机 torch 编译。",
+        "equivalence_evidence": {
+          "method": "把两个 sdist 解开后逐文件 diff（含 C++ 与构建脚本）",
+          "files_byte_identical": [
+            "arctic_inference/suffix_decoding/__init__.py",
+            "arctic_inference/suffix_decoding/cache.py",
+            "arctic_inference/suffix_decoding/simulator.py",
+            "csrc/suffix_decoding/suffix_tree.cc",
+            "csrc/suffix_decoding/suffix_tree.h",
+            "csrc/suffix_decoding/bindings.cc",
+            "csrc/suffix_decoding/int32_map.h",
+            "csrc/suffix_decoding/CMakeLists.txt"
+          ],
+          "files_differing": [],
+          "cache_py_sha256_both_versions": "91c48e6cb335edbd202c8f440e5766df54315ea2d8e40decf8f7a130f3a5e126",
+          "conclusion": "suffix decoding 子系统的源码（Python + 后缀树 C++ + 绑定 + CMake）在 0.1.1 与 0.3.0 之间逐字节相同；差异只在两版的构建依赖与包内其它模块（不属于本关路径）。"
+        }
+      },
+      "api_surface_used": {
+        "constructor": "SuffixDecodingCache(max_tree_depth: int, max_cached_requests: int)",
+        "methods": [
+          "start_request(req_id, prompt_token_ids)",
+          "add_active_response(req_id, token_ids)",
+          "speculate(req_id, context, max_spec_tokens=, max_spec_factor=, min_token_prob=) -> SuffixDecodingDraft",
+          "stop_request(req_id)",
+          "evict_cached_response(req_id)"
+        ],
+        "properties": [
+          "active_requests",
+          "cached_requests"
+        ],
+        "draft_fields": [
+          "token_ids",
+          "parents",
+          "probs",
+          "score",
+          "match_len"
+        ],
+        "input_requirement": "ndarray 上下文/序列必须是 1 维、C 连续、int32（cache.py::_validate_ndarray），否则必须退化为逐元素序列重载；本仓库 InputBatch 的缓冲是 int64 torch，故在 minivllm/spec_decode/suffix_decoding.py::_as_int32 统一转换（上游 vLLM 的 token_ids_cpu 本身就是 int32 numpy 视图，见 vllm/v1/worker/gpu_input_batch.py:140）。",
+        "not_used": [
+          "use_tree_spec（tree attention 不在本关范围，需求 061 §5 明确不引入）",
+          "SuffixDecodingDraft.parents/probs（本关只取 token_ids；q 的概率模型与 59 关的口径不同）",
+          "simulator.py（离线模拟器，不属于推理路径）"
+        ]
+      },
+      "failure_mode_without_dependency": {
+        "behavior": "SpeculativeConfig(method='suffix') 在配置构造期抛 ImportError，附源码钉的安装命令与本次版本偏差说明；运行期不会静默退回其它 proposer。",
+        "covered_by": [
+          "tests/step61/test_suffix_config.py::test_missing_dependency_fails_loudly",
+          "benchmarks/check_step61_suffix.py 项 A3"
+        ]
+      }
+    }
+  },
+  "step62": {
+    "results": {
+      "step": 62,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/062_自定义Proposer接入与配置分派边界.md",
+      "status": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+      "recorded_at": "2026-10-04T21:10:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "96c305c",
+        "implementation_commit": "ed09d3a048b8e9c2cc70fd1ebc749c8b5cb7a4fb",
+        "note": "命令与轨迹在本关实现提交（ed09d3a）之前实跑并记录；包摘要 sha256 按实现后的 minivllm/*.py 计算（69 个文件）；提交号在实现提交之后补记（step60/61 同款做法）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 69,
+        "sha256": "910090255c87a1aeabcdfa90253f77feca7a880543caa42155d5885c2b125b21",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57-61 口径）"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码对照，生产路径不 import）",
+        "device": "cuda:0（RTX 5090 Laptop, WSL2）",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "models": "docs/results.json → step62.models（tiny Qwen3 现场生成；demo 用本机 Qwen3-1.7B；无 draft 模型）",
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step62 -q",
+          "result": "37 passed in 4.87s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 tests/step62 -q",
+          "result": "280 passed, 16 warnings in 13.80s",
+          "failed": 0,
+          "skipped": 0,
+          "note": "41 + 52 + 95 + 55 + 37；五个目录可一次跑完"
+        },
+        {
+          "cmd": "python benchmarks/check_step62_custom_proposer.py",
+          "result": "34 PASS / 0 FAIL",
+          "failed": 0,
+          "note": "A 方法推断 6 / B 接口 2 / C 错误分类 7 / D Runner 接线 7 / E 行为 10 / F 端到端 2"
+        },
+        {
+          "cmd": "python benchmarks/check_step61_suffix.py",
+          "result": "27 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step60_ngram.py",
+          "result": "17 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step59_rejection.py",
+          "result": "21 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step58_{input_budget,draft_inputs,workspace}.py",
+          "result": "10 + 11 + 15 = 36 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python minivllm/demo.py --device cuda --max-new-tokens 4 --spec-method custom_class --spec-model examples.custom_proposer.RepeatLastTokenProposer --spec-k 3 测试",
+          "result": "exit 0；加载 1.72G 模型，输出 4 token，日志含『提议者=RepeatLastTokenProposer（examples.custom_proposer）』",
+          "failed": 0
+        }
+      ],
+      "execution_trace": {
+        "method_inference": {
+          "examples.custom_proposer.RepeatLastTokenProposer": "custom_class",
+          "pkg.sub.Class": "custom_class",
+          "ngram": "ngram",
+          "[ngram]": "ngram",
+          "Qwen/Qwen3-0.6B": "draft_model",
+          "https://huggingface.co/a.b": "draft_model",
+          "single": "draft_model",
+          "my-module.Class": "draft_model"
+        },
+        "error_classification": {
+          "NoDots": "ValueError（full module path）",
+          "no_such_module_xyz.Klass": "ImportError（Cannot import module…，__cause__ = ModuleNotFoundError）",
+          "examples.custom_proposer.NoSuchClass": "AttributeError（has no attribute）",
+          "test_custom_proposer.BoomOnInitProposer": "RuntimeError（must accept VllmConfig，__cause__ = 原始 RuntimeError）",
+          "test_custom_proposer.NoProposeProposer": "AttributeError（must have a 'propose' method）",
+          "test_custom_proposer.NotCallableProposeProposer": "AttributeError（not callable）"
+        },
+        "runner_call": {
+          "对象身份": "num_tokens_no_spec / token_ids_cpu 就是 InputBatch 自己的缓冲（is 比较为真）",
+          "行对齐": "sampled_token_ids 行数 == 调用当刻批行数（观测 [1,1,1,1]）",
+          "定长缓冲": "len(num_tokens_no_spec) == max_num_reqs == 2；token_ids_cpu 形状 (2, 64)；只有前 N 行有效",
+          "slot_mappings": null,
+          "冻结源码对照": "上游 v1/worker/gpu_model_runner.py 的 custom_class 分支含 propose( / sampled_token_ids, / num_tokens_no_spec, / token_ids_cpu, / slot_mappings=slot_mappings,"
+        },
+        "greedy_equivalence": {
+          "prompts": {
+            "a": [
+              1,
+              2,
+              3,
+              4,
+              1,
+              2,
+              3,
+              4
+            ],
+            "b": [
+              5,
+              6,
+              5,
+              6,
+              5,
+              6
+            ]
+          },
+          "baseline_non_spec": {
+            "a": [
+              4,
+              4,
+              4,
+              6,
+              0,
+              6
+            ],
+            "b": [
+              10,
+              4,
+              4,
+              4,
+              4,
+              4
+            ]
+          },
+          "常规插件（重复最后一个 token）": {
+            "outputs_equal": true,
+            "num_draft_tokens": 15
+          },
+          "空候选插件": {
+            "outputs_equal": true,
+            "num_draft_tokens": 0,
+            "插件调用次数": ">0"
+          },
+          "全错候选插件（永远猜 0）": {
+            "outputs_equal": true,
+            "num_draft_tokens": 27
+          },
+          "变长候选插件（行号越大越长）": {
+            "outputs_equal": true,
+            "num_draft_tokens": 10
+          }
+        },
+        "protocol_violation": {
+          "TooFewRowsProposer": "RuntimeError: 自定义提议者 … 返回了 0 行草稿，但本轮批里有 1 行：必须按批行逐行返回",
+          "TooManyRowsProposer": "同上（多一行）",
+          "说明": "上游不检查；本仓库有意加严（差异记在 docs/step62_alignment.md §3.4）"
+        },
+        "optional_hook": {
+          "现象": "示例插件没有 remove_requests；请求结束那一轮（finished_req_ids 非空）曾被 AttributeError 打断",
+          "处理": "Runner 侧改成『有才调』（getattr 取 None 则跳过），并在 check_step62 D6/D7 里固定住"
+        }
+      },
+      "not_run": [
+        "真实权重的投机吞吐/加速比：本关只是接口与分派边界，不做性能结论（总纲把性能矩阵放在 84 关）",
+        "异步调度组合：本仓库还没有异步调度（70 关），没有可拒绝的 async 组合要测",
+        "slot_mappings 的真实传参：本仓库还没有该对象（69 关 CUDA Graph 时引入）",
+        "plugins 的多进程/远程加载：需求明确不做插件发现平台"
+      ],
+      "fixed_during_step": [
+        {
+          "现象": "示例插件在请求结束后仍被 Runner 调 remove_requests → AttributeError",
+          "原因": "57E 的结束清理钩子假定提议者一定有 remove_requests；而 62 关的契约只有 propose",
+          "处理": "Runner 改成可选钩子（有才调），并补 D6/D7 两条用例盯住"
+        },
+        {
+          "现象": "测试里按『缓冲长度 == 批行数』写断言，实测不成立",
+          "原因": "两个缓冲是定长（长度 = max_num_reqs），不是按批行数裁的（上游 vLLM 的 InputBatch 同样定长）",
+          "处理": "断言改成『sampled_token_ids 行数 == 批行数；缓冲长度 == max_num_reqs；只有前 N 行有效』，并把这条契约写进示例插件 docstring 与 alignment §2"
+        },
+        {
+          "现象": "插件返回行数与批行数不一致时静默通过（少给几行只是没草稿）",
+          "原因": "上游不检查；本仓库原先也没有检查",
+          "处理": "在插件↔Runner 边界加 RuntimeError（有意加严），文档 §3.4 记录理由"
+        }
+      ]
+    },
+    "models": {
+      "step": 62,
+      "说明": "本关不引入新模型：验证的是**接口与分派边界**。测试用现场生成的 tiny Qwen3（固定 seed），教学入口用本机真实权重 Qwen3-1.7B；没有 draft 模型——候选来自用户自己的类。",
+      "target_draft_pairs": [
+        {
+          "用途": "端到端（tests/step62/test_custom_proposer.py 的 C/D 段、benchmarks/check_step62_custom_proposer.py 的 D/E/F 段）",
+          "target": {
+            "来源_tiny": "minivllm/testing/tiny_models.py::write_tiny_qwen3('tiny_gqa', seed=0)",
+            "来源_demo": "models/Qwen3-1.7B（本机权重，未跟踪）",
+            "architectures": [
+              "Qwen3ForCausalLM"
+            ],
+            "model_type": "qwen3",
+            "tiny规格": {
+              "hidden_size": 32,
+              "num_hidden_layers": 2,
+              "num_attention_heads": 4,
+              "num_key_value_heads": 2,
+              "head_dim": 16,
+              "vocab_size": 11,
+              "max_position_embeddings": 64,
+              "dtype": "float32"
+            },
+            "demo规格": {
+              "num_hidden_layers": 28,
+              "hidden_size": 2048,
+              "num_attention_heads": 16,
+              "num_key_value_heads": 8,
+              "head_dim": 128,
+              "dtype": "bfloat16",
+              "参数量": "1.72 G",
+              "tokenizer": "Qwen3-1.7B 自带"
+            },
+            "权重来源": "tiny：随机初始化（固定 seed）；demo：本机已有权重（不提交）"
+          },
+          "draft": {
+            "说明": "**没有 draft 模型**：候选来自 `speculative_config.model` 指向的**用户类**（`examples/custom_proposer.py` 是教学示例，测试里还有 4 个别名类做行为/违约用例）",
+            "q": "自定义插件不提供 q → `DraftTokenIds.draft_probs=None`（点质量 q，接受判定退化成 p[d] >= u；与 ngram/suffix 同档）",
+            "K": "由 `num_speculative_tokens` 给（测试用 2/3/4）"
+          },
+          "device": "cuda:0（真引擎；投机验证是 Triton 内核，只在 CUDA 上有——与 59/60/61 关一致）"
+        },
+        {
+          "用途": "冻结源码对照（调用参数与分派）",
+          "上游": "vllm 0.28.0 的 `v1/spec_decode/custom_class_proposer.py` 与 `v1/worker/gpu_model_runner.py` 的 custom_class 分支",
+          "权重": "不需要",
+          "note": "只读源码文本做参数序列对照，不在生产路径 import 上游"
+        },
+        {
+          "用途": "插件类清单（都在 tests/step62/test_custom_proposer.py 里，按点号路径导入）",
+          "classes": {
+            "RepeatLastTokenProposer（examples/）": "常规：重复最后一个 token，确定性",
+            "EmptyProposer": "全空候选",
+            "AllWrongProposer": "永远猜 token 0（全错候选）",
+            "VariableLengthProposer": "每行长度不同（变长候选）",
+            "RecordingProposer": "记录构造参数与每次调用参数",
+            "BufferShapeProposer": "记录定长缓冲的形状与有效前缀",
+            "TooFewRowsProposer / TooManyRowsProposer": "协议违约（行数不匹配）",
+            "BoomOnInitProposer / NoProposeProposer / NotCallableProposeProposer": "构造失败 / 缺 propose / propose 不可调用"
+          }
+        },
+        {
+          "用途": "真实模型集成",
+          "state": "demo.py 用 Qwen3-1.7B 跑通（--spec-method custom_class）",
+          "reason": "本关只验证接口；真实收益与吞吐矩阵按总纲在 84 关统一测"
+        }
+      ],
+      "randomness": {
+        "自定义插件": "示例与测试类都是确定性的（不含随机数、不依赖模型）→ 同一输入同一候选",
+        "端到端": "temperature=0.0（greedy）：开/不开投机的输出必须逐 token 相同"
+      }
+    }
+  },
+  "step63": {
+    "results": {
+      "step": 63,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md",
+      "status": "进行中：第一阶段（第一遍输入对齐）已完成并实跑；模型适配与端到端待做（见 docs/step63_alignment.md §5）",
+      "recorded_at": "2026-10-04T22:35:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "c0fd8c9",
+        "implementation_commit": "798dc00（阶段 A：输入对齐；阶段 B/C 待做）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 69,
+        "sha256": "8a300839de9cc8ea56f10363d37937c3f3e32d030a943f0f7dea49fe32214fcd",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/内核对照）",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step63 -q",
+          "result": "12 passed in 6.51s",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 tests/step62 tests/step63 -q",
+          "result": "292 passed（连跑两次一致）",
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step63_eagle_inputs.py",
+          "result": "17 PASS / 0 FAIL",
+          "failed": 0
+        },
+        {
+          "cmd": "python benchmarks/check_step61_suffix.py / check_step62_custom_proposer.py",
+          "result": "27 PASS / 34 PASS（全 0 FAIL）",
+          "failed": 0
+        }
+      ],
+      "execution_trace": {
+        "requirement_example": {
+          "target": [
+            11,
+            12,
+            21,
+            22,
+            23
+          ],
+          "next": [
+            13,
+            24
+          ],
+          "query_start_loc": [
+            0,
+            2,
+            5
+          ],
+          "draft_input": [
+            12,
+            13,
+            22,
+            23,
+            24
+          ],
+          "sample_rows": [
+            1,
+            4
+          ]
+        },
+        "trap_wrong_patch_index": {
+          "correct": [
+            12,
+            13,
+            22,
+            23,
+            24
+          ],
+          "wrong(patched at query_start_loc[1:])": [
+            12,
+            21,
+            13,
+            23,
+            23
+          ],
+          "症状": "A 的最后一格留成 B 的第一个 token（21）"
+        },
+        "positions_not_shifted": {
+          "input_ids": [
+            2,
+            3,
+            30,
+            5,
+            50
+          ],
+          "positions": [
+            10,
+            11,
+            12,
+            20,
+            21
+          ],
+          "sample_rows": [
+            2,
+            4
+          ]
+        },
+        "kernel_differential": {
+          "kernel": "vllm.v1.spec_decode.utils.copy_and_expand_eagle_inputs_kernel(shift_input_ids=True)",
+          "no_rejection": {
+            "ours": [
+              12,
+              13,
+              22,
+              23,
+              24
+            ],
+            "kernel": [
+              12,
+              13,
+              22,
+              23,
+              24
+            ],
+            "一致": true
+          },
+          "with_rejection": {
+            "ours": [
+              2,
+              3,
+              40,
+              0,
+              0
+            ],
+            "kernel": [
+              2,
+              3,
+              40,
+              0,
+              0
+            ],
+            "一致": true
+          },
+          "shift_false_control": "58 关差分过的分支仍与内核一致（[11,12,13,21,22,23,24]）"
+        },
+        "layout_difference": {
+          "kernel_with_rejection": [
+            12,
+            13,
+            0,
+            22,
+            23,
+            24
+          ],
+          "kernel_is_rejected": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "no_extra_slots": [
+            12,
+            13,
+            22,
+            23,
+            24
+          ],
+          "不变量": "每条请求的 [shift 后有效行 + 扩容行] 相同；差别只是内核为被拒行留占位、后续请求整块后移"
+        },
+        "real_checkpoint_manifest": {
+          "draft_repo": "AngelSlim/Qwen3-1.7B_eagle3",
+          "本地": "models/Qwen3-1.7B-eagle3（未跟踪）",
+          "权重": "pytorch_model.bin 274,132,734 B / 15 个张量 / fp16",
+          "aux_layers": "3（fc.weight 形状 (2048, 6144) = hidden × 3）",
+          "vocab": "draft_vocab_size=32000，target=151936，checkpoint 带 d2t/t2d",
+          "架构": "LlamaForCausalLMEEagle3（model_type=llama, 1 层, head_dim=128, rope_theta=1e6）"
+        }
+      },
+      "fixed_during_step": [
+        {
+          "现象": "tests/step59/test_rejection.py::test_mixed_greedy_and_random 在整套 tests/ 一起跑时失败",
+          "原因": "该用例注入的均匀随机数是 [0.5, 0.9]，隐含『random 行一定读到第二个元素』这一与行序有关的假设（新增 tests/step63 后暴露）",
+          "处理": "改成两行都给 0.9（greedy 行根本不读 u）。断言强度不变（random 行仍是 u=0.9 > p/q=0.889 → 拒绝）；连跑两次 292 passed"
+        }
+      ],
+      "not_run": [
+        "EAGLE3 模型适配与逐层对照（需求 §2/§3.2/§4）——阶段 B",
+        "提议者/Runner 接线与端到端 greedy 一致性、prefix 命中/抢占/重排/结束清理（需求 §2/§3.4/§4）——阶段 C",
+        "真实匹配 checkpoint 的完整生成（draft 词表 32000 ≠ target 151936，需要 d2t/t2d 映射；本关只记录 manifest，完整语义属 67 关）",
+        "M-RoPE/backend/padded 开关组合的限制触发（阶段 C）"
+      ]
+    }
+  }
+}

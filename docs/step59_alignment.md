@@ -12,7 +12,7 @@
 - 目录映射：本项目顶层 `minivllm/` ↔ 上游 `vllm/v1/`；`minivllm/sample/` ↔ `vllm/v1/sample/`；
   `minivllm/spec_decode/` ↔ `vllm/v1/spec_decode/`
 - 交付：`tests/step59/`（52 项 pytest）、`benchmarks/check_step59_rejection.py`（21 项）、
-  `docs/step59_results.json`、`docs/step59_models.json`
+  `docs/results.json` → `step59.results`、`docs/results.json` → `step59.models`
 
 ## 1. 痛点与结论（实测）
 
