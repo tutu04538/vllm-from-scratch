@@ -156,8 +156,12 @@ step scheduled                    hits           preempted    running           
 
 > **阶段 A/B/C 已实现并实跑**：输入对齐、EAGLE3 draft 模型（真实 checkpoint 张量全部落位）、
 > 提议者/Runner 接线与 greedy 端到端（K=1/2/4）都过了，并完成与上游真实实现的数值对照
-> （`combine_hidden_states` 逐位相同、logits max|Δ|=7.0e-4）。剩余项（真实 checkpoint 完整生成 →
-> 67 关、draft 解码层逐值对照 → 69/70、M-RoPE）见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。
+> （`combine_hidden_states` 逐位相同、logits max|Δ|=7.0e-4）。**真实 checkpoint 的完整生成已在 66 关
+> 收尾时补上**：`compute_logits()` 按 `d2t` 把 draft 词表（32000）的 logits scatter 回 target 宽度
+> （151936），真实权重下 greedy 端到端跟非投机逐 token 相同，草稿 id 也钉在 `t2d` 集合内
+> （`tests/step63/test_eagle3_real_e2e.py`）。剩余项（**草稿接受长度还没对齐**：实测 ≈1.07 vs 模型卡
+> 2.13~2.2 → 疑似 draft 解码层差异、draft 解码层逐值对照 → 69/70、M-RoPE）见
+> [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。
 
 EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；于是第一遍输入要满足：
 

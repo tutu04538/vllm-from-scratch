@@ -130,7 +130,7 @@ def test_compute_logits_matches_upstream(models):
     torch.manual_seed(1)
     hidden = torch.randn(4, HIDDEN, dtype=torch.float32, device="cuda") * 0.5
     with torch.no_grad():
-        mine = ours.compute_logits_to_target(hidden)      # 上游出来就是 target 词表宽度
+        mine = ours.compute_logits(hidden)                # 与上游同名方法一样：已映射回 target 词表宽度
         theirs = upstream.compute_logits(hidden)
     assert mine.shape == theirs.shape == (4, 151936)
     # 不能直接相减：两边在"draft 词表没覆盖的 target id"上都是 -inf（-inf - -inf = nan）。
@@ -151,7 +151,7 @@ def test_end_to_end_two_stage_matches_upstream(models):
     torch.manual_seed(2)
     aux = torch.randn(3, HIDDEN * NUM_AUX, dtype=torch.float32, device="cuda") * 0.1
     with torch.no_grad():
-        mine = ours.compute_logits_to_target(ours.combine_hidden_states(aux))
+        mine = ours.compute_logits(ours.combine_hidden_states(aux))
         theirs = upstream.compute_logits(upstream.combine_hidden_states(aux))
     argmax_equal = bool((mine.argmax(-1) == theirs.argmax(-1)).all())
     finite = torch.isfinite(mine) & torch.isfinite(theirs)

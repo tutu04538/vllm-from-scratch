@@ -5,7 +5,7 @@
   B. `combine_hidden_states` 的数学（= 拼接 + fc 投影，不许用平均替代）
   C. 第一层的输入拼装（`cat([input_layernorm(embeds), hidden_norm(hidden)])`，qkv 输入宽度 2*hidden）
   D. 真实 checkpoint 加载：参数全覆盖、d2t/t2d 收到、`embed_tokens` 缺 → 标记与 target 共享
-  E. draft 词表 id → target 词表 id 的映射
+  E. draft 词表 id → target 词表 id 的映射（`compute_logits()` 里 scatter 回 target 宽度）
 
 真实权重在 `models/Qwen3-1.7B-eagle3`（本机、不入库）；没有它时相关用例**跳过并写明原因**
 （不是"通过"）。
@@ -186,13 +186,21 @@ def test_real_checkpoint_combine_and_logits_shapes():
         hidden = model.model.combine_hidden_states(torch.randn(3, 6144) * 0.05)
         logits = model.compute_logits(hidden)
     assert tuple(hidden.shape) == (3, 2048)
-    assert tuple(logits.shape) == (3, 32000)
-    assert torch.isfinite(hidden).all() and torch.isfinite(logits).all()
+    # 66 关收尾（原 63 关待办）：`compute_logits()` 现在与上游同名方法一致——**已映射回 target
+    # 词表宽度**（draft 宽度那份由 `draft_vocab_logits()` 提供，只给断言用）
+    assert tuple(model.draft_vocab_logits(hidden).shape) == (3, 32000)
+    assert tuple(logits.shape) == (3, 151936)
+    assert int(torch.isfinite(logits[0]).sum()) == 32000        # 只有 d2t 覆盖的 32000 个位置有值
+    assert torch.isfinite(hidden).all() and torch.isfinite(logits[:, :1]).all()
 
 
 @pytestmark_real
-def test_draft_to_target_id_mapping_uses_d2t():
-    """draft 词表 id → target 词表 id 用 checkpoint 的 `d2t`（TLI 的映射那一半）。"""
+def test_compute_logits_maps_draft_ids_through_d2t():
+    """草稿 id 一定是 **target 空间**的 id，且等于 `draft_id + d2t[draft_id]`（d2t 是偏移量）。
+
+    这是 66 关收尾的那条：提议者直接对 `compute_logits()` 的结果 `argmax`，所以映射必须发生在
+    这个方法里面（上游 `llama_eagle3.py:339-356` 就是这么做的）。
+    """
     from safetensors.torch import load_file
 
     config = json.loads((REAL_DRAFT_DIR / "config.json").read_text())
@@ -201,14 +209,22 @@ def test_draft_to_target_id_mapping_uses_d2t():
     model = get_model_class(config["architectures"][0])(config)
     state = load_file(str(REAL_DRAFT_DIR / "model.safetensors"))
     model.load_weights(iter(state.items()))
-    ids = torch.tensor([0, 1, 100, 31999])
-    mapped = model.map_draft_ids_to_target(ids)
-    # d2t 是**偏移量**（上游 llama_eagle3.py:344-352）：target = draft_id + d2t[draft_id]
-    assert mapped.tolist() == (ids + state["d2t"][ids].to(ids.dtype)).tolist()
-    assert int(mapped.max()) < model.target_vocab_size
+    torch.manual_seed(0)
+    with torch.no_grad():
+        hidden = model.combine_hidden_states(torch.randn(4, 6144) * 0.05)
+        draft_ids = model.draft_vocab_logits(hidden).argmax(-1)      # draft 空间
+        target_ids = model.compute_logits(hidden).argmax(-1)        # target 空间
+    assert target_ids.tolist() == (draft_ids + state["d2t"][draft_ids]).tolist()
+    assert int(target_ids.max()) < model.target_vocab_size
+    assert bool(model.t2d[target_ids].all())            # 都落在 t2d 标记的可用集合里
+    # 反证：不做映射时会交出的 id 与正确值不同（真实 checkpoint 上 99.6% 的偏移非 0）
+    assert not torch.equal(draft_ids, target_ids)
 
 
-def test_draft_to_target_is_identity_without_d2t():
+def test_compute_logits_is_identity_without_d2t():
+    """draft 与 target 同词表（没有 d2t）时，`compute_logits()` 就是裸的 lm_head 输出。"""
     model = tiny_model()
-    ids = torch.tensor([0, 3, 7])
-    assert torch.equal(model.map_draft_ids_to_target(ids), ids)
+    hidden = torch.randn(3, TINY_CONFIG["hidden_size"])
+    with torch.no_grad():
+        assert torch.equal(model.compute_logits(hidden), model.draft_vocab_logits(hidden))
+        assert tuple(model.compute_logits(hidden).shape) == (3, TINY_CONFIG["vocab_size"])

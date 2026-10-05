@@ -11,7 +11,7 @@
     "step60": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
-    "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
+    "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线；真实 checkpoint 完整生成已在 66 关收尾补齐——compute_logits 按 d2t scatter 回 target 宽度，greedy 逐 token 相同，草稿 id 钉在 t2d 内；仍待验：草稿接受长度 ≈1.07 vs 模型卡 2.13~2.2，疑在 draft 解码层）",
     "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）",
     "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
     "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）"
@@ -2065,7 +2065,7 @@
     "results": {
       "step": 63,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md",
-      "status": "implemented + self-verified（阶段 A/B/C 全做完，含与上游真实实现的数值对照；唯一待验项：真实 checkpoint 的完整生成——异构词表采样空间语义属 67 关）",
+      "status": "implemented + self-verified（阶段 A/B/C 全做完，含与上游真实实现的数值对照）；66 关收尾补齐了 63 关的待办：真实 checkpoint 的完整生成 + d2t 映射（greedy 逐 token 相同）；仍待验：草稿接受长度（≈1.07 vs 模型卡 2.13~2.2，疑在 draft 解码层）",
       "recorded_at": "2026-10-04T22:35:00+00:00",
       "git": {
         "baseline_commit_at_record_time": "c0fd8c9",
@@ -2364,10 +2364,26 @@
         }
       ],
       "not_run": [
-        "真实 checkpoint 的完整生成：draft 词表 32000 → target 151936 的采样空间语义（草稿在 draft 空间采样、q 的映射）属 67 关",
-        "draft decoder layer（attention/MLP）与上游的逐值对照（需要 forward 上下文/KV 元数据）",
+        "草稿接受长度（真实权重实测 ≈1.07 vs 官方模型卡 2.13~2.2）：疑在 draft decoder layer，需要层内逐值对照",
+        "draft decoder layer（attention/MLP）与上游的逐值对照（需要 forward 上下文/KV 元数据；本机也跑不了上游引擎：WSL2 下 UVA 不可用）",
         "M-RoPE / padded drafter batch / lm_head 共享的另一套条件"
-      ]
+      ],
+      "后续补齐": {
+        "什么时候": "66 关收尾时（用户确认「现在做最小修复 + 真实 checkpoint 端到端」）",
+        "问题": "draft 的 lm_head 是 32000 宽（draft_vocab_size），而 target 词表 151936；checkpoint 带 d2t(32000,)/t2d(151936,) 偏移映射，但本仓库原来的 compute_logits() 返回 draft 宽度、映射函数（compute_logits_to_target / map_draft_ids_to_target）只有测试在调 → 提议者 argmax 出来的 draft id 被当成 target id 用（都 < 151936，**不报错**）。实测同一份 hidden：应交 [334, 6, 990, 38043]，实际交 [241, 6, 868, 22993]（'**' vs '�'、' use' vs 'OR'）；d2t 里只有 124/32000（0.4%）的偏移为 0。",
+        "修复": "Eagle3ForCausalLM.compute_logits() 改为与上游 llama_eagle3.py:339-356 一致：targets = arange(draft_vocab_size) + d2t 后 scatter 到 target 宽度、其余位置 -inf（没有 d2t 时保持原样并断言宽度）；draft 宽度那份改名成 draft_vocab_logits()（只给断言用，生产路径不调）；删掉没有生产调用方的 compute_logits_to_target() / map_draft_ids_to_target()。",
+        "测试": "tests/step63/test_eagle3_real_e2e.py（新增 2 项，真实 models/Qwen3-1.7B + Qwen3-1.7B-eagle3，CUDA）：greedy 16 token 与非投机逐 token 相同；草稿 id 全部落在 t2d 集合内，且把它们用 d2t 的逆表退回 draft 空间后大量落在集合外（反证）。test_eagle_model.py / test_eagle3_upstream_diff.py 的期望值随之更新（compute_logits 现在返回 151936 宽；与上游同名方法的对照从 compute_logits_to_target 改成 compute_logits，断言强度不变）。",
+        "实测": {
+          "pytest tests/step63 -q": "23 passed（原 21 + 新增 2）",
+          "真实端到端": "非投机 16 token == 投机(K=2) 16 token；草稿 30 枚全部在 t2d 内",
+          "接受长度（本 prompt，K=2）": "≈1.07（14 个请求·轮 drafted=28 / accepted=1）",
+          "官方模型卡参考": "AngelSlim/Qwen3-1.7B_eagle3 在 Qwen3-1.7B 上报 accept length 2.13~2.2（K=2/4）",
+          "上游引擎对照不可用": "本机 WSL2 上 vllm.LLM(...) 直接 RuntimeError: UVA is not available，所以只能与模型卡/上游类比，不能与上游引擎比接受率"
+        },
+        "仍然没对齐": "草稿接受长度（≈1.07 vs 2.13~2.2）→ 疑在 draft decoder layer，见 not_run 第 1 条",
+        "package_sha256_at_fix": "1a20623154a199aa0414afd1ebd40156c0561403309ca89d8d7b9f081377d974",
+        "recorded_at": "2026-10-05T11:58:01+00:00"
+      }
     }
   },
   "step64": {
@@ -2695,7 +2711,7 @@
       "step": 66,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/066_Medusa多头提议与MLP支持缺口.md",
       "status": "implemented + self-verified（Medusa：与上游真实 Medusa/MedusaProposer 的每个 head logits 与候选列顺序逐位相同；mlp_speculator 按需求 §3 只交「版本缺口证明」，生产路径保持不支持）",
-      "recorded_at": "2026-10-05T09:55:03+00:00",
+      "recorded_at": "2026-10-05T11:59:02+00:00",
       "git": {
         "baseline_commit_at_record_time": "80021aa",
         "implementation_commit": "见本轮提交（step66：Medusa 多头提议与 MLP 支持缺口）"
@@ -2703,7 +2719,7 @@
       "package": {
         "root": "minivllm/",
         "python_files": 78,
-        "sha256": "f97b58f731eafdc75b0d813f455c49e80c00209485bf8fc7d68c75109d9d1575",
+        "sha256": "1a20623154a199aa0414afd1ebd40156c0561403309ca89d8d7b9f081377d974",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2805,7 +2821,16 @@
         "CUDA Graph / 异步调度 / padded drafter batch 下的 Medusa（69/70 关）",
         "量化 head、MoE head + EPLB（本仓库 TP=1、不量化、无 MoE）",
         "异构词表 TLI（67 关；Medusa 的 token_map 是草稿头词表截断，不是同一件事）"
-      ]
+      ],
+      "额外收尾": {
+        "内容": "63 关遗留的 EAGLE3 `d2t` 接线：`Eagle3ForCausalLM.compute_logits()` 之前返回 draft 宽度（32000），现在按上游 scatter 回 target 宽度（151936）；真实 checkpoint 的 greedy 端到端跑通（tests/step63/test_eagle3_real_e2e.py）。",
+        "为什么记在 66 关": "用户在本关收尾时确认「现在做最小修复 + 真实 checkpoint 端到端」；与 65 关把 63 关的 upload bug 记在 step65 同例。",
+        "细节见": "docs/results.json → step63.results.后续补齐 / docs/step63_alignment.md §5",
+        "实测": {
+          "pytest tests/step58..66 -q": "414 passed（412 + 真实 e2e 2 项）",
+          "真实端到端": "非投机 16 token == 投机(K=2) 16 token；草稿接受长度 ≈1.07（模型卡 2.13~2.2，未对齐）"
+        }
+      }
     },
     "models": {
       "tiny_target": {

@@ -100,20 +100,31 @@ no-extra-slots 通路不带这些行（被拒位置本来就是本轮 target 查
 
 阶段 A/B/C 都已实现并实跑；下面这些是**明确留到后续关卡**的，不要当成 63 关已经覆盖：
 
-1. **真实 EAGLE3 checkpoint 的完整生成**：本关只做到"权重全部落位 + shape/数值对照 + tiny 端到端"。
-   真实 checkpoint 的 draft 词表是 32000、target 是 151936（TLI 采样空间语义），完整跑通属 **67 关**。
-2. **draft 解码层（attention/MLP）与上游的逐值对照**：需要 69/70 的 forward 上下文与 CUDA Graph 基建
+1. ~~**真实 EAGLE3 checkpoint 的完整生成**~~ **已于 66 关收尾时补上**：`compute_logits()` 现在按
+   `d2t` 把 draft 词表的 logits **scatter 回 target 宽度**（上游 `llama_eagle3.py:339-356` 同款），
+   提议者不必自己映射；`tests/step63/test_eagle3_real_e2e.py` 用真实
+   `models/Qwen3-1.7B` + `models/Qwen3-1.7B-eagle3` 跑通 greedy 端到端（16 token 逐 token 相同）
+   并断言草稿 id 全部落在 `t2d` 集合里（含"不映射就会大量落在集合外"的反证）。
+   **注意**：这条是"draft 缩小词表 + 偏移映射"（同一个 tokenizer）；67 关的 TLI 是**两套 tokenizer
+   的 token 级交集**（`VocabMapping`），两件事分开做、分开测（需求 067 §3.6）。
+2. **草稿质量（接受长度）还没对齐**：真实权重下实测 K=2、单个 prompt 的接受长度 ≈ **1.07**
+   （14 个请求·轮 drafted=28 / accepted=1），而官方模型卡（`AngelSlim/Qwen3-1.7B_eagle3`）在
+   Qwen3-1.7B 上写的是 **2.13~2.2**。id 空间已经正确（第 1 条钉住了），所以差距更可能出在
+   **draft 解码层本身**，也就是下面第 3 条那条待办。本机跑不了上游引擎做对照
+   （`LLM(...)` 在 WSL2 上直接 `RuntimeError: UVA is not available`），只能与模型卡比。
+3. **draft 解码层（attention/MLP）与上游的逐值对照**：需要 69/70 的 forward 上下文与 CUDA Graph 基建
    才能把两边的前向放到同一条件下比；本关比的是 `combine_hidden_states` 与最终 logits（max|Δ|=7.0e-4）。
-3. **M-RoPE 未接**：上游 `_raise_if_mrope` 的对应检查在配置期报错，三路位置没有实现。
-4. **`lm_head` 共享的另一套条件**：上游 `_maybe_share_lm_head` 在 draft 词表 == target 词表时共享
+   第 2 条的接受长度差距大概率要在这里定位。
+4. **M-RoPE 未接**：上游 `_raise_if_mrope` 的对应检查在配置期报错，三路位置没有实现。
+5. **`lm_head` 共享的另一套条件**：上游 `_maybe_share_lm_head` 在 draft 词表 == target 词表时共享
    lm_head；本关只按"检查点缺 `embed_tokens`"共享嵌入。
-5. **扩容分支（并行提议）**：默认 EAGLE 走 no-extra-slots 通路；`shift_input_ids=True` 的扩容分支
+6. **扩容分支（并行提议）**：默认 EAGLE 走 no-extra-slots 通路；`shift_input_ids=True` 的扩容分支
    要等 **72 关**（P-EAGLE/DFlash），届时重建与上游内核的逐值差分。
 
 ## 6. 验证命令（实测，2026-10-05）
 
 ```bash
-python -m pytest tests/step63 -q                                   # 21 passed
+python -m pytest tests/step63 -q                                   # 23 passed（含 66 关收尾补的真实 checkpoint 端到端 2 项）
 python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 \
                  tests/step62 tests/step63 tests/step64 -q         # 314 passed（含 64 关）
 python benchmarks/check_step63_eagle_inputs.py                     # 8 项 PASS（只测生产路径）

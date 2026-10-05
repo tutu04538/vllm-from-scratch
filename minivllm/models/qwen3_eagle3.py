@@ -13,7 +13,8 @@ forward 语义（**不能替换成普通 Qwen3**）：
 
 权重名（真实 checkpoint，见 docs/results.json → step63.models）：`fc.weight`、`midlayer.*`（映射到
 `layers.0.*`，q/k/v → qkv_proj、gate/up → gate_up_proj）、`norm.weight`、`lm_head.weight`（draft 词表）、
-`d2t`/`t2d`（异构词表映射，67 关主题）。没有 `embed_tokens.*` → 与 target 共享 embedding。
+`d2t`/`t2d`（draft 缩小词表 → target 词表的偏移映射，`compute_logits()` 里 scatter 回去；
+两套 **tokenizer** 的 TLI 交集是另一件事，属 67 关）。没有 `embed_tokens.*` → 与 target 共享 embedding。
 """
 
 import torch
@@ -255,38 +256,42 @@ class Eagle3ForCausalLM(nn.Module):
         return self.model.combine_hidden_states(hidden_states)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.lm_head(hidden_states)
+        """draft 词表的 lm_head，**已经映射回 target 词表宽度**（上游 `llama_eagle3.py:339-356`）。
 
-    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model.embed_input_ids(input_ids)
+        为什么必须在这里映射（而不是"谁用谁自己映射"）：提议者拿到 logits 后直接 `argmax`，
+        那个 id 会被当成**草稿 token**交给调度器、再由 target 验证——它必须是 **target 空间**的 id。
+        真实 checkpoint 的 `draft_vocab_size=32000`、target 词表 151936，而 `d2t` 里只有 0.4% 的
+        偏移是 0：不映射就会把 32000 个 draft id 当成 target id 用（都 < 151936，**不报错**），
+        草稿几乎必被拒、`temperature>0` 时连 q 的宽度都对不上（拒绝采样内核按 target 词表步长索引）。
 
-    def map_draft_ids_to_target(self, draft_ids: torch.Tensor) -> torch.Tensor:
-        """draft 词表 id → target 词表 id（没有 d2t 时是恒等映射）。
-
-        **`d2t` 是偏移量不是绝对 id**：上游 `llama_eagle3.py:344-352` 的规则是
-        `target = draft_id + d2t[draft_id]`（`base = arange(draft_vocab_size); targets = base + d2t`）。
-        这里照抄；写错了会让草稿 token 在 target 词表里指向别的字（静默错）。
+        规则与上游逐字一致：`targets = arange(draft_vocab_size) + d2t`（`d2t` 是**偏移量**），
+        把 draft 宽度的 logits `scatter` 到 target 宽度、其余位置 **-inf**（永远不会被采到）。
+        没有 `d2t` 时（draft 与 target 同词表）就是原来那份 logits。
         """
+        logits = self.draft_vocab_logits(hidden_states)
         if self.d2t is None:
-            return draft_ids
-        offsets = self.d2t.to(draft_ids.device)[draft_ids]
-        return draft_ids.to(offsets.dtype) + offsets
-
-    def compute_logits_to_target(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """把 draft 词表的 logits 映射回 **target 词表**宽度（上游在 `compute_logits` 里就这么做）。
-
-        上游 `llama_eagle3.py:339-356`：`LogitsProcessor(draft_vocab_size)` 出 draft 宽度，
-        再用 `scatter` 铺到 target 宽度、其余位置 **-inf**（-inf 的 token 永远不会被采样到）。
-        本关先提供等价函数；"异构词表的采样空间语义"（q 的映射、恢复分布）属 67 关。
-        """
-        logits = self.compute_logits(hidden_states)
-        if self.d2t is None:
+            # 上游同款断言：没有映射表时，lm_head 的宽度必须就是 target 词表宽度
+            assert logits.shape[-1] == self.target_vocab_size, (
+                f"没有 d2t 时 lm_head 的宽度应当等于 target 词表 {self.target_vocab_size}，"
+                f"实际 {logits.shape[-1]}")
             return logits
         base = torch.arange(self.draft_vocab_size, device=logits.device)
         targets = base + self.d2t.to(logits.device)
         mapped = logits.new_full((logits.shape[0], self.target_vocab_size), float("-inf"))
         mapped[:, targets] = logits
         return mapped
+
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model.embed_input_ids(input_ids)
+
+    def draft_vocab_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """**draft 空间**的原始 logits（宽度 = draft_vocab_size，没有做 `d2t` 映射）。
+
+        它是 `compute_logits()` 的第一步，分开只为可测：`compute_logits()` 才是提议路径用的那个
+        （上游把两步写在一个方法里，本仓库拆开是为了让"映射前后"能分别断言；生产路径只有
+        `compute_logits()` 被调用）。
+        """
+        return self.lm_head(hidden_states)
 
     def load_weights(self, weights) -> set[str]:
         """权重名映射 + 跳过/接收 `d2t`/`t2d`。

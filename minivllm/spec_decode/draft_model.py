@@ -544,8 +544,10 @@ class DraftModelProposer(SpecDecodeBaseProposer):
         target_vocab = target_config.get("vocab_size")
         draft_vocab = draft_config.get("vocab_size")
         if target_vocab != draft_vocab:
-            # 63 关：EAGLE3 允许 draft 词表更小 + 带 `d2t` 映射（异构词表 TLI）；
-            # 但**采样空间**的完整语义属 67 关，这里只要求"映射存在"，否则明确报错。
+            # 63 关：EAGLE3 允许 draft 词表更小 + 带 `d2t` 偏移映射（同 tokenizer、缩小词表；
+            # 与 67 关"两套 tokenizer 的 TLI 交集"不是一回事）。映射本身由 draft 的
+            # `compute_logits()` 完成（scatter 回 target 宽度，上游 llama_eagle3.py:339-356 同款），
+            # 所以这里只要"配置里有 draft_vocab_size 且加载到了 d2t"就放行；缺了就明确报错。
             if not (self.method == "eagle3" and draft_config.get("draft_vocab_size")):
                 raise ValueError(
                     f"draft 与 target 的词表不一致（{draft_vocab} vs {target_vocab}）："
