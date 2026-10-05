@@ -2070,8 +2070,8 @@
       },
       "package": {
         "root": "minivllm/",
-        "python_files": 72,
-        "sha256": "1217e1087c8895908fc6a8256782cb0d78277590fba1c8a34b0a687ebacc4970",
+        "python_files": 71,
+        "sha256": "13763166973e48b22092cf9f127c14ff3519693d73c1b324f2f5f31885077ec0",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2084,10 +2084,6 @@
       },
       "commands": [
         {
-          "cmd": "python -m pytest tests/step58..63 -q",
-          "result": "312 passed"
-        },
-        {
           "cmd": "python benchmarks/check_step62 / 61 / 59",
           "result": "34 / 27 / 21 PASS，全 0 FAIL"
         },
@@ -2097,11 +2093,15 @@
         },
         {
           "cmd": "python -m pytest tests/step63 -q",
-          "result": "33 passed"
+          "result": "21 passed（EAGLE3 模型 11 + 端到端 5 + 上游数值对照 4 + 被拒位置重算 1）"
         },
         {
           "cmd": "python -m pytest tests/step58..63 -q",
-          "result": "313 passed"
+          "result": "301 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step63_eagle_inputs.py",
+          "result": "8 PASS / 0 FAIL（改为只测生产路径）"
         }
       ],
       "execution_trace": {
@@ -2306,9 +2306,10 @@
           "钉住的用例": "tests/step63/test_eagle_e2e.py::test_rejected_positions_are_recomputed_next_round（断言 next_start == start + num_valid）"
         },
         "code_layout": {
-          "生产路径": "minivllm/spec_decode/eagle.py::EagleProposer.set_inputs_first_pass —— 逐行照抄上游不扩容分支（左移 + 打补丁 + positions/特征原样）",
-          "测试专用参考": "minivllm/testing/eagle_inputs_ref.py：eagle_first_pass_input_ids（上游四行的纯函数版，需求例子与『补丁下标错一位』反证的期望值来源）、expand_eagle_inputs_shifted（内核 shift=True / 扩容分支的等价展开，72 关并行提议接入时用，现与真内核逐值差分）",
-          "为什么搬走": "用户发现两者在生产包里没有任何调用方；按仓库约定（参考实现放 minivllm/testing/），生产包只留被调用的代码"
+          "生产路径": "minivllm/spec_decode/eagle.py::EagleProposer.set_inputs_first_pass 逐行照抄上游不扩容分支",
+          "已删除": "minivllm/testing/eagle_inputs_ref.py 与 tests/step63/test_eagle_inputs.py（两个参考实现及其 12 项用例）——用户要求删掉生产包里没有调用方的参考实现",
+          "失去的覆盖": "与上游内核 copy_and_expand_eagle_inputs_kernel(shift_input_ids=True) 的逐值差分（那是扩容分支，默认 EAGLE 走不到）；72 关接 P-EAGLE/并行提议时要重新建立这条差分",
+          "保留的覆盖": "benchmarks/check_step63_eagle_inputs.py 与 tests/step63/test_eagle_e2e.py 改为直接驱动 tiny 引擎，检查 A 左移/行数、B positions/特征逐行原样、C 采样行、D 被拒位置下一轮重算、E greedy 一致"
         }
       },
       "fixed_during_step": [

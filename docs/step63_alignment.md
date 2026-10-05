@@ -16,7 +16,7 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| A | **第一遍输入对齐** | ✅ 已完成：默认 EAGLE 通路**严格照抄上游不扩容分支**（行数 = target 行数、整体左移 + 打补丁、positions/特征逐行原样，Runner 交本轮原始 token/positions）；`expand_eagle_inputs_shifted` 保留为**扩容分支**（并行提议）的等价展开，与上游内核逐值差分（`tests/step63/test_eagle_inputs.py` 12 项、`benchmarks/check_step63_eagle_inputs.py` 17 项） |
+| A | **第一遍输入对齐** | ✅ 已完成：默认 EAGLE 通路**严格照抄上游不扩容分支**（行数 = target 行数、整体左移 + 打补丁、positions/特征逐行原样，Runner 交本轮原始 token/positions）。验收改为**只测生产路径**（`benchmarks/check_step63_eagle_inputs.py` 8 项 + `tests/step63/test_eagle_e2e.py`）；**扩容分支（并行提议）留到 72 关**，届时重建与上游内核 `shift_input_ids=True` 的逐值差分 |
 | B | **EAGLE3 模型适配**（`Eagle3Qwen3ForCausalLM`/`Eagle3LlamaForCausalLM` + target 辅助层输出 + `combine_hidden_states` + d2t/t2d 词表映射） | 🟡 **模型与真实权重加载 ✅**（`minivllm/models/qwen3_eagle3.py`、`tests/step63/test_eagle_model.py` 11 项）；**逐层对照（与上游实现比容差）待做** |
 | C | **提议者与 Runner 接线 + 端到端** | ✅ 已完成：`EagleProposer`（复用基类 KV/AR/工作区）、Runner 设辅助层并把本轮 hidden 交给提议者、EAGLE 第一遍对齐、greedy == 非投机（K=1/2/4） |
 
