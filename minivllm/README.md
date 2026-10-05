@@ -200,7 +200,7 @@ python -m pytest tests/step59 -q                     # 52 项：step59 的单测
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
 python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
-python -m pytest tests/step63 -q                     # 28 项：step63（输入对齐 12 + EAGLE3 模型 11 + 端到端 5）
+python -m pytest tests/step63 -q                     # 32 项：step63（输入对齐 + EAGLE3 模型 + 端到端 + 与上游的数值对照）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

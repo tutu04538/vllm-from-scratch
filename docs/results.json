@@ -2062,7 +2062,7 @@
     "results": {
       "step": 63,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md",
-      "status": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
+      "status": "implemented + self-verified（阶段 A/B/C 全做完，含与上游真实实现的数值对照；唯一待验项：真实 checkpoint 的完整生成——异构词表采样空间语义属 67 关）",
       "recorded_at": "2026-10-04T22:35:00+00:00",
       "git": {
         "baseline_commit_at_record_time": "c0fd8c9",
@@ -2071,7 +2071,7 @@
       "package": {
         "root": "minivllm/",
         "python_files": 71,
-        "sha256": "133913e0b04fdf94c68a1de57a75b0b0aa686914af21c9c064013dd891b28295",
+        "sha256": "9fb2b01fc7fba3854c7f86b1bc7d07dda79c40a4b34ee235282996ed01ed166b",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2085,23 +2085,23 @@
       "commands": [
         {
           "cmd": "python -m pytest tests/step63 -q",
-          "result": "28 passed（输入对齐 12 + 模型 11 + 端到端 5）"
+          "result": "32 passed（输入对齐 + EAGLE3 模型 + 端到端 + 上游数值对照）"
         },
         {
           "cmd": "python -m pytest tests/step58..63 -q",
-          "result": "308 passed（连跑两次一致）"
+          "result": "312 passed"
         },
         {
           "cmd": "python benchmarks/check_step63_eagle_inputs.py",
           "result": "17 PASS / 0 FAIL"
         },
         {
-          "cmd": "python benchmarks/check_step57_*.py（15 个）",
-          "result": "350 PASS / 0 FAIL"
+          "cmd": "python benchmarks/check_step62 / 61 / 59",
+          "result": "34 / 27 / 21 PASS，全 0 FAIL"
         },
         {
-          "cmd": "python benchmarks/check_step58_*/59/60/61/62",
-          "result": "36 + 21 + 17 + 27 + 34 PASS，全 0 FAIL"
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "350 PASS / 0 FAIL"
         }
       ],
       "execution_trace": {
@@ -2271,6 +2271,26 @@
           "辅助层": "draft 配置指定 [0, 1]（2 层 tiny 用不了上游默认 (2, n//2, n-3)）；runner.eagle_aux_hidden_state_layers 已钉住",
           "K": "1 / 2 / 4 三档：greedy 投机输出 == 非投机输出（逐 token）；num_drafts/num_draft_tokens > 0",
           "第一遍对齐（运行中实测）": "input_ids = tokens[start+1 : start+num_valid] + [next_token]；positions = start..start+num_valid-1；扩容行特征 = target 采样行特征（其余行逐行不动）"
+        },
+        "upstream_numeric_diff": {
+          "对照对象": "本机真 vLLM 的 llama_eagle3.Eagle3LlamaForCausalLM（与本机 checkpoint 的 architectures 一致），同一份 safetensors、fp32、CUDA",
+          "combine_hidden_states": {
+            "max_abs_diff": 0.0,
+            "容差": 0.0001,
+            "结论": "逐位相同"
+          },
+          "compute_logits（映射回 target 词表）": {
+            "有值位置": 128000,
+            "max_abs_diff": 0.0007033,
+            "容差": 0.005,
+            "说明": "2048→32000 GEMM 的 fp32 累加顺序不同；结构错会差 1e-1 以上，故该上界仍有意义"
+          },
+          "复合两步": {
+            "max_abs_diff": 0.0003126,
+            "argmax 逐行相同": true
+          },
+          "允许的 target id 集合": "两边完全一致（-inf 掩码逐位相同）",
+          "本关未对照": "draft 的 decoder layer（attention/MLP）需要各自的 forward 上下文与 KV 元数据，留到 69/70 关"
         }
       },
       "fixed_during_step": [
@@ -2311,10 +2331,9 @@
         }
       ],
       "not_run": [
-        "真实 checkpoint（AngelSlim/Qwen3-1.7B_eagle3）的完整生成：draft 词表 32000 → target 151936 需要 d2t/t2d 的采样空间语义（属 67 关）",
-        "与上游 Eagle3Qwen3ForCausalLM 的逐层数值对照（本关只做同结构自检 + 真实权重加载核对）",
-        "M-RoPE / padded drafter batch / 其他 backend 组合的限制触发",
-        "lm_head 共享（_maybe_share_lm_head 的另一套条件）"
+        "真实 checkpoint 的完整生成：draft 词表 32000 → target 151936 的采样空间语义（草稿在 draft 空间采样、q 的映射）属 67 关",
+        "draft decoder layer（attention/MLP）与上游的逐值对照（需要 forward 上下文/KV 元数据）",
+        "M-RoPE / padded drafter batch / lm_head 共享的另一套条件"
       ]
     }
   }
