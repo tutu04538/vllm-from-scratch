@@ -19,7 +19,7 @@ import torch
 
 from ..outputs import DraftTokenIds
 from .draft_model import DraftModelProposer
-from .utils import FirstPassPlan
+from .utils import FirstPassPlan, TargetRows
 
 
 class EagleProposer(DraftModelProposer):
@@ -53,7 +53,7 @@ class EagleProposer(DraftModelProposer):
 
     # -------- 第一遍输入（EAGLE 对齐） --------
 
-    def set_inputs_first_pass(self, rows: list["TargetRows"], all_token_ids,  # noqa: F821
+    def set_inputs_first_pass(self, rows: list[TargetRows], all_token_ids,
                               target_hidden_states=None,
                               target_token_ids=None,
                               target_positions=None) -> FirstPassPlan:
