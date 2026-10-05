@@ -84,6 +84,11 @@ class ExecuteModelState(NamedTuple):
     logits: torch.Tensor
     sample_rows: list[int]
     spec_metadata: object = None
+    # 63 关（EAGLE）：提议者要照上游那样对本轮的输入做"整体左移 + 打补丁"，所以要把
+    # **本轮真正的输入**（含被拒草稿那几行）留到提议时刻。只留 **CPU** 张量（不占显存），
+    # 而且只在 `capture_aux_hidden_states` 时才留——上游是把它们当场当参数传进 proposer 的。
+    target_token_ids_cpu: torch.Tensor | None = None
+    target_positions_cpu: torch.Tensor | None = None
 
 
 @dataclass
@@ -721,7 +726,9 @@ class GPUModelRunner:
             raise
         self.execute_model_state = ExecuteModelState(
             scheduler_output=scheduler_output, logits=logits, sample_rows=inputs.sample_rows,
-            spec_metadata=inputs.spec_metadata)
+            spec_metadata=inputs.spec_metadata,
+            target_token_ids_cpu=(inputs.input_ids if self.capture_aux_hidden_states else None),
+            target_positions_cpu=(inputs.positions if self.capture_aux_hidden_states else None))
         return None
 
     @torch.inference_mode()
@@ -918,9 +925,13 @@ class GPUModelRunner:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
             if getattr(self.proposer, "pass_hidden_states_to_model", False):
-                # EAGLE 系的提议者才收特征；普通 draft/假提议者的签名不变
+                # EAGLE 系的提议者才收特征；普通 draft/假提议者的签名不变。
+                # `target_token_ids` / `target_positions` 就是**本轮 target 真正喂进去的行**
+                # （含被拒草稿）：上游 `set_inputs_first_pass` 拿的正是这两份 + 特征。
                 kwargs["target_hidden_states"] = self._aux_hidden_states_by_req(
                     state.scheduler_output, len(self.input_batch.req_ids))
+                kwargs["target_token_ids"] = state.target_token_ids_cpu
+                kwargs["target_positions"] = state.target_positions_cpu
             drafts = self.proposer.propose(rows, all_token_ids, self.input_batch, **kwargs)
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None

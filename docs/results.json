@@ -2071,7 +2071,7 @@
       "package": {
         "root": "minivllm/",
         "python_files": 71,
-        "sha256": "711149bc920d8cd1a64a7097e5ae591f18a61d4958df904112aed1450d747075",
+        "sha256": "58b743e08be9395e69b89c1e4b0c88b220bdede46eb3ec5508a91059f2a650af",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2291,6 +2291,13 @@
           },
           "允许的 target id 集合": "两边完全一致（-inf 掩码逐位相同）",
           "本关未对照": "draft 的 decoder layer（attention/MLP）需要各自的 forward 上下文与 KV 元数据，留到 69/70 关"
+        },
+        "eagle_first_pass": {
+          "口径": "严格照抄上游不扩容分支：整体左移一格 + 每请求最后一格换成新 token + positions/特征逐行原样",
+          "行数": "= 本轮 target 的行数（含被拒草稿行）；不做行重排、不加额外槽位",
+          "输入来源": "Runner 把本轮的 CPU 输入缓冲（target_token_ids / target_positions，含被拒草稿）当场交给提议者",
+          "被拒行": "token 是真的被拒草稿（上游同款），不掩码；其 KV 由 Scheduler 下一轮丢弃",
+          "采样行": "每请求最后一行（上游 token_indices_to_sample = query_start_loc[1:] - 1）"
         }
       },
       "fixed_during_step": [
@@ -2334,6 +2341,11 @@
           "原因": "num_rejected == 0 时两个下标重合，无被拒的用例看不出来；内核差分只比 input_ids/positions/mask、没比 hidden 映射；端到端只比输出一致——特征取错只让草稿质量变差、不改最终答案（静默错）",
           "证据": "① 上游内核 shift=True：扩容行位置 = start + (有效行数-1)，hidden 映射 out_hidden_state_mapping[query_start+j] = output_start+j 把源行 query_start+(有效行数-1) 写到扩容行；② 布局自洽性：实测 start=8/target_rows=4/num_valid=1/num_rejected=3，扩容行位置=8（最后一个有效行），却取了第 4 行特征；③ 实测 11 轮里 9 轮 num_rejected>0",
           "处理": "改成 hidden[len(valid) - 1]；用例改单请求 + 只挑真的有被拒行的调用，加两条断言（扩容行特征 == 最后一个有效行；被拒时 != 被拒尾部特征）"
+        },
+        {
+          "现象": "第一遍输入按内核的『扩容分支』重建行（shift + 扩容行 + 被拒占位），于是必须自己决定“扩容行取哪一行特征”，并因此混用了位置/特征两套口径",
+          "原因": "上游默认 EAGLE 通路根本不重排行：`hidden_states[:n] = target_hidden_states` 逐行原样、positions 原样，扩容行天然对齐，没有可抄歪的那一步；我们因为拿不到被拒草稿 token 才自行重建",
+          "处理": "改成严格照抄上游：Runner 交本轮的 CPU token/positions（含被拒草稿）→ 只做『整体左移 + 打补丁』，positions/特征逐行原样；`expand_eagle_inputs_shifted` 保留给并行提议（额外槽位）那条通路，仍有与内核的逐值差分"
         }
       ],
       "not_run": [

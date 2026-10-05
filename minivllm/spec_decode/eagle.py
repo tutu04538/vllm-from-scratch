@@ -19,7 +19,7 @@ import torch
 
 from ..outputs import DraftTokenIds
 from .draft_model import DraftModelProposer
-from .utils import DraftInputRows, FirstPassPlan, expand_eagle_inputs_shifted
+from .utils import FirstPassPlan
 
 
 class EagleProposer(DraftModelProposer):
@@ -53,82 +53,90 @@ class EagleProposer(DraftModelProposer):
 
     # -------- 第一遍输入（EAGLE 对齐） --------
 
-    def set_inputs_first_pass(self, rows: list["TargetRows"], all_token_ids,
-                              target_hidden_states=None) -> FirstPassPlan:  # noqa: F821
-        """EAGLE 的第一遍：`[shift 后的有效行] + [扩容行] + [被拒占位行]`，positions/特征不移。
+    def set_inputs_first_pass(self, rows: list["TargetRows"], all_token_ids,  # noqa: F821
+                              target_hidden_states=None,
+                              target_token_ids=None,
+                              target_positions=None) -> FirstPassPlan:
+        """**逐行照抄上游** `set_inputs_first_pass()` 的不扩容分支（`llm_base_proposer.py:846-872`）：
 
-        与基类（普通 draft，`shift_input_ids=False`）的差别：
-          - `valid_token_ids` 里那个"第一个 token"会被跳过（`expand_eagle_inputs_shifted` 干的）；
-          - positions 与 target 逐行相同，扩容行的位置 = 该请求最后一行的位置；
-          - 每行配的 hidden 来自**本轮 target**：前 `num_valid-1` 行用对应行的特征，
-            扩容行用**采样行**（`start + target_rows - 1`）的特征。
+            num_tokens = target_token_ids.shape[0]
+            self.input_ids[: num_tokens - 1] = target_token_ids[1:]      # 整体左移一格
+            self.input_ids[token_indices_to_sample] = next_token_ids     # 每请求最后一格换成新 token
+            self._set_positions(num_tokens, target_positions)            # positions **原样**
+            self.hidden_states[:num_tokens] = target_hidden_states       # 特征 **原样逐行拷贝**
 
-        `target_hidden_states` 由 Runner 给：`{req_id: [target_rows, hidden]}`（本轮这一条请求
-        被算过的那些行的特征）。没有它就直接报错——EAGLE 没有特征就跑不了，**不静默退回 token-only**。
+        关键就是"不重排行"：行数 = 本轮 target 的行数（含被拒草稿那几行），positions 与特征
+        都按下标原样对齐，扩容行的特征天然就是它自己那一行的特征——所以上游这里**没有"选哪一行特征"
+        这种逻辑**，也就没有对应的代码可抄歪。
+
+        我们之前按 `expand_eagle_inputs_shifted`（内核的**扩容分支**，额外槽位那套）重建了行，
+        才引入"位置用紧凑布局、特征取另一行"的混用错误；现在按本函数改回上游口径：
+        输入 token/positions 由 Runner 直接给本轮的原始缓冲（含被拒草稿），我们只做左移与打补丁。
         """
         if target_hidden_states is None:
             raise ValueError(
                 "EAGLE 提议者需要本轮 target 的 hidden states（target_hidden_states）："
                 "它吃的是 (token, 特征) 对，缺特征就退化成普通 draft 了，不能静默降级")
-        input_rows = []
-        hidden_rows: list[torch.Tensor] = []
-        for target in rows:
-            tokens = all_token_ids[target.req_id]
-            valid = [int(tokens[position])
-                     for position in range(target.start, target.start + target.num_valid)]
-            input_rows.append(DraftInputRows(valid_token_ids=valid, start=target.start,
-                                             next_token_id=target.next_token_id,
-                                             num_rejected=target.num_rejected))
-            # 多辅助层拼接 → fc 投影（模型自己的 `combine_hidden_states`，不许自己平均/拼接替代）
-            hidden = self.model.model.combine_hidden_states(target_hidden_states[target.req_id])
-            # 有效行的特征（注意：token 左移了，特征不动 → 第 i 行仍取第 i 行）
-            hidden_rows.extend(hidden[index] for index in range(max(len(valid) - 1, 0)))
-            # 扩容行 = **最后一个有效行**的特征（不是被拒尾部那一行！）：
-            #   - 扩容行的位置 = start + (有效行数 - 1)，特征必须来自同一行，否则"位置与特征指向两个位置"；
-            #   - 上游内核的 `out_hidden_state_mapping[query_start + j] = output_start + j`
-            #     在 shift=True 时把源行 `query_start + (有效行数 - 1)` 写到扩容行，正是这一行。
-            # 只有 num_rejected == 0 时它才等于 `target_rows - 1`——所以这个错在"没有被拒"的用例里看不出来
-            # （被拒行只贡献 padding，它的特征不该进新提议的上下文）。
-            hidden_rows.append(hidden[len(valid) - 1])
-            for _ in range(target.num_rejected):
-                hidden_rows.append(torch.zeros_like(hidden[0]))
+        if target_token_ids is None or target_positions is None:
+            raise ValueError(
+                "EAGLE 第一遍需要本轮 target 的原始输入（target_token_ids / target_positions）："
+                "上游就是在这两份缓冲上做『整体左移 + 打补丁』，本仓库不自己重建行")
 
-        input_ids, positions, is_rejected, sample_indices = expand_eagle_inputs_shifted(input_rows)
-        num_tokens = len(input_ids)
-        if num_tokens > self.max_num_tokens:
+        num_tokens = sum(target.target_rows for target in rows)
+        tokens = [int(t) for t in target_token_ids[:num_tokens]]
+        positions = [int(p) for p in target_positions[:num_tokens]]
+        if len(tokens) != num_tokens or len(positions) != num_tokens:
             raise RuntimeError(
-                f"EAGLE 第一遍要 {num_tokens} 行，超过输入工作区 {self.max_num_tokens} 行："
-                f"input_budget 没兜住，属于控制面/执行面口径不一致（不是模型问题）")
+                f"本轮 target 的输入行数 {len(tokens)} 与调度快照的 target_rows 之和 "
+                f"{num_tokens} 不一致：控制面/执行面口径不一致（不是模型问题）")
 
-        # 每请求的物理行数 = (num_valid - 1)（shift 掉第一个）+ 1（扩容行）+ num_rejected（占位）。
-        # `compute_new_slot_mapping` 的公式是 `query_lens + num_new_tokens`，所以这里传
-        # "有效行数 + 被拒行数 - 1" 再让 num_new_tokens=1 补上扩容行，总数正好等于 num_tokens
-        # （EAGLE 不做 `extend_all_queries_by_N`：它的扩容行由 shift 省下来的那一格换的）。
-        query_lens = [max(target.num_valid + target.num_rejected - 1, 0) for target in rows]
+        # 1) 整体左移一格（最后一格暂时是脏值，下一步会被覆盖）
+        input_ids = list(tokens)
+        if num_tokens > 1:
+            input_ids[:num_tokens - 1] = tokens[1:]
+        # 2) 每条请求的**最后一格**换成这条请求新采出的 token
+        token_indices_to_sample: list[int] = []
+        cursor = 0
+        for target in rows:
+            token_indices_to_sample.append(cursor + target.target_rows - 1)
+            cursor += target.target_rows
+        for index, target in zip(token_indices_to_sample, rows):
+            input_ids[index] = target.next_token_id
+
+        # 3) 特征：**逐行原样**（多辅助层先各自投影，再按行拼回来）
+        hidden_rows: list[torch.Tensor] = []
+        for target, index in zip(rows, token_indices_to_sample):
+            hidden = self.model.model.combine_hidden_states(target_hidden_states[target.req_id])
+            hidden_rows.extend(hidden[i] for i in range(target.target_rows))
+        if len(hidden_rows) != num_tokens:
+            raise RuntimeError(
+                f"特征行数 {len(hidden_rows)} 与输入行数 {num_tokens} 不一致："
+                f"hidden states 必须按本轮 target 的每一行给全（含被拒行）")
+
         query_start_loc = [0]
-        for length in query_lens:
-            query_start_loc.append(query_start_loc[-1] + length + 1)
-        seq_lens = [target.start + target.num_valid for target in rows]
+        for target in rows:
+            query_start_loc.append(query_start_loc[-1] + target.target_rows)
+        seq_lens = [target.start + target.target_rows for target in rows]
 
         self.input_ids_cpu[:num_tokens] = torch.tensor(input_ids, dtype=torch.int64)
         self.positions_cpu[:num_tokens] = torch.tensor(positions, dtype=torch.int64)
         self.hidden_states_cpu[:num_tokens] = torch.stack(hidden_rows).to(
             self.hidden_states_cpu.dtype)
-        self.is_rejected_token_mask_cpu[:num_tokens] = torch.tensor(is_rejected, dtype=torch.bool)
+        # 上游这条通路**不做被拒掩码**（被拒行的 token 是真的被拒草稿，KV 下一轮由 Scheduler 丢），
+        # 所以这里全 False、槽位按各行自己的位置算（`num_new_tokens=0`：不额外加行）
+        self.is_rejected_token_mask_cpu[:num_tokens] = False
         self.query_start_loc_cpu[:len(query_start_loc)] = torch.tensor(query_start_loc,
                                                                       dtype=torch.int64)
         self.seq_lens_cpu[:len(seq_lens)] = torch.tensor(seq_lens, dtype=torch.int64)
-        # 槽位：扩容行按它自己的位置算；被拒占位行打哨兵（不写 KV）
         from .utils import compute_new_slot_mapping
 
         self.slot_mapping_cpu[:num_tokens] = compute_new_slot_mapping(
-            self.block_table_cpu[:len(rows)], query_lens, self.positions_cpu[:num_tokens],
-            self.is_rejected_token_mask_cpu[:num_tokens], self.block_size,
-            1, self.max_model_len)
-        self._check_valid_positions(rows)
+            self.block_table_cpu[:len(rows)], [target.target_rows for target in rows],
+            self.positions_cpu[:num_tokens], self.is_rejected_token_mask_cpu[:num_tokens],
+            self.block_size, 0, self.max_model_len)
         ready = [index for index, target in enumerate(rows) if target.ready]
         return FirstPassPlan(
             num_tokens=num_tokens, num_reqs=len(rows),
-            sample_rows=[sample_indices[index] for index in ready],
+            sample_rows=[token_indices_to_sample[index] for index in ready],
             sample_req_ids=[rows[index].req_id for index in ready],
             history_end={target.req_id: target.history_end for target in rows})

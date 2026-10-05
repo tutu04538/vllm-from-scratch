@@ -171,7 +171,9 @@ class SpecDecodeBaseProposer:
 
     def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]], input_batch,
                 reset_req_ids: set[str] | None = None,
-                target_hidden_states: dict[str, torch.Tensor] | None = None) -> DraftTokenIds:
+                target_hidden_states: dict[str, torch.Tensor] | None = None,
+                target_token_ids: torch.Tensor | None = None,
+                target_positions: torch.Tensor | None = None) -> DraftTokenIds:
         """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
 
         `rows` 是本轮 target 侧的事实（`TargetRows`：起点 `start`、本轮行数 `target_rows`、
@@ -196,7 +198,8 @@ class SpecDecodeBaseProposer:
 
         # ---- 第一遍：把 [start, history_end) 这段写进 draft 的 KV（含 prefix 命中的跳过）----
         self._fill_block_table_rows([target.row for target in rows], input_batch.block_table)
-        plan = self.set_inputs_first_pass(rows, all_token_ids, target_hidden_states)
+        plan = self.set_inputs_first_pass(rows, all_token_ids, target_hidden_states,
+                                          target_token_ids, target_positions)
         hidden = self._forward(plan.num_tokens, plan.num_reqs)
         hidden = self._split_hidden(hidden, plan, rows)
         for target in rows:
@@ -261,7 +264,9 @@ class SpecDecodeBaseProposer:
 
     def set_inputs_first_pass(self, rows: list[TargetRows],
                               all_token_ids: dict[str, list[int]],
-                              target_hidden_states=None) -> FirstPassPlan:
+                              target_hidden_states=None,
+                              target_token_ids: torch.Tensor | None = None,
+                              target_positions: torch.Tensor | None = None) -> FirstPassPlan:
         """把第一遍的输入写进工作区，返回物理行数、采样行与各请求的 AR 起点。
 
         每条请求的物理行 = [有效行 (n - num_rejected)] + [1 行扩容行] + [被拒行]，展开规则与

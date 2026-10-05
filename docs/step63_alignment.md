@@ -3,7 +3,7 @@
 需求：[`063_EAGLE与EAGLE3的特征传递和位置对齐.md`](../../vllm-omni/learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md)
 基线：本机 `vllm==0.28.0` 文件快照。
 
-> **状态：阶段 A/B/C 已实现并实跑**，并完成**与上游真实实现的数值对照**：`combine_hidden_states` 逐位相同
+> **状态：阶段 A/B/C 已实现并实跑（第一遍输入已严格对齐上游不扩容分支）**，并完成**与上游真实实现的数值对照**：`combine_hidden_states` 逐位相同
 > （max|Δ|=0）、映射回 target 词表的 logits max|Δ|=7.0e-4（容差 5e-3）、复合两步 argmax 逐行相同。
 > 唯一待验项：**真实 checkpoint 的完整生成**（依赖 67 关的异构词表采样空间语义）。
 > 本文件按阶段更新。**不要**把本关当成"已通过"——下面 §5 明确列了未做的部分。
@@ -16,7 +16,7 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| A | **第一遍输入对齐**（需求 §3.1/§3.3 的两条通路 + 内核差分） | ✅ 已完成（`minivllm/spec_decode/utils.py`、`tests/step63/test_eagle_inputs.py` 12 项、`benchmarks/check_step63_eagle_inputs.py`） |
+| A | **第一遍输入对齐** | ✅ 已完成：默认 EAGLE 通路**严格照抄上游不扩容分支**（行数 = target 行数、整体左移 + 打补丁、positions/特征逐行原样，Runner 交本轮原始 token/positions）；`expand_eagle_inputs_shifted` 保留为**扩容分支**（并行提议）的等价展开，与上游内核逐值差分（`tests/step63/test_eagle_inputs.py` 12 项、`benchmarks/check_step63_eagle_inputs.py` 17 项） |
 | B | **EAGLE3 模型适配**（`Eagle3Qwen3ForCausalLM`/`Eagle3LlamaForCausalLM` + target 辅助层输出 + `combine_hidden_states` + d2t/t2d 词表映射） | 🟡 **模型与真实权重加载 ✅**（`minivllm/models/qwen3_eagle3.py`、`tests/step63/test_eagle_model.py` 11 项）；**逐层对照（与上游实现比容差）待做** |
 | C | **提议者与 Runner 接线 + 端到端** | ✅ 已完成：`EagleProposer`（复用基类 KV/AR/工作区）、Runner 设辅助层并把本轮 hidden 交给提议者、EAGLE 第一遍对齐、greedy == 非投机（K=1/2/4） |
 

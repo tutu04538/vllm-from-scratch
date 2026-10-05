@@ -121,8 +121,10 @@ def test_first_pass_inputs_follow_eagle_alignment():
         captured = []
         original = runner.proposer.set_inputs_first_pass
 
-        def spy(rows, all_token_ids, target_hidden_states=None):
-            plan = original(rows, all_token_ids, target_hidden_states)
+        def spy(rows, all_token_ids, target_hidden_states=None, target_token_ids=None,
+                target_positions=None):
+            plan = original(rows, all_token_ids, target_hidden_states, target_token_ids,
+                            target_positions)
             captured.append({
                 "rows": list(rows),
                 "tokens": list(all_token_ids["a"]),
@@ -132,7 +134,11 @@ def test_first_pass_inputs_follow_eagle_alignment():
                 "hidden": runner.proposer.hidden_states_cpu[:plan.num_tokens].clone(),
                 "hidden_src": (runner.proposer.model.model.combine_hidden_states(
                     target_hidden_states["a"].to(runner.device)).cpu()
-                    if target_hidden_states else None)})
+                    if target_hidden_states else None),
+                "round_tokens": [int(t) for t in target_token_ids] if target_token_ids is not None
+                else None,
+                "round_positions": [int(p) for p in target_positions]
+                if target_positions is not None else None})
             return plan
 
         runner.proposer.set_inputs_first_pass = spy
@@ -155,27 +161,19 @@ def test_first_pass_inputs_follow_eagle_alignment():
     row = entry["rows"][0]
     tokens = entry["tokens"]
     input_ids, positions = entry["input_ids"], entry["positions"]
-    # 单请求 → 工作区前 num_tokens 行都是这条请求的：
-    #   [shift 后的有效行 (num_valid-1)] + [扩容行] + [被拒占位行 (num_rejected)]
-    assert len(input_ids) == row.num_valid + row.num_rejected
-    assert input_ids[:row.num_valid - 1] == [
-        int(t) for t in tokens[row.start + 1:row.start + row.num_valid]], input_ids
-    assert input_ids[row.num_valid - 1] == row.next_token_id
-    assert all(token == 0 for token in input_ids[row.num_valid:]), "被拒占位行是 padding"
-    # 2) positions：有效行与 target 逐行相同（不被移位带走）；扩容行的位置 = 最后一个**有效行**的位置
-    assert positions[:row.num_valid] == list(range(row.start, row.start + row.num_valid)), positions
-    assert all(position == 0 for position in positions[row.num_valid:])
-    assert entry["plan"].sample_rows[0] == row.num_valid - 1
-    # 3) 特征：有效行逐行不动；扩容行 = **最后一个有效行**的特征
-    #    不变量：每一行的"位置 - start" 必须等于"它的特征取自 target 的第几行"
-    #    （shift 行：位置 start+i ↔ 特征第 i 行；扩容行：位置 start+num_valid-1 ↔ 特征第 num_valid-1 行）
+    # 单请求 → 工作区前 num_tokens 行都是这条请求的；**逐行照抄上游**：
+    #   行数 = 本轮 target 的行数（含被拒行）；positions/特征**原样逐行**；
+    #   token 整体左移一格，最后一格（每条请求的）换成新采出的 token。
+    assert len(input_ids) == row.target_rows
+    round_tokens = entry["round_tokens"]
+    assert input_ids[:-1] == round_tokens[1:], "整体左移一格"
+    assert input_ids[-1] == row.next_token_id, "每请求最后一格 = 新 token"
+    # positions 与 target 逐行相同（不被移位带走）
+    assert positions == entry["round_positions"], positions
+    assert positions == list(range(row.start, row.start + row.target_rows)), positions
+    # 特征逐行不动：第 i 行配第 i 行的特征（扩容行 = 最后一行的特征，天然对齐）
     source = entry["hidden_src"]
-    for index in range(row.num_valid - 1):
-        assert torch.allclose(entry["hidden"][index].float(), source[index].float())
-    assert torch.allclose(entry["hidden"][row.num_valid - 1].float(),
-                          source[row.num_valid - 1].float()), \
-        "扩容行必须取**最后一个有效行**的特征（取被拒尾部那一行是错的）"
-    if row.num_valid != row.target_rows:
-        assert not torch.allclose(entry["hidden"][row.num_valid - 1].float(),
-                                  source[row.target_rows - 1].float()), \
-            "被拒行的特征不该被当成扩容行的特征（两者必须能区分开）"
+    for index in range(row.target_rows):
+        assert torch.allclose(entry["hidden"][index].float(), source[index].float()), \
+            f"第 {index} 行的特征必须取 target 同一行（上游就是逐行原样拷贝）"
+    assert entry["plan"].sample_rows[0] == row.target_rows - 1, "采样行 = 每请求最后一行"
