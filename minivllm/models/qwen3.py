@@ -163,16 +163,39 @@ class Qwen3Model(nn.Module):
             for index in range(config["num_hidden_layers"])
         ])
         self.norm = RMSNorm(config["hidden_size"], eps=config.get("rms_norm_eps", 1e-6))
+        # 63 关（EAGLE3）：要输出的辅助层编号。空 tuple = 不采集（默认，零开销）。
+        self.aux_hidden_state_layers: tuple[int, ...] = ()
+
+    def set_aux_hidden_state_layers(self, layers) -> None:
+        """上游 `SupportsEagle3.set_aux_hidden_state_layers`：指定哪些层顺带输出 hidden states。"""
+        self.aux_hidden_state_layers = tuple(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        """上游默认值 `interfaces.py:1580-1601`：`(2, num_layers // 2, num_layers - 3)`。
+
+        为什么是这三层：低/中/高三段各取一层做特征融合（EAGLE3 的多层融合）；
+        真实 draft 的 `fc.weight` 形状 `(hidden, 3*hidden)` 正好对上这个层数。
+        """
+        num_layers = len(self.layers)
+        return (2, num_layers // 2, num_layers - 3)
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
+                capture_aux: bool = False):
         hidden_states = self.embed_input_ids(input_ids)
         residual = None
-        for layer in self.layers:
+        aux_hidden_states: list[torch.Tensor] = []
+        for index, layer in enumerate(self.layers):
             hidden_states, residual = layer(positions, hidden_states, residual)
+            if capture_aux and index in self.aux_hidden_state_layers:
+                # 上游 `interfaces.py:1506`：采的是**残差流**（hidden + residual），不是裸 hidden
+                aux_hidden_states.append(
+                    hidden_states + residual if residual is not None else hidden_states)
         hidden_states, _ = self.norm(hidden_states, residual)
+        if capture_aux:
+            return hidden_states, aux_hidden_states
         return hidden_states
 
     def load_weights(self, weights) -> set[str]:
@@ -206,8 +229,15 @@ class Qwen3ForCausalLM(nn.Module):
 
     # -------- 计算接口（198 §6）--------
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        return self.model(input_ids, positions)
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
+                capture_aux: bool = False):
+        return self.model(input_ids, positions, capture_aux=capture_aux)
+
+    def set_aux_hidden_state_layers(self, layers) -> None:
+        self.model.set_aux_hidden_state_layers(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        return self.model.get_eagle3_default_aux_hidden_state_layers()
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """只对**需要采样的行**调用（调用方先按行号选 hidden_states）——词表 GEMM 是最贵的一步。"""

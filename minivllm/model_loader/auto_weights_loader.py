@@ -58,10 +58,16 @@ class WeightsMapper:
     """
 
     orig_to_new_stacked: Mapping[str, tuple[str, ShardId]] = field(default_factory=dict)
+    # 63 关（EAGLE3）需要"整段前缀改名"：检查点里 draft 的那一层叫 `midlayer.*`，
+    # 模型里叫 `layers.0.*`（上游用同一个字段）。先做 substring 再做 stacked。
+    orig_to_new_substr: Mapping[str, str] = field(default_factory=dict)
 
     def _map_name_with_shard(self, key: str) -> tuple[str, ShardId | None] | None:
         """返回 `(新名字, shard_id)`；`None` 表示这个名字要丢掉（本关没有这种规则，留给后续）。"""
         shard_id: ShardId | None = None
+        for substring, new_substring in self.orig_to_new_substr.items():
+            if substring in key:
+                key = key.replace(substring, new_substring)
         for substring, (new_key, new_shard_id) in self.orig_to_new_stacked.items():
             if substring in key:
                 key = key.replace(substring, new_key, 1)

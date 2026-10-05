@@ -11,7 +11,7 @@
     "step60": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
-    "step63": "进行中：第一阶段（第一遍输入对齐）已完成并实跑；模型适配与端到端待做（见 docs/step63_alignment.md §5）"
+    "step63": "进行中：阶段 A（输入对齐）✅；阶段 B（EAGLE3 模型适配）**模型与真实权重加载✅、逐层对照与端到端待做**；阶段 C（提议者/Runner 接线 + e2e）未做。见 docs/step63_alignment.md §5"
   },
   "step58": {
     "results": {
@@ -2062,7 +2062,7 @@
     "results": {
       "step": 63,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md",
-      "status": "进行中：第一阶段（第一遍输入对齐）已完成并实跑；模型适配与端到端待做（见 docs/step63_alignment.md §5）",
+      "status": "进行中：阶段 A（输入对齐）✅；阶段 B（EAGLE3 模型适配）**模型与真实权重加载✅、逐层对照与端到端待做**；阶段 C（提议者/Runner 接线 + e2e）未做。见 docs/step63_alignment.md §5",
       "recorded_at": "2026-10-04T22:35:00+00:00",
       "git": {
         "baseline_commit_at_record_time": "c0fd8c9",
@@ -2070,8 +2070,8 @@
       },
       "package": {
         "root": "minivllm/",
-        "python_files": 69,
-        "sha256": "8a300839de9cc8ea56f10363d37937c3f3e32d030a943f0f7dea49fe32214fcd",
+        "python_files": 70,
+        "sha256": "388d7c321029d8937084bfbafb1f7eb202a2159550d98d272399da6a40ceb56a",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2085,13 +2085,13 @@
       "commands": [
         {
           "cmd": "python -m pytest tests/step63 -q",
-          "result": "12 passed in 6.51s",
+          "result": "23 passed（输入对齐 12 + 模型适配 11）",
           "failed": 0,
           "skipped": 0
         },
         {
-          "cmd": "python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 tests/step62 tests/step63 -q",
-          "result": "292 passed（连跑两次一致）",
+          "cmd": "python -m pytest tests/step58..63 -q",
+          "result": "303 passed",
           "failed": 0,
           "skipped": 0
         },
@@ -2101,8 +2101,8 @@
           "failed": 0
         },
         {
-          "cmd": "python benchmarks/check_step61_suffix.py / check_step62_custom_proposer.py",
-          "result": "27 PASS / 34 PASS（全 0 FAIL）",
+          "cmd": "python -c \"…Eagle3ForCausalLM(cfg).load_weights(真实 checkpoint)…\"",
+          "result": "12 个名字全部落位（10 参数 + d2t/t2d）；embed_tokens 缺 → tie_embeddings=True（与 target 共享）",
           "failed": 0
         }
       ],
@@ -2244,6 +2244,29 @@
           "aux_layers": "3（fc.weight 形状 (2048, 6144) = hidden × 3）",
           "vocab": "draft_vocab_size=32000，target=151936，checkpoint 带 d2t/t2d",
           "架构": "LlamaForCausalLMEEagle3（model_type=llama, 1 层, head_dim=128, rope_theta=1e6）"
+        },
+        "eagle3_model": {
+          "真实 checkpoint": "models/Qwen3-1.7B-eagle3（HF AngelSlim/Qwen3-1.7B_eagle3，274 MB，已转 safetensors 供本机加载；不入库）",
+          "权重名映射": "midlayer.* → model.layers.0.*；q/k/v → qkv_proj、gate/up → gate_up_proj；顶层 fc./norm. → model.fc./model.norm.；d2t/t2d 单独收",
+          "形状核对": {
+            "fc.weight": [
+              2048,
+              6144
+            ],
+            "layer0.qkv_proj.weight": [
+              4096,
+              4096
+            ],
+            "lm_head.weight": [
+              32000,
+              2048
+            ],
+            "draft_vocab": 32000,
+            "target_vocab": 151936
+          },
+          "embed_tokens": "检查点里没有这一份 → tie_embeddings=True（上游 _maybe_share_embeddings 同款条件）",
+          "qk_norm": "无（Llama 风格那张 draft 没有 q_norm/k_norm 权重）",
+          "辅助层默认值": "target 侧 (2, num_layers//2, num_layers-3) = (2, 14, 25)（上游 interfaces.py:1580-1601）"
         }
       },
       "fixed_during_step": [
@@ -2254,10 +2277,10 @@
         }
       ],
       "not_run": [
-        "EAGLE3 模型适配与逐层对照（需求 §2/§3.2/§4）——阶段 B",
-        "提议者/Runner 接线与端到端 greedy 一致性、prefix 命中/抢占/重排/结束清理（需求 §2/§3.4/§4）——阶段 C",
-        "真实匹配 checkpoint 的完整生成（draft 词表 32000 ≠ target 151936，需要 d2t/t2d 映射；本关只记录 manifest，完整语义属 67 关）",
-        "M-RoPE/backend/padded 开关组合的限制触发（阶段 C）"
+        "阶段 B 的**逐层对照**（target 辅助输出 / draft forward / logits 与上游实现比容差）",
+        "阶段 C：EagleProposer（first_pass 走 EAGLE 对齐 + 传 hidden）、Runner 接线、draft KV/位置推进、拒绝数修正、prefix 命中/抢占/重排/结束清理、greedy == 非投机",
+        "真实 checkpoint 的完整生成（draft 词表 32000 → target 151936 的采样空间语义属 67 关；本关只做 id 映射）",
+        "M-RoPE/backend/padded 开关组合的限制触发"
       ]
     }
   }

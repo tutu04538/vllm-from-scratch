@@ -150,8 +150,8 @@ step scheduled                    hits           preempted    running           
 
 ## 第六十三关（进行中·第一阶段）：EAGLE 的第一遍输入对齐
 
-> **只有第一阶段完成**：输入对齐机制与上游内核差分已过；EAGLE3 模型适配、提议者/Runner 接线与端到端
-> 还没做，清单见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。**不要当成本关已通过。**
+> **阶段 A 与阶段 B 的模型部分完成**：输入对齐（含上游内核差分）已过；EAGLE3 draft 模型已能加载真实
+> checkpoint；**逐层对照、提议者/Runner 接线与端到端还没做**，清单见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。**不要当成本关已通过。**
 
 EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；于是第一遍输入要满足：
 
@@ -200,7 +200,7 @@ python -m pytest tests/step59 -q                     # 52 项：step59 的单测
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
 python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
-python -m pytest tests/step63 -q                     # 12 项：step63 第一阶段（EAGLE 输入对齐）
+python -m pytest tests/step63 -q                     # 23 项：step63（EAGLE 输入对齐 12 + EAGLE3 模型适配 11）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）
