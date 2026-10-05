@@ -140,11 +140,12 @@ class SpeculativeConfig:
         if self.num_speculative_tokens < 0:
             raise ValueError("num_speculative_tokens 不能为负")
         self._resolve_method()
-        if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class"):
+        if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
+                               "eagle", "eagle3"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                f"'custom_class'，收到 {self.method!r}"
-                "（EAGLE/MTP/PARD 等按需求顺序在后续关卡实现）")
+                f"'custom_class' / 'eagle' / 'eagle3'，收到 {self.method!r}"
+                "（MTP/PARD/DFlash 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
                 f"本关只支持 rejection_sample_method='standard'，收到 "
@@ -156,6 +157,8 @@ class SpeculativeConfig:
             self._resolve_suffix_decoding()
         elif self.method == "custom_class":
             self._resolve_custom_class()
+        elif self.use_eagle():
+            self._resolve_eagle()
 
     def _resolve_method(self) -> None:
         """`method` 没给时按上游规则推出来（`config/speculative.py:741-756`）。
@@ -173,6 +176,11 @@ class SpeculativeConfig:
                 object.__setattr__(self, "method", "custom_class")
             elif self.model in ("ngram", "[ngram]"):
                 object.__setattr__(self, "method", "ngram")
+            elif self.model and "eagle3" in self.model.lower():
+                # 上游 `config/speculative.py:942-951`：从模型名认 EAGLE 系
+                object.__setattr__(self, "method", "eagle3")
+            elif self.model and "eagle-" in self.model.lower():
+                object.__setattr__(self, "method", "eagle")
             else:
                 object.__setattr__(self, "method", "draft_model")
 
@@ -248,6 +256,43 @@ class SpeculativeConfig:
             raise ValueError(
                 f"suffix_decoding_min_token_prob="
                 f"{self.suffix_decoding_min_token_prob} must be in [0, 1]")
+
+    def use_eagle(self) -> bool:
+        """是否走 EAGLE 系提议者（EAGLE-1/2 与 EAGLE3 共用一套提议流程，只差模型类）。"""
+        return self.method in ("eagle", "eagle3")
+
+    def _resolve_eagle(self) -> None:
+        """EAGLE 的取值校验：必须有 draft 模型目录、K > 0（上游同样要求）。
+
+        **不支持 M-RoPE**（上游 `_raise_if_mrope`）：本仓库的 positions 是 1 维的，
+        mrope 需要三路位置——这里明确报错而不是悄悄按 1 维跑。
+        """
+        if self.draft_model_config is None:
+            raise ValueError("method='eagle'/'eagle3' 必须在 SpeculativeConfig 里给 "
+                             "draft_model_config（EAGLE 的 draft 是独立权重）")
+        if self.num_speculative_tokens is None or self.num_speculative_tokens <= 0:
+            raise ValueError("EAGLE 的 num_speculative_tokens 必须 > 0（它决定自回归猜几枚）")
+        if self.num_speculative_tokens > 32:
+            raise ValueError(
+                f"num_speculative_tokens={self.num_speculative_tokens} 太大："
+                f"EAGLE 的自回归步数与它成正比，先支持到 32")
+
+    def eagle3_use_aux_hidden_state(self) -> bool:
+        """EAGLE3 是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。"""
+        return self.method == "eagle3"
+
+    def eagle_aux_hidden_state_layers(self) -> tuple[int, ...] | None:
+        """draft 配置里指定的辅助层编号（没有就返回 None，由 target 的默认值兜底）。
+
+        上游 `_get_eagle3_aux_layers_from_config`：`eagle_aux_hidden_state_layer_ids` →
+        `eagle_config.eagle_aux_hidden_state_layer_ids` → `dflash_config.target_layer_ids + 1`。
+        """
+        hf_config = (self.draft_model_config.hf_config or {}) if self.draft_model_config else {}
+        layers = hf_config.get("eagle_aux_hidden_state_layer_ids")
+        if not layers:
+            eagle_config = hf_config.get("eagle_config") or {}
+            layers = eagle_config.get("eagle_aux_hidden_state_layer_ids")
+        return tuple(layers) if layers else None
 
     def use_ngram_gpu(self) -> bool:
         """是否用 GPU 版 ngram 提议者（上游同名方法）。"""

@@ -131,9 +131,13 @@ def test_mixed_greedy_and_random(cuda_device, monkeypatch):
     drafts = [[1], [2]]
     # 紧凑行序：req0 验证行 + req0 bonus 行 + req1 验证行 + req1 bonus 行
     # req0（greedy）：草稿 1 == argmax 1 → 接受 + bonus 1
-    # req1（random）：p=[0.1,0.1,0.8]、q=[0.05,0.05,0.9] → p[2]/q[2]=0.889 < u=0.9 → 拒绝
+    # req1（random）：p=[0.5,0.5,0.0]、q=[0.05,0.05,0.9] → p[2]/q[2]=**0** → 无论 u 取多少都拒绝。
+    #   （原来写 p[2]=0.8 → p/q=0.889 与 u=0.9 比大小：但 random 行的 u 来自**每请求 generator**
+    #   的 `uniform_()`，generator 种子取自全局 RNG，于是这条断言会随测试执行顺序变化——
+    #   整套 tests/ 一起跑时被暴露。把 p[d] 设成 0 让结论与 u 无关，断言强度不变：仍然是
+    #   "random 行被拒 + 用恢复分布补一枚"。）
     rows = [[0.05, 0.9, 0.05], [0.05, 0.9, 0.05],
-            [0.1, 0.1, 0.8], [0.1, 0.1, 0.8]]
+            [0.5, 0.5, 0.0], [0.5, 0.5, 0.0]]
     logits = torch.tensor(rows, dtype=torch.float32, device="cuda").log()
     meta = metadata_for(drafts)
     q = torch.tensor([[0.05, 0.05, 0.9]], dtype=torch.float32, device="cuda")

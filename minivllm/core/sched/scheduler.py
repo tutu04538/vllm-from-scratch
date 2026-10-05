@@ -62,9 +62,12 @@ class Scheduler:
                                        if speculative_config is not None else 0)
         # 给提议者预留的 KV 槽位（vLLM `VllmConfig.num_lookahead_tokens` 的规则）：
         # draft 模型要往 target query 之外写 K 个位置，所以预留 K 个；ngram 不写 KV → 0。
+        # 63 关：EAGLE 的 draft 也自己写 K 个位置的 KV（和 draft_model 一样要预留）；
+        # ngram/suffix/custom 不写 KV → 0。
         self.num_lookahead_tokens = (
             self.num_speculative_tokens
-            if speculative_config is not None and speculative_config.method == "draft_model"
+            if speculative_config is not None
+            and (speculative_config.method == "draft_model" or speculative_config.use_eagle())
             else 0)
         # 58：**第二份预算**。draft 第一遍要吃 target 本轮刚采出的 token，所以每条被调度的
         # 请求在输入工作区里多占 `draft_slots` 行（普通 draft=1，ngram=0）。

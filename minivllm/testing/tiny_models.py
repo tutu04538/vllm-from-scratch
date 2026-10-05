@@ -130,6 +130,72 @@ def tiny_qwen3_dir(name: str, seed: int = 0) -> str:
     return cached
 
 
+def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
+                    aux_layers=(0, 1), seed: int = 0) -> str:
+    """生成一份**与 tiny target 规格匹配**的 EAGLE3 draft（随机但确定；只给测试）。
+
+    与 `tiny_qwen3_dir` 的区别（这些就是 63 关要适配的东西）：
+      - 只有 **1 层**（`midlayer.*`），forward 语义是 EAGLE3 那套（见 `models/qwen3_eagle3.py`）；
+      - `fc.weight` 把 `num_aux_layers` 个 target 辅助层特征投到 hidden（输入宽度 = hidden × 层数）；
+      - 检查点里**没有 embed_tokens**（与 target 共享）、`lm_head` 是 draft 自己那份（本 tiny 用同词表）；
+      - `eagle_aux_hidden_state_layer_ids` 显式给出（tiny target 只有 2 层，上游默认值
+        `(2, n//2, n-3)` 对 2 层不成立，所以这里必须显式写）。
+    """
+    target_config = tiny_qwen3_config(target_name)
+    hidden = target_config["hidden_size"]
+    head_dim = target_config["head_dim"]
+    num_heads = target_config["num_attention_heads"]
+    num_kv_heads = target_config["num_key_value_heads"]
+    vocab = target_config["vocab_size"]
+    config = {
+        "architectures": ["Eagle3Qwen3ForCausalLM"],
+        "model_type": "qwen3",                      # Qwen3 风格 → 带 q/k norm
+        "hidden_size": hidden,
+        "num_hidden_layers": 1,
+        "num_attention_heads": num_heads,
+        "num_key_value_heads": num_kv_heads,
+        "head_dim": head_dim,
+        "intermediate_size": target_config["intermediate_size"],
+        "vocab_size": vocab,                        # 同词表：异构词表的采样空间语义属 67 关
+        "max_position_embeddings": target_config["max_position_embeddings"],
+        "rms_norm_eps": target_config["rms_norm_eps"],
+        "rope_theta": target_config.get("rope_theta", 10000.0),
+        "target_hidden_size": hidden,
+        "num_aux_layers": num_aux_layers,
+        "eagle_aux_hidden_state_layer_ids": list(aux_layers),
+        "tie_word_embeddings": False,               # draft 的 lm_head 是自己的（同词表）
+        "torch_dtype": target_config.get("torch_dtype", "float32"),
+    }
+    generator = torch.Generator().manual_seed(seed)
+    scale = 0.02
+    def rand(*shape):
+        return (torch.randn(*shape, generator=generator) * scale).to(torch.float32)
+    q_size = num_heads * head_dim
+    kv_size = num_kv_heads * head_dim
+    weights = {
+        "fc.weight": rand(hidden, hidden * num_aux_layers),
+        "norm.weight": torch.ones(hidden, dtype=torch.float32),
+        "lm_head.weight": rand(vocab, hidden),
+        "midlayer.hidden_norm.weight": torch.ones(hidden, dtype=torch.float32),
+        "midlayer.input_layernorm.weight": torch.ones(hidden, dtype=torch.float32),
+        "midlayer.post_attention_layernorm.weight": torch.ones(hidden, dtype=torch.float32),
+        # 第一层的 qkv 输入是 2*hidden（embeds + 特征拼接）
+        "midlayer.self_attn.q_proj.weight": rand(q_size, 2 * hidden),
+        "midlayer.self_attn.k_proj.weight": rand(kv_size, 2 * hidden),
+        "midlayer.self_attn.v_proj.weight": rand(kv_size, 2 * hidden),
+        "midlayer.self_attn.o_proj.weight": rand(hidden, q_size),
+        "midlayer.mlp.gate_proj.weight": rand(config["intermediate_size"], hidden),
+        "midlayer.mlp.up_proj.weight": rand(config["intermediate_size"], hidden),
+        "midlayer.mlp.down_proj.weight": rand(hidden, config["intermediate_size"]),
+        "midlayer.self_attn.q_norm.weight": torch.ones(head_dim, dtype=torch.float32),
+        "midlayer.self_attn.k_norm.weight": torch.ones(head_dim, dtype=torch.float32),
+    }
+    out = Path(tempfile.mkdtemp(prefix=f"minivllm_eagle3_{target_name}_"))
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
 def _weights(config: dict, seed: int) -> dict:
     """按 HF 的初始化方式生成权重：线性/嵌入 ~ N(0, initializer_range)，RMSNorm 全 1。
 

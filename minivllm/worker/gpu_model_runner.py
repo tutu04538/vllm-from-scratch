@@ -146,6 +146,9 @@ class GPUModelRunner:
         # 本轮协议里"整表替换过块表"的请求（draft 侧据此重置自己的进度）
         self._resumed_req_ids: set[str] = set()
         # 60 关：ngram_gpu 的显存历史缓冲在 `_build_proposer()` 里分配（只有这个方法用得到）
+        self.capture_aux_hidden_states = False
+        self.aux_hidden_states: torch.Tensor | None = None
+        self.eagle_aux_hidden_state_layers: tuple[int, ...] = ()
         self.num_tokens_no_spec_gpu: torch.Tensor | None = None
         self.token_ids_gpu_tensor: torch.Tensor | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
@@ -164,7 +167,35 @@ class GPUModelRunner:
 
         self.sampler = Sampler()
         self.proposer = self._build_proposer()
+        # 63 关：EAGLE3 要 target 顺带输出若干**辅助层**的 hidden states（EAGLE-1 只要最后一层）。
+        # 层号来自 draft 配置，缺省用 target 的默认值 `(2, n//2, n-3)`（与上游同一套）。
+        self.capture_aux_hidden_states = False
+        if self.speculative_config is not None and self.speculative_config.use_eagle() \
+                and self.speculative_config.eagle3_use_aux_hidden_state():
+            self.capture_aux_hidden_states = True
+            layers = self.speculative_config.eagle_aux_hidden_state_layers() \
+                or self.model.get_eagle3_default_aux_hidden_state_layers()
+            self.model.set_aux_hidden_state_layers(layers)
+            self.eagle_aux_hidden_state_layers = tuple(layers)
         return self.model
+
+    def _aux_hidden_states_by_req(self, scheduler_output, num_reqs: int):
+        """把本轮 target 的辅助特征按**请求**切片（EAGLE 的第一遍要逐行配对）。
+
+        行序与 `_prepare_inputs` 的展平顺序一致（批行序 × 每请求 `num_scheduled_tokens`），
+        所以偏移量就是 `num_scheduled_tokens` 的前缀和。特征只是**本轮快照**：抢占/重排之后
+        必须由 target 重新算，不能长期留着（需求 063 §2）。
+        """
+        aux = self.aux_hidden_states
+        if aux is None:
+            return None
+        hidden_by_req = {}
+        offset = 0
+        for req_id in self.input_batch.req_ids[:num_reqs]:
+            length = int(scheduler_output.num_scheduled_tokens[req_id])
+            hidden_by_req[req_id] = aux[offset:offset + length]
+            offset += length
+        return hidden_by_req
 
     def _build_proposer(self):
         """按配置建提议器：`ngram` 用历史匹配，`draft_model` 再加载一个小模型（57E）。
@@ -185,6 +216,16 @@ class GPUModelRunner:
             from ..spec_decode.custom_class_proposer import create_custom_proposer
 
             return create_custom_proposer(self.vllm_config)
+        if config.use_eagle():
+            # 63 关：EAGLE 的 draft 额外吃 target 的 hidden states；提议流程与 draft_model
+            # 共用基类（上游 `EagleProposer(SpecDecodeBaseProposer)` 同款结构）。
+            from ..spec_decode.eagle import EagleProposer
+
+            proposer = EagleProposer(config, self.vllm_config, self.device)
+            proposer.load_model()
+            if self.model is not None:
+                proposer.share_embeddings(self.model)
+            return proposer
         if config.method == "ngram":
             from ..spec_decode.ngram_proposer import NgramProposer
 
@@ -609,7 +650,12 @@ class GPUModelRunner:
         positions = inputs.positions.to(device)
         attn_metadata = self._build_attn_metadata(inputs)
         with set_forward_context(attn_metadata, num_tokens=inputs.num_tokens):
-            hidden_states = self.model(input_ids, positions)
+            if self.capture_aux_hidden_states:
+                hidden_states, aux = self.model(input_ids, positions)
+                # 多个辅助层拼在最后一维（draft 的 `combine_hidden_states` 按同样的顺序切块）
+                self.aux_hidden_states = torch.cat(list(aux), dim=-1)
+            else:
+                hidden_states = self.model(input_ids, positions)
         return hidden_states
 
     def _build_attn_metadata(self, inputs: PreparedInputs) -> dict:
@@ -870,8 +916,12 @@ class GPUModelRunner:
                 rows, all_token_ids, self.input_batch, sampled_by_row=sampled_by_row)
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
-            drafts = self.proposer.propose(rows, all_token_ids, self.input_batch,
-                                           reset_req_ids=set(self._resumed_req_ids))
+            kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
+            if getattr(self.proposer, "pass_hidden_states_to_model", False):
+                # EAGLE 系的提议者才收特征；普通 draft/假提议者的签名不变
+                kwargs["target_hidden_states"] = self._aux_hidden_states_by_req(
+                    state.scheduler_output, len(self.input_batch.req_ids))
+            drafts = self.proposer.propose(rows, all_token_ids, self.input_batch, **kwargs)
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
         return drafts

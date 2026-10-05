@@ -89,7 +89,7 @@ except ValueError as error:
     missing_model_ok = "requires 'model'" in str(error)
 check("A3. 显式 custom_class 但没给 model → 配置期 ValueError", missing_model_ok)
 try:
-    SpeculativeConfig(method="eagle3")
+    SpeculativeConfig(method="medusa")     # 63 关起 eagle/eagle3 已支持，换仍未实现的 medusa
     unknown_ok = False
 except ValueError:
     unknown_ok = True

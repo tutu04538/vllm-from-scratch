@@ -3,7 +3,8 @@
 需求：[`063_EAGLE与EAGLE3的特征传递和位置对齐.md`](../../vllm-omni/learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md)
 基线：本机 `vllm==0.28.0` 文件快照。
 
-> **状态：进行中（阶段 A ✅、阶段 B 的模型与真实权重加载 ✅；逐层对照与阶段 C 待续）**
+> **状态：阶段 A/B/C 已实现并实跑（greedy 端到端对照通过）。** 仍未做的是**与上游的逐层数值对照**与
+> **真实 checkpoint 的完整生成**（后者依赖 67 关的异构词表采样空间语义），见 §5。
 > 本文件按阶段更新。**不要**把本关当成"已通过"——下面 §5 明确列了未做的部分。
 
 本关解决什么痛点（一句话）：**draft 的输入从"只有 token"变成"(token, target 特征) 对"以后，
@@ -16,7 +17,7 @@
 |---|---|---|
 | A | **第一遍输入对齐**（需求 §3.1/§3.3 的两条通路 + 内核差分） | ✅ 已完成（`minivllm/spec_decode/utils.py`、`tests/step63/test_eagle_inputs.py` 12 项、`benchmarks/check_step63_eagle_inputs.py`） |
 | B | **EAGLE3 模型适配**（`Eagle3Qwen3ForCausalLM`/`Eagle3LlamaForCausalLM` + target 辅助层输出 + `combine_hidden_states` + d2t/t2d 词表映射） | 🟡 **模型与真实权重加载 ✅**（`minivllm/models/qwen3_eagle3.py`、`tests/step63/test_eagle_model.py` 11 项）；**逐层对照（与上游实现比容差）待做** |
-| C | **提议者与 Runner 接线 + 端到端**（`EagleProposer(SpecDecodeBaseProposer)`、`set_inputs_first_pass` 走 A 的通路、draft KV/位置推进、拒绝数修正、prefix 命中/抢占/重排/结束清理、greedy == 非投机） | ⏳ 待做（需求 §2/§3.4、§4 的端到端与生命周期） |
+| C | **提议者与 Runner 接线 + 端到端** | ✅ 已完成：`EagleProposer`（复用基类 KV/AR/工作区）、Runner 设辅助层并把本轮 hidden 交给提议者、EAGLE 第一遍对齐、greedy == 非投机（K=1/2/4） |
 
 ## 2. 阶段 A：第一遍输入对齐（已实现）
 

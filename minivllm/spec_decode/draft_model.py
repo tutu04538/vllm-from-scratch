@@ -73,11 +73,28 @@ from .utils import (DraftInputRows, FirstPassPlan, TargetRows, compute_new_slot_
                     expand_draft_inputs, extend_all_queries_by_N)
 
 
+def _dtype(name) -> torch.dtype:
+    """配置里的 dtype 字符串 → torch dtype（本关只用到这两种）。"""
+    return {"float32": torch.float32, "bfloat16": torch.bfloat16,
+            "float16": torch.float16}.get(str(name), torch.float32)
+
+
 class SpecDecodeBaseProposer:
-    """提议步骤的骨架：**没有调度、没有请求状态**，只有"本轮哪些行进、草稿怎么出"。"""
+    """提议步骤的骨架：**没有调度、没有请求状态**，只有"本轮哪些行进、草稿怎么出"。
+
+    63 关：EAGLE 系的提议者还吃 target 的 hidden states，所以这里留了两个开关——
+    `pass_hidden_states_to_model`（第一遍要传特征）与 `model_returns_tuple`（模型返回
+    `(hidden_for_lm_head, hidden_for_next_step)` 两个张量，上游 `model_returns_tuple()` 同义）。
+    """
+
+    # 普通 draft 只吃 token；EAGLE 子类改成 True（上游 `EagleProposer.__init__` 传的就是它）
+    pass_hidden_states_to_model = False
+    # 模型是否返回 tuple（EAGLE3 的 forward 返回 `(hidden_states, hidden_prenorm)`）
+    model_returns_tuple = False
 
     def __init__(self, spec_config, vllm_config, device: str) -> None:
         self.spec_config = spec_config
+        self.method = spec_config.method      # 上游 `SpecDecodeBaseProposer` 同样存这份
         self.vllm_config = vllm_config
         self.device = device
         self.num_speculative_tokens = spec_config.num_speculative_tokens
@@ -96,6 +113,8 @@ class SpecDecodeBaseProposer:
         # 现在起点由本轮调度快照的 `TargetRows.start` 决定，这里只留给测试/排查对账。
         self._draft_computed: dict[str, int] = {}
         self._draft_generators: dict[str, torch.Generator] = {}
+        # 63 关：AR 步要用的 draft 自己的 hidden（每请求一行，`_forward` 的第二返回值）
+        self._ar_hidden: dict[str, torch.Tensor] = {}
         self.num_drafts_proposed = 0
         # ---------------- 固定输入工作区（58 §7） ----------------
         # 一次性开好、每轮只覆盖前 N 行/N 个请求：**不每轮新建张量**（`data_ptr()` 稳定，
@@ -127,6 +146,21 @@ class SpecDecodeBaseProposer:
         self.seq_lens_cpu, self.seq_lens = _buffer((self.max_num_reqs,), torch.int64)
         self.block_table_cpu, self.block_table = _buffer(
             (self.max_num_reqs, self.max_blocks_per_req), torch.int64)
+        # 63 关：EAGLE 的第一遍要带 target 的 hidden states（工作区定长、原位覆盖）
+        hidden_size = int((vllm_config.model_config.hf_config or {}).get("hidden_size", 0))
+        self.hidden_size = hidden_size
+        # EAGLE3 收的是**多个辅助层拼接后**的特征（宽度 = hidden × 辅助层数），EAGLE-1 是 1 层
+        draft_hf = (spec_config.draft_model_config.hf_config or {}) \
+            if spec_config.draft_model_config is not None else {}
+        aux_ids = draft_hf.get("eagle_aux_hidden_state_layer_ids") or \
+            (draft_hf.get("eagle_config") or {}).get("eagle_aux_hidden_state_layer_ids")
+        num_aux = len(aux_ids) if aux_ids else int(draft_hf.get("num_aux_layers", 1) or 1)
+        self.num_aux_layers = max(int(num_aux), 1)
+        dtype = _dtype(vllm_config.model_config.dtype)
+        # 模型收到的是**投影后**的特征（宽度 = draft 的 hidden）：多辅助层的拼接与 fc 投影
+        # 由提议者在写缓冲之前用 `combine_hidden_states()` 完成（上游同在 proposer 里做）
+        self.hidden_states_cpu, self.hidden_states = _buffer(
+            (self.max_num_tokens, hidden_size), dtype)
 
     # -------- 交给子类 --------
 
@@ -136,7 +170,8 @@ class SpecDecodeBaseProposer:
     # -------- 提议 --------
 
     def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]], input_batch,
-                reset_req_ids: set[str] | None = None) -> DraftTokenIds:
+                reset_req_ids: set[str] | None = None,
+                target_hidden_states: dict[str, torch.Tensor] | None = None) -> DraftTokenIds:
         """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
 
         `rows` 是本轮 target 侧的事实（`TargetRows`：起点 `start`、本轮行数 `target_rows`、
@@ -161,8 +196,9 @@ class SpecDecodeBaseProposer:
 
         # ---- 第一遍：把 [start, history_end) 这段写进 draft 的 KV（含 prefix 命中的跳过）----
         self._fill_block_table_rows([target.row for target in rows], input_batch.block_table)
-        plan = self.set_inputs_first_pass(rows, all_token_ids)
+        plan = self.set_inputs_first_pass(rows, all_token_ids, target_hidden_states)
         hidden = self._forward(plan.num_tokens, plan.num_reqs)
+        hidden = self._split_hidden(hidden, plan, rows)
         for target in rows:
             self._draft_computed[target.req_id] = target.history_end      # 观测用
         if plan.sample_rows:
@@ -192,6 +228,11 @@ class SpecDecodeBaseProposer:
                 break
             self._set_autoregressive_inputs(pending, drafts, input_batch)
             hidden = self._forward(len(pending), len(pending))
+            if self.model_returns_tuple:
+                logits_hidden, next_hidden = hidden
+                for index, (target, _) in enumerate(pending):
+                    self._ar_hidden[target.req_id] = next_hidden[index]
+                hidden = logits_hidden
             self._sample_draft_tokens(
                 hidden, [(target.req_id, index) for index, (target, _) in enumerate(pending)],
                 input_batch, drafts, probs)
@@ -203,10 +244,24 @@ class SpecDecodeBaseProposer:
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
             draft_probs=torch.stack(probs_rows) if probs_rows else None)
 
+    def _split_hidden(self, hidden, plan: FirstPassPlan, rows: list[TargetRows]):
+        """`model_returns_tuple` 时拆开 `(for_lm_head, for_next_step)` 并记住 AR 要用的那份。
+
+        第一遍每请求的采样行在 `plan.sample_rows`（= 扩容行的全局行号），AR 步用的特征就是
+        这一行对应请求的 `for_next_step`。
+        """
+        if not self.model_returns_tuple:
+            return hidden
+        logits_hidden, next_hidden = hidden
+        for req_id, row in zip(plan.sample_req_ids, plan.sample_rows):
+            self._ar_hidden[req_id] = next_hidden[row]
+        return logits_hidden
+
     # -------- 第一遍输入（对应上游 set_inputs_first_pass） --------
 
     def set_inputs_first_pass(self, rows: list[TargetRows],
-                              all_token_ids: dict[str, list[int]]) -> FirstPassPlan:
+                              all_token_ids: dict[str, list[int]],
+                              target_hidden_states=None) -> FirstPassPlan:
         """把第一遍的输入写进工作区，返回物理行数、采样行与各请求的 AR 起点。
 
         每条请求的物理行 = [有效行 (n - num_rejected)] + [1 行扩容行] + [被拒行]，展开规则与
@@ -283,6 +338,11 @@ class SpecDecodeBaseProposer:
         batch_rows = [target.row for target, _ in pending]
         self.input_ids_cpu[:num_reqs] = torch.tensor(tokens, dtype=torch.int64)
         self.positions_cpu[:num_reqs] = torch.tensor(positions, dtype=torch.int64)
+        if self.pass_hidden_states_to_model:
+            # 第 k 枚草稿的输入特征 = 第 k-1 枚那一步 draft 自己吐出的 hidden（上游同款）
+            rows_hidden = [self._ar_hidden[target.req_id] for target, _ in pending]
+            self.hidden_states_cpu[:num_reqs] = torch.stack(rows_hidden).to(
+                self.hidden_states_cpu.dtype)
         # 槽位与 target 同一份公式、同一张块表（物理容量已由 covers() 确认过）
         self.slot_mapping_cpu[:num_reqs] = input_batch.block_table.compute_slot_mapping(
             input_batch.num_reqs, torch.tensor(positions, dtype=torch.int64),
@@ -322,7 +382,7 @@ class SpecDecodeBaseProposer:
         self.seq_lens[:num_reqs].copy_(self.seq_lens_cpu[:num_reqs])
         self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs])
 
-    def _forward(self, num_tokens: int, num_reqs: int):
+    def _forward(self, num_tokens: int, num_reqs: int, hidden_states=None):
         """把工作区的前 `num_tokens` / `num_reqs` 行交给 draft 模型，返回 hidden states。
 
         **只传有效切片**：缓冲尾部的残留 token / 块号不能被 attention 读到——用长度表达有效，
@@ -337,6 +397,16 @@ class SpecDecodeBaseProposer:
             num_reqs=num_reqs)
         attn_metadata = {name: metadata for name in self.kv_caches}
         with set_forward_context(attn_metadata, num_tokens=num_tokens):
+            if self.pass_hidden_states_to_model:
+                features = self.hidden_states if hidden_states is None else hidden_states
+                out = self.model(self.input_ids[:num_tokens], self.positions[:num_tokens],
+                                 features[:num_tokens])
+                if self.model_returns_tuple:
+                    # 上游：`last_hidden_states, hidden_states = ret_hidden_states`
+                    # —— lm_head 用前者，下一步 draft 用后者（EAGLE3 的 prenorm）
+                    for_logits, for_next = out
+                    return for_logits, for_next
+                return out
             return self.model(self.input_ids[:num_tokens], self.positions[:num_tokens])
 
     def _reset_requests(self, reset_req_ids: set[str]) -> None:
@@ -441,9 +511,12 @@ class DraftModelProposer(SpecDecodeBaseProposer):
         target_vocab = target_config.get("vocab_size")
         draft_vocab = draft_config.get("vocab_size")
         if target_vocab != draft_vocab:
-            raise ValueError(
-                f"draft 与 target 的词表不一致（{draft_vocab} vs {target_vocab}）："
-                f"草稿的 token 在 target 的词表里是另一个意思，验证没有意义")
+            # 63 关：EAGLE3 允许 draft 词表更小 + 带 `d2t` 映射（异构词表 TLI）；
+            # 但**采样空间**的完整语义属 67 关，这里只要求"映射存在"，否则明确报错。
+            if not (self.method == "eagle3" and draft_config.get("draft_vocab_size")):
+                raise ValueError(
+                    f"draft 与 target 的词表不一致（{draft_vocab} vs {target_vocab}）："
+                    f"草稿的 token 在 target 的词表里是另一个意思，验证没有意义")
         if str(self.draft_model_config.dtype) != str(self.vllm_config.model_config.dtype):
             raise ValueError("draft 与 target 的 dtype 必须一致（KV 缓存要放进同一个 group）")
         for key in ("num_key_value_heads", "head_dim", "max_position_embeddings"):

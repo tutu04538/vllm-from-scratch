@@ -11,7 +11,7 @@
     "step60": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
-    "step63": "进行中：阶段 A（输入对齐）✅；阶段 B（EAGLE3 模型适配）**模型与真实权重加载✅、逐层对照与端到端待做**；阶段 C（提议者/Runner 接线 + e2e）未做。见 docs/step63_alignment.md §5"
+    "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）"
   },
   "step58": {
     "results": {
@@ -2062,7 +2062,7 @@
     "results": {
       "step": 63,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/063_EAGLE与EAGLE3的特征传递和位置对齐.md",
-      "status": "进行中：阶段 A（输入对齐）✅；阶段 B（EAGLE3 模型适配）**模型与真实权重加载✅、逐层对照与端到端待做**；阶段 C（提议者/Runner 接线 + e2e）未做。见 docs/step63_alignment.md §5",
+      "status": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
       "recorded_at": "2026-10-04T22:35:00+00:00",
       "git": {
         "baseline_commit_at_record_time": "c0fd8c9",
@@ -2070,8 +2070,8 @@
       },
       "package": {
         "root": "minivllm/",
-        "python_files": 70,
-        "sha256": "388d7c321029d8937084bfbafb1f7eb202a2159550d98d272399da6a40ceb56a",
+        "python_files": 71,
+        "sha256": "133913e0b04fdf94c68a1de57a75b0b0aa686914af21c9c064013dd891b28295",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -2085,25 +2085,23 @@
       "commands": [
         {
           "cmd": "python -m pytest tests/step63 -q",
-          "result": "23 passed（输入对齐 12 + 模型适配 11）",
-          "failed": 0,
-          "skipped": 0
+          "result": "28 passed（输入对齐 12 + 模型 11 + 端到端 5）"
         },
         {
           "cmd": "python -m pytest tests/step58..63 -q",
-          "result": "303 passed",
-          "failed": 0,
-          "skipped": 0
+          "result": "308 passed（连跑两次一致）"
         },
         {
           "cmd": "python benchmarks/check_step63_eagle_inputs.py",
-          "result": "17 PASS / 0 FAIL",
-          "failed": 0
+          "result": "17 PASS / 0 FAIL"
         },
         {
-          "cmd": "python -c \"…Eagle3ForCausalLM(cfg).load_weights(真实 checkpoint)…\"",
-          "result": "12 个名字全部落位（10 参数 + d2t/t2d）；embed_tokens 缺 → tie_embeddings=True（与 target 共享）",
-          "failed": 0
+          "cmd": "python benchmarks/check_step57_*.py（15 个）",
+          "result": "350 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python benchmarks/check_step58_*/59/60/61/62",
+          "result": "36 + 21 + 17 + 27 + 34 PASS，全 0 FAIL"
         }
       ],
       "execution_trace": {
@@ -2267,6 +2265,12 @@
           "embed_tokens": "检查点里没有这一份 → tie_embeddings=True（上游 _maybe_share_embeddings 同款条件）",
           "qk_norm": "无（Llama 风格那张 draft 没有 q_norm/k_norm 权重）",
           "辅助层默认值": "target 侧 (2, num_layers//2, num_layers-3) = (2, 14, 25)（上游 interfaces.py:1580-1601）"
+        },
+        "eagle3_e2e": {
+          "配置": "tiny target(Qwen3 2 层, hidden 32) + tiny EAGLE3 draft(1 层 midlayer.*, fc(32,64), 与 target 共享 embed_tokens)",
+          "辅助层": "draft 配置指定 [0, 1]（2 层 tiny 用不了上游默认 (2, n//2, n-3)）；runner.eagle_aux_hidden_state_layers 已钉住",
+          "K": "1 / 2 / 4 三档：greedy 投机输出 == 非投机输出（逐 token）；num_drafts/num_draft_tokens > 0",
+          "第一遍对齐（运行中实测）": "input_ids = tokens[start+1 : start+num_valid] + [next_token]；positions = start..start+num_valid-1；扩容行特征 = target 采样行特征（其余行逐行不动）"
         }
       },
       "fixed_during_step": [
@@ -2274,13 +2278,43 @@
           "现象": "tests/step59/test_rejection.py::test_mixed_greedy_and_random 在整套 tests/ 一起跑时失败",
           "原因": "该用例注入的均匀随机数是 [0.5, 0.9]，隐含『random 行一定读到第二个元素』这一与行序有关的假设（新增 tests/step63 后暴露）",
           "处理": "改成两行都给 0.9（greedy 行根本不读 u）。断言强度不变（random 行仍是 u=0.9 > p/q=0.889 → 拒绝）；连跑两次 292 passed"
+        },
+        {
+          "现象": "EAGLE3 第一遍把拼接后的辅助特征（宽 hidden×层数）直接喂模型 → RMSNorm 形状不匹配",
+          "原因": "上游在 proposer 里先调 combine_hidden_states() 投影再进 forward",
+          "处理": "在 EagleProposer 里先投影；缓冲宽度改回 draft hidden"
+        },
+        {
+          "现象": "AR 步把 draft 自己的 hidden 当成 target 特征写进同一缓冲",
+          "原因": "两者宽度不同",
+          "处理": "投影后宽度一致，统一一个缓冲 + _ar_hidden 逐请求取值"
+        },
+        {
+          "现象": "share_embeddings 把 target 的绑定方法挂到 embed_tokens → 调用变成 Qwen3ForCausalLM(input_ids) 缺 positions",
+          "原因": "取的是 embed_input_ids.__self__（整个 target）",
+          "处理": "改取 target.model.embed_tokens，拿不到就明确报错"
+        },
+        {
+          "现象": "EAGLE 的 slot_mapping 与物理行数不一致（repeat_interleave output_size 报错）",
+          "原因": "EAGLE 每请求物理行 = (num_valid-1) + 1 + num_rejected",
+          "处理": "query_lens = num_valid + num_rejected - 1，num_new_tokens=1"
+        },
+        {
+          "现象": "step57 两个脚本回归：DraftModelProposer 没有 method；model_logits 盯的 forward 签名多了 capture_aux",
+          "原因": "63 关新字段与新开关",
+          "处理": "基类补 self.method；aux 采集改成模块状态，签名保持 (input_ids, positions)"
+        },
+        {
+          "现象": "tests/step59::test_mixed_greedy_and_random 再次随执行顺序失败",
+          "原因": "混批 random 行的 u 来自每请求 generator（uniform_ 覆盖 torch.rand），种子取自全局 RNG",
+          "处理": "该行 p[d] 设成 0 → 结论与 u 无关，断言强度不变"
         }
       ],
       "not_run": [
-        "阶段 B 的**逐层对照**（target 辅助输出 / draft forward / logits 与上游实现比容差）",
-        "阶段 C：EagleProposer（first_pass 走 EAGLE 对齐 + 传 hidden）、Runner 接线、draft KV/位置推进、拒绝数修正、prefix 命中/抢占/重排/结束清理、greedy == 非投机",
-        "真实 checkpoint 的完整生成（draft 词表 32000 → target 151936 的采样空间语义属 67 关；本关只做 id 映射）",
-        "M-RoPE/backend/padded 开关组合的限制触发"
+        "真实 checkpoint（AngelSlim/Qwen3-1.7B_eagle3）的完整生成：draft 词表 32000 → target 151936 需要 d2t/t2d 的采样空间语义（属 67 关）",
+        "与上游 Eagle3Qwen3ForCausalLM 的逐层数值对照（本关只做同结构自检 + 真实权重加载核对）",
+        "M-RoPE / padded drafter batch / 其他 backend 组合的限制触发",
+        "lm_head 共享（_maybe_share_lm_head 的另一套条件）"
       ]
     }
   }

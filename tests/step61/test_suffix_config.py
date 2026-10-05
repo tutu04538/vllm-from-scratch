@@ -84,9 +84,12 @@ def test_missing_dependency_fails_loudly(monkeypatch):
 
 
 def test_unknown_method_still_rejected():
-    """别的投机方法照旧明确报错（不静默降级）。"""
+    """别的投机方法照旧明确报错（不静默降级）。
+
+    （63 关起 `eagle`/`eagle3` 已被支持，这条用例改用仍未实现的 `medusa`；断言强度不变。）
+    """
     with pytest.raises(ValueError, match="本关只支持"):
-        SpeculativeConfig(method="eagle3")
+        SpeculativeConfig(method="medusa")
 
 
 # ---------------------------------------------------------------------------

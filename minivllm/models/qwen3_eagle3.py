@@ -307,8 +307,18 @@ class Eagle3ForCausalLM(nn.Module):
         return loaded | set(buffers)
 
     def share_embeddings(self, target_model) -> None:
-        """与 target 共享词表嵌入（上游 `_maybe_share_embeddings`）：**只在检查点缺这一份时**做。"""
+        """与 target 共享词表嵌入（上游 `_maybe_share_embeddings`）：**只在检查点缺这一份时**做。
+
+        拿的是 target 的 **embedding 模块**（`<target>.model.embed_tokens`），不是它的
+        `embed_input_ids` 绑定方法——后者会把整个 target 模型挂到 `embed_tokens` 上，
+        调用时变成 `Qwen3ForCausalLM(input_ids)`（缺 positions 报错）。
+        """
         if not getattr(self.model, "tie_embeddings", False):
             return
-        self.model.embed_tokens = target_model.embed_input_ids.__self__ \
-            if hasattr(target_model.embed_input_ids, "__self__") else target_model.model.embed_tokens
+        holder = getattr(target_model, "model", target_model)
+        embed_tokens = getattr(holder, "embed_tokens", None)
+        if embed_tokens is None:
+            raise ValueError(
+                f"draft 的检查点里没有 embed_tokens，需要与 target 共享，但 "
+                f"{type(target_model).__name__} 上没有 embed_tokens 模块")
+        self.model.embed_tokens = embed_tokens

@@ -182,8 +182,13 @@ class Qwen3Model(nn.Module):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
-                capture_aux: bool = False):
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
+        """`forward(input_ids, positions)` —— 签名**不带**任何开关（上游同款）。
+
+        要不要输出辅助层由 `set_aux_hidden_state_layers()` 决定的**模块状态**表达，
+        所以不需要给 forward 加参数（`check_step57_model_logits` 也在盯这个签名）。
+        """
+        capture_aux = bool(self.aux_hidden_state_layers)
         hidden_states = self.embed_input_ids(input_ids)
         residual = None
         aux_hidden_states: list[torch.Tensor] = []
@@ -229,9 +234,8 @@ class Qwen3ForCausalLM(nn.Module):
 
     # -------- 计算接口（198 §6）--------
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
-                capture_aux: bool = False):
-        return self.model(input_ids, positions, capture_aux=capture_aux)
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
+        return self.model(input_ids, positions)
 
     def set_aux_hidden_state_layers(self, layers) -> None:
         self.model.set_aux_hidden_state_layers(layers)
