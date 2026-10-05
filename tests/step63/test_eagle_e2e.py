@@ -114,11 +114,10 @@ def test_first_pass_inputs_follow_eagle_alignment():
 
     直接看提议者写进工作区的内容（工作区是定长缓冲，只读有效前缀）。
     """
-    engine, core, runner = make_engine(spec_k=2, budget=64)
+    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1)
     try:
-        request = {"a": [1, 2, 3, 4, 1, 2, 3, 4]}
-        engine.add_request("a", request["a"],
-                           SamplingParams(max_tokens=3, temperature=0.0, eos_token_id=999))
+        engine.add_request("a", [1, 2, 3, 4, 1, 2, 3, 4],
+                           SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
         captured = []
         original = runner.proposer.set_inputs_first_pass
 
@@ -141,25 +140,42 @@ def test_first_pass_inputs_follow_eagle_alignment():
             if not engine.has_unfinished_requests():
                 break
             engine.step()
-            if any(entry["rows"][0].num_valid >= 2 for entry in captured):
+            # 挑一次**真的有被拒行**的调用：这时"最后一个有效行"与"最后一行"不是同一行，
+            # 才能把 hidden 取错行的 bug 区分出来（无被拒时两者重合）
+            if any(len(entry["rows"]) == 1 and entry["rows"][0].num_valid >= 2
+                   and entry["rows"][0].num_rejected > 0 for entry in captured):
                 break
     finally:
         engine.shutdown()
 
     # 找一次"有效行 ≥ 2"的调用：只有这时才看得出"错一格"与"扩容行位置"
-    entry = next(item for item in captured if item["rows"][0].num_valid >= 2)
+    entry = next(item for item in captured
+                 if len(item["rows"]) == 1 and item["rows"][0].num_valid >= 2
+                 and item["rows"][0].num_rejected > 0)
     row = entry["rows"][0]
     tokens = entry["tokens"]
     input_ids, positions = entry["input_ids"], entry["positions"]
-    # 1) token：这条请求 [start+1, start+num_valid) 是旧的，最后一格 = 新 token
-    assert input_ids[:-1] == [int(t) for t in tokens[row.start + 1:row.start + row.num_valid]]
-    assert input_ids[-1] == row.next_token_id
-    # 2) positions：与 target 逐行相同（不被移位带走），扩容行的位置 = 最后一行的位置
-    assert positions == list(range(row.start, row.start + row.num_valid)), positions
+    # 单请求 → 工作区前 num_tokens 行都是这条请求的：
+    #   [shift 后的有效行 (num_valid-1)] + [扩容行] + [被拒占位行 (num_rejected)]
+    assert len(input_ids) == row.num_valid + row.num_rejected
+    assert input_ids[:row.num_valid - 1] == [
+        int(t) for t in tokens[row.start + 1:row.start + row.num_valid]], input_ids
+    assert input_ids[row.num_valid - 1] == row.next_token_id
+    assert all(token == 0 for token in input_ids[row.num_valid:]), "被拒占位行是 padding"
+    # 2) positions：有效行与 target 逐行相同（不被移位带走）；扩容行的位置 = 最后一个**有效行**的位置
+    assert positions[:row.num_valid] == list(range(row.start, row.start + row.num_valid)), positions
+    assert all(position == 0 for position in positions[row.num_valid:])
     assert entry["plan"].sample_rows[0] == row.num_valid - 1
-    # 3) 特征：有效行逐行不动；扩容行 = target **采样行**的特征
+    # 3) 特征：有效行逐行不动；扩容行 = **最后一个有效行**的特征
+    #    不变量：每一行的"位置 - start" 必须等于"它的特征取自 target 的第几行"
+    #    （shift 行：位置 start+i ↔ 特征第 i 行；扩容行：位置 start+num_valid-1 ↔ 特征第 num_valid-1 行）
     source = entry["hidden_src"]
     for index in range(row.num_valid - 1):
         assert torch.allclose(entry["hidden"][index].float(), source[index].float())
     assert torch.allclose(entry["hidden"][row.num_valid - 1].float(),
-                          source[row.target_rows - 1].float())
+                          source[row.num_valid - 1].float()), \
+        "扩容行必须取**最后一个有效行**的特征（取被拒尾部那一行是错的）"
+    if row.num_valid != row.target_rows:
+        assert not torch.allclose(entry["hidden"][row.num_valid - 1].float(),
+                                  source[row.target_rows - 1].float()), \
+            "被拒行的特征不该被当成扩容行的特征（两者必须能区分开）"

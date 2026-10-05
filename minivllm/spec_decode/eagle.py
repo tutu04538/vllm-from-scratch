@@ -83,8 +83,13 @@ class EagleProposer(DraftModelProposer):
             hidden = self.model.model.combine_hidden_states(target_hidden_states[target.req_id])
             # 有效行的特征（注意：token 左移了，特征不动 → 第 i 行仍取第 i 行）
             hidden_rows.extend(hidden[index] for index in range(max(len(valid) - 1, 0)))
-            # 扩容行 = 采样行的特征（上游 `out_hidden_state_mapping` 把最后一行映射到扩容行）
-            hidden_rows.append(hidden[target.target_rows - 1])
+            # 扩容行 = **最后一个有效行**的特征（不是被拒尾部那一行！）：
+            #   - 扩容行的位置 = start + (有效行数 - 1)，特征必须来自同一行，否则"位置与特征指向两个位置"；
+            #   - 上游内核的 `out_hidden_state_mapping[query_start + j] = output_start + j`
+            #     在 shift=True 时把源行 `query_start + (有效行数 - 1)` 写到扩容行，正是这一行。
+            # 只有 num_rejected == 0 时它才等于 `target_rows - 1`——所以这个错在"没有被拒"的用例里看不出来
+            # （被拒行只贡献 padding，它的特征不该进新提议的上下文）。
+            hidden_rows.append(hidden[len(valid) - 1])
             for _ in range(target.num_rejected):
                 hidden_rows.append(torch.zeros_like(hidden[0]))
 
