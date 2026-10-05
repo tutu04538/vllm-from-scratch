@@ -104,6 +104,10 @@ class SpecDecodeBaseProposer:
         self.max_model_len = vllm_config.model_config.max_model_len
         # 普通自回归 draft：第一遍比 target query 多要 1 行输入（= 新采出的那个 token）
         self.num_new_slots_per_request = spec_config.max_num_new_slots_for_drafting
+        # 67 关（TLI）：异构词表的映射表。基类默认 None = "draft 与 target 同词表"，
+        # 只有 `DraftModelProposer` 在 `use_heterogeneous_vocab` 时建它（上游同款位置）。
+        self.vocab_mapping = None
+        self.use_heterogeneous_vocab = bool(getattr(spec_config, "use_heterogeneous_vocab", False))
         self.model = None                     # 子类加载
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.metadata_builder = AttentionMetadataBuilder(self.block_size)
@@ -259,10 +263,14 @@ class SpecDecodeBaseProposer:
 
         probs_rows = [row for req_id in req_ids for row in probs[req_id]]
         self.num_drafts_proposed += sum(len(drafts[req_id]) for req_id in req_ids)
+        # TLI 的草稿是点质量（`None` 占位）：只要有一个 None，整批就不带 q（59 关的
+        # NO_DRAFT_PROBS 分支——点质量提议本来就不需要 q），不能把 draft 空间的概率混进来。
+        draft_probs = None if (not probs_rows or any(row is None for row in probs_rows)) \
+            else torch.stack(probs_rows)
         return DraftTokenIds(
             req_ids=list(req_ids),
             draft_token_ids=[drafts[req_id] for req_id in req_ids],
-            draft_probs=torch.stack(probs_rows) if probs_rows else None)
+            draft_probs=draft_probs)
 
     def _split_hidden(self, hidden, plan: FirstPassPlan, rows: list[TargetRows]):
         """拆开 `(for_logits, for_next_step)`（tuple 模型）／记住 AR 要用的那份（单返回值模型）。
@@ -300,12 +308,20 @@ class SpecDecodeBaseProposer:
         input_rows = []
         for target in rows:
             tokens = all_token_ids[target.req_id]
+            valid_token_ids = [int(tokens[position])
+                               for position in range(target.start,
+                                                     target.start + target.num_valid)]
+            next_token_id = target.next_token_id
+            if self.vocab_mapping is not None:
+                # 67 关（TLI）：喂进 draft 的 token 必须是**草稿空间**的 id（上游
+                # `set_inputs_first_pass()` 里同一处：`map_target_to_draft_ids(target_token_ids / next_token_ids)`）。
+                # 不在交集里的历史 token 按 unk→eos→报错 处理（映射表里已经填好兜底 id）。
+                valid_token_ids, next_token_id = self._to_draft_space(
+                    valid_token_ids, next_token_id)
             input_rows.append(DraftInputRows(
-                valid_token_ids=[int(tokens[position])
-                                 for position in range(target.start,
-                                                       target.start + target.num_valid)],
+                valid_token_ids=valid_token_ids,
                 start=target.start,
-                next_token_id=target.next_token_id,
+                next_token_id=next_token_id,
                 num_rejected=target.num_rejected))
         input_ids, positions, is_rejected, sample_indices = expand_draft_inputs(input_rows)
         num_tokens = len(input_ids)
@@ -359,6 +375,10 @@ class SpecDecodeBaseProposer:
         """后续自回归步骤：**复用同一个工作区的前 B 行**（每活跃请求一行，58 §7）。"""
         num_reqs = len(pending)
         tokens = [drafts[target.req_id][-1] for target, _ in pending]
+        if self.vocab_mapping is not None:
+            # 67 关（TLI）：`drafts` 里存的是**交回调度器的 target id**，而模型吃的是草稿空间的 id
+            # （上游自回归循环里同一处：`input_ids = self.vocab_mapping.map_target_to_draft_ids(input_ids)`）。
+            tokens = self._to_draft_space_tokens(tokens)
         positions = [position for _, position in pending]
         batch_rows = [target.row for target, _ in pending]
         self.input_ids_cpu[:num_reqs] = torch.tensor(tokens, dtype=torch.int64)
@@ -465,6 +485,27 @@ class SpecDecodeBaseProposer:
             self._draft_computed.pop(req_id, None)
             self._draft_generators.pop(req_id, None)
 
+    # -------- 67 关：异构词表的 id 搬运 --------
+
+    def _to_draft_space(self, valid_token_ids: list[int],
+                        next_token_id: int) -> tuple[list[int], int]:
+        """把一条请求的历史行 + 扩容行 token 从 **target 空间** 搬到 **草稿空间**（TLI）。
+
+        只做"逐位置换 id"，**不重新分词**：位置数、行数、`start/history_end` 全都不变（需求 067 §5），
+        所以 KV 槽位/块表/attention 元数据一律照旧——这也是 token 级 TLI 与"字符串桥接"的根本区别。
+        不在交集里的 token 由映射表填 `draft_unk_token_id`（上游同款）。
+        """
+        tokens = torch.tensor([*valid_token_ids, int(next_token_id)], dtype=torch.int64)
+        mapped = self.vocab_mapping.map_target_to_draft_ids(tokens)
+        mapped = [int(value) for value in mapped.tolist()]
+        return mapped[:-1], mapped[-1]
+
+    def _to_draft_space_tokens(self, tokens: list[int]) -> list[int]:
+        """自回归步用：上一枚草稿（target id）→ 草稿空间 id（上游同一处的 map 调用）。"""
+        tensor = torch.tensor(tokens, dtype=torch.int64)
+        return [int(value)
+                for value in self.vocab_mapping.map_target_to_draft_ids(tensor).tolist()]
+
     # -------- 采样草稿 --------
 
     def _sample_draft_tokens(self, hidden: torch.Tensor, row_refs: list[tuple[str, int]],
@@ -480,6 +521,17 @@ class SpecDecodeBaseProposer:
         logits = self.model.compute_logits(
             hidden[torch.tensor([row for _, row in row_refs],
                                 dtype=torch.int64, device=hidden.device)]).to(torch.float32)
+        if self.vocab_mapping is not None:
+            # 67 关（TLI）：只留交集里的列（交集外的草稿 token 在 target 词表里没有对应物），
+            # 采完再把 id 映回 **target 空间**——交出去的草稿必须是 target id（上游 `_greedy_sample()` 同款）。
+            # 这条路上草稿是 argmax（点质量 q），所以 `draft_probs` 记 `None`；`_row_probs` 的
+            # 概率是 **draft 空间** 的，宽度与 target 词表不符，绝不能交给验证器（需求 067 §3.5 的边界）。
+            logits = self.vocab_mapping.constrain_draft_logits(logits)
+            sampled = self.vocab_mapping.map_draft_to_target_ids(logits.argmax(dim=-1))
+            for index, (req_id, _) in enumerate(row_refs):
+                drafts[req_id].append(int(sampled[index]))
+                probs[req_id].append(None)
+            return
         for index, (req_id, _) in enumerate(row_refs):
             parameter = input_batch.sampling_params[input_batch.req_id_to_index[req_id]]
             row_logits = logits[index]
@@ -526,6 +578,19 @@ class DraftModelProposer(SpecDecodeBaseProposer):
         if spec_config.draft_model_config is None:
             raise ValueError("draft_model 投机必须在 SpeculativeConfig 里给 draft_model_config")
         self.draft_model_config = spec_config.draft_model_config
+        # 67 关（TLI）：异构词表时在这里建映射表——上游 `DraftModelProposer.__init__` 也在这个位置
+        # （构造完就持有，模型加载时用它校验/约束）。**不让 target 模型改自己的词表**：映射只存在于
+        # 提议者这边，target 全程用自己原来的 id 空间（需求 067 §2）。
+        if self.use_heterogeneous_vocab:
+            from .vocab_mapping import VocabMapping, load_tokenizer
+
+            self.vocab_mapping = VocabMapping(
+                target_tokenizer=load_tokenizer(
+                    vllm_config.model_config.tokenizer_path),
+                draft_tokenizer=load_tokenizer(self.draft_model_config.tokenizer_path),
+                target_vocab_size=int((vllm_config.model_config.hf_config or {})["vocab_size"]),
+                draft_vocab_size=int((self.draft_model_config.hf_config or {})["vocab_size"]),
+                device=device)
 
     # -------- 加载与校验 --------
 
@@ -543,7 +608,7 @@ class DraftModelProposer(SpecDecodeBaseProposer):
         draft_config = self.draft_model_config.hf_config or {}
         target_vocab = target_config.get("vocab_size")
         draft_vocab = draft_config.get("vocab_size")
-        if target_vocab != draft_vocab:
+        if target_vocab != draft_vocab and not self.use_heterogeneous_vocab:
             # 63 关：EAGLE3 允许 draft 词表更小 + 带 `d2t` 偏移映射（同 tokenizer、缩小词表；
             # 与 67 关"两套 tokenizer 的 TLI 交集"不是一回事）。映射本身由 draft 的
             # `compute_logits()` 完成（scatter 回 target 宽度，上游 llama_eagle3.py:339-356 同款），
@@ -551,7 +616,9 @@ class DraftModelProposer(SpecDecodeBaseProposer):
             if not (self.method == "eagle3" and draft_config.get("draft_vocab_size")):
                 raise ValueError(
                     f"draft 与 target 的词表不一致（{draft_vocab} vs {target_vocab}）："
-                    f"草稿的 token 在 target 的词表里是另一个意思，验证没有意义")
+                    f"草稿的 token 在 target 的词表里是另一个意思，验证没有意义"
+                    f"（要跨两套 tokenizer 用 method='draft_model' + use_heterogeneous_vocab，"
+                    f"那会按 token 级交集建映射表）")
         if str(self.draft_model_config.dtype) != str(self.vllm_config.model_config.dtype):
             raise ValueError("draft 与 target 的 dtype 必须一致（KV 缓存要放进同一个 group）")
         for key in ("num_key_value_heads", "head_dim", "max_position_embeddings"):

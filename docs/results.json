@@ -14,7 +14,8 @@
     "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线；真实 checkpoint 完整生成已在 66 关收尾补齐——compute_logits 按 d2t scatter 回 target 宽度，greedy 逐 token 相同，草稿 id 钉在 t2d 内；仍待验：草稿接受长度 ≈1.07 vs 模型卡 2.13~2.2，疑在 draft 解码层）",
     "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）",
     "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
-    "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）"
+    "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）",
+    "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）"
   },
   "step58": {
     "results": {
@@ -2860,6 +2861,121 @@
         "状态": "版本缺口（本机 vllm==0.28.0 里配置层认得、模型层没有）",
         "本仓库": "不注册模型类、不写实现；method='mlp_speculator' 明确报错",
         "未来": "先钉一个真正支持它的上游提交并单独增补需求，不得悄悄换参考版本"
+      }
+    }
+  },
+  "step67": {
+    "results": {
+      "step": 67,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/067_异构词表TLI与Draft采样空间.md",
+      "status": "implemented + self-verified（VocabMapping 与上游真实现逐位差分；tiny 异构词表对（两套真 tokenizer）端到端 greedy 与非投机一致；概率草稿的 TLI 按需求 §3.5 配置期拒绝）",
+      "recorded_at": "2026-10-05T12:35:13+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "bee0549",
+        "implementation_commit": "见本轮提交（step67：异构词表 TLI 与 draft 采样空间）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 79,
+        "sha256": "b4512d7fcf9cdbad956fb03469a017de3ebfecef5ed5a7c450bd647e012c28bb",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/上游类差分；生产路径不 import）",
+        "transformers": "5.14.1",
+        "tokenizers": "0.22.2",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step67 -q",
+          "result": "23 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step67_vocab_mapping.py",
+          "result": "21 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step58..67 -q",
+          "result": "438 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step58..66 + check_step57_*.py",
+          "result": "全通过（回归）"
+        }
+      ],
+      "execution_trace": {
+        "tokenizer_pair": {
+          "target": {
+            "path": "models/Qwen3-1.7B/tokenizer.json",
+            "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+            "bytes": 11422654,
+            "vocab_size(模型)": 151936,
+            "note": "本机快照（无 HF revision）；target tokenizer 没有 unk_token_id → 交集外退回 eos=151645（告警，上游同款）"
+          },
+          "draft": {
+            "name": "gpt2",
+            "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+            "snapshot": "~/.cache/huggingface/hub/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e",
+            "vocab_size(模型)": 50257,
+            "space_marker": "Ġ"
+          },
+          "intersection_size": 42257,
+          "draft_coverage": 0.8408,
+          "target_coverage": 0.2781,
+          "结论": "target 有 72% 的 token draft 说不出来（进 draft 空间填 unk）；draft 有 16% 的列永远说不出来（logits 被掩）——只影响接受率，不影响输出分布"
+        },
+        "upstream_diff": {
+          "对象": "vllm.v1.spec_decode.vocab_mapping.VocabMapping（本进程实例化，假 tokenizer）",
+          "比什么": "draft_to_target_ids / target_to_draft_ids / intersection_mask_draft 三张表 + 两个方向的 map + constrain_draft_logits 的输出",
+          "结果": "两组用例（普通 + 混合标记/越界 id/重复规范化）全部逐位相同"
+        },
+        "path_checks": {
+          "同词不同 id": "target ▁hello(id 3) ↔ draft Ġhello(id 2)，交集上往返精确",
+          "两族空格标记": "_detect_space_prefix 分别探到 ▁ 与 Ġ，归一化后对上同一个词",
+          "重复规范化": "同一 tokenizer 内 ▁a(4) 与 Ġa(9) 重名 → 只留 dict 里第一个（4），9 不入表",
+          "越界条目": "tokenizer 里 id ≥ 模型 vocab_size 的条目（special token）不参与映射，表长就是模型词表大小",
+          "unk=0": "两边 unk_token_id=0 时交集外填 0（不是各自的 eos）",
+          "无 unk 有 eos": "退回 eos 并告警",
+          "两者皆无": "ValueError（不猜）",
+          "空交集": "只告警；size=0、mask 全 False、constrain 后全 -inf、两个 map 全回退 unk（按源码行为记录）",
+          "不改写入参": "两个 map + constrain 都不改写入参（逐位比对）",
+          "不重新分词": "[2,5,6] → [6,3,4]：长度不变、逐位置规范化 token 字符串不变"
+        },
+        "integration": {
+          "模型对": "minivllm/testing/tiny_models.py::tiny_hetero_pair（同 KV 规格、target vocab 11（▁ 系 tokenizer）、draft vocab 13（Ġ 系 tokenizer），交集 10 个 token）",
+          "greedy_vs_non_spec": "开了 TLI 与非投机逐 token 相同（6 轮草稿）",
+          "草稿 id": "全部落在交集像内（出现过的 id [1,2,3,5,7,8,9]）",
+          "q": "所有轮次 draft_probs is None（TLI 只支持 greedy 草稿 → 点质量）",
+          "反假接线": "第一遍/自回归共 12 次 map_target_to_draft_ids 调用；入参都是 target 空间 id，且至少有入参≠出参（含 target 独有 token 时变 draft unk=0）",
+          "非 greedy 请求": "temperature=0.8 时草稿仍点质量、端到端正常（输出长度 6）",
+          "不开 TLI": "词表不一致照旧明确报错（TLI 必须显式开启）"
+        }
+      },
+      "not_run": [
+        "概率草稿的 TLI（上游未实现，配置期拒绝；要放开需先有真正支持它的上游提交）",
+        "真实异构词表 target/draft 权重端到端（本机只有一个 target 与它同词表的 eagle3 draft；gpt2 词表的 draft 模型本机没有）",
+        "跨 tokenizer 的字符串桥接（重新分词对齐）——需求 §5 明确不做",
+        "交集外历史 token 对接受率的量化影响",
+        "draft_sample_method='probabilistic' 在非 TLI 路径上的行为切换（只落了配置项与校验）"
+      ]
+    },
+    "models": {
+      "tiny_hetero_pair": {
+        "生成器": "minivllm/testing/tiny_models.py::tiny_hetero_pair('tiny_gqa')",
+        "target": "Qwen3 2 层、hidden 32、vocab 11、float32 + SentencePiece 风格 tokenizer（▁ 系，WordLevel+Metaspace）",
+        "draft": "同 KV 规格（同 hidden/heads/head_dim/max_position）、vocab 13、float32 + BPE 风格 tokenizer（Ġ 系，WordLevel+ByteLevel）",
+        "交集": "10 个 token（target 独有 ▁onlyt；draft 独有 Ġonlyd/Ġx/Ġy）",
+        "用途": "集成测试：真正的异构词表 + 真 tokenizer 文件，不提交权重"
+      },
+      "real_tokenizers": {
+        "target": "models/Qwen3-1.7B/tokenizer.json（本机快照，sha256 见 execution_trace）",
+        "draft": "gpt2 @ 607a30d783dfa663caf39e06633721c8d4cfcd7e（HF 缓存，仅用于记录交集规模，没有对应模型权重）",
+        "交集": 42257
       }
     }
   }

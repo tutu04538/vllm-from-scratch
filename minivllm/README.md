@@ -27,7 +27,8 @@
 [`docs/step63_alignment.md`](../docs/step63_alignment.md)（EAGLE/EAGLE3）、
 [`docs/step64_alignment.md`](../docs/step64_alignment.md)（cache-only 特征提取）、
 [`docs/step65_alignment.md`](../docs/step65_alignment.md)（原生 MTP）、
-[`docs/step66_alignment.md`](../docs/step66_alignment.md)（Medusa 多头提议与 MLP 版本缺口）。
+[`docs/step66_alignment.md`](../docs/step66_alignment.md)（Medusa 多头提议与 MLP 版本缺口）、
+[`docs/step67_alignment.md`](../docs/step67_alignment.md)（异构词表 TLI 与 draft 采样空间）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -46,7 +47,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机验证 | `sample/rejection_sampler.py`（Triton 批量内核） | `v1/sample/rejection_sampler.py` |
-| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding,custom_class_proposer,eagle,extract_hidden_states,medusa}.py` | `v1/spec_decode/*` |
+| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding,custom_class_proposer,eagle,extract_hidden_states,medusa,vocab_mapping}.py` | `v1/spec_decode/*` |
 | 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py`、`testing/torch_rejection_sampler.py`、`testing/spec_metadata.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
@@ -256,6 +257,35 @@ python benchmarks/check_step66_medusa.py          # 28 项（含与上游 Medusa
 [`docs/step66_alignment.md`](../docs/step66_alignment.md)，实测记录见
 [`docs/results.json`](../docs/results.json)（`step66.results`）。
 
+## 第六十七关：异构词表 TLI（token 级交集）
+
+拿**另一个训练好的模型**当 draft 时，两套 tokenizer 的 id 空间毫无关系——target 的 token 17 和 draft 的
+token 17 未必是同一段文字，直接互换 id 不会报错、只会让草稿全错（实测同一段文字：Qwen3 给
+`[23811, 1879, 11, ...]`、gpt2 给 `[23748, 995, 11, ...]`）。这一关按 **token 字符串**建交集表：
+
+- `VocabMapping`：`draft_to_target_ids` / `target_to_draft_ids` / `intersection_mask_draft` 三张表 +
+  两侧 unk 兜底（`unk→eos→报错`；**0 是合法 unk**，不能写 `unk or eos`）；空格标记两族（Ġ / ▁）先归一化；
+  同一个 tokenizer 内规范化后重名的只留第一个；超出模型 `vocab_size` 的条目不入表；
+- 四条路径：第一遍的历史行与扩容行、自回归步的上一枚草稿 → `map_target_to_draft_ids`；草稿 logits →
+  `constrain_draft_logits`（非交集列 `-inf`，永远选不到）→ argmax → `map_draft_to_target_ids`；
+  **交出去的草稿一定是 target 空间的 id**，q 是点质量（TLI 只支持 greedy 草稿）；
+- **只换 id、不重新分词**：行数/位置/`slot_mapping`/块表一律不变（这是它和"字符串桥接"的根本区别）；
+- 边界照抄上游：`use_heterogeneous_vocab` 只支持 `method="draft_model"`，且概率草稿的 TLI 在**配置期
+  直接拒绝**（把 q 从 draft 空间搬到 target 空间上游还没做，需求 §3.5 要求不得自行放开）。
+
+```bash
+python -m pytest tests/step67 -q                     # 23 项
+python benchmarks/check_step67_vocab_mapping.py      # 21 项（含与上游 VocabMapping 的逐位差分）
+```
+
+> 集成：一对真正的 tiny 模型（同 KV 规格、vocab 11 vs 13、两套**真** tokenizer 文件）跑通 greedy，
+> 与非投机逐 token 相同；真实规模记录：Qwen3-1.7B × gpt2 的交集 **42257**（target 27.8% / draft 84.1%）
+> ——target 有 72% 的 token draft 说不出来（填 unk），只影响接受率、不影响输出分布。
+
+设计与差异（含设备处理、日志→字段、`draft_sample_method` 的落地范围、概率草稿那条 TODO 的账）见
+[`docs/step67_alignment.md`](../docs/step67_alignment.md)，实测记录见
+[`docs/results.json`](../docs/results.json)（`step67.results`）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -294,6 +324,7 @@ python benchmarks/check_step63_eagle_inputs.py       # 8 项：EAGLE 第一遍�
 python benchmarks/check_step64_hidden_cache.py       # 18 项：cache-only 路径（物理 slot、协议、chunked/prefix/拒绝尾部/复用、端到端）
 python benchmarks/check_step65_mtp.py                # 17 项：MTP 别名/加载（两派命名）/胶水与上游逐值对照/端到端反证
 python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/加载/行选择/端到端 + 上游逐值对照 + MLP 缺口证明
+python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映射/上游逐位差分/配置边界/异构词表集成
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -303,6 +334,7 @@ python -m pytest tests/step63 -q                     # 21 项：step63（EAGLE3 
 python -m pytest tests/step64 -q                     # 13 项：step64（cache-only 层/提议者/Runner 接线与物理 slot 校验）
 python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配置/加载/前向/端到端 + 特征上传回归）
 python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 配置/模型/加载/行选择/端到端 + MLP 支持缺口）
+python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构造/映射/上游差分/配置边界/异构词表集成）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

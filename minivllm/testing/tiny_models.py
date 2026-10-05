@@ -375,6 +375,89 @@ def tiny_medusa_dir(target_name: str = "tiny_gqa", *, num_heads: int = 3,
     return str(out)
 
 
+# 67 关的 TLI 集成测试用：一对"同 KV 规格、不同词表、不同 tokenizer"的 tiny 模型。
+# 两边的**同一个词**故意放在不同的 id 上，空格标记也故意用两族的写法（SentencePiece 的 ▁ 与
+# BPE 的 Ġ），这样"不能直接换 id"和"要按 token 字符串建交集"两件事都被真正跑到。
+HETERO_TARGET_TOKENS = {
+    "<unk>": 0, "<eos>": 1, "\u2581hello": 2, "\u2581world": 3, "\u2581the": 4,
+    "\u2581kv": 5, "\u2581cache": 6, "\u2581is": 7, "\u2581a": 8, "\u2581b": 9,
+    "\u2581onlyt": 10,                      # target 独有 → 进 draft 空间时变 draft unk
+}
+HETERO_DRAFT_TOKENS = {
+    "<unk>": 0, "<eos>": 1, "\u0120the": 2, "\u0120kv": 3, "\u0120cache": 4,
+    "\u0120is": 5, "\u0120hello": 6, "\u0120world": 7, "\u0120a": 8, "\u0120b": 9,
+    "\u0120onlyd": 10, "\u0120x": 11, "\u0120y": 12,   # draft 独有 → logits 被掩掉
+}
+
+
+def write_wordlevel_tokenizer(out_dir, vocab: dict[str, int], *, space_marker: str,
+                              unk_token: str = "<unk>", eos_token: str = "<eos>",
+                              model_max_length: int = 64) -> Path:
+    """写一份**真正能被 transformers 加载**的极小 tokenizer（WordLevel + 空格预处理）。
+
+    `space_marker` 取 `"\u2581"`（SentencePiece 系）或 `"\u0120"`（BPE 系）：两种都让
+    " hello" 变成一个以该字符开头的 token（`▁hello` / `Ġhello`），于是 `VocabMapping` 的
+    `_detect_space_prefix()` 走的是它两条真实分支，而不是被喂一个假的探测结果。
+    """
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+
+    tokenizer = Tokenizer(models.WordLevel(vocab=dict(vocab), unk_token=unk_token))
+    if space_marker == "\u2581":
+        tokenizer.pre_tokenizer = pre_tokenizers.Metaspace(
+            replacement="\u2581", prepend_scheme="always", split=True)
+        tokenizer.decoder = decoders.Metaspace(replacement="\u2581", prepend_scheme="always",
+                                              split=True)
+    elif space_marker == "\u0120":
+        tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        tokenizer.decoder = decoders.ByteLevel()
+    else:
+        raise ValueError(f"space_marker 只支持 '▁' / 'Ġ'，收到 {space_marker!r}")
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tokenizer.save(str(out / "tokenizer.json"))
+    (out / "tokenizer_config.json").write_text(json.dumps({
+        "tokenizer_class": "PreTrainedTokenizerFast",
+        "unk_token": unk_token, "eos_token": eos_token, "bos_token": None,
+        "pad_token": None, "model_max_length": model_max_length,
+    }, indent=2) + "\n")
+    return out
+
+
+def tiny_hetero_pair(target_name: str = "tiny_gqa", *, seed: int = 0):
+    """生成 67 关用的一对"异构词表"模型目录：`(target_dir, draft_dir, 说明)`。
+
+    - target：tiny target 的配置与权重（vocab=11）+ SentencePiece 风格的 tokenizer；
+    - draft：**同 KV 规格**（同 hidden/heads/head_dim/interleaved/max_position_embeddings）但
+      **vocab=13**、BPE 风格 tokenizer 的 Qwen3 模型——两边同一个词的 id 不同，交集 10 个 token。
+
+    为什么 KV 规格必须相同：draft 与 target 共用逻辑块表（同一个 KV group），规格不同就谈不到一起
+    （`DraftModelProposer._validate_configs` 会报错）。TLI 只是让**词表**可以不同。
+    """
+    target_config = tiny_qwen3_config(target_name)
+    draft_config = dict(target_config)
+    draft_config["vocab_size"] = max(HETERO_DRAFT_TOKENS.values()) + 1        # 13
+    draft_config["eos_token_id"] = HETERO_DRAFT_TOKENS["<eos>"]
+
+    target_dir = Path(tempfile.mkdtemp(prefix=f"minivllm_hetero_target_{target_name}_"))
+    draft_dir = Path(tempfile.mkdtemp(prefix=f"minivllm_hetero_draft_{target_name}_"))
+    (target_dir / "config.json").write_text(json.dumps(target_config, indent=2) + "\n")
+    (draft_dir / "config.json").write_text(json.dumps(draft_config, indent=2) + "\n")
+    save_file(_weights(target_config, seed), str(target_dir / "model.safetensors"))
+    save_file(_weights(draft_config, seed + 3000), str(draft_dir / "model.safetensors"))
+    write_wordlevel_tokenizer(target_dir, HETERO_TARGET_TOKENS, space_marker="\u2581")
+    write_wordlevel_tokenizer(draft_dir, HETERO_DRAFT_TOKENS, space_marker="\u0120")
+    info = {
+        "target_vocab_size": target_config["vocab_size"],
+        "draft_vocab_size": draft_config["vocab_size"],
+        "target_tokens": dict(HETERO_TARGET_TOKENS),
+        "draft_tokens": dict(HETERO_DRAFT_TOKENS),
+        "prompt_token_ids": [HETERO_TARGET_TOKENS["\u2581hello"],
+                             HETERO_TARGET_TOKENS["\u2581kv"],
+                             HETERO_TARGET_TOKENS["\u2581cache"]],
+    }
+    return str(target_dir), str(draft_dir), info
+
+
 def _weights(config: dict, seed: int) -> dict:
     """按 HF 的初始化方式生成权重：线性/嵌入 ~ N(0, initializer_range)，RMSNorm 全 1。
 

@@ -131,10 +131,19 @@ class ModelConfig:
     max_model_len: int = 4096
     hf_config: dict | None = None
     eos_token_id: int | None = None
+    # 66 关以前本仓库从不读 tokenizer（输入都是 token id），所以没有这个字段；67 关的 TLI 要建
+    # "两套 tokenizer 的 token 级交集"，需要**分别**知道两边去哪读（上游 `ModelConfig.tokenizer`
+    # 就是这个用途：默认与 `model` 同一个目录，异构词表时 target 用 target 的、draft 用 draft 的）。
+    tokenizer: str | None = None
 
     def __post_init__(self):
         if self.max_model_len <= 0:
             raise ValueError(f"max_model_len 必须为正，收到 {self.max_model_len}")
+
+    @property
+    def tokenizer_path(self) -> str:
+        """去哪读 tokenizer（没单独指定就是模型目录，与上游默认一致）。"""
+        return self.tokenizer or self.model
 
 
 @dataclass(frozen=True)
@@ -250,6 +259,15 @@ class SpeculativeConfig:
     suffix_decoding_max_spec_factor: float = 1.0
     # 只推测"按频次估计的概率" ≥ 该值的 token。
     suffix_decoding_min_token_prob: float = 0.1
+    # 67 关（TLI，上游 `SpeculativeConfig.use_heterogeneous_vocab`）：允许 draft 与 target 用
+    # **两套不同的 tokenizer**。开启后初始化会按 token 字符串建交集表，草稿 logits 只留交集里的列，
+    # 历史/草稿 id 在两个空间之间搬运（见 `spec_decode/vocab_mapping.py`）。只支持 `draft_model`。
+    use_heterogeneous_vocab: bool = False
+    # 草稿怎么采（上游 `draft_sample_method`）：`"greedy"`（默认，草稿恒 argmax）或
+    # `"probabilistic"`（在草稿自己的分布上采样并把 q 交给验证器）。
+    # **TLI 目前只允许 greedy**（上游同款限制）：概率草稿要把 q 从 draft 空间搬到 target 空间，
+    # 上游还没实现（代码里留着 TODO），需求 067 §3.5 明确要求不得自行放开。
+    draft_sample_method: str = "greedy"
 
     @staticmethod
     def _is_custom_proposer_path(model: str | None) -> bool:
@@ -301,6 +319,23 @@ class SpeculativeConfig:
                 f"'medusa'，收到 "
                 f"{self.method!r}"
                 "（PARD/DFlash/DSpark 等按需求顺序在后续关卡实现）")
+        if self.draft_sample_method not in ("greedy", "probabilistic"):
+            raise ValueError(
+                f"draft_sample_method 只能是 'greedy' 或 'probabilistic'，收到 "
+                f"{self.draft_sample_method!r}（上游 `DraftSampleMethod` 同款）")
+        if self.use_heterogeneous_vocab and self.method != "draft_model":
+            # 上游 `config/speculative.py:1387-1390` 的原话
+            raise ValueError(
+                "use_heterogeneous_vocab only works with method='draft_model'"
+                f"（收到 method={self.method!r}）：分词空间不同是「拿另一个训练好的模型当 draft」"
+                f"才会遇到的事；EAGLE/MTP 这类与 target 共享词表的 draft 不需要它")
+        if self.use_heterogeneous_vocab and self.draft_sample_method != "greedy":
+            # 上游 `config/speculative.py:1392-1396` 的原话 + 本仓库的说明
+            raise ValueError(
+                "use_heterogeneous_vocab currently only supports greedy draft sampling. "
+                f"收到 draft_sample_method={self.draft_sample_method!r}：概率草稿的 q 是 draft 空间的"
+                f"分布，要无损验证必须先把它搬到 target 空间（上游留了 TODO，尚未实现），"
+                f"本仓库照抄这条边界，不自行放开（需求 067 §3.5）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
                 f"本关只支持 rejection_sample_method='standard'，收到 "
