@@ -6,6 +6,7 @@
     ngram_proposer_gpu.py 同一套匹配的 GPU 版：显存常驻历史 + 增量写入 + 有效个数
     draft_model.py        用小模型提议（SpecDecodeBaseProposer + DraftModelProposer）
     extract_hidden_states.py  64 关：cache-only 特征提取（不猜 token，借 KV 缓存存特征）
+    medusa.py                 66 关：Medusa 多头提议（N 个纯 MLP head 并行读同一份 target hidden）
 
 **时序**（199 §4）：轮 t 验证时顺手提草稿 → `post_step` 取回 → 轮 t+1 才采用。
 提议者**不改本轮计划**，也没有自己的调度器：它是"历史进、草稿出"的一段计算。

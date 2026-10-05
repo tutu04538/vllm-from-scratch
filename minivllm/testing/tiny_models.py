@@ -277,6 +277,104 @@ def tiny_mtp_dir(target_name: str = "tiny_gqa", *, naming: str = "mtp",
     return str(out)
 
 
+def tiny_medusa_dir(target_name: str = "tiny_gqa", *, num_heads: int = 3,
+                    num_layers: int = 1, naming: str = "old", fc_bias: bool = False,
+                    original_lm_head: bool = False, truncated_vocab: int | None = None,
+                    seed: int = 0) -> str:
+    """生成一份**与 tiny target 规格匹配**的 Medusa head（随机但确定；只给测试）。
+
+    66 关要对付的真实形态（本机实测 `FasterDecoding/medusa-vicuna-7b-v1.3/medusa_lm_head.pt`
+    的 state_dict 键 + 它的 `config.json`）：
+
+        config.json   `{"medusa_num_heads": 2, "medusa_num_layers": 1, "base_model_name_or_path": ...}`
+                      —— 连 model_type / vocab_size / hidden_size / architectures 都没有
+        head 权重     `0.0.linear.weight` / `0.0.linear.bias`（残差块）
+                      `0.1.weight`（那个 head 的 lm_head，序号 = num_layers）
+                      `1.0.linear.weight` / `1.1.weight` / …（每个 head 一组）
+
+    三种命名各生成一份（`naming`）：
+
+        "old"           `{h}.{l}.linear.weight` / `{h}.{num_layers}.weight`（真实旧文件）
+        "medusa_heads"  同上但带 `medusa_heads.` 前缀（上游 `load_weights` 会先剥掉它）
+        "vllm"          `blocks.{h}.layers.{l}.weight` / `lm_heads.{h}.weight`（已经是本模型的名字）
+
+    默认的 config 里**带 hidden_size**（tiny target 的 32；真实旧文件缺这一项时
+    `MedusaConfig` 的默认值 4096 只对 7B 有效）但**不带 vocab_size**——于是
+    `derive_medusa_draft_config()` 的"与 target 对齐词表"这一步真的有东西可做。
+
+    `fc_bias=True` 让残差块带 bias（旧文件里通常有）；`original_lm_head=True` +
+    `truncated_vocab=k` 生成"共享一个 lm_head + token_map 截断词表"的那一套
+    （上游就只有这条路走得通：lm_head 的参数宽度等于 truncated_vocab_size）。
+    """
+    if naming not in ("old", "medusa_heads", "vllm"):
+        raise ValueError(f"naming 只能是 'old' / 'medusa_heads' / 'vllm'，收到 {naming!r}")
+    target_config = tiny_qwen3_config(target_name)
+    hidden = target_config["hidden_size"]
+    vocab = target_config["vocab_size"]
+
+    config = {
+        # 旧 FasterDecoding 的字段名（`MedusaConfig` 会把它们改写成 num_heads/num_hidden_layers）
+        "medusa_num_heads": num_heads,
+        "medusa_num_layers": num_layers,
+        "base_model_name_or_path": f"tiny://{target_name}",
+        "transformers_version": "4.31.0",
+        "hidden_size": hidden,
+    }
+    if fc_bias:
+        config["medusa_fc_bias"] = True
+    if original_lm_head:
+        config["original_lm_head"] = True
+        config["vocab_size"] = vocab          # 与 target 一致 → 不触发词表对齐
+        config["truncated_vocab_size"] = int(truncated_vocab or vocab)
+
+    generator = torch.Generator().manual_seed(seed + 2000)
+
+    def normal(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, target_config["initializer_range"], generator=generator)
+
+    weights: dict[str, torch.Tensor] = {}
+    for head in range(num_heads):
+        for layer in range(num_layers):
+            weights[f"{head}.{layer}.linear.weight"] = normal(hidden, hidden)
+            if fc_bias:
+                weights[f"{head}.{layer}.linear.bias"] = normal(hidden)
+        # 这个 head 的 lm_head：真实检查点里存的是**整份词表**（截断词表靠加载时按
+        # `token_map` 选行，见 `Medusa.load_weights`）
+        weights[f"{head}.{num_layers}.weight"] = normal(vocab, hidden)
+        if fc_bias:
+            # 旧文件里 lm_head 不带 bias；这里**故意**造一份出来，用来钉住"本模型不建 bias
+            # → 显式记账后丢弃"这条规则（真实转换脚本也偶尔留下这种项）
+            weights[f"{head}.{num_layers}.bias"] = normal(vocab)
+    if original_lm_head and truncated_vocab:
+        # 截断词表的映射表（上游：只有 config 里 truncated_vocab_size < vocab_size 且检查点有
+        # `token_map` 时才启用）
+        weights["token_map"] = torch.arange(int(truncated_vocab), dtype=torch.int64)
+
+    if naming == "medusa_heads":
+        weights = {f"medusa_heads.{name}": value for name, value in weights.items()}
+    elif naming == "vllm":
+        renamed: dict[str, torch.Tensor] = {}
+        for name, value in weights.items():
+            if name == "token_map":
+                renamed[name] = value
+                continue
+            # 旧名字的形状是 `{head}.{层号}.{linear.}?{参数}`：带 `linear.` 的是残差块，
+            # 不带的是那个 head 的 lm_head（序号 = num_layers）
+            head, _, rest = name.partition(".")
+            layer, _, param = rest.partition(".")
+            if param.startswith("linear."):
+                renamed[f"blocks.{head}.layers.{layer}.{param[len('linear.'):]}"] = value
+            else:
+                renamed[f"lm_heads.{head}.{param}"] = value
+        weights = renamed
+
+    out = Path(tempfile.mkdtemp(prefix=f"minivllm_medusa_{target_name}_"))
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
 def _weights(config: dict, seed: int) -> dict:
     """按 HF 的初始化方式生成权重：线性/嵌入 ~ N(0, initializer_range)，RMSNorm 全 1。
 

@@ -13,7 +13,8 @@
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
     "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）",
-    "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）"
+    "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
+    "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）"
   },
   "step58": {
     "results": {
@@ -2688,5 +2689,152 @@
       }
     },
     "dependencies": null
+  },
+  "step66": {
+    "results": {
+      "step": 66,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/066_Medusa多头提议与MLP支持缺口.md",
+      "status": "implemented + self-verified（Medusa：与上游真实 Medusa/MedusaProposer 的每个 head logits 与候选列顺序逐位相同；mlp_speculator 按需求 §3 只交「版本缺口证明」，生产路径保持不支持）",
+      "recorded_at": "2026-10-05T09:55:03+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "80021aa",
+        "implementation_commit": "见本轮提交（step66：Medusa 多头提议与 MLP 支持缺口）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 78,
+        "sha256": "f97b58f731eafdc75b0d813f455c49e80c00209485bf8fc7d68c75109d9d1575",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/上游类数值对照；生产路径不 import）",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step66 -q",
+          "result": "51 passed（test_medusa.py 41 + test_mlp_support_boundary.py 10）"
+        },
+        {
+          "cmd": "python benchmarks/check_step66_medusa.py",
+          "result": "28 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step58..66 -q",
+          "result": "412 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step58..65 + check_step57_*.py",
+          "result": "全通过（回归，见 check_scripts_regression）"
+        }
+      ],
+      "execution_trace": {
+        "upstream_numeric_diff": {
+          "对象": "vllm.model_executor.models.medusa.Medusa + vllm.v1.spec_decode.medusa.MedusaProposer（本进程实例化，tiny Medusa head 目录）",
+          "做法": "同一份 tiny safetensors、同一个 hidden 输入（fp32）：比每个 head 的 blocks / compute_logits，再用上游 proposer 比 [B, K] 的候选列顺序",
+          "per_head_blocks_max_abs_delta": 0.0,
+          "per_head_logits_max_abs_delta": 0.0,
+          "candidate_columns_equal": true,
+          "配置归一对照": "本仓库 derive 出来的 hidden_size/vocab_size/truncated_vocab_size/num_heads/num_hidden_layers/max_paths/topk 与上游 MedusaConfig 逐个相同，architectures 都是 ['MedusaModel']"
+        },
+        "real_old_checkpoint_facts": {
+          "repo": "FasterDecoding/medusa-vicuna-7b-v1.3",
+          "config_json": {
+            "base_model_name_or_path": "lmsys/vicuna-7b-v1.3",
+            "medusa_num_heads": 2,
+            "medusa_num_layers": 1,
+            "transformers_version": "4.31.0"
+          },
+          "权重文件": "medusa_lm_head.pt（torch pickle，1,478,537,775 字节；本仓库加载器只读 safetensors，实测会明确报 NotImplementedError）",
+          "state_dict_键（读前 4MB 实测）": [
+            "0.0.linear.weight",
+            "0.0.linear.bias",
+            "0.1.weight",
+            "1.0.linear.weight",
+            "1.0.linear.bias",
+            "1.1.weight",
+            "…",
+            "4.1.weight"
+          ],
+          "注意": "config 写 2 个 head、文件里有 5 个：上游把 num_heads 改写成 K，所以 head 数由 K 决定",
+          "用途": "tiny fixture 的命名/配置形态照它做；没有下载/加载真实权重（本机无 LLaMA/Vicuna 基座）"
+        },
+        "loader": {
+          "三种命名": [
+            "旧格式 `{h}.{l}.linear.weight`/`{h}.{l}.weight`",
+            "带 `medusa_heads.` 前缀",
+            "本模型名 `blocks.{h}.layers.{l}.*` / `lm_heads.{h}.*`"
+          ],
+          "三种命名加载结果": "参数集合与数值逐位相同（4 个参数：K=2 × (1 个 block + 1 个 lm_head)）",
+          "K<head": "检查点 5 个 head、K=2 → 建 2 个 head，6 项权重记账后丢弃（dropped_weights）",
+          "K>head": "K=6、检查点 5 个 head → 覆盖检查报错（不留 torch.empty 的随机参数）",
+          "未知名字": "报错（上游静默丢）",
+          "token_map": "original_lm_head=True + truncated_vocab_size=5/11：checkpoint 的整份词表 lm_head 按 token_map 选 5 行；compute_logits 越界位置全 -inf、argmax 全落在 token_map 内",
+          "词表对齐": "旧 config 缺 vocab_size（默认 32001）→ 对齐 target 的 11；若 vocab_size 不等则 truncated_vocab_size 也被一起改（上游行为，照抄）"
+        },
+        "row_selection": {
+          "算式": "块内第 `采样数 - 1` 行（首拒 = 第 0 行 = b 的 hidden）；无草稿批退化成 arange(B)，与上游第一条分支逐值相同",
+          "上游stride反证": "rows_per_request=[5(prefill),3,3]、sampled=[1,3,1]：上游 `offset += num_draft+1` 给出 [0,3,4]，本仓库给出 [7,8]",
+          "prefill行": "没有采到 token 的请求不允许进这套算式（上游会算 -1）；Runner 直接跳过"
+        },
+        "e2e": {
+          "greedy_vs_non_spec": "K=1/2/3 × 三种命名全部逐 token 相同（基线是 spec=None 的真非投机引擎）",
+          "drafts": "每条 ready 请求正好 K 枚、draft_probs=None、两条请求的行不串、propose 的 hidden 与重算 argmax 逐位相同",
+          "拒绝模式": "注入 oracle 草稿（greedy 验证确定性）：全接受 (3,3)、首拒 (3,0)、中拒 (3,1)，三种模式输出都 == 非投机",
+          "行错位反证": "把行整体错开一位 → 草稿必变",
+          "混合prefill": "budget=8 + prompt 11：greedy 一致；prefill 轮的草稿列表全为空",
+          "preemption": "num_gpu_blocks=6 触发抢占后 greedy 仍与非投机一致",
+          "lookahead": "num_lookahead_tokens=0、draft_slots=0（上游 VllmConfig 只给 use_eagle()/uses_draft_model() 留 K）"
+        },
+        "mlp_gap": {
+          "结论": "本机 vllm==0.28.0：配置层认得 mlp_speculator、模型层没有它 → 归为版本缺口，生产路径明确报错",
+          "证据1_配置层": "MLPSpeculatorConfig.from_pretrained 正常解析（model_type=mlp_speculator、n_predict=3、num_lookahead_tokens=3）；config/speculative.py 有 model_type == \"mlp_speculator\" 的推断分支",
+          "证据2_注册表": "model_executor/models/registry.py:689 是注释行（同文件有 'Temporarily disabled'）；ModelRegistry._try_inspect_model_cls('MLPSpeculatorPreTrainedModel') is None",
+          "证据3_配置校验": "ModelConfig(model=...) 抛 pydantic ValidationError: Model architectures ['MLPSpeculatorPreTrainedModel'] are not supported for now.",
+          "证据4_执行层": "mlp_speculator.py 的 MLPSpeculator 只有 __init__/load_weights（没有 forward）；v1/worker/gpu_model_runner.py 里 mlp_speculator 出现 0 次",
+          "本仓库口径": "method='mlp_speculator' → NotImplementedError（含「版本缺口」字样与「先钉一个真正支持它的上游提交」）；不写自创 MLP 实现（扫描 minivllm/**/*.py 只允许 config.py 提到它）；绕过配置校验时 Runner 会落到「未知的投机方法」"
+        }
+      },
+      "not_run": [
+        "真实 Medusa checkpoint 的端到端（本机没有 LLaMA/Vicuna 基座；官方权重还是 .pt，本仓库只读 safetensors）",
+        "树形候选/tree attention（需求 §2 明确不做；max_paths/topk 在 V1 无读取点）",
+        "CUDA Graph / 异步调度 / padded drafter batch 下的 Medusa（69/70 关）",
+        "量化 head、MoE head + EPLB（本仓库 TP=1、不量化、无 MoE）",
+        "异构词表 TLI（67 关；Medusa 的 token_map 是草稿头词表截断，不是同一件事）"
+      ]
+    },
+    "models": {
+      "tiny_target": {
+        "生成器": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+        "规格": "Qwen3 2 层、hidden 32、vocab 11、GQA 4/2、head_dim 16、float32",
+        "用途": "所有配置/行选择/端到端用例的 target（随机但固定 seed 现场生成，不提交权重）"
+      },
+      "tiny_medusa_head": {
+        "生成器": "minivllm/testing/tiny_models.py::tiny_medusa_dir('tiny_gqa', num_heads=K, num_layers=1|2, naming='old'|'medusa_heads'|'vllm', fc_bias=?, original_lm_head=?, truncated_vocab=?)",
+        "形态": "照真实旧 checkpoint：config.json 只有 medusa_num_heads/medusa_num_layers（+ hidden_size），权重键 {h}.{l}.linear.weight[/bias] 与 {h}.{num_layers}.weight",
+        "变体": "带 medusa_heads. 前缀、已是本模型名、带 fc bias、original_lm_head + token_map 截断词表",
+        "dtype": "float32"
+      },
+      "upstream_medusa_for_diff": {
+        "类": "vllm.model_executor.models.medusa.Medusa + vllm.v1.spec_decode.medusa.MedusaProposer",
+        "配置": "上游 ModelConfig(model=tiny Medusa 目录)（AutoConfig → MedusaConfig，method='medusa' 注入 model_type）+ ParallelConfig 默认 + CPU",
+        "用途": "每个 head 的 blocks/logits 与候选列顺序的逐值对照；配置归一字段的对照"
+      },
+      "real_checkpoint_manifest": {
+        "repo": "FasterDecoding/medusa-vicuna-7b-v1.3",
+        "revision": "main（2026-10-05 读取 config.json / 文件列表 / 权重文件头部字节；未下载权重）",
+        "config": "config.json 只有 base_model_name_or_path/medusa_num_heads/medusa_num_layers/transformers_version",
+        "权重": "medusa_lm_head.pt（1,478,537,775 字节，5 个 head）；本机没有 LLaMA/Vicuna 基座 → 集成待验"
+      },
+      "mlp_speculator": {
+        "状态": "版本缺口（本机 vllm==0.28.0 里配置层认得、模型层没有）",
+        "本仓库": "不注册模型类、不写实现；method='mlp_speculator' 明确报错",
+        "未来": "先钉一个真正支持它的上游提交并单独增补需求，不得悄悄换参考版本"
+      }
+    }
   }
 }

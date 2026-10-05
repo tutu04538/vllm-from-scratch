@@ -86,10 +86,12 @@ def test_missing_dependency_fails_loudly(monkeypatch):
 def test_unknown_method_still_rejected():
     """别的投机方法照旧明确报错（不静默降级）。
 
-    （63 关起 `eagle`/`eagle3` 已被支持，这条用例改用仍未实现的 `medusa`；断言强度不变。）
+    （这条用例的"仍未实现的方法"换过两次：63 关的 `eagle`/`eagle3` → `medusa`；
+    66 关实现了 `medusa`，现在改用仍未实现的 `dflash`（76–78 关）。断言强度不变：
+    配置期 ValueError + 不静默回退。）
     """
     with pytest.raises(ValueError, match="本关只支持"):
-        SpeculativeConfig(method="medusa")
+        SpeculativeConfig(method="dflash")
 
 
 # ---------------------------------------------------------------------------

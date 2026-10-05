@@ -29,6 +29,74 @@ def has_arctic_inference() -> bool:
     return importlib.util.find_spec("arctic_inference") is not None
 
 
+def medusa_hf_config(draft_hf_config: dict | None, num_speculative_tokens: int) -> dict:
+    """把 draft 的 hf 配置归一成 Medusa 的规格（66 关；对应上游
+    `transformers_utils/configs/medusa.py::MedusaConfig` + `SpeculativeConfig.__post_init__`
+    里对 Medusa 的两处改写）。
+
+    上游在配置期做三件事，这里逐条对应：
+
+    1. **旧 checkpoint 的 key 改名**：`MedusaConfig.from_pretrained()` 会把
+       `medusa_num_heads`/`medusa_num_layers` 改写成 `num_heads`/`num_hidden_layers`。
+       本机实测的真实旧文件 `FasterDecoding/medusa-vicuna-7b-v1.3/config.json` **只有**
+       `{"medusa_num_heads": 2, "medusa_num_layers": 1, "base_model_name_or_path": ...}`——
+       连 `model_type` / `vocab_size` / `hidden_size` / `architectures` 都没有，所以
+       `AutoConfig` 认不出它是 Medusa（这就是上游要 `hf_overrides={"model_type": "medusa"}`
+       的原因），而缺的字段全部落回 `MedusaConfig` 的默认值（vocab_size=32001、hidden_size=4096）。
+
+    2. **model_type / architectures**：上游强制 `model_type="medusa"`；`MedusaConfig.__init__`
+       在"配置里没有 architectures"时补 `["MedusaModel"]`（旧文件正好没有）。
+
+    3. **K 对 head 数的约束**：上游有一段"draft 配置只要有 `num_lookahead_tokens` 属性，就把
+       `num_speculative_tokens` 写进去"，而 `MedusaConfig.num_lookahead_tokens` 的 setter 是
+       `self.num_heads = num_lookahead_tokens`——**所以 Medusa 的 head 数就是 K**，checkpoint
+       自己声明的 `medusa_num_heads` 反而会被覆盖（实测那份 config 写 2、文件里其实有 5 个 head，
+       上游按 K 建、多的丢掉）。本函数同样最后写 `num_heads = K`。
+
+    本仓库的差异（记在 docs/step66_alignment.md §3）：上游的改名循环是"key 里同时含 num 与
+    heads/layers 就改名"，于是 `num_attention_heads` / `num_key_value_heads` 也会被改名成
+    `num_heads`（社区版 config 里两者都在）；因为它随后又被 K 覆盖，观测不到，本仓库只认
+    `medusa_*` 前缀的字段，不做这个有副作用的宽匹配。
+    """
+    source = dict(draft_hf_config or {})
+    # 1) 旧 checkpoint 的字段名 → MedusaConfig 的字段名（`MedusaConfig.from_pretrained` 同款）
+    if "medusa_num_heads" in source:
+        source["num_heads"] = source.pop("medusa_num_heads")
+    if "medusa_num_layers" in source:
+        source["num_hidden_layers"] = source.pop("medusa_num_layers")
+
+    # 2) MedusaConfig.__init__ 的默认值（字段名与默认值逐个照抄）
+    config = {
+        "hidden_size": 4096,
+        "vocab_size": 32001,
+        "num_heads": 5,
+        "num_hidden_layers": 1,
+        "max_paths": 64,          # V1 的线性候选链用不到（论文的树才用），只保留字段
+        "topk": 10,               # 同上
+        "max_seq_len": int(2 ** 20),
+    }
+    config.update(source)         # checkpoint/用户给的字段覆盖默认值
+    config["model_type"] = "medusa"
+    # 3) 截断词表的默认值：不写就等于没截断（上游 `vocab_size if truncated_vocab_size is None`）
+    config["truncated_vocab_size"] = config.get("truncated_vocab_size") or config["vocab_size"]
+    # 4) architectures：`MedusaConfig` 只在"没有 architectures"时补 MedusaModel（旧文件正是如此）；
+    #    写了别的（社区版常见：`["Qwen2ForCausalLM"]`，即基座的名字）**明确报错**而不是照抄——
+    #    照抄的话加载器会去建基座模型，然后要么在权重名上炸、要么（上游）静默跑出一个
+    #    "把 hidden 当 logits" 的错模型。改法写在报错信息里。
+    architectures = config.get("architectures")
+    if architectures not in (None, ["MedusaModel"]):
+        raise ValueError(
+            f"draft 配置里的 architectures={architectures!r} 不是 Medusa："
+            f"method='medusa' 时本仓库只建 `MedusaModel`（上游 `MedusaConfig` 在配置里没有 "
+            f"architectures 时补的就是它，旧 FasterDecoding checkpoint 正好没有这一项）。"
+            f"社区版 checkpoint 常把基座的 architectures 抄进来，请把 draft 目录的 config.json "
+            f"改成 \"architectures\": [\"MedusaModel\"] 再加载")
+    config["architectures"] = ["MedusaModel"]
+    # 5) **K 就是 head 数**（上游 `num_lookahead_tokens` → `num_heads` 的 setter）
+    config["num_heads"] = int(num_speculative_tokens)
+    return config
+
+
 def extract_hidden_states_hf_config(target_hf_config: dict | None, cache_block_size: int,
                                     torch_dtype: str, **overrides) -> dict:
     """cache-only 模型的 hf 配置（对应上游
@@ -112,6 +180,12 @@ class SchedulerConfig:
 class DeviceConfig:
     device: str = "cpu"
 
+
+# 66 关：另一个"有配置枚举、但本机 V1 里没有实现"的方法（需求 066 §3）。
+# 它不是别名、也不是"还没适配的家族"——上游 0.28.0 的注册表里那条是**注释掉的**，
+# 所以配置层能认出它、执行层谁也建不起来。本仓库把这条事实写成明确的报错，
+# 而不是自己写一套 MLP 实现去"骗过枚举"（见 tests/step66/test_mlp_support_boundary.py）。
+MLP_SPECULATOR_MODEL_TYPE = "mlp_speculator"
 
 # 上游 `MTPModelTypes`（`config/speculative.py:37-61`）：这一长串**别名**在配置期一律归一到
 # `method="mtp"`（上游 L748-756：打个 deprecation 警告然后改写）。归一的理由：它们在引擎里
@@ -203,11 +277,28 @@ class SpeculativeConfig:
             # "method `x` is deprecated and replaced with mtp" 的 warning；本仓库不引 logger，
             # 把这条写进 docs/step65_alignment.md 的别名表）。
             object.__setattr__(self, "method", "mtp")
+        if self.method == MLP_SPECULATOR_MODEL_TYPE:
+            # 版本缺口（需求 066 §3）：本机 vLLM 0.28.0 里 `mlp_speculator` **只有配置枚举**，
+            # 没有可用的模型类、也没有 Runner 分支。三条实测证据（tests/step66 里各有断言）：
+            #   1. `ModelRegistry._try_inspect_model_cls("MLPSpeculatorPreTrainedModel")` → None，
+            #      因为 `registry.py:687-689` 那一行是注释掉的（`# Temporarily disabled.`）；
+            #   2. `model_executor/models/mlp_speculator.py` 里 `MLPSpeculator` **没有 forward**，
+            #      只剩 `__init__` / `load_weights`（V0 时代的遗留件）；
+            #   3. `GPUModelRunner` 的提议者分派里没有 `mlp_speculator` 分支。
+            # 所以这里明确报错，**不自己写一套 MLP 实现**去骗过枚举（那就不再是"对齐 vLLM"了）。
+            raise NotImplementedError(
+                "method='mlp_speculator' 是本机 vllm==0.28.0 的**版本缺口**："
+                "配置枚举存在（MLPSpeculatorConfig 能解析），但模型类没有注册、Runner 也没有分派，"
+                "上游自己在 registry.py 里把这一行注释成 'Temporarily disabled'。"
+                "本仓库保持不支持（不写自创实现冒充对齐）。若日后要实现，必须先钉一个**真正支持"
+                "它**的上游提交，单独增补需求；不得悄悄换参考版本。"
+                "（需求 066 §3；证据与最小启动测试见 tests/step66/test_mlp_support_boundary.py）")
         if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
-                               "eagle", "eagle3", "extract_hidden_states", "mtp"):
+                               "eagle", "eagle3", "extract_hidden_states", "mtp", "medusa"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / 'mtp'，收到 "
+                f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / 'mtp' / "
+                f"'medusa'，收到 "
                 f"{self.method!r}"
                 "（PARD/DFlash/DSpark 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
@@ -226,10 +317,29 @@ class SpeculativeConfig:
             # 的 EAGLE 系"（L1477-1481），但 MTP 的 draft 配置是从 target 派生的、不需要用户给
             # draft_model_config，所以校验规则与 EAGLE 不同（见 _resolve_mtp）。
             self._resolve_mtp()
+        elif self.method == "medusa":
+            # 66 关：Medusa 的 draft 配置是**用户给的**（一个只有 head 权重的小目录），
+            # 处理顺序与上游一致：先归一 hf 配置（旧 checkpoint 的 key 改名 / model_type /
+            # architectures / K→head 数），"与 target 对齐词表"那一步需要 target 配置，
+            # 由 derive_medusa_draft_config() 在提议者构造时补（见该方法的说明）。
+            self._resolve_medusa()
         elif self.use_eagle():
             self._resolve_eagle()
         elif self.uses_extract_hidden_states():
             self._resolve_extract_hidden_states()
+
+    @staticmethod
+    def _draft_model_type(draft_model_config) -> str | None:
+        """draft 配置里的 `model_type`（没有 draft 配置时报 None）。
+
+        上游是从 `draft_model_config.hf_config.model_type` 认方法的（`config/speculative.py:958-961`）；
+        本仓库的 `SpeculativeConfig` 直到 66 关才有 draft 配置可用，所以在 `_resolve_method()`
+        里补上这条**只看配置、不猜**的判定。
+        """
+        if draft_model_config is None:
+            return None
+        hf_config = draft_model_config.hf_config or {}
+        return hf_config.get("model_type")
 
     def _resolve_method(self) -> None:
         """`method` 没给时按上游规则推出来（`config/speculative.py:741-756`）。
@@ -241,6 +351,10 @@ class SpeculativeConfig:
         这一步是本关的"分派边界"：**同一条事实只在这里判定一次**，Runner 只按
         `speculative_config.method` 分派，不再自己猜第二遍（否则 CLI 与 Runner 可能各判一套，
         出现"配置说 A、运行时走 B"的静默错）。
+
+        66 关补的两条（上游同位置的 `hf_config.model_type` 分支）：
+        `model_type == "medusa"` → `medusa`；`model_type == "mlp_speculator"` →
+        `mlp_speculator`（随后在 `__post_init__` 里作为**版本缺口**明确报错）。
         """
         if self.method is None:
             if self._is_custom_proposer_path(self.model):
@@ -252,6 +366,11 @@ class SpeculativeConfig:
                 object.__setattr__(self, "method", "eagle3")
             elif self.model and "eagle-" in self.model.lower():
                 object.__setattr__(self, "method", "eagle")
+            elif (draft_model_type := self._draft_model_type(self.draft_model_config)) \
+                    in ("medusa", MLP_SPECULATOR_MODEL_TYPE):
+                # 上游 `:958-961`：draft 配置自己声明了 model_type 时按它认（旧 FasterDecoding
+                # checkpoint 没有 model_type，所以那条路要求用户显式给 method="medusa"）
+                object.__setattr__(self, "method", draft_model_type)
             else:
                 object.__setattr__(self, "method", "draft_model")
 
@@ -412,6 +531,78 @@ class SpeculativeConfig:
                      "n_predict": n_predict,
                      "architectures": ["Qwen3MTPModel"]}
         return replace(target_model_config, hf_config=hf_config)
+
+    def _resolve_medusa(self) -> None:
+        """`method="medusa"` 的配置归一与校验（上游 `config/speculative.py:883-935`）。
+
+        上游在 `__post_init__` 的这个分支里做三件事：
+
+        1. 显式给了 `method="medusa"` 时强制 `hf_overrides={"model_type": "medusa"}`
+           （旧 FasterDecoding checkpoint 的 config.json 里根本没有 model_type，
+           `AutoConfig` 会认成基座模型）；
+        2. 建 draft 的 `ModelConfig`（目录 = 用户给的 `self.model`）；
+        3. **与 target 对齐词表**：`draft_hf.vocab_size != target_vocab` 时把
+           `vocab_size` / `truncated_vocab_size` 都改成 target 的（旧 config 里缺 vocab_size，
+           `MedusaConfig` 的默认值是 32001，而 lm_head 的真实宽度是 target 的词表）。
+
+        本仓库的差异：`SpeculativeConfig` 拿不到 target 配置（与 64/65 关同样的情况），
+        所以第 3 件拆成 `derive_medusa_draft_config()`，由同时持有两者的 Runner 调用；
+        第 1、2 件在这里做（第 2 件在本仓库就是"用户直接给 `draft_model_config`"）。
+        """
+        if self.draft_model_config is None:
+            raise ValueError(
+                "method='medusa' 必须在 SpeculativeConfig 里给 draft_model_config"
+                "（Medusa 的 head 是独立权重的小目录；上游的 `model=` 就是它）")
+        if self.num_speculative_tokens <= 0:
+            # 上游："A speculative model was provided, but `num_speculative_tokens` was not
+            # provided"——而且对 Medusa 来说 K **就是 head 数**（见 medusa_hf_config），
+            # 所以它不能是 0，也没有"从 checkpoint 猜"的余地。
+            raise ValueError(
+                "method='medusa' 必须给 num_speculative_tokens > 0："
+                "它同时就是 Medusa 的 head 数（上游把 draft 配置的 num_heads 改写成 K）")
+        object.__setattr__(self, "prompt_lookup_max", 0)
+        object.__setattr__(self, "prompt_lookup_min", 0)
+        normalized = medusa_hf_config(self.draft_model_config.hf_config,
+                                      self.num_speculative_tokens)
+        object.__setattr__(self, "draft_model_config",
+                           replace(self.draft_model_config, hf_config=normalized))
+
+    def derive_medusa_draft_config(self, target_model_config: "ModelConfig") -> "ModelConfig":
+        """补上 Medusa 配置里"只有 target 才能回答"的那部分（上游同位置的最后一段）：
+
+            target_vocab = target.hf_config.vocab_size
+            if draft_hf.vocab_size != target_vocab:
+                draft_hf.vocab_size = target_vocab
+                draft_hf.truncated_vocab_size = target_vocab
+
+        为什么必要：旧 checkpoint 的 config.json 里**没有 vocab_size**，于是落到
+        `MedusaConfig` 的默认值 32001，而 `lm_heads.{i}.weight` 的真实宽度是 target 的词表
+        （151936）；对齐之后形状才谈得上匹配。**注意**上游是"不等就把两个都改成 target 的"，
+        所以显式声明的 `truncated_vocab_size` 在这个前提下也会被冲掉（要保留截断词表，
+        就得让配置里的 vocab_size 与 target 一致，例如社区版 config 抄了基座的 vocab_size）。
+
+        另外这里多做一条上游没有的检查：**draft 的 hidden_size 必须等于 target 的**
+        （Medusa head 吃的就是 target 的 hidden）。上游靠第一次前向的形状报错，本仓库提前到
+        配置期——差异记在 docs/step66_alignment.md §3。
+        """
+        draft_hf = dict(self.draft_model_config.hf_config or {})
+        target_hf = dict(target_model_config.hf_config or {})
+        target_vocab = target_hf.get("vocab_size")
+        if target_vocab is None:
+            raise ValueError("target 配置里没有 vocab_size：无法给 Medusa 的 lm_head 定宽度")
+        if draft_hf.get("vocab_size") != target_vocab:
+            draft_hf["vocab_size"] = target_vocab
+            draft_hf["truncated_vocab_size"] = target_vocab
+        if int(draft_hf["hidden_size"]) != int(target_hf.get("hidden_size", 0)):
+            raise ValueError(
+                f"Medusa 的 hidden_size={draft_hf['hidden_size']} 与 target 的 "
+                f"hidden_size={target_hf.get('hidden_size')} 不一致：head 吃的就是 target 的 "
+                f"hidden，对不上时上游会在第一次前向炸形状错，本仓库在配置期直接拒绝")
+        return replace(self.draft_model_config, hf_config=draft_hf)
+
+    def uses_medusa(self) -> bool:
+        """是否走 Medusa 多头提议（上游 Runner 的分派判据就是 `method == "medusa"`）。"""
+        return self.method == "medusa"
 
     def _resolve_eagle(self) -> None:
         """EAGLE 的取值校验：必须有 draft 模型目录、K > 0（上游同样要求）。

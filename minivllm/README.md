@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复、第五十八关的 draft 输入/双预算对齐、第五十九关的 GPU 批量拒绝采样、第六十关的 CPU/GPU ngram 提议、第六十一关的 Suffix Decoding、第六十二关的自定义 Proposer 接入）。旧的 `stepNN/` 代码目录已经
+这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复，以及第五十八～六十六关：draft 输入/双预算、GPU 批量拒绝采样、CPU/GPU ngram、Suffix Decoding、自定义 Proposer 接入、EAGLE/EAGLE3、HiddenStateExtraction、原生 MTP、Medusa 多头提议）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 
 它不自己发明协议，而是做一个**能逐层映射到本机 vLLM（0.28.0）的、可运行的文本生成子集**。
@@ -23,7 +23,11 @@
 [`docs/step60_alignment.md`](../docs/step60_alignment.md)（CPU/GPU ngram 提议与历史增量维护）、
 [`docs/step61_alignment.md`](../docs/step61_alignment.md)（Suffix Decoding：请求内 + 跨请求后缀树，外部依赖见
 [`docs/results.json`](../docs/results.json)（`step61.dependencies`））、
-[`docs/step62_alignment.md`](../docs/step62_alignment.md)（自定义 Proposer 与分派边界）。
+[`docs/step62_alignment.md`](../docs/step62_alignment.md)（自定义 Proposer 与分派边界）、
+[`docs/step63_alignment.md`](../docs/step63_alignment.md)（EAGLE/EAGLE3）、
+[`docs/step64_alignment.md`](../docs/step64_alignment.md)（cache-only 特征提取）、
+[`docs/step65_alignment.md`](../docs/step65_alignment.md)（原生 MTP）、
+[`docs/step66_alignment.md`](../docs/step66_alignment.md)（Medusa 多头提议与 MLP 版本缺口）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -42,7 +46,7 @@
 | 层与注意力 | `layers/*`、`attention/*` | `model_executor/layers/*`、`attention/*` |
 | 采样 | `sample/{metadata,sampler}.py`、`sample/ops/*` | `v1/sample/{metadata,sampler}.py`、`v1/sample/ops/*` |
 | 投机验证 | `sample/rejection_sampler.py`（Triton 批量内核） | `v1/sample/rejection_sampler.py` |
-| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding,custom_class_proposer}.py` | `v1/spec_decode/*` |
+| 投机提议 | `spec_decode/{metadata,metrics,ngram_proposer,ngram_proposer_gpu,draft_model,suffix_decoding,custom_class_proposer,eagle,extract_hidden_states,medusa}.py` | `v1/spec_decode/*` |
 | 测试替身 | `testing/fake_runner.py`、`testing/tiny_models.py`、`testing/torch_rejection_sampler.py`、`testing/spec_metadata.py` | 无（只给测试；tiny 模型现场生成，不提交权重） |
 
 ## 怎么用（本地模型短生成）
@@ -214,6 +218,39 @@ python benchmarks/check_step65_mtp.py                 # 17 项（含与上游 Qw
 设计与差异（含别名表与"顺带修掉的 63 关 bug"）见 [`docs/step65_alignment.md`](../docs/step65_alignment.md)，
 实测记录见 [`docs/results.json`](../docs/results.json)（`step65.results`）。
 
+## 第六十六关：Medusa 多头提议（与 MLP 支持缺口）
+
+Medusa 是挂在 target 旁边的 **N 个纯 MLP head**（没有 attention、没有 KV）：所有 head 读**同一份**
+target hidden，各自 argmax 出一枚草稿，`stack` 成 `[B, K]`。与 EAGLE/MTP 的**自回归**候选不同，
+这 N 枚候选互相"听不见"（并行省时间，第 2 枚的接受率天然低一档）。这一关做三件事：
+
+- **K 就是 head 数**：旧 FasterDecoding 的 `config.json` 只有 `medusa_num_heads/medusa_num_layers`
+  （连 `model_type`/`vocab_size`/`architectures` 都没有），上游把 `num_heads` 改写成 K、并把
+  `vocab_size`/`truncated_vocab_size` 对齐到 target——本仓库同样在配置期归一；
+- **线性链，不是树**：`propose()` = `model(hidden)` → 每个 head 的 `compute_logits` → 每个 head 一个
+  `argmax` → `[B, num_heads]`；argmax 是点质量提议，所以 `draft_probs=None` 是**正确**的 q。
+  论文里的 tree attention（`max_paths`/`topk`）在本机 V1 里没有读取点；
+- **取对 hidden 行**：一轮验证的 query 是 `[b][d1]…[dK]`，采样后序列最后一个 token（bonus）本轮没算过，
+  所以要用"产出 bonus 的那一行" = 块内第 `采样数 - 1` 行。上游的 stride 是 `num_draft + 1`
+  （混合 prefill 批会错位），本仓库用调度快照的 `num_scheduled_tokens`。
+
+```bash
+python -m pytest tests/step66 -q                  # 51 项
+python benchmarks/check_step66_medusa.py          # 28 项（含与上游 Medusa/MedusaProposer 的逐值对照）
+```
+
+> 与上游真实 `Medusa` + `MedusaProposer`：每个 head 的 blocks/logits **max|Δ| = 0.0**、候选**列顺序**相同。
+> 旧 checkpoint 是 `.pt`（本仓库只读 safetensors，会明确报错），本机也没有 LLaMA/Vicuna 基座，
+> 所以真实权重下的端到端**待验**。
+>
+> **`mlp_speculator` 是版本缺口**（需求 §3）：本机 0.28.0 里配置层认得它、注册表那行却被注释成
+> "Temporarily disabled"，模型类连 `forward` 都没有、Runner 也没有分派。本仓库**不写自创实现**，
+> 而是在配置期明确报错（`tests/step66/test_mlp_support_boundary.py` 用四份证据钉住）。
+
+设计与差异（含真实旧 checkpoint 的实测形态、行选择错位反证、加载严格度）见
+[`docs/step66_alignment.md`](../docs/step66_alignment.md)，实测记录见
+[`docs/results.json`](../docs/results.json)（`step66.results`）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
@@ -251,6 +288,7 @@ python benchmarks/check_step62_custom_proposer.py    # 34 项：方法推断、�
 python benchmarks/check_step63_eagle_inputs.py       # 8 项：EAGLE 第一遍输入对齐（只测生产路径）
 python benchmarks/check_step64_hidden_cache.py       # 18 项：cache-only 路径（物理 slot、协议、chunked/prefix/拒绝尾部/复用、端到端）
 python benchmarks/check_step65_mtp.py                # 17 项：MTP 别名/加载（两派命名）/胶水与上游逐值对照/端到端反证
+python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/加载/行选择/端到端 + 上游逐值对照 + MLP 缺口证明
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -259,6 +297,7 @@ python -m pytest tests/step62 -q                     # 37 项：step62 的接口
 python -m pytest tests/step63 -q                     # 21 项：step63（EAGLE3 模型 + 端到端 + 与上游的数值对照）
 python -m pytest tests/step64 -q                     # 13 项：step64（cache-only 层/提议者/Runner 接线与物理 slot 校验）
 python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配置/加载/前向/端到端 + 特征上传回归）
+python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 配置/模型/加载/行选择/端到端 + MLP 支持缺口）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

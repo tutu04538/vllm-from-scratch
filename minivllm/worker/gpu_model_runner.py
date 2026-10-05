@@ -289,6 +289,16 @@ class GPUModelRunner:
             from ..spec_decode.suffix_decoding import SuffixDecodingProposer
 
             return SuffixDecodingProposer(self.vllm_config)
+        if config.uses_medusa():
+            # 66 关：Medusa 的 head 是**用户给的**独立小目录。调用形态与上游逐字一致
+            # （`MedusaProposer(vllm_config=..., device=...)`）；"与 target 对齐词表"那步需要
+            # target 配置，由提议者在构造时自己做（与 64 关同样处理）。
+            # 分支位置与上游一致（suffix 之后、extract 之前）。
+            from ..spec_decode.medusa import MedusaProposer
+
+            proposer = MedusaProposer(self.vllm_config, self.device)
+            proposer.load_model()
+            return proposer
         if config.uses_extract_hidden_states():
             # 64 关：它不猜 token（"草稿"就是 target 自己采出的那一列），只负责把 target 的
             # 辅助层特征写进自己的 cache-only 缓存。分支位置与上游一致（排在 eagle 之后）。
@@ -299,7 +309,8 @@ class GPUModelRunner:
             return proposer
         raise ValueError(f"未知的投机方法 {config.method!r}"
                          f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                         f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states'）")
+                         f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / "
+                         f"'mtp' / 'medusa'）")
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
@@ -988,6 +999,10 @@ class GPUModelRunner:
             # 64 关：cache-only 提议者走**自己那套特殊协议**（上游 `propose_draft_token_ids()`
             # 里的 extract 分支），不吃 `TargetRows`/`all_token_ids`——它不跑 draft 模型。
             drafts = self._propose_extract_hidden_states(state, sampled_by_row)
+        elif self.speculative_config is not None and self.speculative_config.uses_medusa():
+            # 66 关：Medusa 也走自己的协议（上游 `propose_draft_token_ids()` 的 medusa 分支）：
+            # 它只要"每条请求最后一个已算过的 token"的 hidden，跑 N 个 head、取 argmax。
+            drafts = self._propose_medusa(state, sampled_by_row)
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
@@ -1038,6 +1053,56 @@ class GPUModelRunner:
         return DraftTokenIds(
             req_ids=list(self.input_batch.req_ids),
             draft_token_ids=[[int(token)] if int(token) >= 0 else [] for token in column])
+
+    def _propose_medusa(self, state, sampled_by_row) -> DraftTokenIds:
+        """66 关：Medusa 的**特殊协议**分支（上游 `gpu_model_runner.py:5206-5225`）。
+
+        上游那段只有两件事：挑出每条请求"最后一个已算过的 token"的 hidden，然后
+        `drafter.propose(K, hidden_states, sampling_metadata, slot_mappings)` 拿回
+        `[B, num_heads]`。行号算式在 `MedusaProposer.select_target_hidden_states()` 里
+        （本仓库把它收进提议者，见那里的说明）。
+
+        **本仓库的两处差异**（docs/step66_alignment.md §3）：
+
+        1. 中间 prefill 块（本轮排了多行、没有采到 token）**跳过不提草稿**。上游会给它算一个
+           `-1` 行号（取到最后一行）并把结果一起交回去，靠 Scheduler 事后把 prefill 块的草稿
+           丢掉；本仓库在提议这一步就不做无意义的计算（那个 hidden 行也不代表"最后一个 token"）。
+        2. 行数口径用调度快照的 `num_scheduled_tokens`（见 `select_target_hidden_states`）。
+        """
+        if self.target_hidden_states is None:
+            raise RuntimeError(
+                "Medusa 需要本轮 target 的 hidden states（`_run_model()` 留下的那份）："
+                "head 就是在这份 hidden 上做预测的，没有它这条路径不该出现")
+        req_ids = list(self.input_batch.req_ids)
+        spec = self.speculative_config
+        ready_req_ids: list[str] = []
+        rows_per_request: list[int] = []
+        num_sampled: list[int] = []
+        for row, req_id in enumerate(req_ids):
+            tokens = sampled_by_row.get(row, [])
+            if not tokens:
+                continue          # 中间 prefill 块：没有"最后一个已算过的 token"
+            ready_req_ids.append(req_id)
+            rows_per_request.append(int(state.scheduler_output.num_scheduled_tokens[req_id]))
+            num_sampled.append(len(tokens))
+        if not ready_req_ids:
+            return DraftTokenIds(req_ids=req_ids, draft_token_ids=[[] for _ in req_ids])
+        hidden_states = self.proposer.select_target_hidden_states(
+            self.target_hidden_states, rows_per_request, num_sampled)
+        # 上游调用形态：propose(K, hidden_states, sampling_metadata, slot_mappings=None)。
+        # 后两个参数上游收下但不用（argmax 提议不看采样参数、也不写 KV），本仓库不为了
+        # "凑参数"去建一份 SamplingMetadata。
+        draft_tokens = self.proposer.propose(
+            num_speculative_tokens=spec.num_speculative_tokens,
+            target_hidden_states=hidden_states)
+        if draft_tokens.shape[1] != spec.num_speculative_tokens:
+            raise RuntimeError(
+                f"Medusa 交回 {draft_tokens.shape[1]} 列草稿，但 K="
+                f"{spec.num_speculative_tokens}：head 数与调度侧的 K 必须一致")
+        proposed = {req_id: [int(token) for token in draft_tokens[index].tolist()]
+                    for index, req_id in enumerate(ready_req_ids)}
+        return DraftTokenIds(req_ids=req_ids,
+                             draft_token_ids=[proposed.get(req_id, []) for req_id in req_ids])
 
     def _padded_sampled_token_ids(self, sampled_by_row, num_rows: int) -> torch.Tensor:
         """把"每行采到了哪些 token"摊成 `[num_rows, K+1]` 的定宽张量（无效位置 `-1`）。
