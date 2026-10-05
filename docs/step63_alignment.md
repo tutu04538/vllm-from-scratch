@@ -17,7 +17,7 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | A | **第一遍输入对齐** | ✅ 已完成：默认 EAGLE 通路**严格照抄上游不扩容分支**（行数 = target 行数、整体左移 + 打补丁、positions/特征逐行原样，Runner 交本轮原始 token/positions）。验收改为**只测生产路径**（`benchmarks/check_step63_eagle_inputs.py` 8 项 + `tests/step63/test_eagle_e2e.py`）；**扩容分支（并行提议）留到 72 关**，届时重建与上游内核 `shift_input_ids=True` 的逐值差分 |
-| B | **EAGLE3 模型适配**（`Eagle3Qwen3ForCausalLM`/`Eagle3LlamaForCausalLM` + target 辅助层输出 + `combine_hidden_states` + d2t/t2d 词表映射） | 🟡 **模型与真实权重加载 ✅**（`minivllm/models/qwen3_eagle3.py`、`tests/step63/test_eagle_model.py` 11 项）；**逐层对照（与上游实现比容差）待做** |
+| B | **EAGLE3 模型适配**（`Eagle3Qwen3ForCausalLM`/`Eagle3LlamaForCausalLM` + target 辅助层输出 + `combine_hidden_states` + d2t/t2d 词表映射） | ✅ 已完成：模型 + **真实 checkpoint 张量全部落位** + 与上游真实实现的数值对照（`combine_hidden_states` 逐位相同、映射回 target 词表的 logits max\|Δ\|=7.0e-4，`tests/step63/test_eagle3_upstream_diff.py` 4 项）；draft **解码层**的逐值对照要等 69/70 的 forward 上下文基建（§5.2） |
 | C | **提议者与 Runner 接线 + 端到端** | ✅ 已完成：`EagleProposer`（复用基类 KV/AR/工作区）、Runner 设辅助层并把本轮 hidden 交给提议者、EAGLE 第一遍对齐、greedy == 非投机（K=1/2/4） |
 
 ## 2. 阶段 A：第一遍输入对齐（已实现）
@@ -26,8 +26,13 @@
 
 | 本项目 | 上游参考 | 说明 |
 |---|---|---|
-| `spec_decode/utils.py::eagle_first_pass_input_ids` | `llm_base_proposer.py:846-872`（`set_inputs_first_pass` 的 **no-extra-slots 通路**） | 整体左移一格 + 按 `query_start_loc[1:] - 1` 打补丁；**特征与 positions 都不动** |
-| `spec_decode/utils.py::expand_eagle_inputs_shifted` | `v1/spec_decode/utils.py::copy_and_expand_eagle_inputs_kernel`（`shift_input_ids=True`） | 扩容分支的等价展开：`num_valid = query_end - query_start`（比 `False` 少 1）、`input_offset = 1`、`output_start = query_start + i*(slots-1)`；positions 不跟着移 |
+| `spec_decode/eagle.py::EagleProposer.set_inputs_first_pass` | `llm_base_proposer.py:846-872`（`set_inputs_first_pass` 的 **no-extra-slots 通路**） | 整体左移一格 + 按 `query_start_loc[1:] - 1` 打补丁；**特征与 positions 都不动**；输入直接吃 Runner 交来的**本轮原始缓冲**（`target_token_ids` / `target_positions`），不自己重建行 |
+| `spec_decode/utils.py::compute_new_slot_mapping` | `v1/spec_decode/utils.py::compute_new_slot_mapping` | 逐行同公式；本通路 `num_new_tokens=0`（不额外加行），被拒行**不掩码**（它的 KV 下一轮必被重算覆盖） |
+
+> 历史说明：阶段 A 期间曾有**两个只被测试调用的参考实现**（`eagle_first_pass_input_ids` /
+> `expand_eagle_inputs_shifted`）与对应的 12 项差分用例；按用户要求"参考实现只放 `minivllm/testing/`、
+> 生产包不留没有调用方的代码"删除了。现在这一关的验收**只测生产路径**（`benchmarks/check_step63_eagle_inputs.py`
+> 8 项 + `tests/step63/test_eagle_e2e.py` 4 项 + 模型/上游对照 17 项）。
 
 需求 §3 的两请求例子已逐元素固定：
 
@@ -37,16 +42,19 @@ next tokens:   [a3,b4]
 → draft 输入:  [a2,a3, b2,b3,b4]        采样行 = [1, 4]
 ```
 
-### 2.2 实测证据（`tests/step63/test_eagle_inputs.py` 12 项 + `benchmarks/check_step63_eagle_inputs.py`）
+### 2.2 实测证据（`benchmarks/check_step63_eagle_inputs.py` 8 项 + `tests/step63/test_eagle_e2e.py`）
 
-- 需求例子逐元素一致；三请求不同长度、单 token 请求、全单 token 批各自只拿自己的新 token；
-- **反证**：把补丁下标算成 `query_start_loc[1:]`（下一条请求的第一格）→ A 的最后一格留成 B 的第一个 token
-  （实测 `[12, 21, ...]`，而正确是 `[12, 13, ...]`）——需求原文点名的坑；
-- **positions/特征不动**：`expand_eagle_inputs_shifted` 给出的 positions 与 target 逐行相同，
-  扩容行位置 = 该请求最后一行的位置（内核注释 "Positions are NOT shifted"）；
-- **与上游内核逐值差分（CUDA）**：`copy_and_expand_eagle_inputs_kernel(shift_input_ids=True,
-  num_padding_slots_per_request=1)` 的 `input_ids`/`positions`/`is_rejected`/`new_token_indices`
-  与我们逐值一致（含带被拒行的用例）；58 关差分的是 `shift_input_ids=False` 分支，本关补上 `True`。
+现在**只测生产路径**：脚本直接驱动 tiny 引擎，对着提议者写进工作区的内容做检查。
+
+- 需求例子逐元素一致（`[a2,a3,b2,b3,b4]`、采样行 = 每请求最后一行）；
+- positions 与特征**逐行原样**（第 i 行配第 i 行的特征，扩容行 = 采样行）；greedy 端到端 == 非投机；
+- **"被拒位置下一轮必被重算"**：实测 `next_start == start + num_valid`（7/8 轮出现被拒行），
+  这是"把被拒草稿也喂进 draft"无害的前提（KV 下一轮必被覆盖）；
+- 阶段 A 期间还做过**与上游内核的逐值差分（CUDA）**：`copy_and_expand_eagle_inputs_kernel(
+  shift_input_ids=True, num_padding_slots_per_request=1)` 的 `input_ids`/`positions`/`is_rejected`/
+  `new_token_indices` 与当时的参考实现逐值一致（含带被拒行的用例；58 关差分的是 `False` 分支）。
+  该差分随参考实现一起删除，**结论保留、命令不再可复跑**——上游行为现在由
+  `tests/step63/test_eagle3_upstream_diff.py`（直接实例化上游类做数值对照）继续盯着。
 
 ### 2.3 两条通路的**物理布局差异**（实测发现，写清楚免得当 bug）
 
@@ -88,26 +96,25 @@ no-extra-slots 通路不带这些行（被拒位置本来就是本轮 target 查
 **断言强度不变**（random 行仍是 `u=0.9 > p/q=0.889` → 拒绝）。修完 `pytest tests/step58..63` 连跑两次
 均 292 passed。
 
-## 5. 未做（阶段 B/C）——不得当作已通过
+## 5. 还没做的部分（不得当作已通过）
 
-1. **EAGLE3 模型适配**：`models/qwen3_eagle3.py`（`Eagle3Qwen3ForCausalLM`：fc 投影 + layer0 的
-   `cat([input_layernorm(embeds), hidden_norm(hidden)])` + `norm` 返回 `(hidden, prenorm)` + lm_head）
-   与 `llama_eagle3.py` 对应类（真实 checkpoint 是 Llama 风格：`midlayer` 名字映射、无 qk-norm）；
-   target 侧 `set_aux_hidden_state_layers` / 返回辅助层 hidden states。
-2. **逐层对照**（需求 §4）：tiny 权重上比较 target 辅助输出、draft forward、logits 并记录容差；
-   真实 checkpoint 加载后的 forward/logits 对照。
-3. **提议者与端到端**：`EagleProposer(SpecDecodeBaseProposer)`（`pass_hidden_states_to_model=True`）、
-   `build_model_inputs_first_pass` 传 `hidden_states`、`prepare_next_token_ids_padded` /
-   `prepare_inputs_padded`、`num_rejected_tokens_gpu` 修正、后续自回归步的 token/hidden/positions/
-   seq_lens 同步、`model_returns_tuple()`、`_maybe_share_embeddings/_maybe_share_lm_head` 条件、
-   prefix 命中/抢占/批重排/结束清理、greedy == 非投机。
-4. **不支持的组合**：M-RoPE（上游 `_raise_if_mrope`）、backend、padded 开关组合的限制触发。
-5. **d2t/t2d 词表映射**：本关只记录 manifest；完整"异构词表 draft 采样空间"是 67 关。
+阶段 A/B/C 都已实现并实跑；下面这些是**明确留到后续关卡**的，不要当成 63 关已经覆盖：
 
-## 6. 阶段 A 的验证命令
+1. **真实 EAGLE3 checkpoint 的完整生成**：本关只做到"权重全部落位 + shape/数值对照 + tiny 端到端"。
+   真实 checkpoint 的 draft 词表是 32000、target 是 151936（TLI 采样空间语义），完整跑通属 **67 关**。
+2. **draft 解码层（attention/MLP）与上游的逐值对照**：需要 69/70 的 forward 上下文与 CUDA Graph 基建
+   才能把两边的前向放到同一条件下比；本关比的是 `combine_hidden_states` 与最终 logits（max|Δ|=7.0e-4）。
+3. **M-RoPE 未接**：上游 `_raise_if_mrope` 的对应检查在配置期报错，三路位置没有实现。
+4. **`lm_head` 共享的另一套条件**：上游 `_maybe_share_lm_head` 在 draft 词表 == target 词表时共享
+   lm_head；本关只按"检查点缺 `embed_tokens`"共享嵌入。
+5. **扩容分支（并行提议）**：默认 EAGLE 走 no-extra-slots 通路；`shift_input_ids=True` 的扩容分支
+   要等 **72 关**（P-EAGLE/DFlash），届时重建与上游内核的逐值差分。
+
+## 6. 验证命令（实测，2026-10-05）
 
 ```bash
-python -m pytest tests/step63 -q                      # 12 项（含 CUDA 上的内核差分）
-python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 tests/step62 tests/step63 -q
-python benchmarks/check_step63_eagle_inputs.py        # 10 项
+python -m pytest tests/step63 -q                                   # 21 passed
+python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 \
+                 tests/step62 tests/step63 tests/step64 -q         # 314 passed（含 64 关）
+python benchmarks/check_step63_eagle_inputs.py                     # 8 项 PASS（只测生产路径）
 ```

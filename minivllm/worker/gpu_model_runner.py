@@ -89,6 +89,10 @@ class ExecuteModelState(NamedTuple):
     # 而且只在 `capture_aux_hidden_states` 时才留——上游是把它们当场当参数传进 proposer 的。
     target_token_ids_cpu: torch.Tensor | None = None
     target_positions_cpu: torch.Tensor | None = None
+    # 64 关（extract_hidden_states）：cache-only 层要把特征写进**与 target KV 相同的槽位**，
+    # 所以提议者要拿到本轮那份 attention 元数据（槽位就在它里面）。只存**引用**、不复制，
+    # 生命周期只在 execute→sample 之间（上游的 execute state 同样持有 common_attn_metadata）。
+    common_attn_metadata: object = None
 
 
 @dataclass
@@ -154,6 +158,9 @@ class GPUModelRunner:
         self.capture_aux_hidden_states = False
         self.aux_hidden_states: torch.Tensor | None = None
         self.eagle_aux_hidden_state_layers: tuple[int, ...] = ()
+        # 本轮那份 attention 元数据（`_build_attn_metadata()` 每轮重设）。64 关的 cache-only
+        # 提议者要用它的 `slot_mapping`（与 target 的 KV 同一份槽位），所以留一个引用。
+        self.attn_metadata = None
         self.num_tokens_no_spec_gpu: torch.Tensor | None = None
         self.token_ids_gpu_tensor: torch.Tensor | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
@@ -172,11 +179,14 @@ class GPUModelRunner:
 
         self.sampler = Sampler()
         self.proposer = self._build_proposer()
-        # 63 关：EAGLE3 要 target 顺带输出若干**辅助层**的 hidden states（EAGLE-1 只要最后一层）。
-        # 层号来自 draft 配置，缺省用 target 的默认值 `(2, n//2, n-3)`（与上游同一套）。
+        # 63/64 关：EAGLE3 与 extract_hidden_states 都要 target **顺带输出若干辅助层**的 hidden
+        # states（EAGLE-1 只要最后一层，不吃 aux）。层号来自 draft 配置，缺省用 target 的默认值
+        # `(2, n//2, n-3)`（与上游同一套）；extract 例外——它的层号是必需的（配置期已校验），
+        # 因为"存哪几层"没有默认值可言。
         self.capture_aux_hidden_states = False
-        if self.speculative_config is not None and self.speculative_config.use_eagle() \
-                and self.speculative_config.eagle3_use_aux_hidden_state():
+        if self.speculative_config is not None and (
+                self.speculative_config.eagle3_use_aux_hidden_state()
+                or self.speculative_config.uses_extract_hidden_states()):
             self.capture_aux_hidden_states = True
             layers = self.speculative_config.eagle_aux_hidden_state_layers() \
                 or self.model.get_eagle3_default_aux_hidden_state_layers()
@@ -258,9 +268,17 @@ class GPUModelRunner:
             from ..spec_decode.suffix_decoding import SuffixDecodingProposer
 
             return SuffixDecodingProposer(self.vllm_config)
+        if config.uses_extract_hidden_states():
+            # 64 关：它不猜 token（"草稿"就是 target 自己采出的那一列），只负责把 target 的
+            # 辅助层特征写进自己的 cache-only 缓存。分支位置与上游一致（排在 eagle 之后）。
+            from ..spec_decode.extract_hidden_states import ExtractHiddenStatesProposer
+
+            proposer = ExtractHiddenStatesProposer(self.vllm_config, self.device)
+            proposer.load_model()
+            return proposer
         raise ValueError(f"未知的投机方法 {config.method!r}"
                          f"（本关支持 'ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                         f"'custom_class'）")
+                         f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states'）")
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
@@ -284,6 +302,12 @@ class GPUModelRunner:
                                 dtype=dtype, device=self.device)
             layer.kv_cache = cache
             self.kv_caches[layer_name] = cache
+        # 64 关：cache-only 层的缓存是提议者自己分配的（与 draft 的 KV 同一套做法），但它必须
+        # 与本轮的块规格一致——上游在 `initialize_kv_cache_tensors()` 之后调
+        # `validate_same_kv_cache_group()`，本仓库在这里做对应的校验。
+        if self.speculative_config is not None \
+                and self.speculative_config.uses_extract_hidden_states():
+            self.proposer.validate_same_kv_cache_group(kv_cache_config)
         return self.kv_caches
 
     def _attention_layers(self) -> dict[str, Attention]:
@@ -677,6 +701,9 @@ class GPUModelRunner:
             block_table=self.input_batch.block_table.gpu[:num_reqs],
             slot_mapping=inputs.slot_mapping.to(self.device),
             num_reqs=num_reqs)
+        # 64 关：本轮这份元数据留一个引用给 cache-only 提议者（它要的就是里面的 `slot_mapping`：
+        # 特征必须写进**与 target KV 相同的槽位**，"同源"是这一关的正确性前提）。
+        self.attn_metadata = metadata
         return {layer_name: metadata for layer_name in self._attention_layers()}
 
     # -------- 执行侧的两步协议 --------
@@ -728,7 +755,12 @@ class GPUModelRunner:
             scheduler_output=scheduler_output, logits=logits, sample_rows=inputs.sample_rows,
             spec_metadata=inputs.spec_metadata,
             target_token_ids_cpu=(inputs.input_ids if self.capture_aux_hidden_states else None),
-            target_positions_cpu=(inputs.positions if self.capture_aux_hidden_states else None))
+            target_positions_cpu=(inputs.positions if self.capture_aux_hidden_states else None),
+            # 64 关：只有 cache-only 提议者需要本轮的元数据（槽位）；别的方法不用，就不留引用
+            common_attn_metadata=(self.attn_metadata
+                                  if self.speculative_config is not None
+                                  and self.speculative_config.uses_extract_hidden_states()
+                                  else None))
         return None
 
     @torch.inference_mode()
@@ -921,6 +953,11 @@ class GPUModelRunner:
             # `sampled_by_row` 告诉它本轮哪些行真的采到了 token（空 = 中间 prefill 块）。
             drafts = self.proposer.propose_drafts(
                 rows, all_token_ids, self.input_batch, sampled_by_row=sampled_by_row)
+        elif self.speculative_config is not None and \
+                self.speculative_config.uses_extract_hidden_states():
+            # 64 关：cache-only 提议者走**自己那套特殊协议**（上游 `propose_draft_token_ids()`
+            # 里的 extract 分支），不吃 `TargetRows`/`all_token_ids`——它不跑 draft 模型。
+            drafts = self._propose_extract_hidden_states(state, sampled_by_row)
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
@@ -936,6 +973,57 @@ class GPUModelRunner:
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
         return drafts
+
+    def _propose_extract_hidden_states(self, state, sampled_by_row) -> DraftTokenIds:
+        """64 关：`extract_hidden_states` 的**特殊协议**分支（上游同名分支）。
+
+        它不猜 token：`propose()` 的返回值是 `sampled_token_ids[:, :1]`——target 本轮采出的
+        第一列，直接当成下一轮的草稿。所以这里不做任何"提议质量"的判断，也没有 `draft_probs`
+        （点质量 q，验证时走 59 关的 `NO_DRAFT_PROBS` 分支，采样分布仍然精确是 target 的分布）。
+
+        真正的产物是**副作用**：target 本轮每个 query 行的辅助层特征被写进了 cache-only 层的
+        分页缓存（槽位与本轮 KV 完全相同）。
+
+        行 → 请求的映射与其它提议者一致：给满批行数，没采到 token 的行（中间 prefill 块）用
+        `-1` 占位（上游的 padded 张量同样用 `-1` 表示"这一行没有有效采样"），它们不产生草稿。
+        """
+        if not self.capture_aux_hidden_states or self.aux_hidden_states is None:
+            raise RuntimeError(
+                "extract_hidden_states 需要本轮 target 的辅助层特征（aux_hidden_states）："
+                "没有特征就没有东西可缓存，这条路径不该出现")
+        if state.common_attn_metadata is None:
+            raise RuntimeError(
+                "extract_hidden_states 需要本轮的 attention 元数据（槽位要与 target KV 同源）："
+                "execute_model() 没把它留下来")
+        num_rows = len(self.input_batch.req_ids)
+        sampled = self._padded_sampled_token_ids(sampled_by_row, num_rows)
+        # 上游调用形态：propose(K, sampled_token_ids, target_hidden_states, common_attn_metadata)
+        draft_tokens = self.proposer.propose(
+            num_speculative_tokens=self.speculative_config.num_speculative_tokens,
+            sampled_token_ids=sampled,
+            target_hidden_states=self.aux_hidden_states,
+            common_attn_metadata=state.common_attn_metadata)
+        # 只取第 0 列当草稿（上游：宽度可能 >1，仍然只返回规定的那一列）
+        column = draft_tokens[:, 0].tolist()
+        return DraftTokenIds(
+            req_ids=list(self.input_batch.req_ids),
+            draft_token_ids=[[int(token)] if int(token) >= 0 else [] for token in column])
+
+    def _padded_sampled_token_ids(self, sampled_by_row, num_rows: int) -> torch.Tensor:
+        """把"每行采到了哪些 token"摊成 `[num_rows, K+1]` 的定宽张量（无效位置 `-1`）。
+
+        上游在 padded drafter batch 下拿到的就是这个形状的 GPU 张量；本仓库的采样结果是
+        **每行的变长列表**（`RejectionSampler.parse_output` 之后），所以在这里补成同形状——
+        `propose()` 的 `[:, :1]` 切片语义才和上游一致（K=1 时一行最多 2 列：
+        验证通过的草稿 + bonus）。
+        """
+        width = self.speculative_config.num_speculative_tokens + 1
+        padded = torch.full((num_rows, width), -1, dtype=torch.int32)
+        for row, tokens in sampled_by_row.items():
+            row_tokens = list(tokens)[:width]
+            if row_tokens:
+                padded[row, :len(row_tokens)] = torch.tensor(row_tokens, dtype=torch.int32)
+        return padded
 
     def _get_spec_decode_draft_probs(self, spec_metadata) -> torch.Tensor | None:
         """按**本轮采用的行序**拼出 `[P, V]` 的 q（上游同名方法；199 §5 的 q 对齐）。

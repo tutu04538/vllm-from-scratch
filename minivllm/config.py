@@ -17,7 +17,7 @@ step56 把二十多个参数平铺在 `Engine.__init__` 上，既看不出哪些
 """
 
 import importlib.util
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 def has_arctic_inference() -> bool:
@@ -27,6 +27,30 @@ def has_arctic_inference() -> bool:
     所以这里只做"在不在"的判断，不在就由 `_resolve_suffix_decoding` 显式报错。
     """
     return importlib.util.find_spec("arctic_inference") is not None
+
+
+def extract_hidden_states_hf_config(target_hf_config: dict | None, cache_block_size: int,
+                                    torch_dtype: str, **overrides) -> dict:
+    """cache-only 模型的 hf 配置（对应上游
+    `transformers_utils/configs/extract_hidden_states.py::ExtractHiddenStatesConfig`）。
+
+    上游那个类做三件事，这里逐条对应：
+
+    1. `combined = {**model_dict, **kwargs}` —— 先放 **target 的配置**，再用**用户给的 draft
+       配置**覆盖（所以 `eagle_aux_hidden_state_layer_ids` 这类"要存哪几层"的参数来自 draft 侧）；
+    2. 丢掉 base 的 `architectures`、强制成 `["ExtractHiddenStatesModel"]` —— 加载器按
+       architectures 选类（本仓库走 `models/registry.py`），写别的名字会去建 target 模型；
+    3. 另外两个字段是本仓库独有的：上游的 `CacheOnlyAttentionLayer` 从
+       `get_current_vllm_config()` 读 `cache_config.block_size` 与模型 dtype，而本仓库的模型
+       只吃一个 config dict，所以把 `cache_block_size` / `torch_dtype` 一并写进去（值就是上游
+       会读到的同样两个值）。
+    """
+    combined = {**dict(target_hf_config or {}), **overrides}
+    combined.pop("architectures", None)
+    combined["architectures"] = ["ExtractHiddenStatesModel"]
+    combined["cache_block_size"] = int(cache_block_size)
+    combined["torch_dtype"] = str(torch_dtype)
+    return combined
 
 
 @dataclass(frozen=True)
@@ -92,7 +116,8 @@ class DeviceConfig:
 @dataclass(frozen=True)
 class SpeculativeConfig:
     """投机配置（57E 接进调度；58 增加输入槽位派生量；60 增加 ngram 匹配窗口；
-    61 增加 suffix decoding 参数；62 增加自定义 proposer 的接入与**方法推断**）。"""
+    61 增加 suffix decoding 参数；62 增加自定义 proposer 的接入与**方法推断**；
+    64 增加 `extract_hidden_states`——一个**不做投机、只借 KV 缓存存特征**的方法）。"""
 
     # 上游 `SpeculativeConfig.method: str | None = None`：**不给**时由 `__post_init__` 推出来，
     # 这样"用哪种投机"只有一个判定点（62 关需求 §3.1：不让 CLI 判一次、Runner 再猜一次）。
@@ -141,10 +166,11 @@ class SpeculativeConfig:
             raise ValueError("num_speculative_tokens 不能为负")
         self._resolve_method()
         if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
-                               "eagle", "eagle3"):
+                               "eagle", "eagle3", "extract_hidden_states"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
-                f"'custom_class' / 'eagle' / 'eagle3'，收到 {self.method!r}"
+                f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states'，收到 "
+                f"{self.method!r}"
                 "（MTP/PARD/DFlash 等按需求顺序在后续关卡实现）")
         if self.rejection_sample_method != "standard":
             raise ValueError(
@@ -159,6 +185,8 @@ class SpeculativeConfig:
             self._resolve_custom_class()
         elif self.use_eagle():
             self._resolve_eagle()
+        elif self.uses_extract_hidden_states():
+            self._resolve_extract_hidden_states()
 
     def _resolve_method(self) -> None:
         """`method` 没给时按上游规则推出来（`config/speculative.py:741-756`）。
@@ -278,8 +306,65 @@ class SpeculativeConfig:
                 f"EAGLE 的自回归步数与它成正比，先支持到 32")
 
     def eagle3_use_aux_hidden_state(self) -> bool:
-        """EAGLE3 是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。"""
+        """EAGLE3 是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。
+
+        64 关：`extract_hidden_states` 也走同一条"target 顺带输出辅助层"的采集路径，但它
+        **不是** EAGLE——没有 draft 模型、不吃这些特征去猜 token。所以这个判定仍然只认
+        `eagle3`，采集开关由 `uses_extract_hidden_states()` 单独打开（Runner 里两个条件是或）。
+        """
         return self.method == "eagle3"
+
+    def uses_extract_hidden_states(self) -> bool:
+        """是否走 cache-only 特征提取（上游同名方法，`config/speculative.py:1495`）。"""
+        return self.method == "extract_hidden_states"
+
+    def _resolve_extract_hidden_states(self) -> None:
+        """`method="extract_hidden_states"` 的取值校验（上游 `config/speculative.py:850-874`）。
+
+        上游在这个分支里做三件事：把 `model` 换成字面量 `"extract_hidden_states"`（它没有 draft
+        模型目录，这个字段只是标记）、清掉 prompt lookup 参数、把 draft 配置换成"target 配置 +
+        `ExtractHiddenStatesConfig`"。前两件这里照抄；第三件需要 **target 配置**（上游
+        `SpeculativeConfig` 自己持有 `target_model_config` 字段，本仓库的配置拿不到），所以拆成
+        `derive_extract_hidden_states_config()`，由同时持有两者的调用方（提议者）执行。
+
+        **K 的约束**：上游是 `ExtractHiddenStatesProposer.__init__` 里的 `assert K == 1`
+        （跑到建提议者时才炸）。本仓库提前到配置期报错——约束相同，报错更早、信息更清楚，
+        差异记在 docs/step64_alignment.md §3。
+        """
+        object.__setattr__(self, "model", "extract_hidden_states")
+        object.__setattr__(self, "prompt_lookup_max", 0)
+        object.__setattr__(self, "prompt_lookup_min", 0)
+        if self.num_speculative_tokens != 1:
+            raise ValueError(
+                f"method='extract_hidden_states' 只支持 num_speculative_tokens=1，收到 "
+                f"{self.num_speculative_tokens}：这个方法不猜 token，每轮只借投机框架多跑"
+                f"一行（target 自己采出的那一列）来缓存特征")
+        if self.eagle_aux_hidden_state_layers() is None:
+            # 上游原话：eagle_aux_hidden_state_layer_ids must be set in the draft model config
+            raise ValueError(
+                "method='extract_hidden_states' 必须在 draft 配置里给 "
+                "eagle_aux_hidden_state_layer_ids（要存哪几层特征）：上游在提议者构造时检查，"
+                "本仓库提前到配置期")
+
+    def derive_extract_hidden_states_config(self, target_model_config: "ModelConfig",
+                                            cache_config: "CacheConfig") -> "ModelConfig":
+        """派生 cache-only 模型用的配置（上游 `config/speculative.py:861-873` 的等价物）。
+
+        上游做的事：从**用户给的** draft 配置里取出 `hf_config`（`ExtractHiddenStatesConfig` 的
+        覆盖项，`eagle_aux_hidden_state_layer_ids` 就在里面），再把它盖到 **target 的 hf 配置**上，
+        于是"draft 模型目录"= target 的目录（cache-only 模型没有权重，加载器读到的权重被忽略）。
+
+        本仓库的模型只吃一个 config dict（上游的 `CacheOnlyAttentionLayer` 从
+        `get_current_vllm_config()` 取 `cache_config`），所以块大小与精度也一并写进 hf 配置，
+        见 `extract_hidden_states_hf_config()`。
+        """
+        overrides = dict(self.draft_model_config.hf_config or {}) \
+            if self.draft_model_config is not None else {}
+        hf_config = extract_hidden_states_hf_config(
+            target_model_config.hf_config, cache_block_size=cache_config.block_size,
+            torch_dtype=str(target_model_config.dtype), **overrides)
+        # `replace()` 会重跑 ModelConfig 的校验（target 那份已经过过一次，值不变）
+        return replace(target_model_config, hf_config=hf_config)
 
     def eagle_aux_hidden_state_layers(self) -> tuple[int, ...] | None:
         """draft 配置里指定的辅助层编号（没有就返回 None，由 target 的默认值兜底）。
@@ -308,6 +393,8 @@ class SpeculativeConfig:
 
         本关只实现**普通自回归 draft**：它保留一个未切片的 token 作为第一遍的最后一行
         （就是 target 本轮刚采出的那个），所以是 1；ngram 不跑模型、不写 KV，是 0。
+        64 关的 `extract_hidden_states` 也是 0：它不跑 draft 模型，写的是 **target 本轮
+        那些 query 行自己的槽位**（与上游的分支表一致：只有 `uses_draft_model()` 才是 1）。
 
         **不要和 `num_lookahead_tokens` 混**：那个是"额外保留几个 KV 位置"（=K），
         这个是"draft 输入工作区每请求多占几行"。

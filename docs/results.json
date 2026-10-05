@@ -11,7 +11,8 @@
     "step60": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step61": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
     "step62": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
-    "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）"
+    "step63": "implemented + self-verified（阶段 A/B/C 全做完：输入对齐、EAGLE3 模型与真实权重加载、提议者/Runner 接线与 greedy 端到端；真实 checkpoint 的完整生成待验，原因见 not_run）",
+    "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）"
   },
   "step58": {
     "results": {
@@ -2366,5 +2367,196 @@
         "M-RoPE / padded drafter batch / lm_head 共享的另一套条件"
       ]
     }
+  },
+  "step64": {
+    "results": {
+      "step": 64,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/064_HiddenStateExtraction的CacheOnly执行路径.md",
+      "status": "implemented + self-verified（tiny 与真实 Qwen3-1.7B 两条路径都做过物理 slot 逐值校验与 greedy 对照）",
+      "recorded_at": "2026-10-05T04:14:50+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "42dd191",
+        "implementation_commit": "见本轮提交（step64：HiddenStateExtraction 的 CacheOnly 执行路径）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 73,
+        "sha256": "672df6257ca1b3e50823fbb0e73ad8eb2b4f669975a442678372c07d51fce926",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码对照）",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step64 -q",
+          "result": "13 passed"
+        },
+        {
+          "cmd": "python benchmarks/check_step64_hidden_cache.py",
+          "result": "18 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step58..64 -q",
+          "result": "314 passed"
+        },
+        {
+          "cmd": "python -m pytest tests/step63 -q",
+          "result": "21 passed（回归）"
+        },
+        {
+          "cmd": "python benchmarks/check_step63_eagle_inputs.py",
+          "result": "8 PASS（回归）"
+        }
+      ],
+      "execution_trace": {
+        "tiny_gqa": {
+          "cache_shape": [
+            32,
+            4,
+            2,
+            32
+          ],
+          "含义": "[num_blocks, block_size, L, H]：L 当 head 数、H 当 head_size",
+          "aux_layers": [
+            0,
+            1
+          ],
+          "层名": "cache_only_layers.2",
+          "first_round": {
+            "rows": [
+              12,
+              2,
+              32
+            ],
+            "slots_vs_slot_mapping": "逐行一致",
+            "物理slot逐值": "torch.equal(缓存[slot], 写入行) 全 True",
+            "独立重跑参考": "torch.equal(参考, 写入行) True"
+          },
+          "protocol": "sampled=[B,2] → 返回 [B,1] 且 == 第 0 列（6 次调用全部成立）",
+          "rejected_tail": "同一槽位最多写 2 次；最终内容 == 最后一次写入",
+          "chunked_prefill": "预算 8 / prompt 12 → 2 块（8+4），12 个位置与另一引擎一次性前向一致（atol 1e-6）",
+          "prefix_hit": "起点=8（两个完整块），本轮只排 4 个 token；命中段特征非空、新算段逐值正确",
+          "e2e_greedy": {
+            "spec": {
+              "a": [
+                4,
+                4,
+                4,
+                6,
+                0,
+                6
+              ],
+              "b": [
+                10,
+                4,
+                4,
+                4,
+                4,
+                4
+              ]
+            },
+            "非投机": "完全相同"
+          },
+          "acceptance_measured": {
+            "greedy_26_rounds": "4 轮接受（产出 2 token）、22 轮被拒（产出 1 token）",
+            "含义": "草稿 = 上一轮采出的 token，通常被拒；被拒时第 0 列就是 target 自己的 token"
+          }
+        },
+        "real_qwen3_1.7b": {
+          "target": "models/Qwen3-1.7B",
+          "dtype": "float16",
+          "aux_layers": [
+            2,
+            14,
+            25
+          ],
+          "cache_shape": [
+            64,
+            16,
+            3,
+            2048
+          ],
+          "每块字节": 196608,
+          "prompt_tokens": 3,
+          "slots": [
+            0,
+            1,
+            2
+          ],
+          "物理slot逐值": true,
+          "独立重跑max_abs_delta": 0.0,
+          "位置0缓存值_层0前4维": [
+            -4.04296875,
+            -6.1640625,
+            -4.546875,
+            6.0546875
+          ],
+          "greedy_8_tokens": [
+            264,
+            729,
+            315,
+            882,
+            11,
+            323,
+            1221,
+            1477
+          ],
+          "与非投机一致": true,
+          "调度统计": "7 轮 ×（草稿 1、接受 0）"
+        }
+      },
+      "fixed_during_step": [
+        "上游 `propose()` 吃的是 target 本轮那份 slot_mapping；本仓库起初只把 CPU 侧 slot_mapping 传下去，改成把本轮 AttentionMetadata 留在 ExecuteModelState 里（同源，不重算）",
+        "本仓库的 0 号块**会**分配给真实请求（与上游'0 号块留白'不同）：padding 行的 clamp_min(0) 现在不会碰到真实数据（target slot_mapping 从不产生 -1），但 69 关引入 CUDA Graph padding 时必须同时留白 0 号块——已写进代码注释与 §2.5"
+      ],
+      "not_run": [
+        "CUDA Graph 的 padding 行与'0 号块留白'（69 关）",
+        "异步调度的 prepare_next_token_ids_padded / prev_sampled_token_ids 路径（70 关）",
+        "跨进程特征/ KV 搬运（上游 ExampleHiddenStatesConnector，81 关）",
+        "量化 KV cache（本仓库没有 cache_dtype 旋钮）",
+        "EPLB / DP 协调（本仓库没有）"
+      ]
+    },
+    "models": {
+      "tiny": {
+        "target": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa') 现场生成",
+        "config": "2 层 / hidden 32 / GQA 4:2 / head_dim 16 / vocab 11",
+        "aux_layers": [
+          0,
+          1
+        ],
+        "dtype": "float32",
+        "cache_only_model": "派生配置 architectures=['ExtractHiddenStatesModel']，无权重（load_weights 不迭代迭代器）"
+      },
+      "real": {
+        "target": "models/Qwen3-1.7B（本机，不入库）",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "num_hidden_layers": 28,
+        "hidden_size": 2048,
+        "aux_layers": [
+          2,
+          14,
+          25
+        ],
+        "dtype": "float16",
+        "cache_only_model": "无权重；配置由 target 配置 + eagle_aux_hidden_state_layer_ids 派生"
+      },
+      "shared_config": {
+        "block_size": 16,
+        "num_gpu_blocks": 64,
+        "max_num_seqs": 2,
+        "max_num_batched_tokens": 128,
+        "num_speculative_tokens": 1
+      }
+    },
+    "dependencies": null
   }
 }

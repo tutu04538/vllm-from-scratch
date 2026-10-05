@@ -150,8 +150,10 @@ step scheduled                    hits           preempted    running           
 
 ## 第六十三关：EAGLE/EAGLE3（特征传递与位置对齐）
 
-> **阶段 A 与阶段 B 的模型部分完成**：输入对齐（含上游内核差分）已过；EAGLE3 draft 模型已能加载真实
-> checkpoint；**逐层对照、提议者/Runner 接线与端到端还没做**，清单见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。**不要当成本关已通过。**
+> **阶段 A/B/C 已实现并实跑**：输入对齐、EAGLE3 draft 模型（真实 checkpoint 张量全部落位）、
+> 提议者/Runner 接线与 greedy 端到端（K=1/2/4）都过了，并完成与上游真实实现的数值对照
+> （`combine_hidden_states` 逐位相同、logits max|Δ|=7.0e-4）。剩余项（真实 checkpoint 完整生成 →
+> 67 关、draft 解码层逐值对照 → 69/70、M-RoPE）见 [`docs/step63_alignment.md`](../docs/step63_alignment.md) §5。
 
 EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；于是第一遍输入要满足：
 
@@ -159,6 +161,25 @@ EAGLE 的 draft 不只吃 token，还吃 target 本轮算出的 hidden states；
   （`query_start_loc[1:] - 1` 是补丁下标）；算错一位就会让 A 的最后一格留着 B 的 token；
 - **特征与 positions 不动**（`(h_i, t_{i+1}) → t_{i+2}` 的配对），扩容行用该请求最后一行的特征/位置；
 - 被拒行仍占工作区（padding + mask），默认 EAGLE 通路不需要额外槽位（`net_num_new_slots == 0`）。
+
+## 第六十四关：HiddenStateExtraction 的 cache-only 执行路径
+
+63 关已经能让 target 顺带吐出辅助层特征，但特征是当轮的中间量：想留下来只能自己存。这一关把
+"存特征"接进 KV 的寻址与生命周期——**不做投机，只借投机框架跑一趟**：
+
+- **特征即 KV**：cache-only 层的缓存形状是 `[num_blocks, block_size, L, H]`（L = 辅助层数当 head 数、
+  H = hidden_size 当 head_size），一个 token 占一个 slot；写缓存就是一次散射
+  `kv_cache[slot // bs, slot % bs] = to_cache`，槽位用的是**本轮 target 那份 `slot_mapping`**；
+- **prefix 命中不会丢数据**：命中段不重算，但它的特征已经在复用的块里（特征与 KV 一样是
+  "token + 位置的确定函数"，同前缀共享块成立）；
+- **草稿是 target 自己采出的 token**：`propose()` 返回 `sampled_token_ids[:, :1]`，K 固定 1；
+  被拒时第 0 列就是 target 自己的 token，所以输出逐 token 正确，但**这不是加速特性**，
+  不计入"投机加速算法"，也不宣称速度收益；
+- **验收靠读物理 slot**：两请求 × 两辅助层塞可辨认值，逐槽位对照"同权重 + 同元数据重跑一次"的
+  独立参考；真实 Qwen3-1.7B（fp16、辅助层 (2,14,25)、每块 196,608 B）上 max|Δ|=0.0、greedy 逐 token 一致。
+
+设计与差异（含"0 号块留白"这个 69 关前提）见 [`docs/step64_alignment.md`](../docs/step64_alignment.md)，
+实测记录见 [`docs/results.json`](../docs/results.json)（`step64.results`）。
 
 ## 明确不做
 
@@ -194,13 +215,15 @@ python benchmarks/check_step59_rejection.py          # 21 项：元数据口径�
 python benchmarks/check_step60_ngram.py              # 17 项：CPU/GPU ngram 与上游逐值差分、显存历史增量、哨兵不出门、端到端
 python benchmarks/check_step61_suffix.py             # 27 项：依赖接入、请求内/跨请求候选、容量与 FIFO、同 ID 重用、调用顺序、参数生效、端到端
 python benchmarks/check_step62_custom_proposer.py    # 34 项：方法推断、接口、错误分类、Runner 接线、行为等价、demo 端到端
-python benchmarks/check_step63_eagle_inputs.py       # 17 项：EAGLE 第一遍输入对齐（含与上游内核 shift=True 的差分）——第一阶段
+python benchmarks/check_step63_eagle_inputs.py       # 8 项：EAGLE 第一遍输入对齐（只测生产路径）
+python benchmarks/check_step64_hidden_cache.py       # 18 项：cache-only 路径（物理 slot、协议、chunked/prefix/拒绝尾部/复用、端到端）
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step61 -q                     # 55 项：step61 的单测 + 集成（含与上游 proposer 的逐事件 trace 差分）
 python -m pytest tests/step62 -q                     # 37 项：step62 的接口/错误分类/接线/行为等价
-python -m pytest tests/step63 -q                     # 32 项：step63（输入对齐 + EAGLE3 模型 + 端到端 + 与上游的数值对照）
+python -m pytest tests/step63 -q                     # 21 项：step63（EAGLE3 模型 + 端到端 + 与上游的数值对照）
+python -m pytest tests/step64 -q                     # 13 项：step64（cache-only 层/提议者/Runner 接线与物理 slot 校验）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）
