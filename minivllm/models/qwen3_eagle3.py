@@ -250,6 +250,10 @@ class Eagle3ForCausalLM(nn.Module):
     def model_returns_tuple(self) -> bool:
         return True
 
+    def combine_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """上游把 `combine_hidden_states` 挂在**顶层**模型上（`llama_eagle3.py:359`），本仓库同位置。"""
+        return self.model.combine_hidden_states(hidden_states)
+
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.lm_head(hidden_states)
 
@@ -257,10 +261,32 @@ class Eagle3ForCausalLM(nn.Module):
         return self.model.embed_input_ids(input_ids)
 
     def map_draft_ids_to_target(self, draft_ids: torch.Tensor) -> torch.Tensor:
-        """draft 词表 id → target 词表 id（没有 d2t 时是恒等映射）。"""
+        """draft 词表 id → target 词表 id（没有 d2t 时是恒等映射）。
+
+        **`d2t` 是偏移量不是绝对 id**：上游 `llama_eagle3.py:344-352` 的规则是
+        `target = draft_id + d2t[draft_id]`（`base = arange(draft_vocab_size); targets = base + d2t`）。
+        这里照抄；写错了会让草稿 token 在 target 词表里指向别的字（静默错）。
+        """
         if self.d2t is None:
             return draft_ids
-        return self.d2t.to(draft_ids.device)[draft_ids]
+        offsets = self.d2t.to(draft_ids.device)[draft_ids]
+        return draft_ids.to(offsets.dtype) + offsets
+
+    def compute_logits_to_target(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """把 draft 词表的 logits 映射回 **target 词表**宽度（上游在 `compute_logits` 里就这么做）。
+
+        上游 `llama_eagle3.py:339-356`：`LogitsProcessor(draft_vocab_size)` 出 draft 宽度，
+        再用 `scatter` 铺到 target 宽度、其余位置 **-inf**（-inf 的 token 永远不会被采样到）。
+        本关先提供等价函数；"异构词表的采样空间语义"（q 的映射、恢复分布）属 67 关。
+        """
+        logits = self.compute_logits(hidden_states)
+        if self.d2t is None:
+            return logits
+        base = torch.arange(self.draft_vocab_size, device=logits.device)
+        targets = base + self.d2t.to(logits.device)
+        mapped = logits.new_full((logits.shape[0], self.target_vocab_size), float("-inf"))
+        mapped[:, targets] = logits
+        return mapped
 
     def load_weights(self, weights) -> set[str]:
         """权重名映射 + 跳过/接收 `d2t`/`t2d`。

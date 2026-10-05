@@ -203,7 +203,8 @@ def test_draft_to_target_id_mapping_uses_d2t():
     model.load_weights(iter(state.items()))
     ids = torch.tensor([0, 1, 100, 31999])
     mapped = model.map_draft_ids_to_target(ids)
-    assert mapped.tolist() == state["d2t"][ids].tolist()
+    # d2t 是**偏移量**（上游 llama_eagle3.py:344-352）：target = draft_id + d2t[draft_id]
+    assert mapped.tolist() == (ids + state["d2t"][ids].to(ids.dtype)).tolist()
     assert int(mapped.max()) < model.target_vocab_size
 
 
