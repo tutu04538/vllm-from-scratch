@@ -108,7 +108,7 @@ FasterDecoding/medusa-vicuna-7b-v1.3
      `logits_indices` 正是 `_calc_spec_decode_metadata`（`:2918-2948`）按"**每请求 `num_draft + 1` 行**"
      造的——若中间 prefill 块那条请求的 `sampled_token_ids[i]` 是 `[x]`（上游会给它的 logits 行也采样），
      那么 `indices[i] = offset` 落在它自己那一行，`offset += num_draft + 1` 与坐标系**自洽、并不错位**。
-     待验证项（含"怎么算证实/证伪"）记在本地文件 `UPSTREAM_SUSPECTED_BUGS.md`（BUG-4，已 gitignore）；
+     待验证项（含"怎么算证实/证伪"）记在本地文件 `vllm_bugs/UPSTREAM_SUSPECTED_BUGS.md`（BUG-4，整个目录已 gitignore）；
      结论出来之前，本条与 `check_step66_medusa.py::D2` 的措辞都要按"待验证"读。
    - stride：上游第二条分支用 `offset += num_draft + 1`（`num_draft` = 本轮**采用的**草稿数）。
      它对"每请求恰好 K_i+1 行"的批是对的（上游会用 `pad_spec_decode` 把 decode 请求补成满宽），
