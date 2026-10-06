@@ -103,6 +103,13 @@ FasterDecoding/medusa-vicuna-7b-v1.3
 3. **行选择的位置与 stride**：
    - 位置：上游把算式写在 Runner 里（`gpu_model_runner.py:5206-5225`），本仓库收进
      `MedusaProposer.select_target_hidden_states()`——那段算式的唯一消费者就是本提议者。
+   - ⚠️ **2026-10-06 复核：下面这条"错位"的前提还没证实，别当成定论。** 复核时的疑点：上游
+     `sample_hidden_states = hidden_states[logits_indices]`（`gpu_model_runner.py:4599`），而
+     `logits_indices` 正是 `_calc_spec_decode_metadata`（`:2918-2948`）按"**每请求 `num_draft + 1` 行**"
+     造的——若中间 prefill 块那条请求的 `sampled_token_ids[i]` 是 `[x]`（上游会给它的 logits 行也采样），
+     那么 `indices[i] = offset` 落在它自己那一行，`offset += num_draft + 1` 与坐标系**自洽、并不错位**。
+     待验证项（含"怎么算证实/证伪"）记在本地文件 `UPSTREAM_SUSPECTED_BUGS.md`（BUG-4，已 gitignore）；
+     结论出来之前，本条与 `check_step66_medusa.py::D2` 的措辞都要按"待验证"读。
    - stride：上游第二条分支用 `offset += num_draft + 1`（`num_draft` = 本轮**采用的**草稿数）。
      它对"每请求恰好 K_i+1 行"的批是对的（上游会用 `pad_spec_decode` 把 decode 请求补成满宽），
      但**一批里混进中间 prefill 块**（本轮排了 n>1 行、0 枚草稿）时只前进 1 行，后面所有请求的
