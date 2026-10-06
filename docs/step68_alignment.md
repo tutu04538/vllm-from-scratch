@@ -168,6 +168,10 @@ valid_mask 裁掉尾巴；语法掩码按候选**逐步试走**再回滚，只�
 10. **logprobs 容器只实现 list 那一支**：上游还有 `FlatLogprobs`（由 `SamplingParams.flat_logprobs`
     选择）；本仓库只实现 list 支、**不提供** `flat_logprobs` 开关（没有开关就没有"收下参数却按另一种
     结构返回"的静默差异）。
+10b. **`LogprobsTensors` 只保留被用到的两个方法**（`tolists` / `filter`）：上游的
+    `to_cpu_nonblocking()`（异步 D2H，属 70 关）、`cat()`（张量版按请求拼接；本项目在 CPU numpy 上做，
+    见 `Runner._concat_logprobs_in_req_order`）、`empty_cpu()`（prompt logprobs 占位，本项目未接入）
+    在**本仓库没有调用方**，按 AGENTS §8"生产包不留没有调用方的代码"删掉（要时会按上游补回）。
 11. **没有 prompt logprobs / `logprob_token_ids`**：两者在请求期明确拒绝（§4 矩阵），
     `LogprobsProcessor` 因此只保留 `_update_sample_logprobs` 那一半。
 12. **没有思考模式（reasoning parser）**：`should_fill_bitmask` 恒为 `True`、`should_advance` 只看

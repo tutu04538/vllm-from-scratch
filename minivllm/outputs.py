@@ -195,6 +195,12 @@ class LogprobsTensors(NamedTuple):
     第 0 列永远是**实际采到的那个 token**（其余是 top-k），rank 是它在整份分布里的名次。
     投机时一个"位置"就是一轮里交付的每一个 token（接受的候选 / 恢复 token / bonus），
     拒绝掉的候选位在这里根本不存在——它们在 `parse_output` 里已被 `valid_mask` 滤掉。
+
+    **只保留被用到的子集**（AGENTS §8：生产包不留没有调用方的代码）：上游还有
+    `to_cpu_nonblocking()`（异步 D2H）、`cat()`（按请求拼接）、`empty_cpu()`（prompt logprobs 占位），
+    它们的调用方分别属于异步调度（70 关）、上游的张量版拼接、prompt logprobs（本项目未接入）；
+    本项目对应位置用的是 `tolists()` + `filter()`，拼接在 CPU numpy 上做
+    （`Runner._concat_logprobs_in_req_order`）。等 70 关/接入 prompt logprobs 时再按上游补回来。
     """
 
     logprob_token_ids: torch.Tensor
@@ -212,17 +218,6 @@ class LogprobsTensors(NamedTuple):
             else self.cu_num_generated_tokens,
         )
 
-    def to_cpu_nonblocking(self) -> "LogprobsTensors":
-        """非阻塞地搬到 CPU（上游同名方法；本仓库同进程，直接同步搬）。"""
-        if self.logprob_token_ids.device.type == "cpu":
-            return self
-        return LogprobsTensors(
-            self.logprob_token_ids.to("cpu", non_blocking=True),
-            self.logprobs.to("cpu", non_blocking=True),
-            self.selected_token_ranks.to("cpu", non_blocking=True),
-            self.cu_num_generated_tokens,
-        )
-
     def filter(self, mask: torch.Tensor) -> "LogprobsTensors":
         """按行掩码过滤（上游同名方法）。
 
@@ -238,33 +233,6 @@ class LogprobsTensors(NamedTuple):
             self.selected_token_ranks[mask],
         )
 
-    @staticmethod
-    def cat(tensors: list["LogprobsTensors"],
-            cu_num_generated_tokens: list[int] | None = None) -> "LogprobsTensors":
-        """把若干段 logprobs 拼起来（上游同名方法）。"""
-        assert tensors
-        assert cu_num_generated_tokens is not None or all(
-            tensor.cu_num_generated_tokens is None for tensor in tensors)
-        if len(tensors) == 1:
-            tensor = tensors[0]
-            if cu_num_generated_tokens is None:
-                return tensor
-            return tensor._replace(cu_num_generated_tokens=cu_num_generated_tokens)
-        return LogprobsTensors(
-            logprob_token_ids=torch.cat([t.logprob_token_ids for t in tensors]),
-            logprobs=torch.cat([t.logprobs for t in tensors]),
-            selected_token_ranks=torch.cat([t.selected_token_ranks for t in tensors]),
-            cu_num_generated_tokens=cu_num_generated_tokens,
-        )
-
-    @staticmethod
-    def empty_cpu(num_positions: int, num_tokens_per_position: int) -> "LogprobsTensors":
-        """建一个空的 CPU 容器（上游同名方法；给"这条请求这一轮没有位置"占位用）。"""
-        logprob_token_ids = torch.empty((num_positions, num_tokens_per_position),
-                                        dtype=torch.int32, device="cpu")
-        logprobs = torch.empty_like(logprob_token_ids, dtype=torch.float32)
-        selected_token_ranks = torch.empty(num_positions, dtype=torch.int32, device="cpu")
-        return LogprobsTensors(logprob_token_ids, logprobs, selected_token_ranks)
 
 
 class LogprobsLists(NamedTuple):
