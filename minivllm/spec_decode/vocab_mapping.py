@@ -84,17 +84,13 @@ def _get_unk_token_id(tokenizer, role: str) -> int:
 def load_tokenizer(path: str):
     """按目录加载 tokenizer（对应上游 `get_tokenizer`）。
 
-    TLI 需要**两套** tokenizer 才能建交集表，所以这是本仓库第一次在提议者里读 tokenizer 文件；
-    读不到就明确报错（不静默退回"同词表"——那会让草稿和 target 的 id 语义悄悄错位）。
+    TLI 需要**两套** tokenizer 才能建交集表；68 关的结构化输出（xgrammar）也要读一份。
+    两处共用 `minivllm/tokenizer_utils.py::load_tokenizer`（按目录缓存一份）：读不到就明确报错
+    （不静默退回"同词表"——那会让草稿和 target 的 id 语义悄悄错位）。
     """
-    from transformers import AutoTokenizer
+    from ..tokenizer_utils import load_tokenizer as _load
 
-    try:
-        return AutoTokenizer.from_pretrained(path, local_files_only=True)
-    except Exception as exc:              # noqa: BLE001 —— 包成"缺 tokenizer"这一件事
-        raise RuntimeError(
-            f"use_heterogeneous_vocab 需要 {path!r} 下有可加载的 tokenizer 文件"
-            f"（tokenizer.json / tokenizer_config.json 等）：{type(exc).__name__}: {exc}") from exc
+    return _load(path)
 
 
 class VocabMapping:

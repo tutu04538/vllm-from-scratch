@@ -289,11 +289,13 @@ check("6. 往请求镜像里 append 一个 token，元数据这一行立刻看�
 
 signature = inspect.signature(Sampler.forward)
 # 59 关加上 `predict_bonus_token`（上游同名参数：投机采样 bonus 行时惩罚的历史要把全部草稿
-# 算进去）。仍然**不接 Request**——多出来的这个参数是布尔开关，不是请求对象。
-check("7. `Sampler.forward` 的入参只有 logits / sampling_metadata / predict_bonus_token"
-      "（不接 Request）",
+# 算进去）；68 关再加上 `logprobs_mode_override`（也是上游同名参数：拒绝采样器让 bonus 行
+# 强制交回 logits）。两者都是**布尔/枚举开关**，不是请求对象——"采样器不认识 Request"这条
+# 不变量没变，所以这里把期望值改成上游当前的四参签名（旧的失败信息会打印实际参数名）。
+check("7. `Sampler.forward` 的入参只有 logits / sampling_metadata / predict_bonus_token / "
+      "logprobs_mode_override（不接 Request）",
       list(signature.parameters) == ["self", "logits", "sampling_metadata",
-                                     "predict_bonus_token"],
+                                     "predict_bonus_token", "logprobs_mode_override"],
       str(list(signature.parameters)))
 check("7. 采样器不返回 finished / 不追加输出（产物只有 token 张量）",
       set(SamplerOutput_fields := {field for field in dir(out) if not field.startswith("_")})

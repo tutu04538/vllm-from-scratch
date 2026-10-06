@@ -140,6 +140,13 @@ class Request:
         self.num_preemptions = 0
         self.cache_salt: str | None = None
 
+        # 68 关：结构化输出的请求级状态（grammar 的 FSM 就挂在它上面）。`None` = 不受约束。
+        # 与上游同一条边界：**采样参数里有没有约束**决定它，而不是"引擎开没开结构化输出"。
+        from .structured_output.request import StructuredOutputRequest
+
+        self.structured_output_request = StructuredOutputRequest.from_sampling_params(
+            sampling_params)
+
         # 只读视图：防止外部直接 append（那样会绕过 append_output_token_ids 的同步）
         self.output_token_ids = ReadOnlyTokenList(self._output_token_ids)
         self.all_token_ids = ReadOnlyTokenList(self._all_token_ids)
@@ -175,6 +182,16 @@ class Request:
     @property
     def num_output_tokens(self) -> int:
         return len(self._output_token_ids)
+
+    @property
+    def use_structured_output(self) -> bool:
+        """这条请求要不要受语法约束（上游同名属性）。
+
+        Scheduler 用它决定"要不要给它填掩码、要不要在提交后推进 grammar"；`Request` 自己
+        不推进 FSM——状态归 `structured_output_request.grammar`，推进时机归 Scheduler
+        （068 §2：不要让 proposer 永久推进 grammar）。
+        """
+        return self.structured_output_request is not None
 
     def is_finished(self) -> bool:
         return RequestStatus.is_finished(self.status)

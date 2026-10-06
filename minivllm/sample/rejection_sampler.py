@@ -47,13 +47,15 @@ Torch 逐候选 29.2 ms/步（837 次 D2H），上游同层 Triton 内核 0.079 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import torch
 import triton
 import triton.language as tl
 
-from ..outputs import SamplerOutput
+from ..config import PROCESSED_LOGPROBS_MODES
+from ..outputs import LogprobsTensors, SamplerOutput
 from .metadata import SamplingMetadata
 from .ops.penalties import apply_all_penalties
 from .ops.topk_topp_sampler import apply_top_k_top_p
@@ -95,6 +97,12 @@ class RejectionSampler:
     def __init__(self, sampler: Sampler, spec_config=None) -> None:
         # 复用普通采样器做 bonus 与"修正分布"抽样：bonus 就是一次普通采样
         self.sampler = sampler
+        # 68 关：logprobs 的四种模式决定"要交付的那一份"是原始的还是处理过的。
+        # 两个判据与上游同名属性一一对应（`PROCESSED_LOGPROBS_MODES` / 是否是 logits 模式）。
+        self.logprobs_mode = sampler.logprobs_mode
+        self.is_processed_logprobs_mode = self.logprobs_mode in PROCESSED_LOGPROBS_MODES
+        self.is_logits_logprobs_mode = self.logprobs_mode in ("raw_logits",
+                                                             "processed_logits")
         # 本关只接 standard（059 §5）。上游同一处按 `rejection_sample_method` 分
         # synthetic / block；那两条在 75 关验收，这里遇到就报错而不是悄悄按 standard 跑。
         method = getattr(spec_config, "rejection_sample_method", "standard")
@@ -129,13 +137,26 @@ class RejectionSampler:
         # `predict_bonus_token=True` 让采样器把惩罚的历史算成"已提交 + 全部草稿"——能走到
         # bonus 就说明草稿都被接受了（上游同名参数）。
         bonus_logits = logits[metadata.bonus_logits_indices]
-        bonus_token_ids = self.sampler.forward(
-            bonus_logits, sampling_metadata, predict_bonus_token=True).sampled_token_ids
+        bonus_sampler_output = self.sampler.forward(
+            bonus_logits, replace(sampling_metadata, max_num_logprobs=-1),
+            predict_bonus_token=True,
+            # 68 关（上游同款）：bonus 这一行的 logprobs 要与候选行拼在一起再统一算，
+            # 所以这里强制它交回 **logits**（`raw_logits` / `processed_logits`），
+            # 而不是它自己那份 logprobs。
+            logprobs_mode_override=("processed_logits"
+                                    if self.is_processed_logprobs_mode else "raw_logits"))
+        bonus_token_ids = bonus_sampler_output.sampled_token_ids
 
         # ---- 2) 验证行的 p：先按"草稿前缀"逐行算历史，再施加惩罚/约束 ----
         # 索引出的张量有独立存储（`logits[...]` 不是视图），所以下面的原地操作不会污染原 logits
         raw_target_logits = logits[metadata.target_logits_indices]
-        target_logits = raw_target_logits.to(torch.float32)
+        # 用 float32 算概率（上游同款：fp16 的 logits 在 softmax 前升精度）
+        raw_target_logits = raw_target_logits.to(torch.float32)
+        target_logits = raw_target_logits
+        if not self.is_processed_logprobs_mode:
+            # `apply_logits_processors` 会**原地**改 logits；raw_* 模式要交付"改之前"的那一份，
+            # 所以先复制一份留底（上游同款注释）。
+            target_logits = target_logits.clone()
         target_logits = self.apply_logits_processors(target_logits, sampling_metadata, metadata)
         # 温度 / top-k / top-p：按请求展开到每个验证行（上游在这里原地改 logits）
         target_logits = apply_sampling_constraints(
@@ -152,8 +173,19 @@ class RejectionSampler:
             bonus_token_ids,
             sampling_metadata,
         )
-        # logprobs 属 68 关：本关 SamplingMetadata 里没有 logprobs 请求字段，恒为 None
+
+        # ---- 4) logprobs（68 关）----
         logprobs_tensors = None
+        if sampling_metadata.max_num_logprobs is not None:
+            logprobs_tensors = self._get_logprobs_tensors(
+                sampling_metadata.max_num_logprobs,
+                metadata,
+                logits,
+                # processed 模式交付处理过的 logits，raw 模式交付留底的那一份（上游同款三元）
+                target_logits if self.is_processed_logprobs_mode else raw_target_logits,
+                bonus_sampler_output.logprobs_tensors.logprobs,
+                output_token_ids,
+            )
         return SamplerOutput(sampled_token_ids=output_token_ids,
                              logprobs_tensors=logprobs_tensors)
 
@@ -162,24 +194,77 @@ class RejectionSampler:
     def _get_logprobs_tensors(self, max_num_logprobs: int, metadata: SpecDecodeMetadata,
                               logits: torch.Tensor, target_logits: torch.Tensor,
                               bonus_logits: torch.Tensor,
-                              sampled_token_ids: torch.Tensor):
-        """保留上游的职责边界，但本关没有 logprobs（`SamplingMetadata` 里没有对应字段）。
+                              sampled_token_ids: torch.Tensor) -> LogprobsTensors:
+        """投机下的 logprobs（上游同名方法，逐行对应）。
 
-        为什么留着：logprobs 的计算**必须**在这里（拒绝后的行要按 `cu_num_sampled_tokens`
-        重新对齐，见上游同名方法），而不是在 Sampler 里；68 关（采样约束 / Logprobs /
-        结构化输出的投机语义）会把它补全。缺能力就报错，不做静默降级。
+        ### 行索引怎么来的（068 §3.5 的"各自索引正确"）
+
+        一轮里交付的 token 可能是"接受的候选 + 恢复 token + bonus"，每个位置该读**哪一行**：
+
+            第 j 个位置（j < 本请求排了几个候选位）→ 紧凑行号 `start + j`（候选 j 的 target 行）
+            拒绝发生在第 a 个位置 → 恢复 token 也读 `start + a`（同一个位置的 p）
+            全部接受 → bonus 位读 `start + K`（bonus 行）
+
+        `final_logits` 就是按这个坐标铺的（上游同款）：候选行放**处理过**的 target logits、
+        bonus 行放 bonus 采样器交回的那一份。于是"读第 j 行"天然满足上面的规则，
+        **不需要**知道这一轮到底接受了几个。
+
+        ### 为什么"多算"却不算错
+
+        上游注释：为了避免 CPU-GPU 同步（要等 valid_mask 才知道每请求几个有效位），这里对
+        **所有**候选位（含被拒绝的）都算一份 logprobs，多出来的部分在 `parse_output` 里由
+        **同一张 valid_mask** 滤掉。所以"截断后的尾部不能漏出"靠的不是少算，而是**同一把尺子**。
+
+        ### 与上游的两处差异（都写进 docs/step68_alignment.md）
+
+        1. `max_num_logprobs == -1`（全词表）在投机下**上游会运行期报错**：它把 -1 直接传给
+           `torch.topk`（实测 `RuntimeError: selected index k out of range`）。本仓库在进
+           topk 之前就明确拒绝，报错信息说清"这条组合不支持"，语义与上游一致（都是不支持），
+           只是失败点更靠前、原因更直白。
+        2. 全词表在**非投机**路径上的行为见 sampler.py（上游把整份分布交出去，输出处理阶段
+           又把 top-k 那一列当成"名次"来解释）。本仓库照抄，不在这里"顺手修好"。
         """
-        raise NotImplementedError(
-            "投机 logprobs 属 68 关：本关只交付 token 序列。"
-            "（上游 `_get_logprobs_tensors` 需要 LogprobsTensors 与 max_num_logprobs，"
-            "本关的 SamplingMetadata 里还没有这些字段）")
+        if max_num_logprobs == -1:
+            raise NotImplementedError(
+                "投机 + logprobs=-1（全词表）上游同样不支持：它把 -1 直接交给 torch.topk，"
+                "会在采样时抛 RuntimeError('selected index k out of range')。本仓库提前拒绝，"
+                "请改用 logprobs=k（k >= 1）。三态矩阵里这条属「上游不支持」")
+
+        # 每请求的起始行号：`cu_num_sampled_tokens` 是累积末端，往左挪一格就是起点
+        cu_num_sampled_tokens = torch.zeros_like(metadata.cu_num_sampled_tokens)
+        cu_num_sampled_tokens[1:] = metadata.cu_num_sampled_tokens[:-1]
+
+        bonus_logits_indices = metadata.bonus_logits_indices
+        target_logits_indices = metadata.target_logits_indices
+        final_logits = torch.zeros_like(logits, dtype=torch.float32)
+        final_logits[target_logits_indices] = target_logits.to(torch.float32)
+        final_logits[bonus_logits_indices] = bonus_logits.to(torch.float32)
+
+        logit_start_indices = cu_num_sampled_tokens
+        offsets = torch.arange(sampled_token_ids.shape[-1],
+                               device=logit_start_indices.device,
+                               dtype=logit_start_indices.dtype)
+        accepted_logit_indices = (logit_start_indices.unsqueeze(1)
+                                  + offsets.unsqueeze(0)).flatten()
+        # 越界兜底（上游同款）：padding 位会算出 `start + K` 之类的下标，夹到最后一行为止；
+        # 它们的结果随后就被 valid_mask 丢掉，不会交付
+        accepted_logit_indices.clamp_(max=final_logits.shape[0] - 1)
+        accepted_tokens = sampled_token_ids.clone().flatten()
+        # -1（PLACEHOLDER）不能拿去 gather：换成 0 让下标合法（上游同款注释）
+        accepted_tokens[accepted_tokens == PLACEHOLDER_TOKEN_ID] = 0
+
+        accepted_logits = final_logits[accepted_logit_indices]
+        accepted_logprobs = (accepted_logits if self.is_logits_logprobs_mode
+                            else self.sampler.compute_logprobs(accepted_logits))
+        return self.sampler.gather_logprobs(accepted_logprobs, max_num_logprobs,
+                                            accepted_tokens.to(torch.int64))
 
     # -------- 输出解析（CPU 交付边界）--------
 
     @staticmethod
     def parse_output(output_token_ids: torch.Tensor, vocab_size: int,
                      discard_req_indices=(), logprobs_tensors=None,
-                     ) -> tuple[list[list[int]], None]:
+                     ) -> tuple[list[list[int]], "LogprobsLists | None"]:
         """把 `[B, max_spec_len+1]` 解析成 `list[list[int]]`（上游同名静态方法）。
 
         被拒绝的位置由内核填了 `PLACEHOLDER_TOKEN_ID = -1`，这里一次性过滤掉。**这是整条
@@ -187,15 +272,26 @@ class RejectionSampler:
 
         `discard_req_indices` 里的行整行丢掉（中间 prefill 块：它的 logits 有效，但这一轮
         不该产出 token）。上游还用 `id < vocab_size` 兜住脏数据，这里保持一致。
+
+        68 关：`logprobs_tensors` 用**同一张 `valid_mask`** 过滤，并给出每请求的有效位置数
+        （`cu_num_tokens`）。这是"截断后的尾部不能漏出"的落点（068 §3.5）——被拒绝的候选位
+        在 token 与 logprobs 两边**同时**消失，不会出现"token 少了一个、logprobs 还留着它"。
         """
         output_token_ids_np = output_token_ids.cpu().numpy()
         valid_mask = (output_token_ids_np != PLACEHOLDER_TOKEN_ID) & (
             output_token_ids_np < vocab_size)
+        output_logprobs = None
+        if logprobs_tensors is not None:
+            # 每请求的有效位置数 → 行偏移；`slice_request` 靠它切（投机时每请求 0~K+1 个）
+            cu_num_tokens = [0] + valid_mask.sum(axis=1).cumsum().tolist()
+            filtered_tensors = logprobs_tensors.filter(valid_mask.flatten())
+            output_logprobs = filtered_tensors.tolists(cu_num_tokens)
+
         if len(discard_req_indices) > 0:
             valid_mask[list(discard_req_indices)] = False
         outputs = [row[valid_mask[index]].tolist()
                    for index, row in enumerate(output_token_ids_np)]
-        return outputs, None
+        return outputs, output_logprobs
 
     # -------- logits 处理 --------
 

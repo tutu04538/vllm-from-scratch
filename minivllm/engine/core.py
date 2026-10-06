@@ -41,9 +41,16 @@ class EngineCore:
         # （195 §8 的第三步）。顺序不能反——先建调度器再分配缓存的话，第一轮就可能排出
         # 执行侧根本没有物理存储的块。
         self.model_executor.initialize_kv_cache(cache_config)
+        # 68 关：结构化输出的管理器在**引擎级**（一张卡一份 grammar 编译环境），Scheduler 与
+        # 执行侧都通过它拿东西：Scheduler 要"每行允许哪些 token"的掩码，执行侧负责把掩码
+        # 打到 logits 上（上游同一条分工，见 068 §2）。
+        from ..structured_output import StructuredOutputManager
+
+        self.structured_output_manager = StructuredOutputManager(vllm_config)
         self.scheduler = Scheduler(vllm_config.scheduler_config, self.kv_cache_manager,
                                    max_model_len=vllm_config.model_config.max_model_len,
-                                   speculative_config=vllm_config.speculative_config)
+                                   speculative_config=vllm_config.speculative_config,
+                                   structured_output_manager=self.structured_output_manager)
 
     # -------- 请求 --------
 
@@ -76,6 +83,7 @@ class EngineCore:
         # 复制一份而不是原地改：`sampling_params` 是调用方的对象（还会被一并打包进
         # NewRequestData 发给执行侧），就地改会让"谁改了我的配置"说不清
         sampling_params = request.sampling_params
+        self._validate_sampling_params(sampling_params)
         room = max_model_len - prompt_len
         if sampling_params.max_tokens > room:
             sampling_params = dataclasses.replace(sampling_params, max_tokens=room)
@@ -84,7 +92,40 @@ class EngineCore:
         # 请求一进门就挂上，保证 hash 链从第一个块开始就是完整的
         return Request.from_engine_core_request(request, block_hasher=self.scheduler.block_hasher)
 
+    def _validate_sampling_params(self, sampling_params) -> None:
+        """68 关的请求期校验（上游在 `Processor._validate_sampling_params` 的位置）。
+
+        只做两件与**引擎配置**相关、逐请求看不出来的事：
+
+        - `logprobs` 不能超过 `ModelConfig.max_logprobs`（静默截断会让用户以为拿到了全部）；
+        - 结构化输出的规格要在**提交时**就校验/规范化（`choice` 会被改写成 EBNF；
+          写错的 schema 在这里报错，而不是排到队之后才失败）。
+        """
+        if sampling_params is None:
+            return
+        num_logprobs = sampling_params.num_logprobs
+        if num_logprobs is not None and num_logprobs != -1:
+            model_config = self.vllm_config.model_config
+            max_logprobs = model_config.max_logprobs
+            if max_logprobs == -1:
+                max_logprobs = model_config.get_vocab_size()
+            if num_logprobs > max_logprobs:
+                raise ValueError(
+                    f"请求要 {num_logprobs} 个 logprobs，超过 max_logprobs={max_logprobs}"
+                    f"（引擎配置）。上游同样在请求期拒绝：静默少给几个会让下游以为"
+                    f"拿到的是完整的前 k 名")
+        if sampling_params.structured_outputs is not None:
+            from ..structured_output import validate_structured_output
+
+            validate_structured_output(sampling_params,
+                                       self.vllm_config.structured_outputs_config,
+                                       tokenizer=None)
+
     def add_request(self, request) -> None:
+        # 68 关：结构化输出的 grammar 在这里编译（上游也在 `EngineCore.add_request` 里调
+        # `grammar_init`，不在 Scheduler 里）。**同步编译**，所以语法错的请求在提交处就失败，
+        # 不会先排队再挂掉（异步编译属"本项目尚未接入"，见三态矩阵）。
+        self.structured_output_manager.grammar_init(request)
         self.scheduler.add_request(request)
 
     def abort_requests(self, request_ids: list[str]) -> None:
@@ -117,7 +158,11 @@ class EngineCore:
             model_output = self.model_executor.execute_model(scheduler_output)
             if model_output is None:
                 # 执行侧说"我先把状态存下了，你来采"——采样在这一步做
-                model_output = self.model_executor.sample_tokens(grammar_output=None)
+                # 68 关：**采样之前**先按语法算出"每个待定位置允许哪些 token"
+                # （上游同序：`get_grammar_bitmask` → `sample_tokens(grammar_output)`）。
+                # 掩码由执行侧打进 logits，`-1`（不约束）的行也在这里被填成全允许。
+                grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+                model_output = self.model_executor.sample_tokens(grammar_output)
             outputs = self.scheduler.update_from_output(scheduler_output, model_output)
         except Exception as exc:                     # noqa: BLE001 —— 半轮状态不可重试
             self.failure = f"{type(exc).__name__}: {exc}"

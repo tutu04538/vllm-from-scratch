@@ -8,7 +8,7 @@
     [max_num_reqs]                  num_computed_tokens_cpu / num_tokens_no_spec / num_prompt_tokens
     block_table                     [max_num_reqs, max_num_blocks_per_req]（每个 KV group 一份）
     sampling_params / generators    每行的采样配置与随机流（本关放普通 list，没编成 GPU 张量）
-    采样用的定长 CPU 张量            temperature / top_k / top_p / 三种惩罚（57D）
+    采样用的定长 CPU 张量            temperature / top_k / top_p / min_p / 三种惩罚（57D、68）
 
 `req_output_token_ids[row]` 存的是**请求镜像那个 list 的引用**（vLLM 同款）：`_bookkeeping_sync`
 往里 append 之后，下一轮建 `SamplingMetadata` 时立刻能看到——惩罚历史因此不需要另存一份。
@@ -60,6 +60,8 @@ class InputBatch:
         self.temperature_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
         self.top_k_cpu = torch.zeros(max_num_reqs, dtype=torch.int64)
         self.top_p_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
+        # 68 关：min_p（上游是 MinPLogitsProcessor 的状态张量；这里与其它采样参数并排存）
+        self.min_p_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
         self.presence_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
         self.frequency_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
         self.repetition_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
@@ -211,6 +213,7 @@ class InputBatch:
             top_k = self.vocab_size
         self.top_k_cpu[row_index] = top_k
         self.top_p_cpu[row_index] = sampling_params.top_p
+        self.min_p_cpu[row_index] = sampling_params.min_p
         self.presence_penalties_cpu[row_index] = sampling_params.presence_penalty
         self.frequency_penalties_cpu[row_index] = sampling_params.frequency_penalty
         self.repetition_penalties_cpu[row_index] = sampling_params.repetition_penalty
@@ -233,7 +236,7 @@ class InputBatch:
         self.num_prompt_tokens[dst] = self.num_prompt_tokens[src]
         self.spec_token_ids[dst] = self.spec_token_ids[src]
         self.spec_token_ids[src] = []
-        for name in ("temperature", "top_k", "top_p", "presence_penalties",
+        for name in ("temperature", "top_k", "top_p", "min_p", "presence_penalties",
                      "frequency_penalties", "repetition_penalties"):
             tensor = getattr(self, f"{name}_cpu")
             tensor[dst] = tensor[src]

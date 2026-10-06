@@ -135,15 +135,47 @@ class ModelConfig:
     # "两套 tokenizer 的 token 级交集"，需要**分别**知道两边去哪读（上游 `ModelConfig.tokenizer`
     # 就是这个用途：默认与 `model` 同一个目录，异构词表时 target 用 target 的、draft 用 draft 的）。
     tokenizer: str | None = None
+    # 68 关：`Sampler` 交付哪一套 logprobs（上游 `ModelConfig.logprobs_mode`，默认 raw_logprobs）。
+    # 四种模式的区别见 sample/sampler.py；它决定的是"用户在 API 里拿到的数是原始分布还是
+    # 被惩罚/温度/掩码改过的分布"，属于**引擎级**配置，不是逐请求参数。
+    logprobs_mode: str = "raw_logprobs"
+    # 上游 `ModelConfig.max_logprobs`（默认 20；-1 表示按词表全给）。68 关在请求期拿它校验
+    # `SamplingParams.logprobs`：要 100 个却只留 20 个的话，静默截断会让用户以为拿到了全部。
+    max_logprobs: int = 20
 
     def __post_init__(self):
         if self.max_model_len <= 0:
             raise ValueError(f"max_model_len 必须为正，收到 {self.max_model_len}")
+        if self.logprobs_mode not in LOGPROBS_MODES:
+            raise ValueError(
+                f"logprobs_mode 只能是 {sorted(LOGPROBS_MODES)} 之一，收到 "
+                f"{self.logprobs_mode!r}")
+        if self.max_logprobs == 0 or self.max_logprobs < -1:
+            raise ValueError(f"max_logprobs 只能是 -1 或正整数，收到 {self.max_logprobs}")
 
     @property
     def tokenizer_path(self) -> str:
         """去哪读 tokenizer（没单独指定就是模型目录，与上游默认一致）。"""
         return self.tokenizer or self.model
+
+    def get_vocab_size(self) -> int:
+        """词表大小（从 HF config 的 `vocab_size` 取；上游同名的取值口径）。
+
+        结构化输出的掩码宽度、`logprobs=-1` 的"全词表"、TLI 的两边宽度都要它。
+        没有 `hf_config` 时报错而不是猜一个值：宽度猜错不会报错，只会让掩码打到别的列上。
+        """
+        if not self.hf_config or "vocab_size" not in self.hf_config:
+            raise ValueError(
+                "模型配置里没有 vocab_size，无法确定词表宽度（结构化输出掩码 / logprobs=-1 "
+                "都要它）。请先把 hf_config 读进来（模型目录里的 config.json）")
+        return int(self.hf_config["vocab_size"])
+
+
+#: 上游 `config/model.py` 的 `LogprobsMode`（四种模式）。前两种是"概率"、后两种是"logits"本身
+#: （上游允许直接交付 logits，用于需要未归一化分数的场景）。
+LOGPROBS_MODES = ("raw_logprobs", "processed_logprobs", "raw_logits", "processed_logits")
+#: 上游 `PROCESSED_LOGPROBS_MODES`：需要"处理之后"的那两份的模式集合。
+PROCESSED_LOGPROBS_MODES = ("processed_logprobs", "processed_logits")
 
 
 @dataclass(frozen=True)
@@ -755,9 +787,42 @@ class SpeculativeConfig:
 
 
 @dataclass(frozen=True)
+class StructuredOutputsConfig:
+    """结构化输出的**引擎级**配置（对应 vLLM `config/structured_outputs.py` 的本关子集）。
+
+    为什么是引擎级而不是请求级：后端是多进程执行时每张卡都要有同一套编译环境，上游因此
+    **不支持**请求级选后端（它只在 `auto` 时按请求内容挑 backend）。68 关照抄这条边界。
+    """
+
+    backend: str = "auto"           # "auto" / "xgrammar"（其余在请求期明确拒绝）
+    disable_any_whitespace: bool = False
+
+    def __post_init__(self):
+        if self.backend not in ("auto", "xgrammar", "guidance", "outlines",
+                                "lm-format-enforcer"):
+            raise ValueError(f"未知的 structured_outputs.backend={self.backend!r}")
+        if self.disable_any_whitespace and self.backend not in ("xgrammar", "guidance",
+                                                                "auto"):
+            raise ValueError(
+                "disable_any_whitespace 只对 xgrammar / guidance 后端有意义"
+                "（上游同款校验）")
+
+
+@dataclass(frozen=True)
 class VllmConfig:
     model_config: ModelConfig
     cache_config: CacheConfig = field(default_factory=CacheConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     device_config: DeviceConfig = field(default_factory=DeviceConfig)
     speculative_config: SpeculativeConfig | None = None
+    structured_outputs_config: StructuredOutputsConfig = field(
+        default_factory=StructuredOutputsConfig)
+
+    @property
+    def num_speculative_tokens(self) -> int:
+        """本轮最多几枚草稿（上游 `VllmConfig.num_speculative_tokens`）。
+
+        结构化输出要用它算掩码缓冲的大小：`max_num_seqs * (1 + K)` 行。
+        """
+        return (self.speculative_config.num_speculative_tokens
+                if self.speculative_config is not None else 0)

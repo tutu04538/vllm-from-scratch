@@ -72,13 +72,13 @@ from .model_loader import get_model
 from .models import Qwen3ForCausalLM
 from .request import Request, RequestStatus
 from .sample import Sampler
-from .sampling_params import SamplingParams
+from .sampling_params import SamplingParams, StructuredOutputsParams
 from .worker import GPUModelRunner, Worker
 
 __all__ = [
     "LLMEngine", "EngineCore", "InprocClient", "OutputProcessor",
     "UniProcExecutor", "Worker", "GPUModelRunner",
-    "Request", "RequestStatus", "SamplingParams",
+    "Request", "RequestStatus", "SamplingParams", "StructuredOutputsParams",
     "EngineCoreRequest", "EngineCoreOutput", "EngineCoreOutputs", "ModelRunnerOutput",
     "RequestOutput", "FinishReason",
     "VllmConfig", "ModelConfig", "CacheConfig", "SchedulerConfig", "DeviceConfig",

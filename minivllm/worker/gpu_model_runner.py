@@ -84,6 +84,9 @@ class ExecuteModelState(NamedTuple):
     logits: torch.Tensor
     sample_rows: list[int]
     spec_metadata: object = None
+    # 68 关：这一轮的语法掩码（`EngineCore.step()` 里算好、随 `sample_tokens()` 传进来）。
+    # 它只在这一步有效：掩码行与 logits 行一一对应，打完就丢。
+    grammar_output: object = None
     # 63 关（EAGLE）：提议者要照上游那样对本轮的输入做"整体左移 + 打补丁"，所以要把
     # **本轮真正的输入**（含被拒草稿那几行）留到提议时刻。只留 **CPU** 张量（不占显存），
     # 而且只在 `capture_aux_hidden_states` 时才留——上游是把它们当场当参数传进 proposer 的。
@@ -138,10 +141,14 @@ class GPUModelRunner:
             # 而 top_k 的归一化规则要用它。假执行路径的 config 没有 hf_config → None
             vocab_size=(vllm_config.model_config.hf_config or {}).get("vocab_size"))
         self.attn_metadata_builder = AttentionMetadataBuilder(self.block_size)
+        # 68 关：logprobs 的四种模式是**引擎级**配置（上游 `ModelConfig.logprobs_mode`），
+        # 采样器与拒绝采样器都要知道它——拒绝采样器还要据此决定"交付 raw 还是 processed 那份"。
+        self.logprobs_mode = vllm_config.model_config.logprobs_mode
         self.sampler = None                       # load_model() 之后才有（采样要用模型精度）
         # 投机的两个部件（57E）：拒绝采样器复用普通采样器（对应上游 sample/rejection_sampler.py，
         # 59 关搬到 `sample/` 下并换成 Triton 批量内核）；提议器由 load_model() 按配置建
-        self.rejection_sampler = RejectionSampler(Sampler(), vllm_config.speculative_config)
+        self.rejection_sampler = RejectionSampler(
+            Sampler(self.logprobs_mode), vllm_config.speculative_config)
         # 投机元数据的索引算术要在 CPU 侧反复做，`arange` 预分配到最大批（上游 `arange_np` 同款）
         arange_size = max(vllm_config.scheduler_config.max_num_batched_tokens,
                           vllm_config.scheduler_config.max_num_seqs + 1)
@@ -180,7 +187,7 @@ class GPUModelRunner:
             self.model = get_model(self.vllm_config.model_config, self.device)
         from ..sample import Sampler
 
-        self.sampler = Sampler()
+        self.sampler = Sampler(self.logprobs_mode)
         self.proposer = self._build_proposer()
         # 63/64 关：EAGLE3 与 extract_hidden_states 都要 target **顺带输出若干辅助层**的 hidden
         # states（EAGLE-1 只要最后一层，不吃 aux）。层号来自 draft 配置，缺省用 target 的默认值
@@ -808,8 +815,9 @@ class GPUModelRunner:
     def sample_tokens(self, grammar_output=None):
         """第二步：消费 logits 采样，并产出 `ModelRunnerOutput`（同样在推理边界内）。
 
-        `grammar_output`（结构化输出）本关不用，但接口留着：执行与采样分开的意义之一就是给
-        这类"采样前还要改一遍 logits"的路径留位置。
+        `grammar_output`（68 关）：Scheduler 算好的语法掩码。**先打掩码再采样**是上游的顺序
+        （`apply_grammar_bitmask` 在 `_sample` 之前），执行与采样分开的意义之一就是给这类
+        "采样前还要改一遍 logits"的路径留位置。
 
         **异常 → 明确失败态**（205 §5 / 204 §9.1）：采样与提议（尤其是提议）失败时，这一轮
         已经处在"镜像更新了、权威输出还没提交"的半截状态。`inference_mode()` 只管梯度记录，
@@ -822,6 +830,8 @@ class GPUModelRunner:
             raise RuntimeError("没有待采样的 execute 结果：sample_tokens() 必须跟在 "
                                "返回 None 的 execute_model() 之后")
         self.execute_model_state = None
+        # 掩码在这一步才拿到（它在 Scheduler 手里），所以要在这里补进 state
+        state = state._replace(grammar_output=grammar_output)
 
         try:
             return self._sample_and_propose(state)
@@ -834,28 +844,105 @@ class GPUModelRunner:
 
     def _sample_and_propose(self, state):
         """`sample_tokens()` 的正常路径（单独一层，好让失败态只包一层 try）。"""
+        # 68 关：结构化输出的掩码必须在**采样之前**打到 logits 上（上游同序：
+        # `apply_grammar_bitmask` 在 `_sample` 之前）。它原地改 `state.logits`，
+        # 所以掩码之后的那份就是采样器看到的那一份——`processed_*` 模式的 logprobs
+        # 因此天然包含掩码，不存在"交付的 logprobs 认为非法 token 还有概率"。
+        self._apply_grammar_bitmask(state)
         scheduled_spec = state.scheduler_output.scheduled_spec_decode_tokens
         spec_metadata = state.spec_metadata
         if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
             # ---- 投机路径：验证草稿 ----
             # 元数据要按**被调度的请求**建（草稿的"假设历史"来自协议里的 spec tokens），
             # 行序与 spec_metadata 的请求顺序一致，长度是 K+1 而不是 1
-            sampled = self._sample_with_spec(state, spec_metadata, scheduled_spec)
+            sampled, logprobs_by_req = self._sample_with_spec(
+                state, spec_metadata, scheduled_spec)
         else:
             # ---- 普通路径（含全批 K=0）----
             sampling_metadata = SamplingMetadata.from_input_batch(
                 self.input_batch, state.sample_rows, device=self.device,
-                scheduled_spec_decode_tokens=scheduled_spec)
+                scheduled_spec_decode_tokens=scheduled_spec,
+                logprobs_mode=self.logprobs_mode)
             sampler_output = self.sampler.forward(state.logits, sampling_metadata)
             sampled = sampler_output.sampled_token_ids.tolist()
+            logprobs_by_req = self._logprobs_by_request(sampler_output.logprobs_tensors,
+                                                        state.sample_rows)
 
         # 先记账、再提草稿（顺序不能反，199 §4 的时序）：
         # `_bookkeeping_sync` 把本轮采样结果写进镜像，**提议必须看到它**——
         # 否则草稿是基于"少一个 token 的历史"算出来的，draft 侧的进度也会比 target 落后一格，
         # 于是发布出去的完整块可能还没被 draft 算过（验收方的独立探针分别抓到了这两点）
-        output = self._bookkeeping_sync(state, sampled)
+        output = self._bookkeeping_sync(state, sampled, logprobs_by_req)
         self.pending_draft_token_ids = self._propose_draft_tokens(state, sampled)
         return output
+
+    # -------- 结构化输出（68 关）--------
+
+    def _apply_grammar_bitmask(self, state) -> None:
+        """把语法掩码打到这一轮的 logits 上（上游 `sample_tokens` 里的同一步）。
+
+        行映射由本 Runner 给出（`_logit_row_of_req`）：上游用它的 InputBatch 现算，
+        但本仓库的非投机路径**只为要采样的行算 logits**（57 关以来的教学差异），所以
+        "请求 → 第一行"只有这里知道。
+        """
+        grammar_output = state.grammar_output
+        if grammar_output is None:
+            return
+        from ..structured_output.utils import apply_grammar_bitmask
+
+        apply_grammar_bitmask(state.logits, grammar_output,
+                              state.scheduler_output.scheduled_spec_decode_tokens,
+                              self._logit_row_of_req(state))
+
+    def _logit_row_of_req(self, state) -> dict[str, int]:
+        """请求 ID → 它在本轮 `logits` 里的第一行行号。
+
+        两种批的行布局（与 `execute_model()` 里选 `sample_indices` 的两条分支一一对应）：
+
+            投机批（有草稿）：所有批行、每请求 `1 + K_i` 行，顺序 = `input_batch.req_ids`
+            普通批：只有 `sample_rows` 那些行，每行一条请求
+
+        行数对不上时直接报错：掩码打错行**不会**报错，只会让模型在该填数字的地方写出字母。
+        """
+        spec_metadata = state.spec_metadata
+        rows: dict[str, int] = {}
+        if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
+            offset = 0
+            for row, req_id in enumerate(self.input_batch.req_ids):
+                rows[req_id] = offset
+                offset += 1 + spec_metadata.num_draft_tokens[row]
+        else:
+            for index, row in enumerate(state.sample_rows):
+                rows[self.input_batch.req_id_at(row)] = index
+        if len(rows) and max(rows.values()) >= state.logits.shape[0]:
+            raise RuntimeError(
+                f"请求 → logits 行的映射越界了（最大行号 {max(rows.values())}，"
+                f"logits 只有 {state.logits.shape[0]} 行）：掩码会打到别的行上，"
+                f"那是不报错的静默错，所以直接停下")
+        return rows
+
+    def _logprobs_by_request(self, logprobs_tensors, sample_rows: list[int]):
+        """把"按采样行排列"的 logprobs 摊成 `{req_id: LogprobsLists}`（68 关）。
+
+        为什么要摊开：`_bookkeeping_sync` 按 **Scheduler 的请求顺序**交付结果，而 logprobs
+        是**按批行/采样行**算出来的，两者顺序可能不同。逐请求摊开之后按目标顺序重排，
+        就不会出现"行号猜对了但内容属于别人"这种静默错。
+        """
+        if logprobs_tensors is None:
+            return None
+        lists = logprobs_tensors.tolists()
+        return {self.input_batch.req_id_at(row): self._slice_logprobs(lists, index, 1)
+                for index, row in enumerate(sample_rows)}
+
+    @staticmethod
+    def _slice_logprobs(logprobs_lists, start: int, num_positions: int):
+        """从 `LogprobsLists` 里切出连续 `num_positions` 行（numpy 切片，不拷贝数据）。"""
+        end = start + num_positions
+        return type(logprobs_lists)(
+            logprobs_lists.logprob_token_ids[start:end],
+            logprobs_lists.logprobs[start:end],
+            logprobs_lists.sampled_token_ranks[start:end],
+            None)
 
     # -------- 投机（57E）--------
 
@@ -866,10 +953,14 @@ class GPUModelRunner:
         `RejectionSampler.parse_output`（上游同一处：那里是整条验证路径唯一的 D2H）。
         **元数据按整个批建**（行序 = `input_batch.req_ids`），因为草稿的"假设历史"来自协议里的
         spec tokens，而不是我们筛出来的采样行。
+
+        68 关：logprobs 与 token **用同一张 valid_mask 裁**（同一处 `parse_output`），
+        所以被拒绝的候选位在两边同时消失——这就是"截断后的尾部不能漏出"的机制。
         """
         sampling_metadata = SamplingMetadata.from_input_batch(
             self.input_batch, list(range(self.input_batch.num_reqs)), device=self.device,
-            scheduled_spec_decode_tokens=scheduled_spec)
+            scheduled_spec_decode_tokens=scheduled_spec,
+            logprobs_mode=self.logprobs_mode)
         draft_probs = self._get_spec_decode_draft_probs(spec_metadata)
         sampler_output = self.rejection_sampler(
             spec_metadata, draft_probs, state.logits, sampling_metadata)
@@ -879,11 +970,27 @@ class GPUModelRunner:
         # 并在那里顺手把对应 generator 的 offset 退回去。
         ready = set(state.sample_rows)
         discard = [row for row in range(self.input_batch.num_reqs) if row not in ready]
-        rows, _ = RejectionSampler.parse_output(sampler_output.sampled_token_ids,
-                                                self.input_batch.vocab_size, discard)
+        rows, logprobs_lists = RejectionSampler.parse_output(
+            sampler_output.sampled_token_ids, self.input_batch.vocab_size, discard,
+            sampler_output.logprobs_tensors)
         sampled_by_row = {row: (list(rows[row]) if row in ready else [])
                           for row in range(self.input_batch.num_reqs)}
-        return [sampled_by_row[row] for row in state.sample_rows]
+        sampled = [sampled_by_row[row] for row in state.sample_rows]
+
+        # logprobs 按请求切开：`cu_num_generated_tokens` 给出每请求的起始行（投机时每请求
+        # 交付 0 ~ K+1 个位置，行数各不相同，所以不能拿请求序号当行号）
+        logprobs_by_req = None
+        if logprobs_lists is not None:
+            cu = logprobs_lists.cu_num_generated_tokens or []
+            logprobs_by_req = {}
+            for row in range(self.input_batch.num_reqs):
+                if row not in ready:
+                    continue
+                start = cu[row] if cu else row
+                num_positions = (cu[row + 1] - cu[row]) if cu else 1
+                logprobs_by_req[self.input_batch.req_id_at(row)] = self._slice_logprobs(
+                    logprobs_lists, start, num_positions)
+        return sampled, logprobs_by_req
 
     def _propose_draft_tokens(self, state, sampled):
         """按配置提**下一轮**的草稿（199 §4：轮 t 验证时顺手提，轮 t+1 才采用）。
@@ -1172,7 +1279,8 @@ class GPUModelRunner:
 
     # -------- 采样之后的记账 --------
 
-    def _bookkeeping_sync(self, state: ExecuteModelState, sampled: list[list[int]]):
+    def _bookkeeping_sync(self, state: ExecuteModelState, sampled: list[list[int]],
+                          logprobs_by_req=None):
         """把采样结果**散射回所有被调度的请求**，并更新镜像。
 
         未 ready 的请求返回 `[]`（198 §4 允许的显式教学差异：本机是"先算采样行、再在
@@ -1181,6 +1289,10 @@ class GPUModelRunner:
         这里最容易错的是"筛行之后还拿原列表 zip"：`sampled` 的行号是 **batch 行**，
         结果要按 `req_id` 摊回 `num_scheduled_tokens` 的顺序。所以映射
         `sample_row → req_id` 必须显式重建。
+
+        68 关的 logprobs 走同一条重建：按 `req_ids` 的顺序拼起来，并用
+        `cu_num_generated_tokens` 给出每请求的起始行——投机时一条请求可能交付 0~K+1 个位置，
+        Scheduler 侧 `slice_request(req_index, n)` 就靠这个偏移切（上游同款容器与用法）。
         """
         sampled_by_req: dict[str, list[int]] = {}
         for row, token_ids in zip(state.sample_rows, sampled):
@@ -1193,7 +1305,55 @@ class GPUModelRunner:
             req_ids=req_ids,
             req_id_to_index={req_id: index for index, req_id in enumerate(req_ids)},
             sampled_token_ids=[sampled_by_req.get(req_id, []) for req_id in req_ids],
+            logprobs=self._concat_logprobs_in_req_order(logprobs_by_req, req_ids),
         )
+
+    @staticmethod
+    def _concat_logprobs_in_req_order(logprobs_by_req, req_ids: list[str]):
+        """按 Scheduler 的请求顺序拼接 logprobs，并给出每请求的行偏移（68 关）。
+
+        没有 logprobs 的请求（没要、或这一轮没采到 token）插**0 行**的空段：偏移表因此与
+        `req_ids` 严格对齐，`slice_request(req_index, n)` 不会切到别人的行上。
+        上游在这一层用 `LogprobsTensors.cat`；本项目在 CPU numpy 上做同一件事
+        （跨执行边界传的本来就是 numpy）。
+        """
+        if logprobs_by_req is None:
+            return None
+        import numpy as np
+
+        from ..outputs import LogprobsLists
+
+        width = None
+        for block in logprobs_by_req.values():
+            if block.logprob_token_ids.shape[0] > 0:
+                width = block.logprob_token_ids.shape[1]
+                break
+        if width is None:
+            return None
+
+        token_ids, logprobs, ranks, cu = [], [], [], []
+        offset = 0
+        for req_id in req_ids:
+            block = logprobs_by_req.get(req_id)
+            cu.append(offset)
+            if block is None or block.logprob_token_ids.shape[0] == 0:
+                continue
+            token_ids.append(block.logprob_token_ids)
+            logprobs.append(block.logprobs)
+            ranks.append(block.sampled_token_ranks)
+            offset += block.logprob_token_ids.shape[0]
+        cu.append(offset)
+
+        def _cat(parts, dtype, columns):
+            if not parts:
+                return np.empty((0, columns), dtype=dtype)
+            return np.concatenate(parts, axis=0)
+
+        return LogprobsLists(
+            _cat(token_ids, np.int32, width),
+            _cat(logprobs, np.float32, width),
+            (np.concatenate(ranks, axis=0) if ranks else np.empty((0,), dtype=np.int32)),
+            cu)
 
     def _commit_tokens_to_mirror(self, req_id: str, row: int, token_ids: list[int]) -> None:
         """把本轮产出的 token 写进执行端镜像：`CachedRequestState` + CPU 缓冲两份都要更新。

@@ -28,7 +28,8 @@
 [`docs/step64_alignment.md`](../docs/step64_alignment.md)（cache-only 特征提取）、
 [`docs/step65_alignment.md`](../docs/step65_alignment.md)（原生 MTP）、
 [`docs/step66_alignment.md`](../docs/step66_alignment.md)（Medusa 多头提议与 MLP 版本缺口）、
-[`docs/step67_alignment.md`](../docs/step67_alignment.md)（异构词表 TLI 与 draft 采样空间）。
+[`docs/step67_alignment.md`](../docs/step67_alignment.md)（异构词表 TLI 与 draft 采样空间）、
+[`docs/step68_alignment.md`](../docs/step68_alignment.md)（采样约束、Logprobs 与结构化输出的投机语义）。
 
 | 层 | 文件 | 对应 vLLM |
 |---|---|---|
@@ -37,7 +38,9 @@
 | 协议 | `outputs.py`、`core/sched/output.py` | `v1/engine/__init__.py`、`v1/outputs.py`、`v1/core/sched/output.py` |
 | KV 控制面 | `core/kv_cache_manager.py` → `core/kv_cache_coordinator.py` → `core/single_type_kv_cache_manager.py` → `core/block_pool.py` → `core/kv_cache_utils.py` | `v1/core/` 下同名文件（这条链一层一个问题） |
 | 调度 | `core/sched/{scheduler,request_queue,utils}.py` | `v1/core/sched/*` |
-| 编排 | `engine/{core,core_client,output_processor,llm_engine}.py` | `v1/engine/*` |
+| 编排 | `engine/{core,core_client,output_processor,llm_engine}.py`、`engine/logprobs.py` | `v1/engine/*` |
+| 结构化输出 | `structured_output/{__init__,backend_types,backend_xgrammar,request,utils}.py` | `v1/structured_output/*` |
+| logprobs 容器 | `logprobs.py`、`tokenizer_utils.py` | `vllm/logprobs.py`、`vllm/tokenizers/` |
 | 执行部署 | `executor/uniproc_executor.py` | `v1/executor/uniproc_executor.py` |
 | 执行端 | `worker/worker.py` | `v1/worker/gpu_worker.py` |
 | 一轮怎么跑 | `worker/gpu_model_runner.py` | `v1/worker/gpu_model_runner.py` |
@@ -286,9 +289,41 @@ python benchmarks/check_step67_vocab_mapping.py      # 21 项（含与上游 Voc
 [`docs/step67_alignment.md`](../docs/step67_alignment.md)，实测记录见
 [`docs/results.json`](../docs/results.json)（`step67.results`）。
 
+
+## 第六十八关：采样约束、Logprobs 与结构化输出的投机语义
+
+投机让"每个位置该看哪份分布"变成一个**索引问题**，而索引错了不会报错——只会悄悄给出错的数或坏的 JSON。
+这一关把两件事在投机路径上做对：
+
+- **logprobs（四种模式）**：`raw_logprobs` / `raw_logits` / `processed_logprobs` / `processed_logits`
+  （由 `ModelConfig.logprobs_mode` 选）。一轮里交付的位置可能是"接受的候选 + 恢复 token + bonus"，
+  规则是**第 j 个位置读第 j 行**：接受候选读候选行、恢复 token 读**同一个位置**的行、bonus 读 bonus 行；
+  被拒的候选位照样算一份，但 `parse_output` 用**同一张 valid_mask**把 token 与 logprobs 一起滤掉
+  （停止 token 截断处同样同步截断）。`frequency_penalty` 是"按出现次数减"的那一项，所以
+  "历史里算不算草稿"会直接改变 bonus 行的分布（差 1.0 个 logit 足以翻转采样）。
+- **结构化输出（只接 xgrammar）**：请求期把 `choice` 改写成 EBNF 并校验 schema（xgrammar 不支持的
+  关键字直接报错，不静默忽略）；每轮每请求生成 `1 + K` 行掩码（K 个候选位 + 1 个 bonus 位），
+  候选位靠"假设前面都被接受"地**逐步试走**得到，离去前统一 `rollback`；**只有 Scheduler 在真正提交
+  token 之后**才 `accept_tokens` 永久推进 FSM；草稿在收下时先过 `validate_tokens` 预筛。
+
+```bash
+python -m pytest tests/step68 -q                     # 65 项
+python benchmarks/check_step68_logprobs.py           # 23 项（含与上游 Sampler / _get_logprobs_tensors 的逐值差分）
+python benchmarks/check_step68_grammar.py            # 30 项（规格/掩码/状态/应用/端到端/后端边界）
+```
+
+> 真实权重实测：Qwen3-1.7B 的 `raw_logprobs` 与 `transformers` **逐值相同**（含 `decoded_token`）；
+> `--json-schema` 下产出符合 schema 的 JSON；`--logprobs 3` 的候选带名次与解码文本。
+> 三态矩阵（支持 / 上游不支持 / 本项目尚未接入）见 `docs/step68_alignment.md` §4：
+> 六项未接入字段与三个未接入后端**请求期明确拒绝**，绝不静默忽略参数。
+
+设计与差异（四种模式的行索引、掩码试走/回滚、两处上游疑似 bug 的逐值证据、三态矩阵）见
+[`docs/step68_alignment.md`](../docs/step68_alignment.md)，实测记录见
+[`docs/results.json`](../docs/results.json)（`step68.results`）。
+
 ## 明确不做
 
-EAGLE/MTP、异步与多进程、指标、logprobs、KV 连接器、多 KV group。
+EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -335,6 +370,7 @@ python -m pytest tests/step64 -q                     # 13 项：step64（cache-o
 python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配置/加载/前向/端到端 + 特征上传回归）
 python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 配置/模型/加载/行选择/端到端 + MLP 支持缺口）
 python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构造/映射/上游差分/配置边界/异构词表集成）
+python -m pytest tests/step68 -q                     # 65 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

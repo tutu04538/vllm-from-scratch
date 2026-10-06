@@ -54,10 +54,13 @@ _MAX_TRACE_STEPS = 200
 
 class Scheduler:
     def __init__(self, scheduler_config, kv_cache_manager, max_model_len: int,
-                 speculative_config=None) -> None:
+                 speculative_config=None, structured_output_manager=None) -> None:
         # 投机只影响两件事：预算里**算上草稿**（`num_tokens_with_spec` 已经含了）、
         # 以及把草稿发给执行侧。所以这里只需要"开没开"这一条信息。
         self.speculative_config = speculative_config
+        # 68 关：结构化输出的管理器由引擎建（它持有 grammar 编译环境），Scheduler 只调它
+        # 三件事：算掩码、判断要不要推进、收草稿时裁剪（上游同一条分工）。
+        self.structured_output_manager = structured_output_manager
         self.num_speculative_tokens = (speculative_config.num_speculative_tokens
                                        if speculative_config is not None else 0)
         # 给提议者预留的 KV 槽位（vLLM `VllmConfig.num_lookahead_tokens` 的规则）：
@@ -471,9 +474,39 @@ class Scheduler:
             # 派生判断：还没算到已有历史的末尾（中间 prefill 块）。57A 没有代码依赖它，
             # 但它是"这轮该不该产出 token"的权威口径，执行侧按同一口径判 ready。
             request.is_prefill_chunk = request.num_computed_tokens < request.num_tokens
+            # 68 关：只有"已在解码阶段"的结构化输出请求才算数。中间 prefill 块这一轮不产出
+            # token，给它填掩码纯属浪费（它的 grammar 也还没开始走）。上游同一个位置置位。
+            scheduler_output.has_structured_output_requests |= (
+                request.use_structured_output and not request.is_prefill_chunk)
         self.prev_step_scheduled_req_ids = set(scheduler_output.num_scheduled_tokens)
         # 重新绑定（不是 clear）：上面那个快照还引用着旧集合，它必须保持"本轮要清理的 ID"
         self.finished_req_ids = set()
+
+    # -------- 结构化输出（68 关）--------
+
+    def get_grammar_bitmask(self, scheduler_output: SchedulerOutput):
+        """算出这一轮的语法掩码（上游同名方法）。
+
+        掩码里**每个待定位置一行**（每请求 `1 + K` 行），由管理器试走草稿、逐一填好后回滚；
+        Scheduler 在这里只挑"哪些请求要掩码"，不碰 FSM 状态（068 §2）。
+        """
+        from .output import GrammarOutput
+
+        if not scheduler_output.has_structured_output_requests:
+            return None
+
+        structured_output_request_ids = [
+            req_id for req_id in scheduler_output.num_scheduled_tokens
+            if (request := self.requests.get(req_id))
+            and (request.use_structured_output and not request.is_prefill_chunk)
+        ]
+        if not structured_output_request_ids:
+            return None
+
+        bitmask = self.structured_output_manager.grammar_bitmask(
+            self.requests, structured_output_request_ids,
+            scheduler_output.scheduled_spec_decode_tokens)
+        return GrammarOutput(structured_output_request_ids, bitmask)
 
     # -------- 结果回来之后 --------
 
@@ -487,6 +520,8 @@ class Scheduler:
         finished_now: set[str] = set()
         # 本步的接受率统计（上游同名局部变量：每步重建，随 SchedulerStats 送前端）
         spec_decoding_stats = None
+        # 68 关：这一轮的 logprobs（行序与 `req_id_to_index` 对齐，由 Runner 保证）
+        logprobs = getattr(model_runner_output, "logprobs", None)
 
         # 按 Scheduler 自己的 num_scheduled_tokens 遍历（顺序稳定），再用 req_id_to_index
         # 去结果里取——**不能**按 Runner 的行顺序 zip（Runner 允许重排）。
@@ -520,6 +555,30 @@ class Scheduler:
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(request, new_token_ids)
 
+            # 68 关：**只有真正提交的 token** 才推进 grammar（068 §2）。
+            # 掩码阶段对草稿的试走已经回滚过，所以这里推的是"实际发生的历史"；
+            # FSM 拒绝一串本该合法的 token 说明状态已经走错（例如掩码被填到了别的行上），
+            # 上游把它当致命错误终止这条请求——本项目同样报错，不静默继续。
+            if new_token_ids and self.structured_output_manager is not None \
+                    and self.structured_output_manager.should_advance(request):
+                grammar = request.structured_output_request.grammar
+                if grammar is None:
+                    raise RuntimeError(
+                        f"{req_id!r} 有结构化输出请求，但 grammar 还没编译（grammar_init 漏了）")
+                if not grammar.accept_tokens(req_id, new_token_ids):
+                    raise RuntimeError(
+                        f"语法拒绝了本该合法的 token {new_token_ids}（请求 {req_id!r}）："
+                        f"上游在这里终止该请求（它认为这是不该发生的事）。"
+                        f"常见原因：掩码填到了别的 logits 行上，或者 grammar 被推进了两次")
+
+            # 68 关：logprobs 按**提交后**的数量切（与 `new_token_ids` 逐位置对齐）。
+            # 停止 token 把剩余候选截断时，这里同步少切几个——尾部不会漏出来（068 §3.5）。
+            new_logprobs = None
+            if (request.sampling_params is not None
+                    and request.sampling_params.num_logprobs is not None
+                    and logprobs is not None):
+                new_logprobs = logprobs.slice_request(req_index, len(new_token_ids))
+
             # 发布缓存：此刻本轮的 KV 已经写完（forward 在前），进度也是校正过的值。
             # 放在"释放块之前"——释放之后块就进空闲队列了，但内容还在，只是我们要在
             # 还持有它的时候把 hash 登记好（197 §4）。
@@ -549,6 +608,7 @@ class Scheduler:
                 new_token_ids=new_token_ids,
                 finish_reason=finish_reason,
                 stop_reason=request.stop_reason,
+                new_logprobs=new_logprobs,
             ))
 
         if stopped_running:
@@ -607,7 +667,9 @@ class Scheduler:
         三种情况要丢掉：
         - 请求已经结束/不存在（提议时还在，回来时已经收尾了）；
         - 它还是个中间 prefill 块（没有可用来验证草稿的 next token）；
-        - 结构化输出会在这里过滤不合语法的草稿（本关不做）。
+        - 结构化输出：草稿要先过 `grammar.validate_tokens`（**试走不推进**），不合语法的
+          尾巴直接砍掉（68 关；上游同款）。不砍的话，下一轮的掩码生成会因为"草稿没被语法
+          预筛过"而断言失败——那正是"非法候选不该进验证器"这条要求的落点。
         """
         if draft_token_ids is None:
             return
@@ -626,8 +688,15 @@ class Scheduler:
                     request.spec_token_ids = []
                 continue
             num_valid = None if valid_counts is None else valid_counts[index]
-            request.spec_token_ids = update_scheduler_for_invalid_drafts(
+            spec_token_ids = update_scheduler_for_invalid_drafts(
                 list(spec_token_ids), num_valid)
+            # 68 关：语法预筛（试走 + 回滚，**不推进** FSM——推进只发生在真正提交之后）
+            if (self.structured_output_manager is not None
+                    and self.structured_output_manager.should_advance(request)
+                    and request.structured_output_request.grammar is not None):
+                spec_token_ids = request.structured_output_request.grammar.validate_tokens(
+                    spec_token_ids)
+            request.spec_token_ids = spec_token_ids
 
     # -------- 结束与清理 --------
 

@@ -458,6 +458,60 @@ def tiny_hetero_pair(target_name: str = "tiny_gqa", *, seed: int = 0):
     return str(target_dir), str(draft_dir), info
 
 
+# 68 关结构化输出的 tiny 词表：JSON 的记号逐个成词，这样"模型只能输出 "
+# {"x":整数}" 这条约束能把每一步都卡死（词表里没有其它可以走的字符）。
+STRUCTURED_TOKENS = {
+    "<unk>": 0, "<eos>": 1, "{": 2, "}": 3, '"': 4, "x": 5, ":": 6,
+    "1": 7, "2": 8, "3": 9, ",": 10, "y": 11, " ": 12,
+}
+
+
+def write_plain_wordlevel_tokenizer(out_dir, vocab: dict[str, int], *,
+                                    unk_token: str = "<unk>", eos_token: str = "<eos>",
+                                    model_max_length: int = 64) -> Path:
+    """写一份**不做空格预处理**的极小 tokenizer（WordLevel + Fuse 解码）。
+
+    与 `write_wordlevel_tokenizer` 的区别：没有 pre_tokenizer（`encode` 只按空白切分），
+    解码是**直接拼接**而不是还原空格。结构化输出的测试要的是"token ↔ 文本"一一对应
+    （JSON 里没有空格语义），空格预处理反而会把 `{"x":1}` 切成别的样子。
+    """
+    from tokenizers import Tokenizer, decoders, models
+
+    tokenizer = Tokenizer(models.WordLevel(vocab=dict(vocab), unk_token=unk_token))
+    tokenizer.decoder = decoders.Fuse()
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tokenizer.save(str(out / "tokenizer.json"))
+    (out / "tokenizer_config.json").write_text(json.dumps({
+        "tokenizer_class": "PreTrainedTokenizerFast",
+        "unk_token": unk_token, "eos_token": eos_token, "bos_token": None,
+        "pad_token": None, "model_max_length": model_max_length,
+    }, indent=2) + "\n")
+    return out
+
+
+def tiny_structured_dir(name: str = "tiny_mqa", *, seed: int = 0):
+    """68 关用：tiny 模型 + 上面那份 JSON 记号的 tokenizer（同一个目录）。
+
+    target 的 `eos_token_id` 被改成 tokenizer 的 `<eos>`（tiny 模板里原本是 4），
+    否则"停止"会停在一个词表里不存在的 id 上。
+    """
+    config = tiny_qwen3_config(name)
+    if config["vocab_size"] != max(STRUCTURED_TOKENS.values()) + 1:
+        raise ValueError(
+            f"{name} 的词表是 {config['vocab_size']}，与 STRUCTURED_TOKENS 的 "
+            f"{max(STRUCTURED_TOKENS.values()) + 1} 不一致：换一份词表要同时改这里")
+    config["eos_token_id"] = STRUCTURED_TOKENS["<eos>"]
+    out = Path(tempfile.mkdtemp(prefix=f"minivllm_structured_{name}_"))
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    (out / "generation_config.json").write_text(json.dumps(
+        {"bos_token_id": config["bos_token_id"], "eos_token_id": config["eos_token_id"],
+         "pad_token_id": config["pad_token_id"]}, indent=2) + "\n")
+    save_file(_weights(config, seed), str(out / "model.safetensors"))
+    write_plain_wordlevel_tokenizer(out, STRUCTURED_TOKENS)
+    return str(out)
+
+
 def _weights(config: dict, seed: int) -> dict:
     """按 HF 的初始化方式生成权重：线性/嵌入 ~ N(0, initializer_range)，RMSNorm 全 1。
 

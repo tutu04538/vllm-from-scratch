@@ -92,6 +92,15 @@ def main(argv=None):
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--presence-penalty", type=float, default=0.0)
     parser.add_argument("--frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--min-p", type=float, default=0.0,
+                        help="min_p：低于「最大概率 × min_p」的 token 全屏蔽（0 = 不筛）")
+    parser.add_argument("--logprobs", type=int, default=None,
+                        help="每个生成位置交付 top-k 个 logprobs（68 关；-1 = 全词表，"
+                             "投机下上游与本项目都不支持 -1）")
+    parser.add_argument("--json-schema", default=None,
+                        help="结构化输出：给一份 JSON schema，模型只能输出符合它的 JSON（68 关）")
+    parser.add_argument("--choice", default=None,
+                        help="结构化输出：只允许输出这几个字符串之一（逗号分隔）")
     parser.add_argument("--min-tokens", type=int, default=0,
                         help="至少生成这么多个 token 才允许出现停止 token（采样侧屏蔽）")
     parser.add_argument("--seed", type=int, default=None, help="随机种子（同 seed 可复现）")
@@ -118,7 +127,8 @@ def main(argv=None):
     from transformers import AutoTokenizer
 
     from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig, SamplingParams,
-                        SchedulerConfig, SpeculativeConfig, UniProcExecutor, VllmConfig, Worker)
+                        SchedulerConfig, SpeculativeConfig, StructuredOutputsParams,
+                        UniProcExecutor, VllmConfig, Worker)
 
     if args.spec_aux_layers and args.spec_method != "extract_hidden_states":
         parser.error("--spec-aux-layers 只对 --spec-method extract_hidden_states 有意义（64 关）")
@@ -146,7 +156,9 @@ def main(argv=None):
     started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
     # 没有任何 Runner 注入 → Worker 走真实路径：建 GPUModelRunner、读权重、按 KV 规格建物理缓存
-    engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+    # tokenizer 一起交给引擎：68 关的 logprobs 要把候选 token 解码成文本给用户看
+    # （`OutputProcessor` 用它填 `Logprob.decoded_token`；不给的话 decoded_token 全是 None）
+    engine = LLMEngine(config, UniProcExecutor(config, Worker(config)), tokenizer=tokenizer)
     load_seconds = time.perf_counter() - started
 
     runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
@@ -193,10 +205,18 @@ def main(argv=None):
 
     for index, question in enumerate(questions):
         prompt_token_ids = encode(tokenizer, question)
+        structured = None
+        if args.json_schema:
+            structured = StructuredOutputsParams(json=args.json_schema)
+        elif args.choice:
+            structured = StructuredOutputsParams(choice=args.choice.split(","))
         engine.add_request(f"q{index}", prompt_token_ids,
                            SamplingParams(max_tokens=args.max_new_tokens,
                                           temperature=args.temperature,
                                           top_k=args.top_k, top_p=args.top_p,
+                                          min_p=args.min_p,
+                                          logprobs=args.logprobs,
+                                          structured_outputs=structured,
                                           seed=args.seed, min_tokens=args.min_tokens,
                                           ignore_eos=args.ignore_eos,
                                           repetition_penalty=args.repetition_penalty,
@@ -209,8 +229,10 @@ def main(argv=None):
     steps = 0
     finished: dict[str, str] = {}
     answers: dict[str, str] = {}
+    last_output = {}
     while engine.has_unfinished_requests():
         for output in engine.step():
+            last_output[output.request_id] = output
             answers[output.request_id] = tokenizer.decode(output.token_ids,
                                                           skip_special_tokens=True)
             if output.finished:
@@ -219,6 +241,17 @@ def main(argv=None):
         steps += 1
     seconds = time.perf_counter() - start
     runner._prepare_inputs = original_prepare
+
+    if args.logprobs is not None:
+        for request_id, output in last_output.items():
+            if not output.logprobs:
+                continue
+            print(f"\n{request_id} 最后一个位置的 logprobs"
+                  f"（candidate: logprob, rank；cumulative={output.cumulative_logprob:.3f}）：")
+            for token_id, entry in output.logprobs[-1].items():
+                text = entry.decoded_token if entry.decoded_token is not None else "?"
+                print(f"    {text!r:>12} id={token_id:<6} logprob={entry.logprob:+.3f} "
+                      f"rank={entry.rank}")
 
     if trace.get("inputs") is not None:
         inputs = trace["inputs"]

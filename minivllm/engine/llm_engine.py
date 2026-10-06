@@ -35,7 +35,8 @@ class LLMEngine:
             raise TypeError(f"request_id 必须是字符串，收到 {type(request_id)}")
 
         # 先占住用户侧状态：重复 ID 在这一步就会报错，不会走到 EngineCore
-        self.output_processor.add_request(request_id, prompt_token_ids)
+        # （68 关：采样参数一并传进去——logprobs 的累计器按 `num_logprobs` 建）
+        self.output_processor.add_request(request_id, prompt_token_ids, sampling_params)
 
         engine_core_request = EngineCoreRequest(
             request_id=request_id,

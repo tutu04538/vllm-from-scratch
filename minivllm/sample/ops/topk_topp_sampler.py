@@ -91,10 +91,25 @@ def random_sample(probs: torch.Tensor, generators: dict[int, torch.Generator]) -
 
 
 class TopKTopPSampler:
-    """把"温度缩放后的 logits → 一个 token"打包成一次调用（vLLM 里它是个 nn.Module）。"""
+    """把"温度缩放后的 logits → 一个 token"打包成一次调用（vLLM 里它是个 nn.Module）。
+
+    **返回值是二元组**（68 关改；与上游 `forward_native` 同签名）：`(采样结果, 要留的 logits)`。
+    第二个元素只在这两种模式下非 None（`processed_logits` / `processed_logprobs`）——
+    它交付的是**筛选之后**的那份 logits（top-k/top-p 已经把落选者打成 -inf），
+    所以 `processed_*` 模式的 logprobs 名次与真正的采样分布严格一致（068 §3.5）。
+    """
+
+    def __init__(self, logprobs_mode: str = "raw_logprobs") -> None:
+        self.logprobs_mode = logprobs_mode
 
     def __call__(self, logits: torch.Tensor, generators: dict[int, torch.Generator],
-                 k: torch.Tensor | None, p: torch.Tensor | None) -> torch.Tensor:
-        logits = apply_top_k_top_p(logits, k, p)
+                 k: torch.Tensor | None, p: torch.Tensor | None
+                 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        logits = apply_top_k_top_p(logits, k, p)      # 原地：落选者变 -inf
+        logits_to_return = None
+        if self.logprobs_mode == "processed_logits":
+            logits_to_return = logits
+        elif self.logprobs_mode == "processed_logprobs":
+            logits_to_return = logits.log_softmax(dim=-1, dtype=torch.float32)
         probs = logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, generators)
+        return random_sample(probs, generators), logits_to_return

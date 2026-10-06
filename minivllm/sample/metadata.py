@@ -6,7 +6,7 @@
 三条约定：
 
 1. **行对齐 compact 行号**：`logits` 的第 i 行 ↔ 元数据的第 i 项 ↔ `rows[i]` 那个 batch 行。
-   本关只对**要采样的行**建元数据（未 ready 的请求连 logits 都没有），所以元数据里的行号是
+   本仓库只对**要采样的行**建元数据（未 ready 的请求连 logits 都没有），所以元数据里的行号是
    紧凑下标，不是 batch 行号——映射在 Runner 里显式重建（`sample_rows`）。
 2. **能省则省**：全是贪心时 `temperature=None`（采样器连温度都不除，避免除以 0）；
    没人要 top-k/top-p/惩罚时就传 `None` / `no_penalties=True`。这与 vLLM 一致
@@ -14,9 +14,15 @@
 3. **`no_penalties` 是"整批都没人用惩罚"**，不是"这一行不用"。逐行的惩罚值仍然是张量
    （不用惩罚的行是 1.0/0.0 这种无操作值），这样惩罚算子可以一次批处理。
 
-**本关省略的字段**（vLLM 有、57D 不需要）：logprobs 相关（`max_num_logprobs`、
-`logprob_token_ids`）、`allowed_token_ids_mask`（白名单）、`bad_words_token_ids`、
-`spec_token_ids`（57E）、`logitsprocs` 插件框架、thinking budget。
+**68 关补齐的字段**（57D 时这里一个都没有）：
+
+    max_num_logprobs    整批要几个 logprobs（逐请求的要几个，在上层按请求裁）
+    logprobs_mode       四种模式（raw/processed × logits/logprobs），引擎级配置传进来
+    min_p               [num_rows]；上游把它做成 MinPLogitsProcessor，本项目内联同一算式
+    allowed_token_ids_mask / bad_words_token_ids / thinking_budget_state_holder
+                        上游有、本项目**尚未接入**的三个字段：这里**保留字段并恒为 None**，
+                        绝不假装有。设了对应采样参数的请求在 `SamplingParams` 就报错了
+                        （068 §3.6：不许静默忽略参数）。
 """
 
 from dataclasses import dataclass, field
@@ -51,20 +57,31 @@ class SamplingMetadata:
     stop_token_ids: list[list[int]] = field(default_factory=list)
     # 投机的草稿（57E）：只有验证路径用得到——它要按"已提交历史 + 草稿前缀"算惩罚
     spec_token_ids: list[list[int]] = field(default_factory=list)
+    # ---- 68 关 ----
+    # 整批最多要几个 logprobs（None = 整批都不要）。逐请求要几个在输出处理时按 `num_logprobs` 裁。
+    max_num_logprobs: int | None = None
+    # 四种模式之一（`ModelConfig.logprobs_mode`）：决定交付"原始/处理过"的 logits 还是 logprobs
+    logprobs_mode: str = "raw_logprobs"
+    # min_p 的逐行值（None = 整批都不用筛）；上游是 MinPLogitsProcessor 的状态张量
+    min_p: torch.Tensor | None = None
+    # 上游有、本项目尚未接入的三项：字段在、值恒为 None（对应的采样参数在请求期就报错了）
+    allowed_token_ids_mask: torch.Tensor | None = None
+    bad_words_token_ids: list[list[int]] | None = None
+    thinking_budget_state_holder: object | None = None
 
     @property
     def num_rows(self) -> int:
         if self.temperature is not None:
             return int(self.temperature.shape[0])
-        for tensor in (self.top_k, self.top_p, self.presence_penalties):
+        for tensor in (self.top_k, self.top_p, self.presence_penalties, self.min_p):
             if tensor is not None:
                 return int(tensor.shape[0])
         return len(self.min_tokens)
 
     @classmethod
     def from_input_batch(cls, input_batch, rows: list[int], device=None,
-                         scheduled_spec_decode_tokens: dict | None = None
-                         ) -> "SamplingMetadata":
+                         scheduled_spec_decode_tokens: dict | None = None,
+                         logprobs_mode: str = "raw_logprobs") -> "SamplingMetadata":
         """把 batch 的若干行翻译成采样元数据。`rows` 是 batch 行号，顺序就是 logits 的行序。
 
         `device` 必须与 **logits 所在设备**一致（采样器要把温度/惩罚直接作用在 logits 上，
@@ -78,7 +95,7 @@ class SamplingMetadata:
             # 没有要采样的行（比如整批都是中间 prefill 块）：给一份空元数据，
             # 采样器在空张量上跑一遍也不产出任何 token
             return cls(temperature=torch.empty(0), all_greedy=True, all_random=False,
-                       top_k=None, top_p=None)
+                       top_k=None, top_p=None, logprobs_mode=logprobs_mode)
 
         all_greedy = all(parameter.temperature < SAMPLING_EPS for parameter in params)
         all_random = all(parameter.temperature >= SAMPLING_EPS for parameter in params)
@@ -90,9 +107,15 @@ class SamplingMetadata:
             else parameter.top_k in (-1, 0)
             for parameter in params)
         no_top_p = all(parameter.top_p >= 1.0 for parameter in params)
+        no_min_p = all(parameter.min_p <= 0.0 for parameter in params)
         no_penalties = all(parameter.repetition_penalty == 1.0
                            and parameter.presence_penalty == 0.0
                            and parameter.frequency_penalty == 0.0 for parameter in params)
+        # 整批的 logprobs 宽度取逐请求的**最大值**（上游 `InputBatch.max_num_logprobs`）：
+        # 采样器只做一次 top-k，多出来的部分由输出处理按每请求的 num_logprobs 裁掉。
+        requested = [parameter.num_logprobs for parameter in params
+                     if parameter.num_logprobs is not None]
+        max_num_logprobs = max(requested) if requested else None
 
         if device is None:
             device = input_batch.temperature_cpu.device
@@ -121,4 +144,8 @@ class SamplingMetadata:
             stop_token_ids=[sorted(parameter.all_stop_token_ids) for parameter in params],
             spec_token_ids=[list((scheduled_spec_decode_tokens or {}).get(
                 input_batch.req_id_at(row), [])) for row in rows],
+            max_num_logprobs=max_num_logprobs,
+            logprobs_mode=logprobs_mode,
+            min_p=None if no_min_p else input_batch.min_p_cpu[rows_tensor].to(
+                device, torch.float32),
         )

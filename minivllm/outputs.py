@@ -21,9 +21,12 @@
 
 import enum
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
+import numpy as np
 import torch
 
+from .logprobs import SampleLogprobs
 from .sampling_params import SamplingParams
 
 
@@ -61,12 +64,17 @@ class EngineCoreOutput:
 
     注意不是"Runner 采到了什么"：被拒绝的草稿、EOS 之后被截掉的候选，都不会出现在这里
     （截断发生在 `Scheduler._update_request_with_output()` 里）。
+
+    `new_logprobs`（68 关）与 `new_token_ids` **逐位置对齐**：长度就是 `len(new_token_ids)`
+    （Scheduler 按提交后的数量切片，见 `LogprobsLists.slice_request`），所以被截断的尾巴
+    在 logprobs 里也不会漏出来（068 §3.5）。
     """
 
     request_id: str
     new_token_ids: list[int]
     finish_reason: FinishReason | None = None
     stop_reason: int | str | None = None
+    new_logprobs: "LogprobsLists | None" = None
 
     @property
     def finished(self) -> bool:
@@ -105,19 +113,20 @@ class DraftTokenIds:
 
 @dataclass
 class SamplerOutput:
-    """`Sampler` 的产物：token（+ 上游同名的 logprobs 槽位），对应 vLLM `v1/outputs.py::SamplerOutput`。
+    """`Sampler` 的产物：token（+ logprobs），对应 vLLM `v1/outputs.py::SamplerOutput`。
 
     形状：普通采样一行出一个 token（`[num_rows, 1]`）；投机是 `[B, max_spec_len + 1]`，
     被拒绝的位置填 `PLACEHOLDER_TOKEN_ID(-1)`（int32，上游同 dtype）。为什么不让采样器直接
     产出 `list[list[int]]`：它是**执行侧**的东西，行号与请求 ID 的对应关系是 Runner 才知道的
     事（见 `_bookkeeping_sync` / `RejectionSampler.parse_output`）。
 
-    `logprobs_tensors` 是留给 logprobs 的位置（68 关）：**本关恒为 None**，
-    字段先按上游的形状摆着，免得 68 关改一批签名。
+    `logprobs_tensors`（68 关）与 `sampled_token_ids` 同源、同行序：普通采样是
+    `[num_rows, k+1]`，投机是 `[num_tokens, k+1]`（每个**候选位**一行，无效位由
+    `parse_output` 用同一张 valid_mask 过滤）。
     """
 
     sampled_token_ids: torch.Tensor
-    logprobs_tensors: object | None = None
+    logprobs_tensors: "LogprobsTensors | None" = None
 
 
 @dataclass
@@ -129,11 +138,16 @@ class ModelRunnerOutput:
 
     **必须查 `req_id_to_index` 取结果**，不能按 Scheduler 自己的顺序 zip：Runner 允许
     重排紧凑 batch（本关的用例就故意把行反着返回）。
+
+    `logprobs`（68 关）与 `req_ids` 同样对齐（`LogprobsLists.slice_request(req_index, n)`
+    按请求切），`cu_num_generated_tokens` 给出每请求的行起始偏移——投机时一条请求一行可能
+    交付 0~K+1 个位置，没有这个偏移就无法按请求切片。
     """
 
     req_ids: list[str]
     req_id_to_index: dict[str, int]
     sampled_token_ids: list[list[int]]
+    logprobs: "LogprobsLists | None" = None
 
     @classmethod
     def make_empty(cls) -> "ModelRunnerOutput":
@@ -146,6 +160,12 @@ class RequestOutput:
 
     `stop_reason` 只在结束那一条上有值：显式 stop token 命中时是那个 token id，
     否则是 None（对应 vLLM `CompletionOutput.stop_reason`）。
+
+    `logprobs` / `cumulative_logprob`（68 关）与 `token_ids` **逐位置对齐**：
+    第 i 个 token 的 logprobs 就是 `logprobs[i]`（它是累计视图，不是这一轮的增量——和
+    `token_ids` 一样）。`cumulative_logprob` 是"到目前所有生成 token 的 logprob 之和"，
+    上游用它算 perplexity：
+    `ppl = exp(-cumulative_logprob / len(token_ids))`。
     """
 
     request_id: str
@@ -155,3 +175,122 @@ class RequestOutput:
     finish_reason: FinishReason | None = None
     stop_reason: int | str | None = None
     text: str | None = None
+    logprobs: SampleLogprobs | None = None
+    cumulative_logprob: float | None = None
+
+
+# ---------------------------------------------------------------------------
+# logprobs 的两层容器（68 关；对应 vLLM `v1/outputs.py` 的同名 NamedTuple）
+# ---------------------------------------------------------------------------
+
+
+class LogprobsTensors(NamedTuple):
+    """执行侧的 logprobs（**GPU 张量**，还没下 CPU）。
+
+    形状（上游逐字）：
+        logprob_token_ids     [num_positions, max_num_logprobs + 1]
+        logprobs              [num_positions, max_num_logprobs + 1]
+        selected_token_ranks  [num_positions]
+
+    第 0 列永远是**实际采到的那个 token**（其余是 top-k），rank 是它在整份分布里的名次。
+    投机时一个"位置"就是一轮里交付的每一个 token（接受的候选 / 恢复 token / bonus），
+    拒绝掉的候选位在这里根本不存在——它们在 `parse_output` 里已被 `valid_mask` 滤掉。
+    """
+
+    logprob_token_ids: torch.Tensor
+    logprobs: torch.Tensor
+    selected_token_ranks: torch.Tensor
+    cu_num_generated_tokens: list[int] | None = None
+
+    def tolists(self, cu_num_generated_tokens: list[int] | None = None) -> "LogprobsLists":
+        """转成 CPU numpy（跨执行边界传的就是这一份）。"""
+        return LogprobsLists(
+            self.logprob_token_ids.cpu().numpy(),
+            self.logprobs.cpu().numpy(),
+            self.selected_token_ranks.cpu().numpy(),
+            cu_num_generated_tokens if cu_num_generated_tokens is not None
+            else self.cu_num_generated_tokens,
+        )
+
+    def to_cpu_nonblocking(self) -> "LogprobsTensors":
+        """非阻塞地搬到 CPU（上游同名方法；本仓库同进程，直接同步搬）。"""
+        if self.logprob_token_ids.device.type == "cpu":
+            return self
+        return LogprobsTensors(
+            self.logprob_token_ids.to("cpu", non_blocking=True),
+            self.logprobs.to("cpu", non_blocking=True),
+            self.selected_token_ranks.to("cpu", non_blocking=True),
+            self.cu_num_generated_tokens,
+        )
+
+    def filter(self, mask: torch.Tensor) -> "LogprobsTensors":
+        """按行掩码过滤（上游同名方法）。
+
+        投机路径用它把"被拒绝的候选位"整行丢掉：`parse_output` 用**同一个** valid_mask
+        既滤 token 又滤 logprobs，所以两边的位置永远对得上（068 §3.5）。
+        """
+        assert self.cu_num_generated_tokens is None, (
+            "filter 不能与 cu_num_generated_tokens 一起用（上游同款断言）："
+            "已经有每请求偏移的容器说明它已经被切开过")
+        return LogprobsTensors(
+            self.logprob_token_ids[mask],
+            self.logprobs[mask],
+            self.selected_token_ranks[mask],
+        )
+
+    @staticmethod
+    def cat(tensors: list["LogprobsTensors"],
+            cu_num_generated_tokens: list[int] | None = None) -> "LogprobsTensors":
+        """把若干段 logprobs 拼起来（上游同名方法）。"""
+        assert tensors
+        assert cu_num_generated_tokens is not None or all(
+            tensor.cu_num_generated_tokens is None for tensor in tensors)
+        if len(tensors) == 1:
+            tensor = tensors[0]
+            if cu_num_generated_tokens is None:
+                return tensor
+            return tensor._replace(cu_num_generated_tokens=cu_num_generated_tokens)
+        return LogprobsTensors(
+            logprob_token_ids=torch.cat([t.logprob_token_ids for t in tensors]),
+            logprobs=torch.cat([t.logprobs for t in tensors]),
+            selected_token_ranks=torch.cat([t.selected_token_ranks for t in tensors]),
+            cu_num_generated_tokens=cu_num_generated_tokens,
+        )
+
+    @staticmethod
+    def empty_cpu(num_positions: int, num_tokens_per_position: int) -> "LogprobsTensors":
+        """建一个空的 CPU 容器（上游同名方法；给"这条请求这一轮没有位置"占位用）。"""
+        logprob_token_ids = torch.empty((num_positions, num_tokens_per_position),
+                                        dtype=torch.int32, device="cpu")
+        logprobs = torch.empty_like(logprob_token_ids, dtype=torch.float32)
+        selected_token_ranks = torch.empty(num_positions, dtype=torch.int32, device="cpu")
+        return LogprobsTensors(logprob_token_ids, logprobs, selected_token_ranks)
+
+
+class LogprobsLists(NamedTuple):
+    """CPU 侧的 logprobs（numpy），跨执行边界之后的那一份（上游同名 NamedTuple）。
+
+    `cu_num_generated_tokens[i]` 是第 i 条请求在行方向上的**起始偏移**；投机时每请求
+    交付的位置数不同（0 ~ K+1），所以切片必须用它，不能拿请求序号当行号。
+    """
+
+    logprob_token_ids: np.ndarray
+    logprobs: np.ndarray
+    sampled_token_ranks: np.ndarray
+    cu_num_generated_tokens: list[int] | None = None
+
+    def slice_request(self, req_idx: int, num_positions: int) -> "LogprobsLists":
+        """切出第 `req_idx` 条请求的 `num_positions` 个位置（上游同名方法）。
+
+        `num_positions` 用**已经提交**的 token 数（Scheduler 传 `len(new_token_ids)`）：
+        停止 token 把这一轮剩下的候选截断时，logprobs 也同步截断——尾部不会漏出来。
+        """
+        if self.cu_num_generated_tokens is not None:
+            req_idx = self.cu_num_generated_tokens[req_idx]
+        end_idx = req_idx + num_positions
+        return LogprobsLists(
+            self.logprob_token_ids[req_idx:end_idx],
+            self.logprobs[req_idx:end_idx],
+            self.sampled_token_ranks[req_idx:end_idx],
+            None,
+        )

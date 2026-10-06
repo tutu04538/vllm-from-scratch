@@ -15,7 +15,8 @@
     "step64": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；真实权重下物理 slot 逐值 + greedy 对照已实测）",
     "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
     "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）",
-    "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）"
+    "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）",
+    "step68": "已实现并自检：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；65 项 pytest + 53 项 benchmark 全 PASS；真实权重与 transformers 逐值一致"
   },
   "step58": {
     "results": {
@@ -2976,6 +2977,194 @@
         "target": "models/Qwen3-1.7B/tokenizer.json（本机快照，sha256 见 execution_trace）",
         "draft": "gpt2 @ 607a30d783dfa663caf39e06633721c8d4cfcd7e（HF 缓存，仅用于记录交集规模，没有对应模型权重）",
         "交集": 42257
+      }
+    }
+  },
+  "step68": {
+    "results": {
+      "step": 68,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/068_采样约束Logprobs与结构化输出的投机语义.md",
+      "status": "implemented + self-verified（4 种 logprobs 模式与上游 Sampler 逐值一致；投机 _get_logprobs_tensors 与上游逐值一致；xgrammar 语法掩码的试走/回滚/推进语义对齐；真实权重 Qwen3-1.7B 的 raw_logprobs 与 transformers 逐值相同；三态矩阵里的「上游不支持」两处与「本项目尚未接入」六项都有显式拒绝用例）",
+      "recorded_at": "2026-10-06T02:01:53+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "6cc4276",
+        "implementation_commit": "见本轮提交（step68：采样约束 / Logprobs / 结构化输出的投机语义）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 87,
+        "sha256": "68a46de7232bcca9c632e45fb3a45d8a1a1e112a465411158c90b1d992ced7e8",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/上游类差分；生产路径不 import）",
+        "xgrammar": "0.2.3（本关唯一接入的结构化输出后端）",
+        "transformers": "5.14.1",
+        "device": "cuda:0",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step68 -q",
+          "result": "65 passed（16 + 26 + 23）"
+        },
+        {
+          "cmd": "python benchmarks/check_step68_logprobs.py",
+          "result": "23 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python benchmarks/check_step68_grammar.py",
+          "result": "30 PASS / 0 FAIL"
+        },
+        {
+          "cmd": "python -m pytest tests/step58..68 -q",
+          "result": "503 passed（438 + 65）"
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py + check_step58..68_*.py",
+          "result": "全通过（回归；check_step57_sampler 的第 7 项期望值随上游签名同步为四参，见 docs/step68_alignment.md §3）"
+        }
+      ],
+      "execution_trace": {
+        "logprobs_vs_upstream": {
+          "对象": "vllm.v1.sample.sampler.Sampler（本进程实例化，同一份 logits + 同一份元数据 + 同一 seed）",
+          "比什么": "4 种模式（raw_logprobs / raw_logits / processed_logprobs / processed_logits）的 sampled_token_ids、logprob_token_ids、selected_token_ranks、logprobs",
+          "结果": "token/列序/名次相同，logprobs allclose(atol=1e-6)（4/4 模式）"
+        },
+        "spec_logprobs_row_index": {
+          "对象": "vllm.v1.sample.rejection_sampler.RejectionSampler._get_logprobs_tensors",
+          "比什么": "B=1、K=3、V=4，含被拒候选位（-1）与 bonus 位",
+          "结果": "逐值相同（logprob_token_ids / logprobs / ranks）",
+          "手算": "第 j 个位置读第 j 行：log_softmax(第 j 行)[token] 全中；故意读 bonus 行差 > 1.0（反证用例）"
+        },
+        "real_model_logprobs": {
+          "model": "models/Qwen3-1.7B（bfloat16、CUDA）",
+          "prompt": "chat template 后的末位、贪心",
+          "HF transformers": [
+            [
+              151667,
+              -0.0001,
+              "<think>"
+            ],
+            [
+              151668,
+              -11.2501,
+              "</think>"
+            ],
+            [
+              151644,
+              -12.3751,
+              "<|im_start|>"
+            ],
+            [
+              151645,
+              -13.2501,
+              "<|im_end|>"
+            ],
+            [
+              1062,
+              -13.2501,
+              " co"
+            ]
+          ],
+          "本仓库": [
+            [
+              151667,
+              -0.0001,
+              "<think>"
+            ],
+            [
+              151668,
+              -11.2501,
+              "</think>"
+            ],
+            [
+              151644,
+              -12.3751,
+              "<|im_start|>"
+            ],
+            [
+              151645,
+              -13.2501,
+              "<|im_end|>"
+            ],
+            [
+              1062,
+              -13.2501,
+              " co"
+            ]
+          ],
+          "结论": "raw_logprobs 与 transformers 逐值相同（含 decoded_token）；cumulative_logprob = 选中 token 的 logprob"
+        },
+        "grammar_mask_semantics": {
+          "对象": "tiny 模型 + JSON 记号词表（tiny_structured_dir），xgrammar 0.2.3",
+          "每请求 1+K 行": "B=1、K=2：第 0 行只允许 `{`、第 1 行只允许 `\"`、bonus 行只允许 `x`",
+          "试走回滚": "grammar_bitmask() 之后 num_processed_tokens 仍为 0、is_terminated() 仍为 False；重复生成的掩码逐位相同",
+          "非法草稿": "草稿没过语法 → AssertionError（上游同款：草稿必须先被 validate_tokens 裁过）",
+          "`-1`": "该位仍按当前试走状态填掩码；其后的候选位不填（全允许）、不推进；整段结束统一 rollback",
+          "停止 token": "语法走完之前 eos 被掩掉；走完之后只剩 eos 可选"
+        },
+        "grammar_e2e": {
+          "CPU（非投机，const schema）": "随机初始化的 tiny 模型输出 {'x': 1}（text='{\"x\": 1 }<eos>'）；同一 prompt 不加约束时吐不出合法 JSON（区分度反证）",
+          "CPU（自由整数 schema）": "每一步都是合法前缀（tokens 可被同规格 grammar 重放接受）",
+          "CUDA（ngram K=3 + 自由整数 schema）": "16 轮里 4 轮带草稿；掩码行数 == Σ(1+K)；每轮被采用的草稿都是「当时语法状态」的合法前缀；输出 token 全部可被重放接受",
+          "真实权重": "Qwen3-1.7B + JSON schema（name/age）：CUDA 贪心/采样都产出符合 schema 的 JSON；`--logprobs 3` 的候选带 decoded_token 与 rank（demo 实测）"
+        },
+        "unsupported_rejections": {
+          "上游不支持（实测）": {
+            "投机 + logprobs=-1": "上游 torch.topk(k=-1) → RuntimeError: selected index k out of range；本仓库提前 NotImplementedError（同一判定）",
+            "非投机 + logprobs=-1": "上游 LogprobsProcessor 的 zip 在空数组上截断 → 交付为空、cumulative 保持 0（差分复现，本项目照抄）"
+          },
+          "本项目尚未接入（请求期拒绝）": [
+            "allowed_token_ids",
+            "bad_words",
+            "logit_bias",
+            "thinking_token_budget",
+            "logprob_token_ids",
+            "prompt_logprobs"
+          ],
+          "本项目尚未接入（后端/配置期拒绝）": [
+            "guidance",
+            "outlines",
+            "lm-format-enforcer",
+            "未知 backend"
+          ],
+          "上游疑似 bug（本项目照抄 + 差分钉住）": "processed_logprobs 模式下 bonus 位的数字来自 raw 那一份（手算 processed 与实测差 > 1.0）"
+        }
+      },
+      "known_gaps": [
+        "异步 grammar 编译（WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR）与掩码并行填充未接入",
+        "思考模式（reasoning parser / enable_in_reasoning / trim_reasoning_for_advance）未接入",
+        "白名单 / bad words / logit_bias / 思考预算 / logprob_token_ids / prompt_logprobs 只有请求期拒绝",
+        "上游两处疑似 bug（logprobs=-1 的输出处理截断、processed_logprobs 的 bonus 位）照抄并记账，等上游修复后重对",
+        "`-1` 占位草稿在生产路径暂不出现（60 关已在交接处裁掉），只有单元测试覆盖；异步调度（70 关）才真正用到",
+        "异步调度 / V2（70、73 关）要求回归本关同一批测试",
+        "未做性能测量（batched_count_greater_than 未编译、掩码串行填充、logprobs 在 CPU 上 numpy 拼接）"
+      ]
+    },
+    "models": {
+      "target": {
+        "path": "models/Qwen3-1.7B",
+        "revision": "本机快照（无 HF revision）",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "dtype": "bfloat16（CUDA 实测）/ float32（tiny 单测）",
+        "max_model_len": 512,
+        "tokenizer": "models/Qwen3-1.7B（tokenizer.json sha256 aeb13307a71acd8f…，11422654 bytes）",
+        "用途": "真实权重上验证 raw_logprobs 与 transformers 逐值相同、JSON schema 约束下产出 JSON"
+      },
+      "tiny": {
+        "tiny_gqa": "vocab 11（无 tokenizer 文件）——非投机 logprobs 单测/端到端",
+        "tiny_mqa + JSON 词表": "minivllm/testing/tiny_models.py::tiny_structured_dir（现场生成，vocab 13：`{`/`}`/`\"`/`x`/`y`/`:`/`1`/`2`/`3`/`,`/空格 + unk/eos；WordLevel + Fuse 解码，eos=1）——结构化输出端到端",
+        "缺权重": "无（tiny 现场生成；不提交权重）"
+      },
+      "upstream_reference": {
+        "vllm": "0.28.0 site-packages（只用于差分测试，生产路径不 import）",
+        "xgrammar": "0.2.3（生产路径使用的后端库）"
       }
     }
   }

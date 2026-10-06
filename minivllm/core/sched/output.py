@@ -86,9 +86,28 @@ class SchedulerOutput:
     total_num_scheduled_tokens: int
     scheduled_spec_decode_tokens: dict[str, list[int]]      # 57E 才非空
     finished_req_ids: set[str]
+    #: 68 关：这一轮有没有"已经在解码阶段的结构化输出请求"。没有的话引擎连掩码都不必算
+    #: （上游同名字段，在 `_update_after_schedule()` 里置位）。
+    has_structured_output_requests: bool = False
 
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(scheduled_new_reqs=[], scheduled_cached_reqs=CachedRequestData.make_empty(),
                    num_scheduled_tokens={}, total_num_scheduled_tokens=0,
                    scheduled_spec_decode_tokens={}, finished_req_ids=set())
+
+
+@dataclass
+class GrammarOutput:
+    """Scheduler → 执行侧：这一轮的语法掩码（对应 vLLM `v1/core/sched/output.py::GrammarOutput`）。
+
+    **只有两个字段**（上游同款）：
+        structured_output_request_ids  掩码按这个顺序排列（不是批行序！）
+        grammar_bitmask                `[num_masks, ceil(vocab/32)]` 的 numpy int32
+
+    顺序为什么重要：掩码是"每个待定位置一行"，而"位置 → logits 行号"的映射还要叠上每请求
+    的草稿数；执行侧必须按同一份 id 列表重建映射，不能假设它等于批行序。
+    """
+
+    structured_output_request_ids: list[str]
+    grammar_bitmask: object          # np.ndarray[np.int32]
