@@ -139,9 +139,11 @@ check("C3. 与上游 `_get_logprobs_tensors` 逐值一致",
 
 ok, detail = _raises(NotImplementedError, rs._get_logprobs_tensors, -1, meta, spec_logits,
                      target, bonus, sampled_all)
-check("C4. 投机 + logprobs=-1：提前明确拒绝（上游在 topk 处运行期报错）", ok, detail)
+check("C4. 本项目当前对投机 + logprobs=-1 提前拒绝（⚠️ 属未对齐，不是上游行为）", ok, detail)
+# 2026-10-06 独立复核：-1 在引擎入口（gpu_input_batch.py:435-440）就被归一化成 vocab_size，
+# 用户请求到不了下面这条路径；只有"手搓 metadata"才会踩到它
 ok, detail = _raises(RuntimeError, torch.topk, torch.randn(1, 4), -1, dim=-1)
-check("C5. 上游那条失败路径的实测证据：torch.topk(k=-1) 直接抛错", ok, detail)
+check("C5. 手搓 metadata 才会踩到的失败路径（torch.topk(k=-1) 抛错）——非用户可达", ok, detail)
 
 # ---------------------------------------------------------------- D. 截断
 rows, lists = rs.parse_output(torch.tensor([[0, 1, -1, -1]], dtype=torch.int32),
@@ -177,6 +179,26 @@ if torch.cuda.is_available():
 else:
     check("E2. 候选行假设历史（需要 CUDA 的 expand 内核）", False, "本机没有 CUDA：待验")
 
+# min_p：只作用在 bonus 行（上游 argmax 不变处理器只在 Sampler.sample() 里跑），候选行被跳过
+if torch.cuda.is_available():
+    from minivllm.sample.rejection_sampler import apply_sampling_constraints
+
+    row = torch.tensor([[2.0, 1.0, 0.0, -1.0]], device="cuda")
+    sm_minp = h.sampling_metadata([1.0], [[]], device="cuda", min_p=[1.0],
+                                  logprobs_mode="processed_logits", max_num_logprobs=4)
+    candidate = apply_sampling_constraints(
+        row.clone(), torch.tensor([1], dtype=torch.int32, device="cuda"), sm_minp)
+    bonus_out = logs.Sampler("processed_logits").forward(row.clone(), sm_minp)
+    cols = bonus_out.logprobs_tensors.logprob_token_ids[0].tolist()
+    vals = bonus_out.logprobs_tensors.logprobs[0].tolist()
+    check("E3. min_p 只作用在 bonus 行：候选行不被掩码，bonus 行除 argmax 外全 -inf",
+          torch.equal(candidate, row)
+          and abs(vals[cols.index(0)] - 2.0) < 1e-6
+          and all(v == float("-inf") for c, v in enumerate(vals) if cols[c] != 0),
+          f"候选行={candidate.tolist()} bonus列={cols} bonus值={[round(v,2) if v != float('-inf') else '-inf' for v in vals]}")
+else:
+    check("E3. min_p 只作用在 bonus 行（候选行部分需要 CUDA 的 expand 内核）", False, "本机没有 CUDA：待验")
+
 # ---------------------------------------------------------------- F. 未接入项
 from minivllm import SamplingParams  # noqa: E402
 
@@ -197,9 +219,11 @@ print("  · raw/processed 的区别只在**是否施加惩罚/温度/top-k/top-p
 print("    因为它是在采样器之前打到 logits 上的（上游同序）。")
 print("  · 投机下「第 j 个位置读第 j 行」：接受候选读候选行、恢复 token 读同一个位置的行、")
 print("    bonus 读 bonus 行；被拒的候选位多算一份，但由 parse_output 的同一张 mask 滤掉。")
-print("  · 上游疑似 bug（本项目照抄 + 记账）：processed_logprobs 模式下 bonus 位的数字来自 raw")
-print("    那一份（`Sampler.forward` 的 override 与 `sample()` 用的模式不是同一个），逐值证据见")
-print("    tests/step68/test_spec_logprobs.py::test_processed_mode_bonus_row_comes_from_raw_upstream_quirk。")
+print("  · ⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」（见 vllm_bugs/VERIFICATION_REPORT_20261006.md）：")
+print("    processed_logprobs 的 bonus 位虽走了两次 log_softmax，但 log_softmax 幂等 → 数字正确；")
+print("    logprobs=-1 在引擎入口就被归一化成 vocab_size → topk(k=-1) 那条路径用户不可达。")
+print("    真正待修的是本项目缺这条归一化（非投机交付为空 / 投机提前拒绝）。")
+print("  · 新增未复核项：min_p 只作用在 bonus 行，候选验证行不加掩码（E3 与 tests/step68 的钉住用例）。")
 print(f"设备={DEVICE}；torch={torch.__version__}")
 print()
 print(f"{'全部通过' if not FAIL else '失败: ' + ', '.join(FAIL)}")

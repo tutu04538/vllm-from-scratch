@@ -307,7 +307,7 @@ python benchmarks/check_step67_vocab_mapping.py      # 21 项（含与上游 Voc
   token 之后**才 `accept_tokens` 永久推进 FSM；草稿在收下时先过 `validate_tokens` 预筛。
 
 ```bash
-python -m pytest tests/step68 -q                     # 65 项
+python -m pytest tests/step68 -q                     # 67 项
 python benchmarks/check_step68_logprobs.py           # 23 项（含与上游 Sampler / _get_logprobs_tensors 的逐值差分）
 python benchmarks/check_step68_grammar.py            # 30 项（规格/掩码/状态/应用/端到端/后端边界）
 ```
@@ -316,8 +316,11 @@ python benchmarks/check_step68_grammar.py            # 30 项（规格/掩码/�
 > `--json-schema` 下产出符合 schema 的 JSON；`--logprobs 3` 的候选带名次与解码文本。
 > 三态矩阵（支持 / 上游不支持 / 本项目尚未接入）见 `docs/step68_alignment.md` §4：
 > 六项未接入字段与三个未接入后端**请求期明确拒绝**，绝不静默忽略参数。
+> 处理顺序表见 §2.9：**同一个约束在 bonus 行与候选行上可能不一样**——上游的 `min_p`
+> 只作用在 bonus 行（候选验证行不掩码），本项目照抄并钉住（实测 `min_p=1.0` 时投机仍有 rank>1 的 token 被交付）。
+> ⚠️ 2026-10-06 独立复核：`logprobs=-1` 上游在引擎入口把它归一化成 `vocab_size`，本项目缺这一步（待修）。
 
-设计与差异（四种模式的行索引、掩码试走/回滚、两处上游疑似 bug 的逐值证据、三态矩阵）见
+设计与差异（四种模式的行索引、掩码试走/回滚、采样约束处理顺序表、三态矩阵与复核后的更正）见
 [`docs/step68_alignment.md`](../docs/step68_alignment.md)，实测记录见
 [`docs/results.json`](../docs/results.json)（`step68.results`）。
 
@@ -370,7 +373,7 @@ python -m pytest tests/step64 -q                     # 13 项：step64（cache-o
 python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配置/加载/前向/端到端 + 特征上传回归）
 python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 配置/模型/加载/行选择/端到端 + MLP 支持缺口）
 python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构造/映射/上游差分/配置边界/异构词表集成）
-python -m pytest tests/step68 -q                     # 65 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
+python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

@@ -257,3 +257,41 @@ def _fake_request(sampling_params, request_id="r1"):
     from minivllm.request import Request
 
     return Request(request_id, [1, 2, 3], sampling_params, arrival_time=1.0)
+
+
+def test_min_p_only_applies_to_the_bonus_row(cuda_device):
+    """需求 068 §3.2 的"bonus 行 vs 候选行不同之处"：`min_p` **只作用在 bonus 行**。
+
+    上游 `min_p` 是"argmax 不变"的 logits processor（`MinPLogitsProcessor`，在
+    `Sampler.sample()` 里施加）。投机路径的**候选验证行不经过 `Sampler.sample()`**——
+    它只走 `RejectionSampler.apply_logits_processors`（惩罚/白名单/bad words/min_tokens/思考预算）
+    与 `apply_sampling_constraints`（温度/top-k/top-p），所以候选行上**没有** min_p 掩码。
+    本仓库照抄这条行为（上游没有的部分我们不自创），这条用例把它钉住：
+
+        · 候选行：`min_p=1.0`（只该留概率最大的那个）之后仍然**一个 -inf 都没有**
+        · bonus 行：同一个 min_p 生效 → 除 argmax 外全是 -inf
+
+    后果（已量到，见 `vllm_bugs/UPSTREAM_SUSPECTED_BUGS.md` 的 BUG-6）：投机下被接受的草稿
+    可以是 `min_p` 本该屏蔽的 token，于是"开投机"与"不开投机"的输出分布对 `min_p` 的承诺不一致。
+    """
+    logits = torch.tensor([[2.0, 1.0, 0.0, -1.0]], device=cuda_device)
+    sm = sampling_metadata([1.0], [[]], device=cuda_device, min_p=[1.0],
+                           logprobs_mode="processed_logits", max_num_logprobs=4)
+
+    # ---- 候选行：走 apply_sampling_constraints（温度 + top-k/top-p），没有 min_p ----
+    from minivllm.sample.rejection_sampler import apply_sampling_constraints
+    # cu_num_draft_tokens=[1] = 这条请求有 1 个候选行（K=0 的请求不占候选行，见 59 关）
+    candidate = apply_sampling_constraints(
+        logits.clone(), torch.tensor([1], dtype=torch.int32, device=cuda_device), sm)
+    assert torch.equal(candidate, logits), (
+        f"候选行被改动了（温度=1.0、top-k/top-p 都没开，唯一可能的改动者就是 min_p）："
+        f"{candidate.tolist()}")
+
+    # ---- bonus 行：走 Sampler.sample → min_p 生效 ----
+    bonus = Sampler("processed_logits").forward(logits.clone(), sm)
+    columns = bonus.logprobs_tensors.logprob_token_ids[0].tolist()
+    values = bonus.logprobs_tensors.logprobs[0].tolist()
+    assert values[columns.index(0)] == pytest.approx(2.0)      # argmax（token 0）留下
+    for column, token_id in enumerate(columns):
+        if token_id != 0:
+            assert values[column] == float("-inf"), (columns, values)

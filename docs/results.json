@@ -16,7 +16,7 @@
     "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
     "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）",
     "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）",
-    "step68": "已实现并自检：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；65 项 pytest + 53 项 benchmark 全 PASS；真实权重与 transformers 逐值一致"
+    "step68": "已实现并自检（67 项 pytest + 53 项 benchmark）：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性），并确认 logprobs=-1 的入口归一化是本项目待对齐项"
   },
   "step58": {
     "results": {
@@ -2984,7 +2984,7 @@
     "results": {
       "step": 68,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/068_采样约束Logprobs与结构化输出的投机语义.md",
-      "status": "implemented + self-verified（4 种 logprobs 模式与上游 Sampler 逐值一致；投机 _get_logprobs_tensors 与上游逐值一致；xgrammar 语法掩码的试走/回滚/推进语义对齐；真实权重 Qwen3-1.7B 的 raw_logprobs 与 transformers 逐值相同；三态矩阵里的「上游不支持」两处与「本项目尚未接入」六项都有显式拒绝用例）",
+      "status": "implemented + self-verified（4 种 logprobs 模式与上游 Sampler 逐值一致；投机 _get_logprobs_tensors 与上游逐值一致；xgrammar 语法掩码的试走/回滚/推进语义对齐；真实权重 Qwen3-1.7B 的 raw_logprobs 与 transformers 逐值相同；三态矩阵 + 采样约束处理顺序表，未接入项一律请求期拒绝。⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性，见 vllm_bugs/VERIFICATION_REPORT_20261006.md），并确认本项目缺 logprobs=-1 → vocab_size 的入口归一化，列为待修）",
       "recorded_at": "2026-10-06T02:01:53+00:00",
       "git": {
         "baseline_commit_at_record_time": "6cc4276",
@@ -3009,7 +3009,7 @@
       "commands": [
         {
           "cmd": "python -m pytest tests/step68 -q",
-          "result": "65 passed（16 + 26 + 23）"
+          "result": "67 passed（17 + 26 + 24）"
         },
         {
           "cmd": "python benchmarks/check_step68_logprobs.py",
@@ -3021,7 +3021,7 @@
         },
         {
           "cmd": "python -m pytest tests/step58..68 -q",
-          "result": "503 passed（438 + 65）"
+          "result": "505 passed（438 + 67）"
         },
         {
           "cmd": "python benchmarks/check_step57_*.py + check_step58..68_*.py",
@@ -3114,10 +3114,6 @@
           "真实权重": "Qwen3-1.7B + JSON schema（name/age）：CUDA 贪心/采样都产出符合 schema 的 JSON；`--logprobs 3` 的候选带 decoded_token 与 rank（demo 实测）"
         },
         "unsupported_rejections": {
-          "上游不支持（实测）": {
-            "投机 + logprobs=-1": "上游 torch.topk(k=-1) → RuntimeError: selected index k out of range；本仓库提前 NotImplementedError（同一判定）",
-            "非投机 + logprobs=-1": "上游 LogprobsProcessor 的 zip 在空数组上截断 → 交付为空、cumulative 保持 0（差分复现，本项目照抄）"
-          },
           "本项目尚未接入（请求期拒绝）": [
             "allowed_token_ids",
             "bad_words",
@@ -3132,15 +3128,22 @@
             "lm-format-enforcer",
             "未知 backend"
           ],
-          "上游疑似 bug（本项目照抄 + 差分钉住）": "processed_logprobs 模式下 bonus 位的数字来自 raw 那一份（手算 processed 与实测差 > 1.0）"
+          "本项目未对齐（待修）": "logprobs=-1：上游在 gpu_input_batch.py:435-440 归一化成 vocab_size，本项目透传 -1 → 非投机交付为空 / 投机下提前拒绝（复核确认，非上游 bug）",
+          "已复核为假阳性（原先的上游疑似 bug 记录）": [
+            "processed_logprobs 的 bonus 位：上游确实双 log_softmax，但 log_softmax 幂等 → 交付值正确（max|Δ|=0.0）",
+            "投机 + logprobs=-1 在 topk 处报错：-1 在引擎入口已被归一化，用户请求不可达",
+            "非投机 logprobs=-1 交付为空：同上，只在手搓 metadata 时成立"
+          ],
+          "新增（尚未复核）：min_p 不作用于候选行": "上游 min_p 是 argmax 不变处理器，只在 Sampler.sample() 里施加；候选行只走 apply_sampling_constraints（温度/top-k/top-p）。实测 min_p=1.0：非投机 820 位置 0 个 rank>1；投机 779 位置 85 个 rank>1（见 vllm_bugs BUG-6 与 tests/step68 的钉住用例）"
         }
       },
       "known_gaps": [
         "异步 grammar 编译（WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR）与掩码并行填充未接入",
         "思考模式（reasoning parser / enable_in_reasoning / trim_reasoning_for_advance）未接入",
         "白名单 / bad words / logit_bias / 思考预算 / logprob_token_ids / prompt_logprobs 只有请求期拒绝",
-        "上游两处疑似 bug（logprobs=-1 的输出处理截断、processed_logprobs 的 bonus 位）照抄并记账，等上游修复后重对",
-        "`-1` 占位草稿在生产路径暂不出现（60 关已在交接处裁掉），只有单元测试覆盖；异步调度（70 关）才真正用到",
+        "logprobs=-1 未对齐：上游在引擎入口把 -1 归一化成 vocab_size，本项目缺这一步（待修，复核确认）",
+        "min_p / logit_bias 在上游只作用于 bonus 行（候选行被跳过）——本项目照抄；若上游改，本项目跟着改",
+        "-1 占位草稿在生产路径暂不出现（60 关已在交接处裁掉），只有单元测试覆盖；异步调度（70 关）才真正用到",
         "异步调度 / V2（70、73 关）要求回归本关同一批测试",
         "未做性能测量（batched_count_greater_than 未编译、掩码串行填充、logprobs 在 CPU 上 numpy 拼接）"
       ]

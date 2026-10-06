@@ -225,10 +225,15 @@ class RejectionSampler:
            又把 top-k 那一列当成"名次"来解释）。本仓库照抄，不在这里"顺手修好"。
         """
         if max_num_logprobs == -1:
+            # ⚠️ 这是**本项目尚未对齐**的地方，不是上游的行为：上游在引擎入口
+            # `v1/worker/gpu_input_batch.py:435-440` 就把 `-1` 归一化成 `vocab_size`，
+            # 所以 `gather_logprobs` 收到的永远不是 -1（走的是"top-k 取满整张词表"）。
+            # 本仓库的 `SamplingMetadata.from_input_batch` 目前把 -1 透传下来 → 走到这里。
+            # 修法：补上同一条归一化（已记入 docs/step68_alignment.md §7 待办）。
             raise NotImplementedError(
-                "投机 + logprobs=-1（全词表）上游同样不支持：它把 -1 直接交给 torch.topk，"
-                "会在采样时抛 RuntimeError('selected index k out of range')。本仓库提前拒绝，"
-                "请改用 logprobs=k（k >= 1）。三态矩阵里这条属「上游不支持」")
+                "投机 + logprobs=-1（全词表）本项目尚未对齐：上游在 gpu_input_batch.py:435-440 "
+                "把 -1 归一化成 vocab_size（于是 top-k 合法），本仓库透传 -1 → 这里只能提前拒绝。"
+                "临时请改用 logprobs=k（k >= 1）；对齐后再放开这条")
 
         # 每请求的起始行号：`cu_num_sampled_tokens` 是累积末端，往左挪一格就是起点
         cu_num_sampled_tokens = torch.zeros_like(metadata.cu_num_sampled_tokens)

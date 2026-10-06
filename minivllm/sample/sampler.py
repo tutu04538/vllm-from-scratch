@@ -96,7 +96,11 @@ class Sampler:
 
         logits = logits.to(torch.float32)
         logits = self.apply_logits_processors(logits, sampling_metadata, predict_bonus_token)
-        sampled, processed_logprobs = self.sample(logits, sampling_metadata, logprobs_mode)
+        # **不把 override 传给 `sample()`**（上游同款）：override 只决定"开头要不要留 raw 那一份"，
+        # `sample()` 里用的是引擎级模式。拒绝采样器的 bonus 行因此会经历"两次 log_softmax"
+        # （processed_logprobs 模式下），但 `log_softmax` 幂等，交付值逐值不变
+        # （2026-10-06 独立复核；见 docs/step68_alignment.md §3.5）。
+        sampled, processed_logprobs = self.sample(logits, sampling_metadata)
         if processed_logprobs is not None:
             # processed_* 模式下"要交付的那一份"是采样时才算出来的，直接顶替
             raw_logprobs = processed_logprobs

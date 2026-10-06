@@ -186,11 +186,15 @@ def _spec_setup(mode, drafts=(0, 1, 2), rows=None):
     return meta, logits, sampler, rs
 
 
-def _bonus_logits_for(sampler, meta, logits, mode):
-    """bonus 采样器交回的那一份（生产路径里由 `RejectionSampler.forward` 传进来）。"""
+def _bonus_logits_for(sampler, meta, logits, mode, sm=None):
+    """bonus 采样器交回的那一份（生产路径里由 `RejectionSampler.forward` 传进来）。
+
+    `sm` 给定时用它（这样惩罚/温度等设置与生产路径一致）；不给就用一份"无惩罚"的默认元数据。
+    """
     from dataclasses import replace
 
-    sm = sampling_metadata([0.0], [[3, 1, 2]])
+    if sm is None:
+        sm = sampling_metadata([0.0], [[3, 1, 2]])
     sm = replace(sm, max_num_logprobs=-1)
     out = sampler.forward(logits[meta.bonus_logits_indices], sm,
                           predict_bonus_token=True,
@@ -274,35 +278,57 @@ def test_bonus_position_reads_bonus_row():
         hand_log_softmax(logits[3].tolist())[3], abs=1e-5)
 
 
-def test_processed_mode_bonus_row_comes_from_raw_upstream_quirk():
-    """**上游疑似 bug 的最小差分证据**（本项目照抄，不在这里偷偷修好）。
+def test_processed_logprobs_bonus_row_is_numerically_correct():
+    """`processed_logprobs` 模式下 bonus 位的**交付值 == 手算的 processed logprob**。
 
-    上游 `Sampler.forward` 对 bonus 行传 `logprobs_mode_override="processed_logits"`，
-    但 `sample()` 内部用的是**引擎级模式**：`processed_logprobs` 模式下 it 交回的其实是
-    logprobs（而不是 logits），`_get_logprobs_tensors` 又对它做了一次 `log_softmax`
-    → bonus 位的数字退化成"**raw** 那一份的 logprob"（惩罚/温度都没算进去）。
+    2026-10-06 独立复核的结论（原先我们记成"上游疑似 bug"，是假阳性）：上游确实会"双
+    `log_softmax`"——bonus 采样器在 `processed_logprobs` 模式下交回的本就是 logprobs，
+    `_get_logprobs_tensors` 又对它做一次——但 **`log_softmax` 幂等**（对已归一化的向量再取一次
+    log_softmax 得到它自己），所以数字没错。
 
-    这条用例把这个事实钉住：手算的期望值（processed）与实际值（raw）刻意不同。
+    这条用例用**生产路径的口径**钉住它：惩罚由 bonus 采样器自己施加（`predict_bonus_token=True`，
+    历史 = 已提交 + 全部草稿），再用**手算的 processed 分布**做期望值。
     """
     rows = [[2.0, 1.0, 0.5, 0.2], [0.2, 2.0, 1.0, 0.5], [0.5, 0.2, 2.0, 1.0],
             [1.0, 0.5, 0.2, 2.0]]
-    meta, logits, sampler, rs = _spec_setup("processed_logprobs", rows=rows)
-    # 处理过的那一份：给 bonus 行加一个大惩罚，让"processed"的期望值明显不同
-    processed = logits.clone()
-    processed[3, 3] = -8.0
-    bonus = _bonus_logits_for(sampler, meta, logits, "processed_logprobs")
-    sampled = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
-    got = rs._get_logprobs_tensors(1, meta, logits,
-                                   processed[meta.target_logits_indices], bonus, sampled)
+    # K=2（草稿 [0,1]）、bonus 行是第 2 行 → 词表里的 token 2 不在历史里，惩罚**不是均匀的**
+    meta, logits, sampler, rs = _spec_setup("processed_logprobs", drafts=(0, 1), rows=rows)
+    # bonus 行的历史 = 已提交 [3] + 草稿 [0,1]；frequency_penalty=1.0 → token 0/1/3 各减 1.0、token 2 不动
+    sm = sampling_metadata([0.0], [[0, 1]], max_num_logprobs=None, no_penalties=False,
+                           output_token_ids=[[3]], prompt_token_ids=[[]],
+                           frequency_penalties=[1.0], presence_penalties=[0.0],
+                           repetition_penalties=[1.0])
+    bonus = _bonus_logits_for(sampler, meta, logits, "processed_logprobs", sm=sm)
 
-    hand_processed = hand_log_softmax(processed[3].tolist())[3]
-    hand_raw = hand_log_softmax(logits[3].tolist())[3]
-    assert abs(hand_processed - hand_raw) > 1.0          # 手算的两份确实不同
-    assert got.logprobs[3, 0].item() == pytest.approx(hand_raw, abs=1e-4)
-    assert abs(got.logprobs[3, 0].item() - hand_processed) > 1.0
+    sampled = torch.tensor([[0, 1, 3]], dtype=torch.int32)
+    got = rs._get_logprobs_tensors(1, meta, logits, logits[meta.target_logits_indices],
+                                   bonus, sampled)
+
+    bonus_row = int(meta.bonus_logits_indices[0])   # 行号由 metadata 给（别写死下标）
+    penalized_bonus = logits[bonus_row].tolist()
+    for token_id in (0, 1, 3):                     # 历史 = [3, 0, 1]，各出现 1 次
+        penalized_bonus[token_id] -= 1.0
+    hand_processed = hand_log_softmax(penalized_bonus)[3]
+    hand_raw = hand_log_softmax(logits[bonus_row].tolist())[3]
+    assert abs(hand_processed - hand_raw) > 0.1, (hand_processed, hand_raw)   # 两份确实不同
+    assert got.logprobs[2, 0].item() == pytest.approx(hand_processed, abs=1e-5)
+    # 反证：如果交付的真是 raw 那一份（我们原先的怀疑），这里会差 0.1 以上
+    assert abs(got.logprobs[2, 0].item() - hand_raw) > 0.1
 
 
-def test_spec_full_vocab_mode_is_rejected_like_upstream():
+def test_log_softmax_is_idempotent():
+    """复核结论的机理：`log_softmax(log_softmax(x)) == log_softmax(x)`（数值上 `max|Δ|=0`）。
+
+    这就是"上游双 log_softmax 但没有数值后果"的原因；把这条单独钉住，免得以后有人
+    （包括我们自己）再把它当成 bug 重新报一遍。
+    """
+    x = torch.tensor([[2.0, 1.0, 0.5, 0.2], [0.1, 0.1, 0.1, 0.1]])
+    once = x.log_softmax(dim=-1, dtype=torch.float32)
+    twice = once.log_softmax(dim=-1, dtype=torch.float32)
+    assert (once - twice).abs().max().item() < 1e-6, (once - twice).abs().max().item()
+
+
+def test_spec_full_vocab_mode_is_rejected_until_aligned():
     """投机 + `logprobs=-1`：上游在 `torch.topk(k=-1)` 处运行期报错，本项目提前拒绝。
 
     上游证据（差分测试实测）：`torch.topk(x, -1)` → `RuntimeError: selected index k out of
