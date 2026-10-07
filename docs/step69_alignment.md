@@ -27,11 +27,11 @@
 | `minivllm/spec_decode/draft_model.py`（改） | 收下 padded 批的两个索引并逐值校验；AR 步的 device 侧算法复核；`seq_lens` 去掉被拒行；`initialize_cudagraph_keys()` |
 | `minivllm/worker/worker.py`、`executor/uniproc_executor.py`（改） | `compile_or_warm_up_model()`：KV 绑定之后捕获 |
 | `tests/step69/test_drafter_padding.py` | 9 项：padded 索引/上游内核逐值差分/工作区哨兵/seq_lens 修正/布局换算 |
-| `tests/step69/test_spec_cudagraph.py` | 18 项：键与分派/配置解析/捕获与重放/污染 padding/profiler/无同步/68 关回归 |
-| `benchmarks/check_step69_cudagraph.py` | **26 项**脚本式验收（A 配置 / B 键 / C 一致性 / D 留痕 / E profiler / F drafter padding） |
+| `tests/step69/test_spec_cudagraph.py` | 19 项：键与分派/配置解析/捕获与重放/污染 padding（含"补齐区非空"断言）/补齐行内容确定性/profiler/无同步/68 关回归 |
+| `benchmarks/check_step69_cudagraph.py` | **28 项**脚本式验收（A 配置 / B 键 / C 一致性 / D 留痕 / E profiler / F drafter padding） |
 | `docs/results.json → step69` | 命令、依赖、设备、源码 hash、真实执行轨迹 |
 
-包摘要（92 个 `*.py`）：`32be9781c5508f84f89a9c27ffbf74b1dd974ff927eac1a6d739e85318e2d7af`。
+包摘要（92 个 `*.py`）：`d8f8f1acc245c1fbc6c525ac52c7ac387ead08908a7adb340ad524ce6c1a644f`。
 
 ---
 
@@ -91,9 +91,21 @@ workspace、注意力元数据形状都由这四个量决定。补齐规则（�
 
 | 假东西 | 挡法 | 破了会怎样 |
 |---|---|---|
-| 补齐的**行**（token/位置） | 槽位 = `PADDING_SLOT_ID(-1)` | 写进真实槽位 → 覆盖别人的 KV |
+| 补齐的**行**（token/位置） | 槽位 = `PADDING_SLOT_ID(-1)`；**内容显式写成 0** | 写进真实槽位 → 覆盖别人的 KV |
 | 补齐的**请求**（seq_len=0） | 注意力 mask 整行掩掉（用 `finfo.min` 而非 `-inf`，避免 NaN） | 读到别的请求的 KV，输出垃圾（若含 NaN 会扩散） |
 | 补齐请求的**块表行** | 每轮清零（指向 0 号块） | 读到被清零前那行的真实块 |
+
+补齐行的内容**为什么也要写死**（不是"反正结果会被丢掉"）：这些行照样会过模型的
+embedding 与 RoPE 查表（`input_ids` 索引词表、`positions` 索引位置表），内容超范围就是
+device 端越界（实测 `device-side assert triggered`）。留上一轮的残值在正常路径里恰好都合法
+（写的都是自己的真 token / 真位置），但"恰好合法"不该当不变量，所以 `_fill_padded_buffers`
+显式把它们清零——见 `tests/step69::test_padding_rows_have_deterministic_content`。
+
+> 一个相关的推论：**每请求补齐到 `1+K` 不是在这里做的**。图路径只在"统一 decode"批上生效
+> （`_is_uniform_decode()` 要求每请求恰好 `1+K` 行、总行数 = `(1+K) × 请求数`），
+> 所以紧凑输入本身就已经是"每请求 `1+K` 行"，拷贝过去即成立；这个函数补齐的是**尾部**——
+> 到档位的那几行，以及档位带来的**假请求**（`seq_lens=0` + 块表行清零 + 槽位哨兵）。
+> 各请求草稿数不等的批（`K_i` 不同）不是统一 decode，`dispatch()` 直接回退 eager。
 
 ### 3.3 0 号块是垃圾桶（本关最容易被忽略的一条）
 
@@ -172,7 +184,7 @@ EAGLE      ：行块 = target 的行块（扩容 token 打在最后一行）→ 
 | B=1→3→1、图 bucket 边界、prefill/decode 混合、context 边界 | `test_batch_size_1_to_3_to_1_reuses_two_graphs`、B1/B2/B4、B3（混合批回退）、C3（prefill 回退 NONE） |
 | 记录真实选中的 mode/key | `runner.cudagraph_selections`（每轮一条）+ C3 |
 | 复用地址不变 | C2（静态缓冲 `data_ptr` 恒定、捕获次数不增） |
-| 故意污染 padding buffer → 有效输出不变、不写错 KV slot | D3（输出逐 token 相同）、D4（真实块 KV **逐位**相同）、D2（0 号块不属任何请求） |
+| 故意污染 padding buffer → 有效输出不变、不写错 KV slot | D3（用例真的覆盖到补齐区：2 行补齐 + 1 条补齐请求）、D4（输出逐 token 相同）、D5（真实块 KV **逐位**相同）、D2（0 号块不属任何请求）、D6/`test_padding_rows_have_deterministic_content`（补齐行内容写死，不靠残值） |
 | profiler 看到真实 replay、热路径不夹带逐请求同步 | E1（`cudaGraphLaunch` 计数）、E2（`set_sync_debug_mode("error")` 下跑图区域） |
 | 57 生命周期与 68 约束输出在受支持模式下回归 | 全量 `tests/step58..69`（532 项，含图模式默认开启）；`test_graph_mode_keeps_spec_logprobs_and_grammar_working` |
 | 不支持的模式按规则降级/拒绝 | A5/A6（配置期 `NotImplementedError`）、B3（混合批回退 NONE = 上游 dispatch 规则） |
@@ -293,9 +305,9 @@ FULL 图"时留白：不开图时留白是纯损耗。区别可观测（`cache_c
 **回归（本机实测）**：
 
 ```
-pytest tests/step58..69           → 532 passed   （68 关基线 505 + 本关 27）
-pytest tests/step69               → 27 passed    （9 + 18）
-benchmarks/check_step69_cudagraph.py → 全部通过（26 项）
+pytest tests/step58..69           → 533 passed   （68 关基线 505 + 本关 28）
+pytest tests/step69               → 28 passed    （9 + 19）
+benchmarks/check_step69_cudagraph.py → 全部通过（28 项）
 其余 check_step57_* / check_step58..68_* 全绿（15 + 14 个脚本）
 ```
 

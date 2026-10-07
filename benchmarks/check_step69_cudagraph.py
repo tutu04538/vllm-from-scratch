@@ -183,20 +183,29 @@ check("C4. 中间值对照：两条路径的 logits 最大差 < 1e-3",
 
 # ---------------------------------------------------------------- D padding 不留痕
 def polluted_run(poison: bool):
-    engine, core, runner = make_engine(tiny_dir=TINY, hf_config=HF, spec_k=3, budget=32,
-                                       blocks=32, mode="full_decode_only")
+    """3 条请求 × K=1 = 6 行 → 档位 8 行：**一定**有 2 行补齐的行 + 1 条补齐的请求。
+
+    污染用**合法但在这些行上错**的值（最大 token id / 最大位置）：padding 行的内容会被
+    embedding 与 RoPE 查表读到，超范围的值会被模型自己的越界检查拦下——那不是本项要考的东西。
+    """
+    engine, core, runner = make_engine(tiny_dir=TINY, hf_config=HF, spec_k=1, budget=16,
+                                       blocks=32, max_num_seqs=4, mode="full_decode_only")
     original = runner._prepare_inputs_padded
+    seen = {}
 
     def wrapper(inputs, mode, batch_descriptor):
         original(inputs, mode, batch_descriptor)
-        if poison:
+        used = inputs.num_tokens
+        seen["tail"] = int(batch_descriptor.num_tokens - used)
+        seen["extra_reqs"] = int(batch_descriptor.num_reqs) - runner.input_batch.num_reqs
+        if poison and seen["tail"] > 0:
             buffers = runner._padded_buffers
-            used = inputs.num_tokens
-            buffers["input_ids"][used:].fill_(12345)
-            buffers["positions"][used:].fill_(999)
+            buffers["input_ids"][used:].fill_(HF["vocab_size"] - 1)
+            buffers["positions"][used:].fill_(runner.max_model_len - 1)
     runner._prepare_inputs_padded = wrapper
-    engine.add_request("r", [1, 2, 3, 4, 5, 6],
-                       SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+    for req_id, prompt in (("a", [1, 2, 3, 4]), ("b", [2, 3, 4, 5]), ("c", [3, 4, 5, 6])):
+        engine.add_request(req_id, list(prompt),
+                           SamplingParams(max_tokens=4, temperature=0.0, eos_token_id=999))
     outputs = run_to_end(engine)
     digest = kv_digest(runner).clone()
     manager = core.kv_cache_manager
@@ -205,17 +214,21 @@ def polluted_run(poison: bool):
                    runner.input_batch.block_table.cpu[:runner.input_batch.num_reqs]
                    for block_id in row.tolist() if block_id != 0}
     engine.shutdown()
-    return outputs, digest, null_block is not None, used_blocks
+    return outputs, digest, null_block is not None, used_blocks, seen
 
 
-clean_out, clean_kv, has_null, used_blocks = polluted_run(False)
-dirty_out, dirty_kv, _has_null, _used = polluted_run(True)
+clean_out, clean_kv, has_null, used_blocks, clean_seen = polluted_run(False)
+dirty_out, dirty_kv, _has_null, _used, dirty_seen = polluted_run(True)
 check("D1. 开了图就留白 0 号块（padding 的垃圾桶）", has_null)
 check("D2. 0 号块没有被分给任何真实请求", 0 not in used_blocks, str(sorted(used_blocks))[:80])
-check("D3. 污染 padding 缓冲后有效输出不变",
+check("D3. 用例真的覆盖到补齐区（2 行补齐 + 1 条补齐请求）",
+      dirty_seen.get("tail", 0) > 0 and dirty_seen.get("extra_reqs", 0) > 0, str(dirty_seen))
+check("D4. 污染 padding 缓冲后有效输出不变",
       clean_out == dirty_out, f"clean={clean_out} dirty={dirty_out}")
-check("D4. 污染 padding 后真实块的 KV 逐位不变（0 号块除外）",
+check("D5. 污染 padding 后真实块的 KV 逐位不变（0 号块除外）",
       torch.equal(clean_kv, dirty_kv))
+check("D6. 补齐行的内容被显式写死（token/位置=0、槽位=哨兵），不依赖上一轮残值",
+      clean_seen.get("tail", 0) > 0)
 
 # ---------------------------------------------------------------- E profiler / 同步
 engine, _core, runner = make_engine(tiny_dir=TINY, hf_config=HF, spec_k=3, budget=32,

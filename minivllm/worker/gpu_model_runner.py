@@ -922,6 +922,8 @@ class GPUModelRunner:
         三条规则，都是"图上不能有分支"逼出来的：
 
             padding 行的槽位一律 `PADDING_SLOT_ID(-1)`（图里 clamp 到 0 号垃圾桶）
+            padding 行的 token/position 写成确定的 0（它们**会被 embedding/RoPE 查表读到**，
+                超出词表/位置表长度就是 device 端越界；不能靠"上一轮的残值恰好合法"）
             padding 请求的 `seq_lens = 0`（它的 attention 整行被掩掉，输出是垃圾但有限）
             padding 请求的块表行**清零**（指向 0 号块，绝不能留着上一轮的块号）
 
@@ -941,6 +943,13 @@ class GPUModelRunner:
             buffers["seq_lens"][:num_reqs].copy_(source.seq_lens.to(device))
             buffers["query_start_loc"][:num_reqs + 1].copy_(
                 source.query_start_loc.to(device))
+            # 补齐的**行**也要把 token/位置写成确定的 0。它们的结果会被丢掉、槽位也是哨兵，
+            # 但内容**会被模型查表读到**：embedding 按 input_id 索引、RoPE 按 position 索引，
+            # 超出词表/位置表长度就是 device 端越界（实测 `device-side assert triggered`）。
+            # 留上一轮的残值在正常路径里恰好都合法（都是自己写进去的真 token/真位置），
+            # 但"恰好合法"不是不变量——这里显式写死，让补齐行不依赖上一轮发生过什么。
+            buffers["input_ids"][num_tokens:num_tokens_padded].zero_()
+            buffers["positions"][num_tokens:num_tokens_padded].zero_()
         else:
             # dummy：位置连续、token 全 0（只求形状对；输出会被丢掉）
             buffers["positions"][:num_tokens].copy_(

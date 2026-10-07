@@ -3176,7 +3176,7 @@
     "results": {
       "step": 69,
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/069_V1投机输入Padding与编译CUDA_Graph.md",
-      "status": "implemented + self-verified（forward_context/BatchDescriptor、CUDAGraphMode 与 CompilationConfig、CudagraphDispatcher、CUDAGraphWrapper、padded 静态工作区、_dummy_run/capture_model/dispatch、0 号块留白、drafter 的 prepare_inputs_padded（与上游 kernel 逐值一致）全部落地；CUDA 上默认走 FULL_DECODE_ONLY，eager 与图 greedy 逐 token 相同、真实块 KV 逐位相同。⚠️ 缺口：无 torch.compile 一轴（配置期明确拒绝）、无 PIECEWISE（含混合批进图）、drafter 侧仍 eager（上游只在 PIECEWISE 下做）、图内注意力物化 K/V gather（长上下文显存吃紧））",
+      "status": "implemented + self-verified（forward_context/BatchDescriptor、CUDAGraphMode 与 CompilationConfig、CudagraphDispatcher、CUDAGraphWrapper、padded 静态工作区、_dummy_run/capture_model/dispatch、0 号块留白、drafter 的 prepare_inputs_padded（与上游 kernel 逐值一致）全部落地；补齐行的内容显式写死为 0（embedding/RoPE 会读它们）；CUDA 上默认走 FULL_DECODE_ONLY，eager 与图 greedy 逐 token 相同、真实块 KV 逐位相同。⚠️ 缺口：无 torch.compile 一轴（配置期明确拒绝）、无 PIECEWISE（含混合批进图）、drafter 侧仍 eager（上游只在 PIECEWISE 下做）、图内注意力物化 K/V gather（长上下文显存吃紧））",
       "recorded_at": "2026-10-07T03:21:00+00:00",
       "git": {
         "baseline_commit_at_record_time": "cd70185",
@@ -3185,7 +3185,7 @@
       "package": {
         "root": "minivllm/",
         "python_files": 92,
-        "sha256": "32be9781c5508f84f89a9c27ffbf74b1dd974ff927eac1a6d739e85318e2d7af",
+        "sha256": "d8f8f1acc245c1fbc6c525ac52c7ac387ead08908a7adb340ad524ce6c1a644f",
         "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -3199,15 +3199,15 @@
       "commands": [
         {
           "cmd": "python -m pytest tests/step58 .. tests/step69 -q",
-          "result": "532 passed（68 关基线 505 + 本关 27）"
+          "result": "533 passed（68 关基线 505 + 本关 28）"
         },
         {
           "cmd": "python -m pytest tests/step69 -q",
-          "result": "27 passed（test_drafter_padding 9 + test_spec_cudagraph 18）"
+          "result": "28 passed（test_drafter_padding 9 + test_spec_cudagraph 19）"
         },
         {
           "cmd": "python benchmarks/check_step69_cudagraph.py",
-          "result": "全部通过（26 项：A 配置 6 / B 键与分派 5 / C 一致性 4 / D padding 不留痕 4 / E profiler 与同步 2 / F drafter padding 3）"
+          "result": "全部通过（28 项：A 配置 6 / B 键与分派 4+1 / C 一致性 4 / D padding 不留痕 6 / E profiler 与同步 2 / F drafter padding 3）"
         },
         {
           "cmd": "python benchmarks/check_step57_*.py 与 check_step58..68_*.py",
@@ -3305,8 +3305,10 @@
           "real_eagle3_bf16": "真实 Qwen3-1.7B + EAGLE3（bf16）：eager 与 FULL 图的 greedy 逐 token 相同（16 token）；未升 fp32 时第 7 个 token 会分叉"
         },
         "padding_not_leaking": {
+          "覆盖度": "3 条请求 × K=1 = 6 行 → 档位 8 行：2 行补齐的行 + 1 条补齐的请求（用例先断言补齐区非空，否则是空用例）",
           "污染 padding 缓冲后": "输出逐 token 不变；真实块 KV 逐位相同（0 号块除外）",
-          "0号块": "留白（null_block），未被任何请求引用；padding 行的 clamp_min(0) 落点"
+          "0号块": "留白（null_block），未被任何请求引用；padding 行的 clamp_min(0) 落点",
+          "补齐行内容": "显式写死为 0（token/位置=0、槽位哨兵）；实测把越界值灌进补齐行会触发 device-side assert，所以「恰好合法」不能当不变量"
         },
         "no_sync_in_graph_region": "torch.cuda.set_sync_debug_mode('error') 下 _run_model_padded() 跑通（图区域内零同步）",
         "upstream_kernel_diff": {
@@ -3319,6 +3321,7 @@
         "无 PIECEWISE 图：FULL_AND_PIECEWISE / piecewise / 非分段 full 一律配置期拒绝；混合 prefill-decode 批回退 eager",
         "drafter（EAGLE/MTP/draft_model）不做图：上游只在 PIECEWISE 下做，本项目 proposer.cudagraph_mode 恒 NONE，第一遍仍 CPU 拼行",
         "图内注意力一次物化 K/V gather（显存 2·B·P·Hk·D·4，P=上下文上限），上游分块 kernel 不物化",
+        "图内注意力逐层物化 K/V gather；补齐行的 token/位置虽被丢弃仍会过 embedding/RoPE（故显式清零），上游分块 kernel 不做这一步",
         "logprobs=-1 的入口归一化仍未对齐（68 关遗留）",
         "异步调度（70 关）未接线：本轮工作区已为它留好静态缓冲与 prepare_inputs_padded"
       ]

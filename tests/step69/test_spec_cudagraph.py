@@ -213,38 +213,90 @@ def test_batch_size_1_to_3_to_1_reuses_two_graphs(tiny_dir, hf_config):
 def test_polluted_padding_buffer_does_not_change_valid_output(tiny_dir, hf_config):
     """污染 padding 缓冲：有效输出不变，而且真实块的 KV 逐位相同（0 号块除外）。
 
-    做法：跑一遍拿到 KV 摘要 → 把静态缓冲里"这一轮用不到的尾巴"和 0 号垃圾桶灌成垃圾 →
-    再跑一遍 → 比较输出与 KV。两个引擎的请求序列、seed 完全相同（greedy）。
+    **必须真的存在补齐区**，否则这条用例是空的：所以用 3 条请求 × K=1（= 6 行）→ 档位 8 行，
+    既有 2 行补齐的**行**、又多出 1 条补齐的**请求**（3 → 4 条）。断言里先查 `tail > 0`
+    与 `padded_reqs > num_reqs`，再谈污染。
+
+    污染用的是**合法但在这些行上"错"的值**（最大 token id / 最大位置）：padding 行的内容
+    会被 embedding 与 RoPE 查表读到，所以只有"在合法范围内"的污染才是在考"这些行不影响结果"；
+    超出范围的值会被模型自己的越界检查拦下（那是另一件事，不是本用例要证明的）。
     """
+    vocab_size = hf_config["vocab_size"]
+
     def run(poison: bool):
-        engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
-                                           budget=32, blocks=32, mode="full_decode_only")
+        engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=1,
+                                           budget=16, blocks=32, max_num_seqs=4,
+                                           mode="full_decode_only")
         original = runner._prepare_inputs_padded
-        state = {}
+        seen = {}
 
         def poisoned(inputs, mode, batch_descriptor):
             original(inputs, mode, batch_descriptor)
             buffers = runner._padded_buffers
-            # 把"补齐区"（真实行之后）灌成极端值：它们必须被哨兵/掩码挡住
             used = inputs.num_tokens
-            buffers["input_ids"][used:].fill_(12345)
-            buffers["positions"][used:].fill_(999)
-            buffers["slot_mapping"][used:].fill_(-1)
-            state["padding_rows"] = int(buffers["slot_mapping"].shape[0] - used)
+            seen["tail"] = int(batch_descriptor.num_tokens - used)
+            seen["num_reqs"] = int(batch_descriptor.num_reqs) - runner.input_batch.num_reqs
+            if poison and seen["tail"] > 0:
+                # 补齐区（真实行之后：包括"补齐请求"的那几行）灌成合法但错的值
+                buffers["input_ids"][used:].fill_(vocab_size - 1)
+                buffers["positions"][used:].fill_(runner.max_model_len - 1)
+            seen.setdefault("rows", []).append(
+                (int(used), int(batch_descriptor.num_tokens)))
 
         runner._prepare_inputs_padded = poisoned
-        engine.add_request("r", [1, 2, 3, 4, 5, 6],
-                           SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+        for req_id, prompt in (("a", [1, 2, 3, 4]), ("b", [2, 3, 4, 5]), ("c", [3, 4, 5, 6])):
+            engine.add_request(req_id, list(prompt),
+                               SamplingParams(max_tokens=4, temperature=0.0,
+                                              eos_token_id=999))
         outputs = run_to_end(engine)
         digest = kv_digest(runner).clone()
         engine.shutdown()
-        return outputs, digest, state
+        return outputs, digest, seen
 
-    clean, clean_digest, _ = run(poison=False)
-    dirty, dirty_digest, state = run(poison=True)
+    clean, clean_digest, clean_seen = run(poison=False)
+    dirty, dirty_digest, dirty_seen = run(poison=True)
+    assert dirty_seen["tail"] > 0, f"这一轮没有补齐区，用例是空的：{dirty_seen}"
+    assert dirty_seen["num_reqs"] > 0, f"没有补齐请求：{dirty_seen}"
     assert clean == dirty, "污染 padding 之后有效输出变了：说明 padding 行漏进了计算"
     assert torch.equal(clean_digest, dirty_digest), \
         "真实块的 KV 被改了：padding 行写到了不该写的地方（0 号块之外的槽位）"
+
+
+@requires_cuda
+def test_padding_rows_have_deterministic_content(tiny_dir, hf_config):
+    """补齐行的内容**显式写死为 0**，不依赖"上一轮恰好留了什么"。
+
+    为什么在意：padding 行虽然结果会被丢掉、槽位也是哨兵，但它们的 token/position **会被
+    embedding 与 RoPE 查表读到**（超范围就是 device 端越界）。所以不能把"上一轮的残值恰好
+    合法"当不变量——填进去的必须是确定的、合法的值。
+    """
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=1,
+                                       budget=16, blocks=32, max_num_seqs=4,
+                                       mode="full_decode_only")
+    original = runner._prepare_inputs_padded
+    seen = {}
+
+    def spy(inputs, mode, batch_descriptor):
+        buffers = runner._padded_buffers
+        # 先把整块灌成"合法但非 0"的旧值，模拟"上一轮留下的残值"
+        buffers["input_ids"][:batch_descriptor.num_tokens].fill_(hf_config["vocab_size"] - 1)
+        buffers["positions"][:batch_descriptor.num_tokens].fill_(runner.max_model_len - 1)
+        original(inputs, mode, batch_descriptor)
+        used = inputs.num_tokens
+        seen["tail_ids"] = buffers["input_ids"][used:batch_descriptor.num_tokens].tolist()
+        seen["tail_positions"] = buffers["positions"][used:batch_descriptor.num_tokens].tolist()
+        seen["tail_slots"] = buffers["slot_mapping"][used:batch_descriptor.num_tokens].tolist()
+
+    runner._prepare_inputs_padded = spy
+    for req_id, prompt in (("a", [1, 2, 3, 4]), ("b", [2, 3, 4, 5]), ("c", [3, 4, 5, 6])):
+        engine.add_request(req_id, list(prompt),
+                           SamplingParams(max_tokens=2, temperature=0.0, eos_token_id=999))
+    run_to_end(engine)
+    engine.shutdown()
+    assert seen.get("tail_slots"), f"没有补齐区：{seen}"
+    assert set(seen["tail_ids"]) == {0}, seen
+    assert set(seen["tail_positions"]) == {0}, seen
+    assert set(seen["tail_slots"]) == {-1}, seen      # 哨兵：不能是 0（0 是真实槽位）
 
 
 @requires_cuda
