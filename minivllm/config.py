@@ -16,6 +16,7 @@ step56 把二十多个参数平铺在 `Engine.__init__` 上，既看不出哪些
 `num_gpu_blocks` 先手动配置：真实 vLLM 的显存 profiling 自动定容属于"明确延后"的部分。
 """
 
+import enum
 import importlib.util
 from dataclasses import dataclass, field, replace
 
@@ -142,6 +143,11 @@ class ModelConfig:
     # 上游 `ModelConfig.max_logprobs`（默认 20；-1 表示按词表全给）。68 关在请求期拿它校验
     # `SamplingParams.logprobs`：要 100 个却只留 20 个的话，静默截断会让用户以为拿到了全部。
     max_logprobs: int = 20
+    # 69 关：`enforce_eager=True` 时**一律不做 CUDA Graph**（上游 `ModelConfig.enforce_eager`
+    # 默认 False，但它同时决定 `_set_cudagraph_sizes` 走不走）。本仓库的解析规则见
+    # `VllmConfig._resolve_cudagraph_config`：只有 CUDA + 没开 enforce_eager + 模式含 FULL
+    # 才真的会建图。
+    enforce_eager: bool = False
 
     def __post_init__(self):
         if self.max_model_len <= 0:
@@ -808,6 +814,228 @@ class StructuredOutputsConfig:
                 "（上游同款校验）")
 
 
+class CompilationMode(enum.IntEnum):
+    """模型怎么被"编译"（对应上游 `config/compilation.py::CompilationMode`）。
+
+    本仓库**只实现 NONE**：另外三种都要 torch.compile 参与（上游的 `VLLM_COMPILE` 还要
+    算子拆分 + 自定义 pass）。把它们照抄进来是为了让"不支持"这件事有一个**共同的名字**：
+    用户写 `mode="vllm_compile"` 时得到的是"本仓库未实现该模式"的明确报错，
+    而不是"这个字段被忽略、悄悄跑 eager"（那会让人以为编译生效了）。
+    """
+
+    NONE = 0
+    """纯 eager：模型按写好的 PyTorch 代码逐步执行，不做图编译。"""
+    STOCK_TORCH_COMPILE = 1
+    """标准 `torch.compile`。"""
+    DYNAMO_TRACE_ONCE = 2
+    """只做一次 Dynamo trace，避免重复编译。"""
+    VLLM_COMPILE = 3
+    """上游自定义后端：算子拆分 + 分段编译 + 自定义 pass。"""
+
+
+class CUDAGraphMode(enum.Enum):
+    """CUDA Graph 的模式（逐字对应上游 `config/compilation.py::CUDAGraphMode`）。
+
+    这个枚举同时承担两个角色，**不能混**：
+
+    1. **配置值**（可以有"分段"取值）：`FULL_DECODE_ONLY = (FULL, NONE)` 读作
+       "decode 批用 FULL 图，混合 prefill/decode 批不用图"；
+       `FULL_AND_PIECEWISE = (FULL, PIECEWISE)` 读作"decode 用 FULL，混合批用 PIECEWISE"。
+    2. **运行模式**（只能是具体的那三个）：`NONE` / `PIECEWISE` / `FULL`——图包装器实际
+       比对的就是它，`valid_runtime_modes()` 给的就是这三个。
+
+    `decode_mode()` / `mixed_mode()` 把那对取值拆开；`separate_routine()` 说明"两种批走
+    不同套路"，`has_mode()` 说明"整体上含不含某个具体模式"。
+    """
+
+    NONE = 0
+    PIECEWISE = 1
+    FULL = 2
+    FULL_DECODE_ONLY = (FULL, NONE)
+    FULL_AND_PIECEWISE = (FULL, PIECEWISE)
+
+    def decode_mode(self) -> "CUDAGraphMode":
+        """decode（统一 1+K 行）批用哪个具体模式。"""
+        return CUDAGraphMode(self.value[0]) if self.separate_routine() else self
+
+    def mixed_mode(self) -> "CUDAGraphMode":
+        """混合 prefill/decode 批用哪个具体模式。"""
+        return CUDAGraphMode(self.value[1]) if self.separate_routine() else self
+
+    def has_mode(self, mode: "CUDAGraphMode") -> bool:
+        if mode.separate_routine():
+            raise ValueError(f"has_mode() 只接受具体运行模式，收到分段取值 {mode}")
+        if self.separate_routine():
+            return mode.value in self.value
+        return self == mode
+
+    def requires_piecewise_compilation(self) -> bool:
+        return self.has_mode(CUDAGraphMode.PIECEWISE)
+
+    def max_cudagraph_mode(self) -> "CUDAGraphMode":
+        return CUDAGraphMode(max(self.value)) if self.separate_routine() else self
+
+    def has_full_cudagraphs(self) -> bool:
+        return self.max_cudagraph_mode() == CUDAGraphMode.FULL
+
+    def has_piecewise_cudagraphs(self) -> bool:
+        return self.requires_piecewise_compilation()
+
+    def separate_routine(self) -> bool:
+        return isinstance(self.value, tuple)
+
+    @classmethod
+    def valid_runtime_modes(cls) -> frozenset["CUDAGraphMode"]:
+        """可以作为**运行模式**出现的三个（图包装器只认这三个）。"""
+        return frozenset({cls.NONE, cls.PIECEWISE, cls.FULL})
+
+    def is_valid_runtime_mode(self) -> bool:
+        return self in CUDAGraphMode.valid_runtime_modes()
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __bool__(self) -> bool:
+        # 上游同款：`if cudagraph_mode:` 的语义是"不是 NONE"
+        return self != CUDAGraphMode.NONE
+
+
+#: `CompilationMode` 字符串别名 → 枚举。上游是 pydantic 的 Literal，本仓库收这几个写法。
+_COMPILATION_MODE_ALIASES = {
+    "none": CompilationMode.NONE,
+    "stock_torch_compile": CompilationMode.STOCK_TORCH_COMPILE,
+    "dynamo_trace_once": CompilationMode.DYNAMO_TRACE_ONCE,
+    "vllm_compile": CompilationMode.VLLM_COMPILE,
+}
+#: `CUDAGraphMode` 字符串别名 → 枚举（含上游那对分段取值）。
+_CUDAGRAPH_MODE_ALIASES = {
+    "none": CUDAGraphMode.NONE,
+    "piecewise": CUDAGraphMode.PIECEWISE,
+    "full": CUDAGraphMode.FULL,
+    "full_decode_only": CUDAGraphMode.FULL_DECODE_ONLY,
+    "full_and_piecewise": CUDAGraphMode.FULL_AND_PIECEWISE,
+}
+
+
+@dataclass
+class CompilationConfig:
+    """编译与 CUDA Graph 的引擎级配置（对应上游 `config/compilation.py` 的子集）。
+
+    **为什么不加"本仓库自己的旋钮"**（AGENTS §8）：能对齐的字段就照抄上游的名字与默认值，
+    对不上的能力（piecewise / torch.compile / LoRA 特化）用**明确的报错**表达，
+    而不是加一个"打开就能用"的开关——那会变成"看起来支持"。
+
+    字段：
+        mode                     编译模式。本仓库只接受 NONE，其余在构造期报错。
+        cudagraph_mode           图模式。None = 交给 `VllmConfig` 按能力解析。
+        cudagraph_num_of_warmups 捕获前的热身次数（上游默认 0；热身的用处是把 lazy
+                                 init/workspace 分配从"被录进图"里排除掉）。
+        cudagraph_capture_sizes  要捕获的**档位**列表；None = 按上游的默认档位生成。
+        max_cudagraph_capture_size  档位上限（None = 按 max_num_seqs*(1+K)*2 与 512 取小）。
+        compile_sizes            上游给"编译若干固定 shape"用；本仓库没有编译，只保留字段，
+                                 非空即报错（不接受"配了但没生效"）。
+    """
+
+    mode: CompilationMode | str = CompilationMode.NONE
+    cudagraph_mode: CUDAGraphMode | str | None = None
+    cudagraph_num_of_warmups: int = 0
+    cudagraph_capture_sizes: list[int] | None = None
+    max_cudagraph_capture_size: int | None = None
+    compile_sizes: list[int] | None = None
+    # 上游用它把注意力算子从被编译的图里拆出来（piecewise 的前提）。本仓库不编译，
+    # 保留空列表只为让"为什么不支持 piecewise"这句话有据可依。
+    splitting_ops: list[str] | None = None
+    # 让"编译模式 NONE + 图模式 FULL"这条组合在文档里有一个显式名字：图与编译是两件事，
+    # 可以只做后者（上游 `cudagraph_mode=FULL, mode=NONE` 也是合法组合）。
+    enforce_eager: bool | None = None
+
+    def __post_init__(self):
+        self.mode = self._as_compilation_mode(self.mode)
+        if self.cudagraph_mode is not None:
+            self.cudagraph_mode = self._as_cudagraph_mode(self.cudagraph_mode)
+        if self.mode != CompilationMode.NONE:
+            raise NotImplementedError(
+                f"compilation_config.mode={self.mode.name} 在本仓库未实现：torch.compile "
+                f"这条路要算子拆分/自定义后端，而本仓库的注意力是逐请求的 Torch 循环"
+                f"（Python 层有同步与动态形状），编译它只会到处 graph break。"
+                f"用 mode='none' + cudagraph_mode='full'（图只减少 kernel 启动开销，"
+                f"不改变算子实现，与编译是两件独立的事）。上游编号见 vllm/config/compilation.py")
+        if self.compile_sizes:
+            raise NotImplementedError(
+                "compile_sizes 需要编译路径（本仓库 mode 只能是 NONE）：配了却不生效的字段"
+                "比报错更危险")
+        if self.cudagraph_mode is not None and self.cudagraph_mode.has_piecewise_cudagraphs():
+            raise NotImplementedError(
+                f"cudagraph_mode={self.cudagraph_mode.name} 含 PIECEWISE：分段图要求把注意力"
+                f"算子从被编译的图里拆出来（上游靠 mode=VLLM_COMPILE + splitting_ops），"
+                f"本仓库没有编译路径，所以只支持 FULL 系（full / full_decode_only）"
+                f"——见 docs/step69_alignment.md §2 的三态矩阵")
+
+    @staticmethod
+    def _as_compilation_mode(value) -> CompilationMode:
+        if isinstance(value, CompilationMode):
+            return value
+        if isinstance(value, str) and value in _COMPILATION_MODE_ALIASES:
+            return _COMPILATION_MODE_ALIASES[value]
+        raise ValueError(f"未知的 compilation mode={value!r}；"
+                         f"可选 {sorted(_COMPILATION_MODE_ALIASES)}")
+
+    @staticmethod
+    def _as_cudagraph_mode(value) -> CUDAGraphMode:
+        if isinstance(value, CUDAGraphMode):
+            return value
+        if isinstance(value, str) and value in _CUDAGRAPH_MODE_ALIASES:
+            return _CUDAGRAPH_MODE_ALIASES[value]
+        raise ValueError(f"未知的 cudagraph_mode={value!r}；"
+                         f"可选 {sorted(_CUDAGRAPH_MODE_ALIASES)}")
+
+    def adjust_cudagraph_sizes_for_spec_decode(self, uniform_decode_query_len: int) -> None:
+        """把档位表**向上取整**到 `1+K` 的倍数（对应上游 `config/compilation.py:1519`）。
+
+        为什么必须做：统一 decode 图要求"每请求恰好 1+K 行"，所以能当图键的总行数只能是
+        `1+K` 的倍数。上游默认档位表里有 1/2/4/8/... 这些非倍数档位，K>0 时它们既建不出键、
+        也会让 `_create_padded_batch_descriptor()` 的整除断言失败（上游 issue #28207 就是这个：
+        投机 + CUDA Graph 在 K 不是 2 的幂减一时直接崩）。
+
+        规则逐行对齐上游：
+            每个档位向上取整到 `q` 的倍数，超过 `max_cudagraph_capture_size` 的丢掉；
+            一个都不剩且 `q <= max` → 用 `[q]`；
+            还是不剩（q 比上限还大）→ 明确报错（不能静默变回"没有图"）。
+        本仓库没有 sequence parallelism，所以没有上游"再取 tp 的倍数"那一步。
+        """
+        multiple_of = uniform_decode_query_len
+        if not self.cudagraph_capture_sizes or multiple_of <= 1:
+            return
+        if self.max_cudagraph_capture_size is None:
+            raise RuntimeError("取整档位前必须先定下 max_cudagraph_capture_size")
+        round_up = lambda size: -(-size // multiple_of) * multiple_of   # noqa: E731
+        rounded_sizes = sorted({round_up(size) for size in self.cudagraph_capture_sizes
+                                if round_up(size) <= self.max_cudagraph_capture_size})
+        if not rounded_sizes and multiple_of <= self.max_cudagraph_capture_size:
+            rounded_sizes = [multiple_of]
+        if not rounded_sizes:
+            raise ValueError(
+                f"按 1+K={multiple_of} 取整之后没有任何合法档位（上限 "
+                f"{self.max_cudagraph_capture_size}）：请调小 num_speculative_tokens "
+                f"或调大 max_cudagraph_capture_size / max_num_batched_tokens")
+        self.max_cudagraph_capture_size = rounded_sizes[-1]
+        self.cudagraph_capture_sizes = rounded_sizes
+
+    def post_init_cudagraph_sizes(self) -> None:
+        """档位表的收尾校验（上游 `post_init_cudagraph_sizes`）：
+
+        升序、最大档位必须等于 `max_cudagraph_capture_size`。少了这条，`_bs_to_padded_graph_size`
+        的"最近档位"映射会在尾部对不上（大于最大档位却仍被判成"该走图"）。
+        """
+        if self.cudagraph_capture_sizes:
+            self.cudagraph_capture_sizes = sorted(self.cudagraph_capture_sizes)
+            if self.cudagraph_capture_sizes[-1] != self.max_cudagraph_capture_size:
+                raise ValueError(
+                    f"cudagraph_capture_sizes 的最大值 "
+                    f"{self.cudagraph_capture_sizes[-1]} 与 max_cudagraph_capture_size "
+                    f"{self.max_cudagraph_capture_size} 不一致")
+
+
 @dataclass(frozen=True)
 class VllmConfig:
     model_config: ModelConfig
@@ -817,12 +1045,120 @@ class VllmConfig:
     speculative_config: SpeculativeConfig | None = None
     structured_outputs_config: StructuredOutputsConfig = field(
         default_factory=StructuredOutputsConfig)
+    # 69 关：编译/图配置（上游 `VllmConfig.compilation_config`）。默认值本身是 None 语义：
+    # `cudagraph_mode=None` 表示"让引擎按能力解析"，解析结果写回这个可变对象。
+    compilation_config: CompilationConfig = field(default_factory=CompilationConfig)
+
+    def __post_init__(self):
+        self._resolve_cudagraph_config()
+
+    def _resolve_cudagraph_config(self) -> None:
+        """把 `cudagraph_mode=None` 解析成本仓库**真的支持**的模式，并算出图档位表。
+
+        对应上游 `VllmConfig._set_cudagraph_sizes()`（`config/vllm.py:1878-2043`）的两件事：
+        决定要不要建图、决定 `cudagraph_capture_sizes` / `max_cudagraph_capture_size`。
+
+        本仓库的解析规则（每一条都有理由，写在 `docs/step69_alignment.md` §2）：
+
+            enforce_eager=True            → NONE（上游同款开关）
+            设备不是 CUDA                 → NONE（CPU 上没有图可捕获）
+            用户显式给了 NONE             → NONE
+            其它（None / FULL / 含 FULL） → FULL_DECODE_ONLY
+
+        为什么默认解析成 `FULL_DECODE_ONLY` 而不是上游的 `FULL_AND_PIECEWISE`：
+        PIECEWISE 要求"把注意力算子从被编译的图里拆出来单独做图"，那需要 torch.compile +
+        算子拆分（本仓库没有编译路径，配置期明确拒绝，见 `CompilationConfig.__post_init__`）。
+        在"只有 FULL 可用"的子集里，`FULL_DECODE_ONLY` 正是上游给"只对 decode 建全图"准备的
+        模式名：混合 prefill/decode 批没有对应的图键 → 按 `dispatch()` 的规则回退 eager。
+
+        与上游的差异（记在文档里）：上游 `compilation_config` 的默认 `cudagraph_mode=None`
+        最终解析成 `FULL_AND_PIECEWISE`；本仓库解析成 `FULL_DECODE_ONLY`，因为 piecewise
+        这一半我们没有实现——**不是**把它当成不需要。
+        """
+        compilation_config = self.compilation_config
+        requested = compilation_config.cudagraph_mode
+        device = self.device_config.device
+        if self.model_config.enforce_eager or str(device) != "cuda":
+            resolved = CUDAGraphMode.NONE
+        elif requested is None:
+            resolved = CUDAGraphMode.FULL_DECODE_ONLY
+        else:
+            resolved = requested
+        compilation_config.cudagraph_mode = resolved
+        if resolved == CUDAGraphMode.NONE:
+            compilation_config.max_cudagraph_capture_size = 0
+            compilation_config.cudagraph_capture_sizes = []
+        else:
+            self._set_cudagraph_sizes()
+        compilation_config.post_init_cudagraph_sizes()
+
+    def _set_cudagraph_sizes(self) -> None:
+        """图档位表（上游 `VllmConfig._set_cudagraph_sizes` 的等价实现，去掉 SP/LoRA 分支）。
+
+        上游默认档位是 `[1, 2, 4] + range(8, 256, 8) + range(256, max+1, 16)`——小 batch 密、
+        大 batch 疏。每个真实形状都会被**补齐到最近的档位**（见 `CudagraphDispatcher`），
+        所以档位越密、padding 越少，但捕获的图越多（捕获耗时 + 显存）。
+
+        与上游一致的两条边界：
+          - `max_cudagraph_capture_size` 不超过 `max_num_batched_tokens`（图不可能比输入预算还大）；
+          - `max_num_batched_tokens` 本身若在范围内就额外补一个档位（否则"满批"永远命中不了图）。
+        """
+        compilation_config = self.compilation_config
+        max_cudagraph_capture_size = compilation_config.max_cudagraph_capture_size
+        if max_cudagraph_capture_size is None:
+            # 上游：`min(max_num_seqs * (1+K) * 2, 512)`（数据中心 Blackwell 是 1024），
+            # 再被 max_num_batched_tokens 夹住。
+            decode_query_len = 1 + self.num_speculative_tokens
+            max_cudagraph_capture_size = min(
+                self.scheduler_config.max_num_seqs * decode_query_len * 2, 512)
+        max_num_tokens = self.scheduler_config.max_num_batched_tokens
+        max_cudagraph_capture_size = min(max_num_tokens, max_cudagraph_capture_size)
+        if max_cudagraph_capture_size < 1:
+            raise ValueError(
+                f"max_cudagraph_capture_size 解析成了 {max_cudagraph_capture_size}："
+                f"要么 max_num_batched_tokens 太小，要么显式配置不合理")
+
+        if compilation_config.cudagraph_capture_sizes is not None:
+            sizes = sorted({int(size) for size in compilation_config.cudagraph_capture_sizes
+                            if int(size) <= max_num_tokens})
+            if not sizes:
+                raise ValueError(
+                    "用户给的 cudagraph_capture_sizes 里没有一个不超过 "
+                    f"max_num_batched_tokens={max_num_tokens}：这些图永远不可能被命中")
+        else:
+            sizes = [size for size in (1, 2, 4) if size <= max_cudagraph_capture_size]
+            if max_cudagraph_capture_size >= 8:
+                sizes += list(range(8, min(max_cudagraph_capture_size + 1, 256), 8))
+            if max_cudagraph_capture_size >= 256:
+                sizes += list(range(256, max_cudagraph_capture_size + 1, 16))
+            if max_num_tokens <= max_cudagraph_capture_size and max_num_tokens not in sizes:
+                sizes.append(max_num_tokens)
+            sizes = sorted(set(sizes))
+
+        valid_max_size = sizes[-1] if sizes else 0
+        if (compilation_config.max_cudagraph_capture_size is not None
+                and compilation_config.max_cudagraph_capture_size != valid_max_size):
+            if compilation_config.cudagraph_capture_sizes is not None:
+                raise ValueError(
+                    f"显式给的 max_cudagraph_capture_size="
+                    f"{compilation_config.max_cudagraph_capture_size} 与 "
+                    f"cudagraph_capture_sizes 的最大值 {valid_max_size} 不一致")
+        compilation_config.max_cudagraph_capture_size = valid_max_size
+        compilation_config.cudagraph_capture_sizes = sizes
+        # 投机：decode 走 FULL 图时必须把档位取整到 1+K 的倍数（上游同款，
+        # 见 `adjust_cudagraph_sizes_for_spec_decode` 的说明）
+        if (compilation_config.cudagraph_mode is not None
+                and compilation_config.cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+                and self.num_speculative_tokens > 0):
+            compilation_config.adjust_cudagraph_sizes_for_spec_decode(
+                1 + self.num_speculative_tokens)
 
     @property
     def num_speculative_tokens(self) -> int:
         """本轮最多几枚草稿（上游 `VllmConfig.num_speculative_tokens`）。
 
-        结构化输出要用它算掩码缓冲的大小：`max_num_seqs * (1 + K)` 行。
+        结构化输出要用它算掩码缓冲的大小：`max_num_seqs * (1 + K)` 行；69 关的图档位、
+        `uniform_decode_query_len = 1 + K` 也要它。
         """
         return (self.speculative_config.num_speculative_tokens
                 if self.speculative_config is not None else 0)

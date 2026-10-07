@@ -79,9 +79,11 @@ class WorkspaceTrace:
         self._propose = proposer.propose
         self._forward = proposer._forward
 
-        def propose(rows, all_token_ids, input_batch, reset_req_ids=None):
+        def propose(rows, all_token_ids, input_batch, reset_req_ids=None, **kwargs):
+            # **kwargs：69 关起 Runner 还会传 padded 批的两个索引
+            # （token_indices_to_sample / num_rejected_tokens_gpu），spy 原样转发
             self.rows = list(rows)
-            return self._propose(rows, all_token_ids, input_batch, reset_req_ids)
+            return self._propose(rows, all_token_ids, input_batch, reset_req_ids, **kwargs)
 
         def forward(num_tokens, num_reqs):
             self.forwards.append({

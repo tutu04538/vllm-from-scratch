@@ -36,8 +36,14 @@ class UniProcExecutor:
         return self.vllm_config.cache_config
 
     def initialize_kv_cache(self, kv_cache_config) -> None:
-        """把容量交给执行端绑定（本关只是转发给 Worker）。"""
+        """把容量交给执行端绑定，然后**捕获 CUDA Graph**（69 关）。
+
+        顺序不能反：图里录的是"注意力层访问自己那份物理 KV 缓存"的地址，缓存没绑定就捕获
+        等于把图录到别的张量上——重放时读的是错的显存，而且不报错。上游同样在
+        `initialize_from_config()` 之后才 `compile_or_warm_up_model()`。
+        """
         self.driver_worker.initialize_from_config(kv_cache_config)
+        self.driver_worker.compile_or_warm_up_model()
 
     def execute_model(self, scheduler_output):
         return self.driver_worker.execute_model(scheduler_output)

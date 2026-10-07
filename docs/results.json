@@ -16,7 +16,8 @@
     "step65": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；与上游真实 Qwen3NextMTP 的胶水数值对照 max|Δ|=0.0，并修掉 63 关的 hidden 上传 bug）",
     "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）",
     "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）",
-    "step68": "已实现并自检（67 项 pytest + 53 项 benchmark）：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性），并确认 logprobs=-1 的入口归一化是本项目待对齐项"
+    "step68": "已实现并自检（67 项 pytest + 53 项 benchmark）：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性），并确认 logprobs=-1 的入口归一化是本项目待对齐项",
+    "step69": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）"
   },
   "step58": {
     "results": {
@@ -3168,6 +3169,169 @@
       "upstream_reference": {
         "vllm": "0.28.0 site-packages（只用于差分测试，生产路径不 import）",
         "xgrammar": "0.2.3（生产路径使用的后端库）"
+      }
+    }
+  },
+  "step69": {
+    "results": {
+      "step": 69,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/069_V1投机输入Padding与编译CUDA_Graph.md",
+      "status": "implemented + self-verified（forward_context/BatchDescriptor、CUDAGraphMode 与 CompilationConfig、CudagraphDispatcher、CUDAGraphWrapper、padded 静态工作区、_dummy_run/capture_model/dispatch、0 号块留白、drafter 的 prepare_inputs_padded（与上游 kernel 逐值一致）全部落地；CUDA 上默认走 FULL_DECODE_ONLY，eager 与图 greedy 逐 token 相同、真实块 KV 逐位相同。⚠️ 缺口：无 torch.compile 一轴（配置期明确拒绝）、无 PIECEWISE（含混合批进图）、drafter 侧仍 eager（上游只在 PIECEWISE 下做）、图内注意力物化 K/V gather（长上下文显存吃紧））",
+      "recorded_at": "2026-10-07T03:21:00+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "cd70185",
+        "implementation_commit": "见本轮提交（step69：V1 投机输入 Padding 与编译 CUDA Graph）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 92,
+        "sha256": "32be9781c5508f84f89a9c27ffbf74b1dd974ff927eac1a6d739e85318e2d7af",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码/上游 kernel 差分；生产路径不 import）",
+        "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step58 .. tests/step69 -q",
+          "result": "532 passed（68 关基线 505 + 本关 27）"
+        },
+        {
+          "cmd": "python -m pytest tests/step69 -q",
+          "result": "27 passed（test_drafter_padding 9 + test_spec_cudagraph 18）"
+        },
+        {
+          "cmd": "python benchmarks/check_step69_cudagraph.py",
+          "result": "全部通过（26 项：A 配置 6 / B 键与分派 5 / C 一致性 4 / D padding 不留痕 4 / E profiler 与同步 2 / F drafter padding 3）"
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py 与 check_step58..68_*.py",
+          "result": "全部通过（29 个脚本；本关改了 3 处容量/槽位期望，见 docs/step69_alignment.md §7）"
+        }
+      ],
+      "execution_trace": {
+        "capture": {
+          "K=0": {
+            "captured": 2,
+            "capture_seconds": 0.2719,
+            "sizes": [
+              1,
+              2,
+              4
+            ],
+            "graph_pool_bytes": 50331648
+          },
+          "K=3": {
+            "captured": 2,
+            "capture_seconds": 0.0273,
+            "sizes": [
+              4,
+              8,
+              16
+            ],
+            "graph_pool_bytes": 6291456
+          }
+        },
+        "profiler_tiny_1req_greedy": [
+          {
+            "mode": "none",
+            "spec_k": null,
+            "steps": 13,
+            "cuda_launch_kernel": 1573,
+            "cuda_graph_launch": 0,
+            "launch_per_step": 121.0,
+            "wall_ms_per_step": 4.545,
+            "captures": {}
+          },
+          {
+            "mode": "full_decode_only",
+            "spec_k": null,
+            "steps": 13,
+            "cuda_launch_kernel": 55,
+            "cuda_graph_launch": 11,
+            "launch_per_step": 4.2,
+            "wall_ms_per_step": 3.708,
+            "captures": {
+              "mode": "FULL_DECODE_ONLY",
+              "captured": 2,
+              "capture_seconds": 0.27187692699953914,
+              "graph_pool_bytes": 50331648,
+              "capture_sizes": [
+                1,
+                2,
+                4
+              ]
+            }
+          },
+          {
+            "mode": "none",
+            "spec_k": 3,
+            "steps": 5,
+            "cuda_launch_kernel": 1908,
+            "cuda_graph_launch": 0,
+            "launch_per_step": 381.6,
+            "wall_ms_per_step": 21.552,
+            "captures": {}
+          },
+          {
+            "mode": "full_decode_only",
+            "spec_k": 3,
+            "steps": 5,
+            "cuda_launch_kernel": 1482,
+            "cuda_graph_launch": 3,
+            "launch_per_step": 296.4,
+            "wall_ms_per_step": 18.218,
+            "captures": {
+              "mode": "FULL_DECODE_ONLY",
+              "captured": 2,
+              "capture_seconds": 0.02734274696558714,
+              "graph_pool_bytes": 6291456,
+              "capture_sizes": [
+                4,
+                8,
+                16
+              ]
+            }
+          }
+        ],
+        "eager_vs_graph": {
+          "greedy": "K=None/1/3 三种配置下逐 token 相同（两个请求）",
+          "logits": "同一步 logits max|Δ| = 4.470e-08（fp32 tiny）",
+          "real_eagle3_bf16": "真实 Qwen3-1.7B + EAGLE3（bf16）：eager 与 FULL 图的 greedy 逐 token 相同（16 token）；未升 fp32 时第 7 个 token 会分叉"
+        },
+        "padding_not_leaking": {
+          "污染 padding 缓冲后": "输出逐 token 不变；真实块 KV 逐位相同（0 号块除外）",
+          "0号块": "留白（null_block），未被任何请求引用；padding 行的 clamp_min(0) 落点"
+        },
+        "no_sync_in_graph_region": "torch.cuda.set_sync_debug_mode('error') 下 _run_model_padded() 跑通（图区域内零同步）",
+        "upstream_kernel_diff": {
+          "prepare_inputs_padded": "与 vllm.v1.spec_decode.utils.eagle_prepare_inputs_padded_kernel 逐值一致（CUDA）",
+          "eagle_step_update_slot_mapping_and_metadata": "与上游同名 kernel 逐值一致（含 padding 行与越界行）"
+        }
+      },
+      "known_gaps": [
+        "无 torch.compile 一轴：CompilationMode 除 NONE 之外配置期 NotImplementedError（compilation/compile_sizes 同）",
+        "无 PIECEWISE 图：FULL_AND_PIECEWISE / piecewise / 非分段 full 一律配置期拒绝；混合 prefill-decode 批回退 eager",
+        "drafter（EAGLE/MTP/draft_model）不做图：上游只在 PIECEWISE 下做，本项目 proposer.cudagraph_mode 恒 NONE，第一遍仍 CPU 拼行",
+        "图内注意力一次物化 K/V gather（显存 2·B·P·Hk·D·4，P=上下文上限），上游分块 kernel 不物化",
+        "logprobs=-1 的入口归一化仍未对齐（68 关遗留）",
+        "异步调度（70 关）未接线：本轮工作区已为它留好静态缓冲与 prepare_inputs_padded"
+      ]
+    },
+    "models": {
+      "tiny": {
+        "tiny_gqa": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场生成，2 层 / hidden 32 / vocab 11）——键、分派、捕获、污染 padding、profiler 全部用它",
+        "tiny_eagle3": "tiny_eagle3_dir('tiny_gqa')——两种提议者布局换算（EAGLE 与 draft_model）"
+      },
+      "real": {
+        "path": "models/Qwen3-1.7B + models/Qwen3-1.7B-eagle3（bfloat16）",
+        "用途": "真实权重上确认 eager 与图 greedy 逐 token 相同；发现并修掉 bf16 图内注意力不升 fp32 会翻 token 的问题",
+        "revision": "本机快照（无 HF revision）"
       }
     }
   }

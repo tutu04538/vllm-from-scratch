@@ -19,8 +19,8 @@
 
 **与 vLLM 的两处差异**：
 
-1. 没有 `null_block`（vLLM 从空闲队列拿走一个块当占位，因此它实际可用 `num_gpu_blocks - 1`
-   个）。本关没有滑窗/CoW，`num_gpu_blocks` 个块全部可用——**测试不能默认 vLLM 的容量口径**。
+1. 没有滑窗/CoW，所以只在"这一轮真的会走图"时才留白 0 号块（`reserve_null_block=True`，
+   见下面的注释）；`num_gpu_blocks` 个块在不开图时全部可用——**测试不能默认 vLLM 的容量口径**。
 2. 没有 KV 事件（`BlockStored`/`BlockRemoved`）与 metrics 收集器，那是给外部网关/监控用的。
 """
 
@@ -29,14 +29,33 @@ from .kv_cache_utils import (BlockHashToBlockMap, FreeKVCacheBlockQueue, KVCache
 
 
 class BlockPool:
-    def __init__(self, num_gpu_blocks: int, enable_caching: bool) -> None:
+    def __init__(self, num_gpu_blocks: int, enable_caching: bool,
+                 reserve_null_block: bool = False) -> None:
         if num_gpu_blocks <= 0:
             raise ValueError(f"num_gpu_blocks 必须为正，收到 {num_gpu_blocks}")
+        if reserve_null_block and num_gpu_blocks < 2:
+            raise ValueError(
+                "要留白 0 号块至少要 2 个物理块（1 个垃圾桶 + 1 个真实块）；"
+                f"收到 num_gpu_blocks={num_gpu_blocks}")
         self.num_gpu_blocks = num_gpu_blocks
         self.enable_caching = enable_caching
         self.blocks = [KVCacheBlock(block_id) for block_id in range(num_gpu_blocks)]
         self.free_block_queue = FreeKVCacheBlockQueue(self.blocks)
         self.cached_block_hash_to_block = BlockHashToBlockMap()
+        # 69 关（CUDA Graph 的 padding 行）：**0 号块留白 = 垃圾桶**。
+        #
+        # 图内路径写 KV 时不能做 `slot >= 0` 判断（那是一次 CPU 同步，图里不允许），
+        # 改用 `slot.clamp_min(0)` 把 padding 行统统写进 0 号块。于是 0 号块必须**永远不被
+        # 任何请求引用**，否则 padding 的垃圾会盖掉真实数据——而且不报错、只是结果不对。
+        #
+        # 上游的 `null_block` 也是这么来的（vLLM 从空闲队列拿走一个块当占位）。本仓库
+        # 只在"这一轮真的会走图"时留白：不开图时留白是纯损耗（池子少一块），开着才是必须的。
+        # **留白之后可用块数是 num_gpu_blocks - 1**，这一条会影响容量口径，所以它是显式参数。
+        self.null_block: KVCacheBlock | None = None
+        if reserve_null_block:
+            self.null_block = self.blocks[0]
+            self.free_block_queue.remove(self.null_block)
+            self.null_block.ref_cnt = 1        # 永久"被引用"：永远不会被放回空闲队列
 
     # -------- 观察 --------
 

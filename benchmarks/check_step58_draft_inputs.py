@@ -84,9 +84,11 @@ class Trace:
         self._original_propose = proposer.propose
         self._original_forward = proposer._forward
 
-        def propose(rows, all_token_ids, input_batch, reset_req_ids=None):
+        def propose(rows, all_token_ids, input_batch, reset_req_ids=None, **kwargs):
+            # **kwargs：69 关起 Runner 还会传 padded 批的两个索引，spy 原样转发
             self.rows = list(rows)
-            return self._original_propose(rows, all_token_ids, input_batch, reset_req_ids)
+            return self._original_propose(rows, all_token_ids, input_batch, reset_req_ids,
+                                          **kwargs)
 
         def forward(num_tokens, num_reqs):
             self.rounds.append({
@@ -165,8 +167,12 @@ check("B2. prefill 轮：draft 第一遍 = prompt 行 + 1 行扩容行（扩容�
       and entry["positions"] == list(range(0, target.target_rows + 1))
       and entry["rejected"] == [0] * entry["num_tokens"]
       and entry["input_ids"][:target.target_rows] == [1, 2, 3, 4, 5, 6]
-      and entry["slots"] == list(range(entry["num_tokens"])),
-      f"rows={target} positions={entry['positions']} ids={entry['input_ids']}")
+      # 槽位按块表算：69 关起 0 号块留白（CUDA Graph 的 padding 垃圾桶），
+      # 所以第一个物理块不再是 0（断言强度不变：仍然逐值检查整段槽位）
+      and entry["slots"] == [int(runner.input_batch.block_table.cpu[0, 0]) * runner.block_size
+                             + offset for offset in range(entry["num_tokens"])],
+      f"rows={target} positions={entry['positions']} ids={entry['input_ids']} "
+      f"slots={entry['slots']}")
 engine.shutdown()
 
 # 首拒绝：把提议者换成一个"永远提 token 0"的桩（target 的贪心不是 0 → 必拒）
@@ -289,7 +295,8 @@ engine.shutdown()
 
 
 def preemption_run(k):
-    engine, core, runner = build(k=k, budget=4, blocks=3, max_tokens=8, max_num_seqs=2)
+    # blocks=4：留白 0 号块之后可用块数 = blocks - 1，所以要保住"可用 3 块"这个前提
+    engine, core, runner = build(k=k, budget=4, blocks=4, max_tokens=8, max_num_seqs=2)
     trace = Trace(runner) if runner.proposer is not None else None
     for req, priority in (("A", 0), ("B", 5)):
         engine.add_request(req, [1, 2], SamplingParams(max_tokens=8, temperature=0.0,

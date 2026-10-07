@@ -68,14 +68,21 @@ class KVCacheBlocks:
 
 
 class KVCacheManager:
-    def __init__(self, cache_config, max_model_len: int | None = None) -> None:
+    def __init__(self, cache_config, max_model_len: int | None = None,
+                 reserve_null_block: bool = False) -> None:
         """`max_model_len=None` 表示**不做上下文夹取**：只有"越界已由上层保证不会发生"的
-        纯分配用例（只测块池行为）才该这么用；生产路径由 EngineCore 传真实值。"""
+        纯分配用例（只测块池行为）才该这么用；生产路径由 EngineCore 传真实值。
+
+        `reserve_null_block=True`（69 关）把 0 号块留白当垃圾桶：CUDA Graph 的 padding 行
+        会被 `clamp_min(0)` 写进去。**必须与"这一轮真的会走图"同步**——留白了却不走图只是
+        少一块容量，走了图却没留白则是静默的数据破坏。
+        """
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self.max_model_len = max_model_len
         self.enable_caching = bool(cache_config.enable_prefix_caching)
-        self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching=self.enable_caching)
+        self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching=self.enable_caching,
+                                    reserve_null_block=reserve_null_block)
         self.coordinator = UnitaryKVCacheCoordinator(self.block_pool, self.enable_caching,
                                                      self.block_size)
 
@@ -93,8 +100,13 @@ class KVCacheManager:
 
     @property
     def num_allocated_blocks(self) -> int:
-        """被活请求持有的块数（= 总块数 - 空闲块数）。空闲块里包含"带缓存但没人用"的块。"""
-        return self.num_gpu_blocks - self.num_free_blocks()
+        """被活请求持有的块数（= 总块数 - 空闲块数 - 留白的垃圾桶）。
+
+        空闲块里包含"带缓存但没人用"的块。留白的 0 号块（69 关）既不属于空闲、也不属于
+        任何请求，所以要从"已分配"里减掉——不减的话"没有任何请求时也显示占了 1 块"。
+        """
+        reserved = 1 if self.block_pool.null_block is not None else 0
+        return self.num_gpu_blocks - self.num_free_blocks() - reserved
 
     def num_common_prefix_blocks(self) -> int:
         """所有活请求共同的前缀块数（trace/调试用；vLLM 用它做 cascade attention 与 P/D 传输）。"""

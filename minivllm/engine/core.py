@@ -36,7 +36,12 @@ class EngineCore:
 
         cache_config = self.model_executor.get_cache_config()
         self.kv_cache_manager = KVCacheManager(
-            cache_config, max_model_len=vllm_config.model_config.max_model_len)
+            cache_config, max_model_len=vllm_config.model_config.max_model_len,
+            # 69 关：走 CUDA Graph 时 0 号块必须留白（padding 行会 clamp 到它）。
+            # 判据用**最终解析出来的模式**（`VllmConfig._resolve_cudagraph_config` 已经
+            # 把 None/enforce_eager/设备这些因素算完了），不是用户原始输入。
+            reserve_null_block=vllm_config.compilation_config.cudagraph_mode
+            .has_full_cudagraphs())
         # 容量定了之后**立刻交给执行侧**：执行侧要按它分配物理缓存并绑定到 Attention 层
         # （195 §8 的第三步）。顺序不能反——先建调度器再分配缓存的话，第一轮就可能排出
         # 执行侧根本没有物理存储的块。

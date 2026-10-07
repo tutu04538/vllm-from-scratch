@@ -91,6 +91,11 @@ class SpecDecodeBaseProposer:
 
     # 普通 draft 只吃 token；EAGLE 子类改成 True（上游 `EagleProposer.__init__` 传的就是它）
     pass_hidden_states_to_model = False
+    # 69 关：这个提议者收不收"padded 批"的两个逐请求索引
+    # （`token_indices_to_sample` / `num_rejected_tokens_gpu`，上游 `prepare_inputs_padded()`
+    # 的产物）。所有 LLM 系提议者（draft_model / EAGLE / MTP）都收；ngram / suffix /
+    # medusa / extract / 用户插件不吃 token 与特征，没有这两个概念。
+    supports_padded_first_pass = True
 
     def __init__(self, spec_config, vllm_config, device: str) -> None:
         self.spec_config = spec_config
@@ -180,13 +185,43 @@ class SpecDecodeBaseProposer:
         """
         return False
 
+    # -------- 69 关：draft 侧的图模式 --------
+
+    def initialize_cudagraph_keys(self, cudagraph_mode) -> None:
+        """draft 侧的图键（对应上游 `llm_base_proposer.py:419-434`）。
+
+        上游规则：`mixed_mode()` 是 PIECEWISE/FULL 时给 draft 建 **PIECEWISE** 键，否则 NONE
+        ——也就是说 **EAGLE 系只在分段图下走图**（它的自回归循环每步形状都不同，只有"注意力
+        拆到图外"的分段图能容纳）。
+
+        本仓库没有 PIECEWISE（`CompilationConfig` 构造期就拒绝），所以这条规则退化成**恒 NONE**：
+        draft 侧不做图。这里把原因与"上游会怎么做"都记在对象上，而不是沉默地什么都不做——
+        `self.cudagraph_mode` 是"draft 这一侧到底有没有图"的唯一答案，测试盯它。
+        """
+        from ..config import CUDAGraphMode
+
+        self.requested_cudagraph_mode = cudagraph_mode
+        needs_graph = cudagraph_mode.mixed_mode() in (CUDAGraphMode.PIECEWISE,
+                                                      CUDAGraphMode.FULL)
+        self.cudagraph_mode = CUDAGraphMode.NONE
+        if needs_graph:
+            # 不 raise：target 侧照样有图可用（FULL_DECODE_ONLY 下 mixed_mode() 本来就是 NONE，
+            # 走到这里说明用户显式要了含 mixed 图的模式）。draft 侧回退 eager 这件事是**配置的
+            # 结果**，而且被 `self.cudagraph_mode` 与文档三态矩阵记下来了，不是静默降级。
+            self.cudagraph_unsupported_reason = (
+                "draft 侧的图要求 PIECEWISE（上游 eagle 只支持分段图），本仓库未实现该模式")
+        else:
+            self.cudagraph_unsupported_reason = None
+
     # -------- 提议 --------
 
     def propose(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]], input_batch,
                 reset_req_ids: set[str] | None = None,
                 target_hidden_states: dict[str, torch.Tensor] | None = None,
                 target_token_ids: torch.Tensor | None = None,
-                target_positions: torch.Tensor | None = None) -> DraftTokenIds:
+                target_positions: torch.Tensor | None = None,
+                token_indices_to_sample: torch.Tensor | None = None,
+                num_rejected_tokens_gpu: torch.Tensor | None = None) -> DraftTokenIds:
         """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
 
         `rows` 是本轮 target 侧的事实（`TargetRows`：起点 `start`、本轮行数 `target_rows`、
@@ -204,6 +239,21 @@ class SpecDecodeBaseProposer:
         """
         self._reset_requests(reset_req_ids or set())
         req_ids = [target.req_id for target in rows]
+        # 69 关：把 Runner 按上游口径算出来的两个索引收下（长度 = 本轮批的请求数）。
+        # **必须逐值对齐**：它代表"从哪一行取 hidden 采样 / 有几行是被拒的 padding"，
+        # 与 CPU 侧自己算的那份不一致时，说明两套坐标系已经分叉——那种错不会报错，
+        # 只会让草稿基于另一个 token 的条件产生（草稿质量悄悄变差，甚至验证出错误的候选）。
+        self.last_padded_inputs = None
+        if token_indices_to_sample is not None:
+            if token_indices_to_sample.shape[0] != len(rows):
+                raise ValueError(
+                    f"token_indices_to_sample 长度 {token_indices_to_sample.shape[0]} 与本轮 "
+                    f"请求数 {len(rows)} 不一致：padded 索引必须按批行序逐请求给")
+            self.last_padded_inputs = {
+                "token_indices_to_sample": token_indices_to_sample.tolist(),
+                "num_rejected_tokens_gpu": (None if num_rejected_tokens_gpu is None
+                                           else num_rejected_tokens_gpu.tolist()),
+            }
         drafts: dict[str, list[int]] = {req_id: [] for req_id in req_ids}
         probs: dict[str, list[torch.Tensor]] = {req_id: [] for req_id in req_ids}
         if not rows:
@@ -217,6 +267,8 @@ class SpecDecodeBaseProposer:
         hidden = self._split_hidden(hidden, plan, rows)
         for target in rows:
             self._draft_computed[target.req_id] = target.history_end      # 观测用
+        self._check_padded_sample_rows(plan, rows)
+        self._apply_num_rejected_to_seq_lens(plan, rows)
         if plan.sample_rows:
             self._sample_draft_tokens(hidden,
                                       list(zip(plan.sample_req_ids, plan.sample_rows)),
@@ -358,6 +410,82 @@ class SpecDecodeBaseProposer:
             sample_req_ids=[rows[index].req_id for index in ready],
             history_end={target.req_id: target.history_end for target in rows})
 
+    def _check_padded_sample_rows(self, plan: FirstPassPlan, rows: list[TargetRows]) -> None:
+        """把 device 侧的 `token_indices_to_sample` 与 CPU 侧的事实按同一公式对一遍。
+
+        **两套坐标系的区别要说清楚**（这是本关最容易搞错的一处）：
+
+            device（上游 `eagle_prepare_inputs_padded_kernel`）：索引 **target 的输入行**
+                —— "最后一枚有效 token 所在的行"。每条请求的 target 块是 `[b, d1..dK]`（K+1 行），
+                所以行号 = `块起点 + target_rows - 1 - num_rejected`。
+            本仓库的 draft 工作区：索引 **第一遍拼出来的行**。两种提议者的布局还不一样：
+                `DraftModelProposer`：`[有效行][扩容行][被拒行]` → 采样行 = 块起点 + num_valid
+                `EagleProposer`      ：沿用 target 的行块、把扩容 token 打在**最后一行** →
+                                       采样行 = 块起点 + target_rows - 1
+
+        所以这里校验的是**协议事实与 TargetRows 事实算出的 target 行号必须一致**（两个独立来源：
+        左边来自 `cu_num_draft_tokens` + 有效采样数，右边来自调度快照 + 记账结果）。
+        工作区行号与 target 行号的换算由各自的 `set_inputs_first_pass()` 决定，测试里按布局分别钉住
+        （`tests/step69/test_drafter_padding.py`）——**不在这里假设某一种布局**，否则这个校验就会
+        变成"用布局 A 的公式去检查布局 B"，报一堆假警。
+        """
+        recorded = self.last_padded_inputs
+        if recorded is None:
+            return
+        actual = recorded["token_indices_to_sample"]
+        cursor = 0
+        for index, target in enumerate(rows):
+            if target.target_rows <= 0:
+                raise RuntimeError(f"{target.req_id!r} 本轮的 target 行数为 0，无法定位采样行")
+            want = cursor + target.target_rows - 1 - target.num_rejected
+            cursor += target.target_rows
+            got = actual[index]
+            if got != want:
+                raise RuntimeError(
+                    f"{target.req_id!r} 的采样行两套口径不一致：device 侧（上游 "
+                    f"prepare_inputs_padded 算法）说第 {got} 行，按本轮 TargetRows"
+                    f"（起点 {target.start}、{target.target_rows} 行、被拒 {target.num_rejected} 行）"
+                    f"算出来应是第 {want} 行。这会让第一枚草稿条件在错误的 token 上"
+                    f"（不报错、只是草稿变差）")
+
+    def _apply_num_rejected_to_seq_lens(self, plan: FirstPassPlan,
+                                        rows: list[TargetRows]) -> None:
+        """把被拒的 padding 行从 draft 的上下文长度里减掉（上游同名动作）。
+
+        上游（`llm_base_proposer.py:682-685`）：
+
+            if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
+                common_attn_metadata.seq_lens -= num_rejected_tokens_gpu
+
+        为什么必须减：第一遍的 `seq_lens` 是**乐观值**（把 K 枚草稿全算上），而被拒的那几行
+        既没写 KV、也不该成为上下文。不减的话，自回归步的 query 位置会落在"从未写过的位置"上
+        （读到上一轮的残留 KV），草稿的条件就是错的——不报错，只是草稿变差。
+
+        为什么在**第一遍之后**才减：第一遍的 query 行是 `[b, d1..dK]` 连续排布，
+        `seq_len - query_len` 必须等于本轮的起点；减了它，第一遍的位置假设就塌了。
+        自回归步每请求只有 1 行，`seq_len - 1` 才是"刚写下的那一行"的位置，减完正好对上。
+
+        本仓库的 AR 步位置是直接算出来的（`history_end + k - 1`），所以这里的作用是**把
+        device 侧的 `seq_lens` 起点摆正**：`eagle_step_update_slot_mapping_and_metadata()`
+        是"原地 +1"的语义（上游同款），起点错了后面每一步都会错。
+        """
+        plan.num_rejected = [target.num_rejected for target in rows]
+        recorded = self.last_padded_inputs
+        if recorded is not None and recorded["num_rejected_tokens_gpu"] is not None:
+            device_rejected = recorded["num_rejected_tokens_gpu"]
+            if device_rejected != plan.num_rejected:
+                raise RuntimeError(
+                    f"被拒行数两套口径不一致：device 侧（上游 prepare_inputs_padded 算法）"
+                    f"{device_rejected}，CPU 侧（58 关的 TargetRows）{plan.num_rejected}："
+                    f"draft 的上下文长度会按错误的值修剪")
+        if self.num_speculative_tokens <= 1:
+            # 上游同款条件：K=1 时第一遍只有两行，修正与不修正等价
+            return
+        for index, target in enumerate(rows):
+            self.seq_lens_cpu[index] = target.start + target.num_valid + 1
+        if self.device != "cpu":
+            self.seq_lens[:len(rows)].copy_(self.seq_lens_cpu[:len(rows)])
+
     def _check_valid_positions(self, rows: list[TargetRows]) -> None:
         """内部错误检查（对应 205 §3 保留的那条断言）：有效行/扩容行必须在模型位置上界内。
 
@@ -398,6 +526,55 @@ class SpecDecodeBaseProposer:
         self.seq_lens_cpu[:num_reqs] = torch.tensor(
             [position + 1 for _, position in pending], dtype=torch.int64)
         self._fill_block_table_rows(batch_rows, input_batch.block_table)
+        # 69 关：上面几步就是上游 `_update_positions_dependent_metadata()` 里的那三件事
+        # （位置 +1、查块表得槽位、上下文 +1），上游把它们融进一个 kernel。这里在 device 上用
+        # 同一套算法**复算一遍并逐值校验**（见下面的方法），通过之后才让 `_upload()` 把
+        # （相等的）staging 值推上去给模型。
+        self._check_ar_metadata_on_device(pending, positions, num_reqs)
+
+    def _check_ar_metadata_on_device(self, pending, positions: list[int],
+                                     num_reqs: int) -> None:
+        """AR 步的 `(positions, slot_mapping, seq_lens)` 用上游同款算法在 device 上更新。
+
+        输入是**上一枚草稿的位置**（`self.positions` 里此刻存的就是它），函数把它们各 +1 写进
+        同一块位置缓冲、按位置查块表得到槽位、并把 `seq_lens` 原地 +1 —— 与上游
+        `eagle_step_update_slot_mapping_and_metadata()` 的调用形态逐条一致
+        （上游 `_update_positions_dependent_metadata()` 就是这么调的）。
+
+        CPU 上 staging 与工作区是同一份张量，所以这条分支只在 CUDA 上有意义；
+        CPU 上直接返回（值已经由 `_set_autoregressive_inputs` 的 CPU 公式写好了）。
+        """
+        from .utils import eagle_step_update_slot_mapping_and_metadata
+
+        if self.device == "cpu":
+            return                      # CPU 上 staging 与工作区本就是同一份张量
+        # 上游传的是"上一步选中的那些行的位置"（`positions = self.positions[token_indices_to_sample]`），
+        # 也就是本步位置 - 1。**不能直接从 `self.positions` 读**：那块缓冲此刻装的是第一遍
+        # 的整块位置（[0,1,2,...]），不是"上一步选中的行"。读错的表现是位置从 1 开始递增
+        # （而不是从历史末尾开始）——不报错，但草稿全写在错的位置上。
+        previous_positions = torch.tensor([position - 1 for position in positions],
+                                          dtype=torch.int64, device=self.device)
+        # 复算到 scratch：不动 live 缓冲（live 缓冲随后由 `_upload()` 写，值是这里校验过的）
+        out_positions = torch.empty(num_reqs, dtype=torch.int64, device=self.device)
+        out_slots = torch.empty(num_reqs, dtype=torch.int64, device=self.device)
+        # `self.seq_lens` 此刻还是**上一步**的值（本步的值在 staging 里），正是内核的输入语义
+        out_seq_lens = self.seq_lens[:num_reqs].clone()
+        eagle_step_update_slot_mapping_and_metadata(
+            previous_positions, self.block_table[:num_reqs], out_seq_lens,
+            self.block_size, self.max_model_len, out_positions, out_slots,
+            input_batch_size=num_reqs)
+        # 与 CPU staging 比对：位置/槽位/长度三样都必须一样（不一样就是两套口径分叉）
+        for name, device_values, cpu_values in (
+                ("positions", out_positions, self.positions_cpu[:num_reqs]),
+                ("slot_mapping", out_slots, self.slot_mapping_cpu[:num_reqs]),
+                ("seq_lens", out_seq_lens, self.seq_lens_cpu[:num_reqs])):
+            got = device_values.tolist()
+            want = cpu_values.tolist()
+            if got != want:
+                raise RuntimeError(
+                    f"draft 自回归步的 {name} 两套算法不一致：device 侧（上游 "
+                    f"eagle_step_update_slot_mapping_and_metadata 算法）{got}，"
+                    f"CPU 侧（58 关的工作区拼行）{want}：草稿会写在错误的位置上")
 
     def _fill_block_table_rows(self, batch_rows: list[int], block_table) -> None:
         """把这几条请求的块表行拷进**工作区块表**（只覆盖前 len(batch_rows) 行）。
@@ -415,7 +592,12 @@ class SpecDecodeBaseProposer:
             self.block_table_cpu[index, count:].zero_()
 
     def _upload(self, num_tokens: int, num_reqs: int) -> None:
-        """只上传有效前缀（CPU 上 staging 与 device 侧是同一份，直接返回）。"""
+        """只上传有效前缀（CPU 上 staging 与 device 侧是同一份，直接返回）。
+
+        上传的内容**必须已经与 device 侧算法校验过**（见 `_check_ar_metadata_on_device`）：
+        AR 步的 positions/slot_mapping/seq_lens 由上游同款算法在 device 上复算并逐值比对，
+        再看这里把（相等的）值推上去——"谁算的"与"谁被模型读到"因此不会分叉。
+        """
         if self.device == "cpu":
             return
         self.input_ids[:num_tokens].copy_(self.input_ids_cpu[:num_tokens])

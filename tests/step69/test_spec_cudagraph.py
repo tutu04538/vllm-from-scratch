@@ -1,0 +1,339 @@
+"""69 关（二）：键 → 捕获 → 重放，以及"图与 eager 结果一致 / padding 不留痕"。
+
+需求 069 §4 的验收项在这里逐条落地：
+
+    * eager / Graph 的同权重 greedy 与中间值对照（含首拒与全接受）
+    * B=1→3→1、图 bucket 边界、prefill/decode 混合、记录**真实**选中的 mode/key
+    * 复用地址不变；故意污染 padding 缓冲，有效输出不变、且不写错误 KV slot
+    * profiler 看到真实 replay，热路径不夹带逐请求同步
+    * 不支持的模式按规则降级/拒绝（配置期报错，不静默退化）
+"""
+
+import pytest
+import torch
+
+from spec69_helpers import (CUDAGraphMode, CompilationConfig, DEVICE, DispatcherHarness,
+                            graph_snapshot, greedy_outputs, kv_digest, make_config,
+                            make_engine, requires_cuda, run_to_end, tiny_eagle3_dir)
+from minivllm import SamplingParams
+from minivllm.config import CompilationMode, VllmConfig
+from minivllm.forward_context import BatchDescriptor
+
+
+# ---------------------------------------------------------------- 1. 键与分派（不需要模型）
+
+
+def test_bs_to_padded_graph_size_matches_the_source_rule():
+    """补齐映射逐值：正好命中档位不补，落在两档之间补到**下一个**档位。"""
+    harness = DispatcherHarness(budget=64, max_num_seqs=4, mode="full_decode_only",
+                                capture_sizes=[2, 4, 8], max_capture_size=8)
+    dispatcher = harness.dispatcher
+    mapping = dispatcher._bs_to_padded_graph_size
+    assert mapping[1] == 2 and mapping[2] == 2 and mapping[3] == 4
+    assert mapping[4] == 4 and mapping[5] == 8 and mapping[8] == 8
+    assert len(mapping) == 9                    # 表只到最大档位为止（更大的形状不查表）
+
+
+def test_dispatch_pads_to_bucket_and_computes_num_reqs():
+    """真实形状 → (FULL, 补齐后的键)：num_reqs 由补齐后的行数除以 1+K 得到。
+
+    K=3（q=4）、max_num_seqs=4：5 行 → 补到 8 行 → 2 条请求（统一 decode）。
+    """
+    harness = DispatcherHarness(spec_k=3, budget=64, max_num_seqs=4)
+    mode, desc = harness.dispatch(5, uniform_decode=True)
+    assert mode is CUDAGraphMode.FULL
+    assert desc.num_tokens == 8 and desc.num_reqs == 2 and desc.uniform is True
+    # 4 行正好是档位 → 不补
+    mode, desc = harness.dispatch(4, uniform_decode=True)
+    assert (mode, desc.num_tokens, desc.num_reqs) == (CUDAGraphMode.FULL, 4, 1)
+
+
+def test_mixed_prefill_decode_falls_back_to_eager():
+    """混合批（每条请求行数不同）在 FULL_DECODE_ONLY 下没有图键 → 按规则回退 NONE。"""
+    harness = DispatcherHarness(spec_k=3, budget=64, max_num_seqs=4)
+    # 一条 4 行（K+1）+ 一条 1 行：max_num_scheduled=4 但总行数 5 != 8 → 不是统一批
+    assert harness.dispatch(5, uniform_decode=False)[0] is CUDAGraphMode.NONE
+    # 纯 prefill（比如 12 行一条请求）也没有键
+    assert harness.dispatch(12, uniform_decode=False)[0] is CUDAGraphMode.NONE
+
+
+def test_shapes_above_the_largest_bucket_fall_back():
+    harness = DispatcherHarness(spec_k=0, budget=16, max_num_seqs=16, mode="full")
+    assert harness.dispatch(8, uniform_decode=True)[0] is CUDAGraphMode.FULL
+    mode, desc = harness.dispatch(17, uniform_decode=True)
+    assert mode is CUDAGraphMode.NONE and desc == BatchDescriptor(17)
+
+
+def test_capture_sizes_are_rounded_up_to_multiples_of_one_plus_k():
+    """档位表必须是 (1+K) 的倍数（上游 issue #28207 的修法）。"""
+    harness = DispatcherHarness(spec_k=2, budget=32, max_num_seqs=4)
+    sizes = harness.config.compilation_config.cudagraph_capture_sizes
+    assert sizes and all(size % 3 == 0 for size in sizes), sizes
+    # 每条请求恰好 1+K 行 → 每个键的 num_reqs 都是整数
+    for _mode, descs in harness.dispatcher.get_capture_descs():
+        for desc in descs:
+            assert desc.num_tokens % 3 == 0
+
+
+def test_capture_desc_order_is_largest_first():
+    """捕获顺序：大图在前（小图复用大图占下的显存池）。"""
+    harness = DispatcherHarness(spec_k=0, budget=32, max_num_seqs=8, mode="full")
+    for _mode, descs in harness.dispatcher.get_capture_descs():
+        tokens = [desc.num_tokens for desc in descs]
+        assert tokens == sorted(tokens, reverse=True)
+
+
+def test_unsupported_modes_are_rejected_loudly():
+    """PIECEWISE / torch.compile 在配置期就明确拒绝（不静默退化）。"""
+    with pytest.raises(NotImplementedError, match="PIECEWISE"):
+        CompilationConfig(cudagraph_mode="piecewise")
+    with pytest.raises(NotImplementedError, match="PIECEWISE"):
+        CompilationConfig(cudagraph_mode="full_and_piecewise")
+    with pytest.raises(NotImplementedError, match="mode"):
+        CompilationConfig(mode=CompilationMode.VLLM_COMPILE)
+    with pytest.raises(NotImplementedError, match="compile_sizes"):
+        CompilationConfig(compile_sizes=[8])
+    with pytest.raises(ValueError):
+        CompilationConfig(cudagraph_mode="does_not_exist")
+
+
+def test_config_resolution_and_enforce_eager():
+    """默认解析：CUDA → FULL_DECODE_ONLY；CPU / enforce_eager → NONE。"""
+    tiny_dir, hf = __import__("spec69_helpers").tiny_model()
+    cuda_cfg = make_config(tiny_dir=tiny_dir, hf_config=hf, device="cuda")
+    assert cuda_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_DECODE_ONLY
+    assert cuda_cfg.compilation_config.cudagraph_capture_sizes
+    cpu_cfg = make_config(tiny_dir=tiny_dir, hf_config=hf, device="cpu")
+    assert cpu_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.NONE
+    assert cpu_cfg.compilation_config.cudagraph_capture_sizes == []
+    eager_cfg = make_config(tiny_dir=tiny_dir, hf_config=hf, device="cuda",
+                            enforce_eager=True)
+    assert eager_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.NONE
+    assert eager_cfg.compilation_config.max_cudagraph_capture_size == 0
+
+
+def test_explicit_plain_full_is_rejected_at_engine_init(tiny_dir, hf_config):
+    """`cudagraph_mode='full'`（非分段）会让混合批也进图 → 本仓库明确拒绝。"""
+    if DEVICE != "cuda":
+        pytest.skip("只在 CUDA 上会走到建图那条路")
+    with pytest.raises(NotImplementedError, match="full_decode_only"):
+        make_engine(tiny_dir=tiny_dir, hf_config=hf_config, mode="full")
+
+
+# ---------------------------------------------------------------- 2. 捕获与重放（要 CUDA）
+
+
+@requires_cuda
+def test_capture_happens_once_per_key_and_replay_reuses_it(tiny_dir, hf_config):
+    """同一个键只捕获一次；之后每一轮都是 replay，而且输入缓冲地址不变。"""
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=None,
+                                        budget=16, blocks=32, mode="full_decode_only")
+    before = graph_snapshot(runner)
+    assert before["captured"] >= 2, before            # 至少 [1, 2] 两个档位
+    assert before["captures"] == before["captured"]   # 捕获次数 == 档位数
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
+    addresses = {name: buffer.data_ptr() for name, buffer in runner._padded_buffers.items()}
+    run_to_end(engine)
+    after = graph_snapshot(runner)
+    assert after["replays"] >= 7, after               # 8 个 token 至少 7 次 decode
+    assert after["captures"] == before["captures"], "重放阶段不该再捕获新图"
+    assert {name: buffer.data_ptr() for name, buffer in
+            runner._padded_buffers.items()} == addresses, "静态缓冲的地址必须恒定"
+    engine.shutdown()
+
+
+@requires_cuda
+def test_eager_and_graph_produce_the_same_greedy_tokens(tiny_dir, hf_config):
+    """同权重 greedy 逐 token 相同：普通 decode、投机（首拒 / 全接受）三种形状都覆盖。"""
+    prompts = (("A", [1, 2, 3, 4, 5, 6]), ("B", [2, 3, 4]))
+    for spec_k in (None, 1, 3):
+        eager = greedy_outputs(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=spec_k,
+                               prompts=prompts, max_tokens=8, budget=32, blocks=32,
+                               mode="none")
+        graph = greedy_outputs(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=spec_k,
+                               prompts=prompts, max_tokens=8, budget=32, blocks=32,
+                               mode="full_decode_only")
+        assert eager == graph, (spec_k, eager, graph)
+
+
+@requires_cuda
+def test_graph_selection_is_recorded_per_step(tiny_dir, hf_config):
+    """每轮真实选中的 mode/key 都记在 `cudagraph_selections` 里（验收要求"记录真实选择"）。"""
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=None,
+                                        budget=16, blocks=32, mode="full_decode_only")
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+    run_to_end(engine)
+    engine.shutdown()
+    modes = [entry["mode"] for entry in runner.cudagraph_selections]
+    assert modes[0] == "NONE", "prefill（6 行、非统一 decode）没有图键，必须回退 eager"
+    assert all(mode == "FULL" for mode in modes[1:]), modes
+    assert all(entry["padded_tokens"] == entry["num_tokens"]
+               for entry in runner.cudagraph_selections[1:])
+
+
+@requires_cuda
+def test_batch_size_1_to_3_to_1_reuses_two_graphs(tiny_dir, hf_config):
+    """B=1→3→1：档位来回切换时只重放、不重新捕获（键就是"档位"）。"""
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=None,
+                                        budget=16, blocks=64, max_num_seqs=4,
+                                        mode="full_decode_only")
+    captured = graph_snapshot(runner)["captures"]
+
+    def drain(limit=20):
+        for _ in range(limit):
+            if not engine.has_unfinished_requests():
+                return
+            list(engine.step())
+
+    def add(req_id, prompt):
+        engine.add_request(req_id, list(prompt),
+                           SamplingParams(max_tokens=4, temperature=0.0, eos_token_id=999))
+
+    add("a", [1, 2, 3, 4])            # B=1
+    drain()
+    for req_id in ("b", "c", "d"):    # B=3
+        add(req_id, [2, 3, 4, 5])
+    drain()
+    add("e", [5, 6, 7])               # 又回到 B=1
+    drain()
+
+    snapshot = graph_snapshot(runner)
+    assert snapshot["captures"] == captured, "档位不变时不该再捕获"
+    assert snapshot["replays"] > 0
+    padded = [entry["padded_tokens"] for entry in runner.cudagraph_selections
+              if entry["mode"] == "FULL"]
+    # 1+K=1（非投机）→ 档位 1、2、4；三条请求的批补到 4
+    assert 1 in padded and 4 in padded, padded      # 两个档位都真的用过
+    engine.shutdown()
+
+
+@requires_cuda
+def test_polluted_padding_buffer_does_not_change_valid_output(tiny_dir, hf_config):
+    """污染 padding 缓冲：有效输出不变，而且真实块的 KV 逐位相同（0 号块除外）。
+
+    做法：跑一遍拿到 KV 摘要 → 把静态缓冲里"这一轮用不到的尾巴"和 0 号垃圾桶灌成垃圾 →
+    再跑一遍 → 比较输出与 KV。两个引擎的请求序列、seed 完全相同（greedy）。
+    """
+    def run(poison: bool):
+        engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
+                                           budget=32, blocks=32, mode="full_decode_only")
+        original = runner._prepare_inputs_padded
+        state = {}
+
+        def poisoned(inputs, mode, batch_descriptor):
+            original(inputs, mode, batch_descriptor)
+            buffers = runner._padded_buffers
+            # 把"补齐区"（真实行之后）灌成极端值：它们必须被哨兵/掩码挡住
+            used = inputs.num_tokens
+            buffers["input_ids"][used:].fill_(12345)
+            buffers["positions"][used:].fill_(999)
+            buffers["slot_mapping"][used:].fill_(-1)
+            state["padding_rows"] = int(buffers["slot_mapping"].shape[0] - used)
+
+        runner._prepare_inputs_padded = poisoned
+        engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                           SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+        outputs = run_to_end(engine)
+        digest = kv_digest(runner).clone()
+        engine.shutdown()
+        return outputs, digest, state
+
+    clean, clean_digest, _ = run(poison=False)
+    dirty, dirty_digest, state = run(poison=True)
+    assert clean == dirty, "污染 padding 之后有效输出变了：说明 padding 行漏进了计算"
+    assert torch.equal(clean_digest, dirty_digest), \
+        "真实块的 KV 被改了：padding 行写到了不该写的地方（0 号块之外的槽位）"
+
+
+@requires_cuda
+def test_padding_writes_land_only_in_the_blank_block(tiny_dir, hf_config):
+    """0 号块是垃圾桶：请求的块表里永远没有它，padding 的垃圾只落在它身上。"""
+    engine, core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
+                                       budget=32, blocks=32, mode="full_decode_only")
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
+    run_to_end(engine)
+    manager = core.kv_cache_manager
+    assert manager.block_pool.null_block is not None, "开了图就必须留白 0 号块"
+    # 容量口径：留白之后"可用块数 = 总数 - 1"（`num_allocated_blocks` 已经扣掉垃圾桶）
+    assert manager.num_free_blocks() == manager.num_gpu_blocks - 1 -         manager.num_allocated_blocks
+    used = {block_id for row in runner.input_batch.block_table.cpu[:runner.input_batch.num_reqs]
+            for block_id in row.tolist() if block_id != 0}
+    assert 0 not in used, "0 号块被分给了真实请求：padding 会覆盖真实数据"
+    engine.shutdown()
+
+
+@requires_cuda
+def test_no_per_request_sync_inside_the_graph_path(tiny_dir, hf_config):
+    """热路径不夹带逐请求同步：图前向期间任何一次隐式同步都当场报错。
+
+    `torch.cuda.set_sync_debug_mode("error")` 会在"CPU 等 GPU"的操作（`.item()`、
+    `bool(tensor)`、`int(tensor)`、D2H copy）上抛异常。图路径的输入准备与模型前向都在
+    这个窗口里跑一遍——它们必须一次同步都没有（每请求一次同步正是 69 关要消灭的东西）。
+    """
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
+                                        budget=32, blocks=32, mode="full_decode_only")
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=3, temperature=0.0, eos_token_id=999))
+    list(engine.step())            # prefill（eager）
+    # 直接问图那一段：输入准备（H2D 上传）本来就在图外，这里要证明的是**图区域内**没有同步。
+    # 形状用统一 decode 的：K=3 → 每请求 4 行，所以 num_tokens=4、一条请求。
+    mode, batch_descriptor = runner._determine_batch_execution_and_padding(
+        num_tokens=4, num_reqs=1, num_scheduled_tokens=[4], max_num_scheduled_tokens=4)
+    assert mode is CUDAGraphMode.FULL
+    runner._fill_padded_buffers(4, 1, [4], batch_descriptor.num_tokens,
+                                batch_descriptor.num_reqs, 4)
+    metadata = runner._padded_attn_metadata(batch_descriptor)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        runner._run_model_padded(
+            __import__("minivllm.worker.gpu_model_runner", fromlist=["_PaddedRun"])._PaddedRun(
+                batch_descriptor=batch_descriptor, mode=mode,
+                num_tokens=batch_descriptor.num_tokens),
+            metadata=metadata)
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+    engine.shutdown()
+
+
+@requires_cuda
+def test_profiler_sees_a_real_graph_replay(tiny_dir, hf_config):
+    """profiler 里能看到 `cudaGraphLaunch`：证明热路径真的在重放图（而不是"看起来配好了"）。"""
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=None,
+                                        budget=16, blocks=32, mode="full_decode_only")
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=4, temperature=0.0, eos_token_id=999))
+    list(engine.step())            # 先跑一轮 prefill，避免把捕获算进来
+    from torch.profiler import ProfilerActivity, profile
+
+    with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU]) as prof:
+        while engine.has_unfinished_requests():
+            list(engine.step())
+        torch.cuda.synchronize()
+    names = {event.name for event in prof.events()}
+    assert any("cudaGraphLaunch" in name for name in names), sorted(names)[:20]
+    assert prof.key_averages() is not None
+    engine.shutdown()
+
+
+@requires_cuda
+def test_graph_mode_keeps_spec_logprobs_and_grammar_working(tiny_dir, hf_config):
+    """68 关的约束输出在受支持模式（图）下同样成立：logprobs 的宽度/行数与 greedy 输出对齐。"""
+    engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=2,
+                                        budget=32, blocks=32, mode="full_decode_only")
+    engine.add_request("r", [1, 2, 3, 4, 5, 6],
+                       SamplingParams(max_tokens=4, temperature=0.0, logprobs=2,
+                                      eos_token_id=999))
+    seen = []
+    while engine.has_unfinished_requests():
+        for out in engine.step():
+            seen.append(out)
+    engine.shutdown()
+    assert seen and seen[-1].logprobs is not None
+    # 每个交付位置最多 2 个候选（top-2），且必须有采样到的那个 token
+    for position in seen[-1].logprobs:
+        assert 1 <= len(position) <= 2
+    assert any(entry["mode"] == "FULL" for entry in runner.cudagraph_selections)

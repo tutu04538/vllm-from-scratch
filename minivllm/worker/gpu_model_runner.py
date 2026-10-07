@@ -35,12 +35,17 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
-from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
+from ..attention import Attention, AttentionMetadataBuilder
+from ..compilation import (CUDAGraphWrapper, graph_capture,
+                           set_cudagraph_capturing_enabled)
+from ..config import CUDAGraphMode
+from ..cudagraph_dispatcher import CudagraphDispatcher
+from ..forward_context import BatchDescriptor, set_forward_context
 from ..outputs import ModelRunnerOutput
 from ..outputs import DraftTokenIds
 from ..sample import RejectionSampler, Sampler, SamplingMetadata
 from ..spec_decode.metadata import SpecDecodeMetadata
-from ..spec_decode.utils import TargetRows
+from ..spec_decode.utils import PADDING_SLOT_ID, TargetRows
 from .gpu_input_batch import InputBatch
 
 
@@ -73,6 +78,18 @@ class CachedRequestState:
         return list(self.prompt_token_ids) + list(self.output_token_ids)
 
 
+class _PaddedRun(NamedTuple):
+    """图分派路径的一次前向所需要的全部信息（批次键 + 运行模式 + 补齐后的行数）。
+
+    单独一个类型而不是散着传：`_dummy_run`（热身/捕获）与 `execute_model`（真实重放）必须
+    走**同一条**代码路径，否则"录下来的图"和"真实路径"就不是一回事了。
+    """
+
+    batch_descriptor: BatchDescriptor
+    mode: CUDAGraphMode
+    num_tokens: int
+
+
 class ExecuteModelState(NamedTuple):
     """`execute_model()` 与 `sample_tokens()` 之间的临时状态。
 
@@ -87,6 +104,9 @@ class ExecuteModelState(NamedTuple):
     # 68 关：这一轮的语法掩码（`EngineCore.step()` 里算好、随 `sample_tokens()` 传进来）。
     # 它只在这一步有效：掩码行与 logits 行一一对应，打完就丢。
     grammar_output: object = None
+    # 69 关：本轮 target 的 `query_start_loc`（device 版）。给 `prepare_inputs_padded` 用——
+    # 它按"每请求 query 块的最后一行 − 被拒行数"算该从哪一行采样（上游同一个 kernel 的输入）。
+    query_start_loc: torch.Tensor | None = None
     # 63 关（EAGLE）：提议者要照上游那样对本轮的输入做"整体左移 + 打补丁"，所以要把
     # **本轮真正的输入**（含被拒草稿那几行）留到提议时刻。只留 **CPU** 张量（不占显存），
     # 而且只在 `capture_aux_hidden_states` 时才留——上游是把它们当场当参数传进 proposer 的。
@@ -177,6 +197,23 @@ class GPUModelRunner:
         self.execute_model_state: ExecuteModelState | None = None
         self.failure: str | None = None
 
+        # ---------------- 69 关：CUDA Graph ----------------
+        self.compilation_config = vllm_config.compilation_config
+        # 统一 decode 批的每请求行数（普通 decode = 1，投机 = 1 + K）。它是图的形状参数：
+        # 只有"每请求恰好这么多行"的批才有固定形状（见 forward_context.BatchDescriptor）。
+        self.uniform_decode_query_len = 1 + vllm_config.num_speculative_tokens
+        self.cudagraph_dispatcher = CudagraphDispatcher(vllm_config)
+        # 静态输入工作区（按 max_num_batched_tokens / max_num_reqs 开一次，地址恒定）。
+        # 图里记的是**指针**，所以这些缓冲必须常驻、每轮只覆盖内容。
+        self._padded_buffers: dict[str, torch.Tensor] | None = None
+        # 图键 → 捕获时建好的那份 metadata（它的张量就是上面的静态缓冲，每轮原地更新）。
+        # **不能每轮新建 metadata**：新对象里的张量是别人的地址，图重放时读不到。
+        self._padded_metadata: dict[BatchDescriptor, object] = {}
+        # 真实分派记录（每轮一条）：测试与 profiler 记录"这一轮选了哪个 mode/键"靠它，
+        # 不是靠日志猜。字段名与 README/对齐文档里的表一致。
+        self.cudagraph_selections: list[dict] = []
+        self.cudagraph_capture_stats: dict | None = None
+
     # -------- 初始化 --------
 
     def load_model(self):
@@ -205,6 +242,9 @@ class GPUModelRunner:
                 or self.model.get_eagle3_default_aux_hidden_state_layers()
             self.model.set_aux_hidden_state_layers(layers)
             self.eagle_aux_hidden_state_layers = tuple(layers)
+        # 69 关：图键必须在**注意力后端与 KV 缓存确定之后**才好定（键里含着请求数上限），
+        # 但"要不要建图"此刻就能定（设备、enforce_eager、模式都是配置事实）。
+        self.initialize_cudagraph_capture()
         return self.model
 
     def _target_hidden_states_by_req(self, scheduler_output, num_reqs: int):
@@ -706,6 +746,428 @@ class GPUModelRunner:
             logits_indices=to_device(logits_indices),
         )
 
+    # -------- 69 关：CUDA Graph（键 → 热身 → 捕获 → 分派 → 重放）--------
+
+    def initialize_cudagraph_capture(self) -> None:
+        """确定图模式、建键表、包装模型、开静态工作区（对应上游
+        `initialize_cudagraph_capture()` + `CudagraphDispatcher.initialize_cudagraph_keys()`）。
+
+        与上游的差异只有一条、而且是环境事实：**本机没有 CUDA 时强制 NONE**。
+        `VllmConfig` 是按 `DeviceConfig.device` 字符串解析的，而"字符串写着 cuda"不等于
+        "这台机器真的有 CUDA"（跨机器跑同一份配置时就会不同）；真去 `torch.cuda.CUDAGraph()`
+        只会在捕获时炸，不如在这里就退成 eager 并**记录下来**。
+        """
+        mode = self.compilation_config.cudagraph_mode
+        if mode == CUDAGraphMode.FULL:
+            # 非分段 FULL 会给**混合 prefill/decode 批**也建图，而那种批的注意力没有固定形状
+            # （每请求 query 长度不同），只能走 `_forward_generic` 里的逐请求循环——那里的
+            # `int(张量)` 是 CPU 同步，录进图之后重放会读到**录制时**的那些数字（静默算错）。
+            # 所以这里明确拒绝，指向我们真正支持的那一档。
+            raise NotImplementedError(
+                "cudagraph_mode='full'（非分段）本仓库不支持：它会把混合 prefill/decode 批也"
+                "录进图，而本仓库的注意力只有「统一 decode」这一条图内路径。"
+                "请用 'full_decode_only'（decode 走图、混合批自动回退 eager，与上游"
+                "CUDAGraphMode.FULL_DECODE_ONLY 同义）")
+        if mode != CUDAGraphMode.NONE and not torch.cuda.is_available():
+            self.cudagraph_unsupported_reason = (
+                "配置要求 CUDA Graph，但这台机器没有可用的 CUDA：退成 eager")
+            mode = CUDAGraphMode.NONE
+            self.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
+            self.compilation_config.cudagraph_capture_sizes = []
+            self.compilation_config.max_cudagraph_capture_size = 0
+        else:
+            self.cudagraph_unsupported_reason = None
+        self.cudagraph_dispatcher.initialize_cudagraph_keys(
+            mode, self.uniform_decode_query_len)
+        # draft 侧单独一套键（上游 `self.drafter.initialize_cudagraph_keys(cudagraph_mode)`）：
+        # EAGLE 系只支持 PIECEWISE 图，本仓库没有 PIECEWISE，于是它恒为 NONE。
+        if self.proposer is not None:
+            initialize_keys = getattr(self.proposer, "initialize_cudagraph_keys", None)
+            if initialize_keys is not None:
+                initialize_keys(mode)
+        if mode != CUDAGraphMode.NONE:
+            self._init_padded_buffers()
+            # 图包装器只包模型前向（`compute_logits` 留在图外：它只在"要采样的行"上做，
+            # 行数每轮不同，属于动态索引）。上游同款：`self.model = CUDAGraphWrapper(...)`。
+            self.model = CUDAGraphWrapper(self.model, self.vllm_config, CUDAGraphMode.FULL)
+
+    def _init_padded_buffers(self) -> None:
+        """静态输入工作区（对应上游 `_init_input_buffers()` 里与图相关的那几块）。
+
+        容量口径全部来自既有配置（AGENTS §8：**不加"调大一点"的旋钮**）：
+
+            input_ids / positions / slot_mapping   max_num_batched_tokens 行
+            query_start_loc / seq_lens             max_num_seqs (+1) 行
+            block_table                            复用 InputBatch 的块表镜像（本来就去定长）
+
+        `slot_mapping` 初值填 `PADDING_SLOT_ID(-1)`：没被覆盖到的行**必须是哨兵**，
+        不能是 0（0 是真实槽位，会往 0 号块/第一块写垃圾）。
+        """
+        max_num_tokens = self.vllm_config.scheduler_config.max_num_batched_tokens
+        max_num_reqs = self.input_batch.max_num_reqs
+        device = self.device
+        self._padded_buffers = {
+            "input_ids": torch.zeros(max_num_tokens, dtype=torch.int64, device=device),
+            "positions": torch.zeros(max_num_tokens, dtype=torch.int64, device=device),
+            "slot_mapping": torch.full((max_num_tokens,), PADDING_SLOT_ID,
+                                       dtype=torch.int64, device=device),
+            "query_start_loc": torch.zeros(max_num_reqs + 1, dtype=torch.int64, device=device),
+            "seq_lens": torch.zeros(max_num_reqs, dtype=torch.int64, device=device),
+        }
+
+    @staticmethod
+    def _is_uniform_decode(max_num_scheduled_tokens: int, uniform_decode_query_len: int,
+                           num_tokens: int, num_reqs: int,
+                           force_uniform_decode: bool | None = None) -> bool:
+        """"所有请求的 query 长度都一样"的批（上游同名静态方法，逐字对齐）。
+
+        两个条件缺一不可：最长请求恰好 `1+K` 行，且总行数 = `(1+K) × 请求数`。
+        只看第一个的话，"一条请求 K+1 行、另一条 1 行"也会被误判成统一批——那样的批
+        行数不是请求数的整数倍，图的形状根本对不上。
+        """
+        return (((max_num_scheduled_tokens == uniform_decode_query_len)
+                 and (num_tokens == max_num_scheduled_tokens * num_reqs))
+                if force_uniform_decode is None else force_uniform_decode)
+
+    def _determine_batch_execution_and_padding(
+            self, num_tokens: int, num_reqs: int, num_scheduled_tokens: list[int],
+            max_num_scheduled_tokens: int, force_eager: bool = False,
+            force_uniform_decode: bool | None = None,
+    ) -> tuple[CUDAGraphMode, BatchDescriptor]:
+        """真实形状 → `(运行模式, 补齐后的图键)`（上游同名方法的本仓库子集）。
+
+        上游这里还有 cascade attention、DP 协调、LoRA 计数、microbatch —— 那几样本仓库都没有
+        （单卡、无 LoRA、无 cascade），所以只留下"判统一 decode → 问分派器"这两步。
+        返回的键里的 `num_tokens` 是**补齐后**的，调用方必须按它准备输入。
+        """
+        uniform_decode = self._is_uniform_decode(
+            max_num_scheduled_tokens=max_num_scheduled_tokens,
+            uniform_decode_query_len=self.uniform_decode_query_len,
+            num_tokens=num_tokens, num_reqs=num_reqs,
+            force_uniform_decode=force_uniform_decode)
+        mode, batch_descriptor = self.cudagraph_dispatcher.dispatch(
+            num_tokens=num_tokens, uniform_decode=uniform_decode,
+            valid_modes={CUDAGraphMode.NONE} if force_eager else None)
+        return mode, batch_descriptor
+
+    def _record_selection(self, mode: CUDAGraphMode, batch_descriptor: BatchDescriptor,
+                          num_tokens: int, num_reqs: int) -> None:
+        """记下这一轮**真实**选中的模式与键（验收要求："记录真实选中的 mode/key"）。
+
+        不是日志：测试与 profiler 直接读这个列表，所以它必须由分派的那一处写、别处不写。
+        """
+        self.cudagraph_selections.append({
+            "num_tokens": num_tokens, "num_reqs": num_reqs,
+            "padded_tokens": batch_descriptor.num_tokens,
+            "padded_reqs": batch_descriptor.num_reqs,
+            "uniform": batch_descriptor.uniform,
+            "mode": str(mode), "key": str(batch_descriptor),
+        })
+
+    def _padded_attn_metadata(self, batch_descriptor: BatchDescriptor):
+        """取（或第一次建）这个图键的 attention 元数据对象。
+
+        对象只建一次，因为它的张量必须是**静态缓冲本身**：每轮只改缓冲内容，图重放时按同一批
+        地址去读。每轮新建 metadata 会让图读到旧地址（不报错、只是算错）。
+        """
+        metadata = self._padded_metadata.get(batch_descriptor)
+        if metadata is None:
+            raise RuntimeError(
+                f"图键 {batch_descriptor} 没有对应的元数据：说明它在 capture_model() 之前就被"
+                f"分派到了。图必须**先在捕获窗口里建好**（含元数据），运行时只重放")
+        return metadata
+
+    def _build_padded_attn_metadata(self, batch_descriptor: BatchDescriptor,
+                                    for_cudagraph_capture: bool = False,
+                                    num_tokens_padded: int | None = None,
+                                    num_reqs_padded: int | None = None,
+                                    uniform_query_len: int | None = None):
+        """按图键建一份元数据（张量全部指向静态工作区）。
+
+        默认按**图键**（补齐后的形状）建；热身（mode=NONE）那一次按**未补齐**形状建，
+        因为那一轮根本不走图（上游 `dummy_run` 里 `pad_attn = mode == FULL` 是同一个意思）。
+        """
+        buffers = self._padded_buffers
+        if num_tokens_padded is None:
+            num_tokens_padded = batch_descriptor.num_tokens
+        if num_reqs_padded is None:
+            num_reqs_padded = batch_descriptor.num_reqs
+            if num_reqs_padded is None:
+                raise ValueError("本仓库只有 FULL 图，键里必须有精确的 num_reqs")
+        if uniform_query_len is None:
+            uniform_query_len = (self.uniform_decode_query_len
+                                 if batch_descriptor.uniform else None)
+        if uniform_query_len is not None and \
+                uniform_query_len * num_reqs_padded != num_tokens_padded:
+            raise ValueError(
+                f"统一 decode 的行数对不上：{uniform_query_len} × {num_reqs_padded} != "
+                f"{num_tokens_padded}（键自己矛盾，不可能有这张图）")
+        metadata = self.attn_metadata_builder.build(
+            query_start_loc=buffers["query_start_loc"][:num_reqs_padded + 1],
+            seq_lens=buffers["seq_lens"][:num_reqs_padded],
+            block_table=self.input_batch.block_table.gpu[:num_reqs_padded],
+            slot_mapping=buffers["slot_mapping"][:num_tokens_padded],
+            num_reqs=num_reqs_padded, uniform_query_len=uniform_query_len)
+        if for_cudagraph_capture:
+            self.attn_metadata_builder.build_for_cudagraph_capture(metadata)
+        return metadata
+
+    def _fill_padded_buffers(self, num_tokens: int, num_reqs: int,
+                             num_scheduled_tokens: list[int] | None,
+                             num_tokens_padded: int, num_reqs_padded: int,
+                             uniform_query_len: int | None,
+                             source: PreparedInputs | None = None) -> None:
+        """把这一轮的真实输入写进静态缓冲（图内路径的"更新数据"这一步）。
+
+        三条规则，都是"图上不能有分支"逼出来的：
+
+            padding 行的槽位一律 `PADDING_SLOT_ID(-1)`（图里 clamp 到 0 号垃圾桶）
+            padding 请求的 `seq_lens = 0`（它的 attention 整行被掩掉，输出是垃圾但有限）
+            padding 请求的块表行**清零**（指向 0 号块，绝不能留着上一轮的块号）
+
+        `source=None` 是 dummy_run（热身/捕获）：token/position 填 0 即可，槽位仍是哨兵
+        （上游注释同款："dummy runs have no real slot assignments — fill with -1 so the
+        cache kernels skip the KV write"）。
+        """
+        buffers = self._padded_buffers
+        device = self.device
+        # 先把**整段**槽位打成哨兵，再覆盖真实行：顺序反过来的话，补齐的行会留着上一轮
+        # 的槽位（可能是别人的真实槽位）——那是不报错的覆盖。
+        buffers["slot_mapping"][:num_tokens_padded].fill_(PADDING_SLOT_ID)
+        if source is not None:
+            buffers["input_ids"][:num_tokens].copy_(source.input_ids.to(device))
+            buffers["positions"][:num_tokens].copy_(source.positions.to(device))
+            buffers["slot_mapping"][:num_tokens].copy_(source.slot_mapping.to(device))
+            buffers["seq_lens"][:num_reqs].copy_(source.seq_lens.to(device))
+            buffers["query_start_loc"][:num_reqs + 1].copy_(
+                source.query_start_loc.to(device))
+        else:
+            # dummy：位置连续、token 全 0（只求形状对；输出会被丢掉）
+            buffers["positions"][:num_tokens].copy_(
+                torch.arange(num_tokens, dtype=torch.int64, device=device))
+            buffers["input_ids"][:num_tokens].zero_()
+            if uniform_query_len is not None:
+                cumsum = torch.arange(num_reqs + 1, dtype=torch.int64,
+                                      device=device) * uniform_query_len
+            else:
+                cumsum = torch.tensor(
+                    [0, *list(__import__("itertools").accumulate(num_scheduled_tokens))],
+                    dtype=torch.int64, device=device)
+            buffers["query_start_loc"][:num_reqs + 1].copy_(cumsum)
+            buffers["seq_lens"][:num_reqs].fill_(1)
+        # 补齐的行/请求
+        if uniform_query_len is not None:
+            buffers["query_start_loc"][num_reqs + 1:num_reqs_padded + 1].fill_(
+                num_tokens)
+        else:
+            buffers["query_start_loc"][num_reqs + 1:num_reqs_padded + 1].fill_(num_tokens)
+        buffers["seq_lens"][num_reqs:num_reqs_padded].zero_()
+        # 块表：padding 请求的行必须清零（0 号块 = 垃圾桶；留旧块号会读到别人的 KV）
+        self.input_batch.block_table.cpu[num_reqs:num_reqs_padded].zero_()
+        self.input_batch.block_table.commit_block_table(num_reqs_padded)
+
+    def _prepare_inputs_padded(self, inputs: PreparedInputs, mode: CUDAGraphMode,
+                              batch_descriptor: BatchDescriptor) -> None:
+        """eager 的紧凑输入 → 图要的补齐输入（对应上游 `prepare_inputs_padded` 的效果）。
+
+        与上游的差别要说清楚：上游的 padding 发生在**草稿第一遍**（drafter 侧，
+        `SpecDecodeBaseProposer.prepare_inputs_padded()` 用 Triton kernel 算
+        `token_indices_to_sample` / `num_rejected_tokens_gpu`），target 侧是按"整批 K+1 行"
+        直接准备的。本仓库的紧凑布局在**统一 decode 批**下已经与"整批 K+1 行"逐行相同
+        （每请求恰好 `1+K` 行连续排布），所以这里只需要在**尾部**补上档位差：
+        补齐的行槽位是哨兵、补齐的请求 seq_len=0 → 既不改动真实行的索引，
+        也不需要动采样/掩码/logprobs 的行映射（它们是这个前缀的子集，见
+        `tests/step69/test_spec_cudagraph.py::test_padded_rows_extend_the_compact_layout`）。
+        """
+        num_reqs_padded = batch_descriptor.num_reqs
+        uniform_query_len = self.uniform_decode_query_len if batch_descriptor.uniform else None
+        self._fill_padded_buffers(inputs.num_tokens, self.input_batch.num_reqs,
+                                  inputs.num_scheduled_tokens,
+                                  batch_descriptor.num_tokens, num_reqs_padded,
+                                  uniform_query_len, source=inputs)
+        if batch_descriptor not in self._padded_metadata:
+            # 正常路径不会走到这里（键要么在 capture_model 里建过，要么分派器不会返回它）。
+            # 走到这里说明"图没建好就想重放"：明确报错，不要顺手补一个（那会带着旧地址建图）。
+            raise RuntimeError(
+                f"图键 {batch_descriptor} 还没在捕获窗口里建过元数据："
+                f"请先跑 capture_model()（Worker.compile_or_warm_up_model()）")
+
+    def _dummy_run(self, num_tokens: int, uniform_decode: bool = False,
+                   cudagraph_runtime_mode: CUDAGraphMode | None = None,
+                   is_graph_capturing: bool = False) -> torch.Tensor:
+        """跑一次"假"前向：用来热身、也用来**在捕获窗口里录图**（上游同名方法的子集）。
+
+        与上游一致的三点：
+
+        1. 形状由分派器决定（`force_uniform_decode=uniform_decode`），不是自己拼；
+        2. 捕获时把 `seq_lens` 全填 1（见 `AttentionMetadataBuilder.build_for_cudagraph_capture`）；
+        3. 走的是**和真实路径同一个** `_run_model_padded`，不是"在别处重建一套前向"
+           ——否则录下来的图与真实路径的算子/顺序不一致，"捕获成功"就没有意义。
+        """
+        if uniform_decode:
+            uniform_query_len = self.uniform_decode_query_len
+            num_reqs = min(self.input_batch.max_num_reqs,
+                           -(-num_tokens // uniform_query_len))
+            num_scheduled_tokens = [uniform_query_len] * num_reqs
+            if num_tokens % uniform_query_len != 0:
+                num_scheduled_tokens[-1] = num_tokens % uniform_query_len
+        else:
+            num_reqs = min(num_tokens, self.input_batch.max_num_reqs)
+            per_req = num_tokens // num_reqs
+            num_scheduled_tokens = [per_req] * num_reqs
+            num_scheduled_tokens[-1] += num_tokens % num_reqs
+        if sum(num_scheduled_tokens) != num_tokens:
+            raise RuntimeError("dummy_run 的 token 分配与 num_tokens 不一致")
+        max_num_scheduled_tokens = max(num_scheduled_tokens)
+
+        mode, batch_descriptor = self._determine_batch_execution_and_padding(
+            num_tokens=num_tokens, num_reqs=num_reqs,
+            num_scheduled_tokens=num_scheduled_tokens,
+            max_num_scheduled_tokens=max_num_scheduled_tokens,
+            force_eager=(cudagraph_runtime_mode == CUDAGraphMode.NONE),
+            force_uniform_decode=uniform_decode)
+        if cudagraph_runtime_mode is None:
+            cudagraph_runtime_mode = mode
+        elif cudagraph_runtime_mode != mode:
+            raise RuntimeError(
+                f"dummy_run 期望的模式 {cudagraph_runtime_mode} 与分派器给的 {mode} 不一致："
+                f"热身/捕获必须与真实路径选到同一张图，否则热身白做")
+
+        uniform_query_len = (self.uniform_decode_query_len
+                             if batch_descriptor.uniform else None)
+        if cudagraph_runtime_mode == CUDAGraphMode.NONE:
+            # 热身：**不补齐**（上游 `pad_attn = mode == FULL` 同义），跑的是未补齐的形状，
+            # 元数据临时建、不占用图键——它是"把算子和 handle 热起来"，不是"建图"。
+            self._fill_padded_buffers(num_tokens, num_reqs, num_scheduled_tokens,
+                                      num_tokens, num_reqs, uniform_query_len)
+            metadata = self._build_padded_attn_metadata(
+                batch_descriptor, num_tokens_padded=num_tokens,
+                num_reqs_padded=num_reqs, uniform_query_len=uniform_query_len)
+        else:
+            num_reqs_padded = batch_descriptor.num_reqs or num_reqs
+            self._fill_padded_buffers(num_tokens, num_reqs, num_scheduled_tokens,
+                                      batch_descriptor.num_tokens, num_reqs_padded,
+                                      uniform_query_len)
+            if batch_descriptor not in self._padded_metadata:
+                self._padded_metadata[batch_descriptor] = self._build_padded_attn_metadata(
+                    batch_descriptor, for_cudagraph_capture=is_graph_capturing)
+            metadata = self._padded_metadata[batch_descriptor]
+        padded = _PaddedRun(batch_descriptor=batch_descriptor, mode=cudagraph_runtime_mode,
+                            num_tokens=metadata.slot_mapping.shape[0])
+        hidden = self._run_model_padded(padded, metadata=metadata)
+        # dummy 前向的产物**不能留在 Runner 上**：`hidden_states` / `aux_hidden_states` /
+        # `target_hidden_states` 都是"本轮 target 的事实"，提议者会直接吃它们。留着热身/捕获
+        # 那一轮的零张量，会让"还没跑过真实一轮"的状态看起来像有数据（测试当场抓到了这一点），
+        # 更糟的是失败路径下可能真的喂给提议者。
+        self.aux_hidden_states = None
+        self.target_hidden_states = None
+        self.attn_metadata = None
+        return hidden
+
+    def _warmup_and_capture(self, batch_descriptor: BatchDescriptor,
+                            cudagraph_runtime_mode: CUDAGraphMode) -> None:
+        """热身若干次 → 捕获一次（上游同名方法）。
+
+        为什么要热身：第一次跑某个形状时，cuBLAS 的 handle / workspace、kernel 的 lazy init、
+        `torch.empty` 的缓存块都会"在录制过程中"发生。cuBLAS 的 handle **不允许在捕获里创建**
+        （实测报 `CUBLAS_STATUS_NOT_INITIALIZED when calling cublasCreate(handle)`，随后整个
+        捕获流被作废），所以捕获前至少要在这个（形状/权重/流都相同的）上下文里真跑过一次。
+
+        上游的 `cudagraph_num_of_warmups` 默认 0，是因为它在此之前已经做过 profile run
+        （定容量那一步就是若干次 `_dummy_run(mode=NONE)`）；本仓库没有显存 profiling，
+        于是把"至少一次 eager 前向"作为捕获的**必需前置**：`max(1, cudagraph_num_of_warmups)`。
+        这不改变图的语义，只保证捕获能成功。
+        """
+        num_warmups = max(1, self.compilation_config.cudagraph_num_of_warmups)
+        for _ in range(num_warmups):
+            self._dummy_run(batch_descriptor.num_tokens,
+                            uniform_decode=batch_descriptor.uniform,
+                            cudagraph_runtime_mode=CUDAGraphMode.NONE)
+        torch.cuda.synchronize()
+        self._dummy_run(batch_descriptor.num_tokens,
+                        uniform_decode=batch_descriptor.uniform,
+                        cudagraph_runtime_mode=cudagraph_runtime_mode,
+                        is_graph_capturing=True)
+
+    def capture_model(self) -> dict:
+        """按分派器的键表逐张捕获（上游 `capture_model()` 的子集）。
+
+        **大档位先捕获**（`get_capture_descs()` 已排好序）：小图能复用大图占下的显存池。
+        捕获窗口由 `monitor.set_cudagraph_capturing_enabled()` 划定；窗口之外任何"顺手捕获"
+        都会被 `validate_cudagraph_capturing_enabled()` 拦下（那会让服务中的某一步突然卡顿）。
+        """
+        import time
+
+        if self.compilation_config.cudagraph_mode == CUDAGraphMode.NONE:
+            return {"mode": "NONE", "captured": 0, "capture_seconds": 0.0}
+        start = time.perf_counter()
+        torch.cuda.synchronize()
+        start_free = torch.cuda.mem_get_info()[0]
+        set_cudagraph_capturing_enabled(True)
+        captured = 0
+        try:
+            with graph_capture(self.device):
+                for runtime_mode, batch_descriptors in \
+                        self.cudagraph_dispatcher.get_capture_descs():
+                    for batch_descriptor in batch_descriptors:
+                        self._warmup_and_capture(batch_descriptor, runtime_mode)
+                        captured += 1
+                        torch.cuda.synchronize()
+        finally:
+            # 无论捕获成功与否都要**关掉窗口**：开着的话，后面每一次"没见过的形状"都会
+            # 顺手录一张图（延迟尖峰 + 显存悄悄涨）
+            set_cudagraph_capturing_enabled(False)
+        torch.cuda.synchronize()
+        end_free = torch.cuda.mem_get_info()[0]
+        self.cudagraph_capture_stats = {
+            "mode": str(self.compilation_config.cudagraph_mode),
+            "captured": captured,
+            "capture_seconds": time.perf_counter() - start,
+            "graph_pool_bytes": start_free - end_free,
+            "capture_sizes": list(self.compilation_config.cudagraph_capture_sizes or []),
+        }
+        return self.cudagraph_capture_stats
+
+    def _run_model_padded(self, padded: "_PaddedRun", metadata=None,
+                          inputs: PreparedInputs | None = None) -> torch.Tensor:
+        """图分派路径的前向：静态缓冲 + 固定的 metadata + 上下文里的图模式/键。
+
+        与 `_run_model()` 的关系：**同一个模型、同一份 forward 上下文协议**，区别只在
+        "输入从哪来"（静态缓冲）与"上下文里写什么"（运行模式 + 键）。图包装器就是靠上下文里
+        这两个字段决定捕获/重放的；注意力层也靠运行模式决定走固定形状那条路。
+
+        `metadata` 由调用方给：捕获/重放给的是**存在图键下的那一份**（张量必须是静态缓冲本身，
+        每轮只改内容），热身给的是临时建的那一份（NONE 模式不走图，形状也不必补齐）。
+        """
+        buffers = self._padded_buffers
+        num_tokens_padded = metadata.slot_mapping.shape[0]
+        layer_names = self._attention_layers()
+        attn_metadata = {name: metadata for name in layer_names}
+        # 64 关的 cache-only 提议者要拿"本轮 target 的 slot_mapping"，而它按**紧凑行**工作
+        # （它的特征缓冲也是紧凑的）。所以在图路径里额外留一份紧凑元数据给它，而不是把
+        # 补齐的那份（多出来的行是 padding，喂过去会写错位置/长度对不上）。
+        needs_compact_metadata = (inputs is not None
+                                  and self.speculative_config is not None
+                                  and self.speculative_config.uses_extract_hidden_states())
+        if needs_compact_metadata:
+            self.attn_metadata = next(iter(self._build_attn_metadata(inputs).values()))
+        else:
+            self.attn_metadata = None
+        input_ids = buffers["input_ids"][:num_tokens_padded]
+        positions = buffers["positions"][:num_tokens_padded]
+        with set_forward_context(
+                attn_metadata, num_tokens=num_tokens_padded,
+                cudagraph_runtime_mode=padded.mode,
+                batch_descriptor=padded.batch_descriptor,
+                slot_mapping={"slot_mapping": metadata.slot_mapping}):
+            if self.capture_aux_hidden_states:
+                hidden_states, aux = self.model(input_ids, positions)
+                self.aux_hidden_states = torch.cat(list(aux), dim=-1)
+            else:
+                hidden_states = self.model(input_ids, positions)
+        self.target_hidden_states = hidden_states
+        return hidden_states
+
     # -------- 一轮：跑模型 --------
 
     def _run_model(self, inputs: PreparedInputs) -> torch.Tensor:
@@ -776,8 +1238,31 @@ class GPUModelRunner:
             raise RuntimeError("Runner 还没 load_model()")
 
         inputs = self._prepare_inputs(scheduler_output)
+        # 69 关：先问分派器"这一轮能不能走图、走哪张图"。它返回的 num_tokens 是**补齐后**的，
+        # 下面准备输入与设上下文都要按它来。模式 NONE = 这一轮 eager（形状不匹配 / 没建图 /
+        # 关掉了图），这也是上游 `dispatch()` 的规则，不是"我们悄悄降级"。
+        mode, batch_descriptor = self._determine_batch_execution_and_padding(
+            num_tokens=inputs.num_tokens, num_reqs=self.input_batch.num_reqs,
+            num_scheduled_tokens=inputs.num_scheduled_tokens,
+            max_num_scheduled_tokens=max(inputs.num_scheduled_tokens))
+        self._record_selection(mode, batch_descriptor, inputs.num_tokens,
+                               self.input_batch.num_reqs)
         try:
-            hidden_states = self._run_model(inputs)
+            if mode == CUDAGraphMode.NONE:
+                hidden_states = self._run_model(inputs)
+            else:
+                self._prepare_inputs_padded(inputs, mode, batch_descriptor)
+                hidden_states = self._run_model_padded(
+                    _PaddedRun(batch_descriptor=batch_descriptor, mode=mode,
+                               num_tokens=batch_descriptor.num_tokens),
+                    metadata=self._padded_attn_metadata(batch_descriptor), inputs=inputs)
+                # 图路径的 hidden 缓冲是**补齐后**的行数（含尾部 padding 行）。后续所有消费者
+                # （采样行选择、logprobs、掩码、提议者取特征）用的都是**紧凑行号**，而紧凑行
+                # 正好是补齐布局的前缀，所以在这里切一刀即可——不是"重新映射"，是"去掉尾巴"。
+                hidden_states = hidden_states[:inputs.num_tokens]
+                if self.aux_hidden_states is not None:
+                    self.aux_hidden_states = self.aux_hidden_states[:inputs.num_tokens]
+                self.target_hidden_states = hidden_states
             # LM head 只做在**要采样的行**上（每请求末行、且已 ready）。这是本关"按采样行选
             # hidden"的落点：隐藏态是给所有 token 算的，词表 GEMM 不是。
             #
@@ -802,6 +1287,7 @@ class GPUModelRunner:
         self.execute_model_state = ExecuteModelState(
             scheduler_output=scheduler_output, logits=logits, sample_rows=inputs.sample_rows,
             spec_metadata=inputs.spec_metadata,
+            query_start_loc=inputs.query_start_loc.to(self.device),
             target_token_ids_cpu=(inputs.input_ids if needs_target_rows else None),
             target_positions_cpu=(inputs.positions if needs_target_rows else None),
             # 64 关：只有 cache-only 提议者需要本轮的元数据（槽位）；别的方法不用，就不留引用
@@ -1113,6 +1599,15 @@ class GPUModelRunner:
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
+            if getattr(self.proposer, "supports_padded_first_pass", False):
+                # 69 关：按上游 `drafter.prepare_inputs_padded(...)` 的**同一套输入**算出
+                # "该从哪一行采样"与"每请求被拒了几行"，再按上游的参数名传进 propose()。
+                # 上游是在 device 上算的（`eagle_prepare_inputs_padded_kernel`），本仓库的
+                # draft 第一遍仍是 CPU 拼行（58 关的设计），所以这两个张量在本仓库里的作用
+                # 是**校验与对齐口径**：提议者会把它们与自己算的那份逐值比一遍（不一致就报错），
+                # 而不是"两条路各算一次、谁错都看不出来"。
+                kwargs["token_indices_to_sample"], kwargs["num_rejected_tokens_gpu"] = \
+                    self._padded_draft_token_indices(state, sampled_by_row)
             if getattr(self.proposer, "pass_hidden_states_to_model", False):
                 # EAGLE 系（含 MTP）的提议者才收特征；普通 draft/假提议者的签名不变。
                 # `target_token_ids` / `target_positions` 就是**本轮 target 真正喂进去的行**
@@ -1125,6 +1620,33 @@ class GPUModelRunner:
         # 概率按请求存：下一轮可能只采用每条请求的**前缀**，所以要留下每条的块边界
         self.pending_draft_probs = drafts if drafts.draft_probs is not None else None
         return drafts
+
+    def _padded_draft_token_indices(self, state, sampled_by_row):
+        """算 draft 侧 padded 批的两个逐请求索引（上游 `prepare_inputs_padded` 的输入）。
+
+            valid_sampled_tokens_count[i]  这条请求本轮采到了几个有效 token（= 接受数 + 1）
+            cu_num_draft_tokens            本轮采用的草稿数的**包含式**前缀和（spec_metadata 给）
+
+        两者都按**批行序**给，长度 = 本轮批的请求数（上游同款）。没有带草稿的请求时
+        `cu_num_draft_tokens` 会是全 0，`prepare_inputs_padded` 得到 num_rejected=0、
+        index=每请求最后一行——与"没有草稿"的语义一致（那一行就是纠正/bonus 行）。
+        """
+        from ..spec_decode.utils import prepare_inputs_padded
+
+        num_reqs = self.input_batch.num_reqs
+        valid_counts = torch.tensor(
+            [len(sampled_by_row.get(row, ())) for row in range(num_reqs)],
+            dtype=torch.int32, device=self.device)
+        spec_metadata = state.spec_metadata
+        if spec_metadata is not None:
+            cu_num_draft_tokens = spec_metadata.cu_num_draft_tokens
+        else:
+            cu_num_draft_tokens = torch.zeros(num_reqs, dtype=torch.int32,
+                                              device=self.device)
+        if state.query_start_loc is None:
+            raise RuntimeError("这一轮没有留下 query_start_loc：prepare_inputs_padded 需要它")
+        return prepare_inputs_padded(cu_num_draft_tokens, valid_counts,
+                                     state.query_start_loc, num_reqs)
 
     def _propose_extract_hidden_states(self, state, sampled_by_row) -> DraftTokenIds:
         """64 关：`extract_hidden_states` 的**特殊协议**分支（上游同名分支）。

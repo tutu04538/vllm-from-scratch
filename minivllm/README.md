@@ -40,6 +40,8 @@
 | 调度 | `core/sched/{scheduler,request_queue,utils}.py` | `v1/core/sched/*` |
 | 编排 | `engine/{core,core_client,output_processor,llm_engine}.py`、`engine/logprobs.py` | `v1/engine/*` |
 | 结构化输出 | `structured_output/{__init__,backend_types,backend_xgrammar,request,utils}.py` | `v1/structured_output/*` |
+| forward 上下文 / 图键 | `forward_context.py` | `vllm/forward_context.py`（`BatchDescriptor` + `ForwardContext`） |
+| 图分派与包装 | `cudagraph_dispatcher.py`、`compilation/{monitor,cuda_graph}.py` | `v1/cudagraph_dispatcher.py`、`compilation/*` |
 | logprobs 容器 | `logprobs.py`、`tokenizer_utils.py` | `vllm/logprobs.py`、`vllm/tokenizers/` |
 | 执行部署 | `executor/uniproc_executor.py` | `v1/executor/uniproc_executor.py` |
 | 执行端 | `worker/worker.py` | `v1/worker/gpu_worker.py` |
@@ -319,6 +321,36 @@ python benchmarks/check_step68_grammar.py            # 30 项（规格/掩码/�
 > 处理顺序表见 §2.9：**同一个约束在 bonus 行与候选行上可能不一样**——上游的 `min_p`
 > 只作用在 bonus 行（候选验证行不掩码），本项目照抄并钉住（实测 `min_p=1.0` 时投机仍有 rank>1 的 token 被交付）。
 > ⚠️ 2026-10-06 独立复核：`logprobs=-1` 上游在引擎入口把它归一化成 `vocab_size`，本项目缺这一步（待修）。
+
+## 第六十九关：V1 投机输入 Padding 与编译 CUDA Graph
+
+CUDA Graph 只有在「形状固定 + 地址固定」时才成立，而投机的每轮形状都在变（B 在变、每请求 `1+K`
+在变）。这一关做两件事：
+
+- **补空位（padding）**：真实形状先补齐到最近的**档位**，档位就是图键
+  `BatchDescriptor(num_tokens, num_reqs, uniform, ...)`。补出来的假行／假请求物理存在但绝不能留痕：
+  槽位是 `PADDING_SLOT_ID(-1)`、`seq_lens=0`、块表行清零。图里写 KV 不能做 `slot >= 0` 判断
+  （那是一次 CPU 同步），改用 `clamp_min(0)` 把 padding 写进 **0 号块**——所以 0 号块必须留白
+  （`BlockPool(reserve_null_block=True)`，可用块数 = `num_gpu_blocks - 1`）。
+- **录制与重放（CUDA Graph）**：`capture_model()` 在捕获窗口里按档位逐个热身 + 录制；
+  `set_forward_context(..., cudagraph_runtime_mode=..., batch_descriptor=...)` 告诉图包装器这一轮
+  是直通、捕获还是重放；注意力后端按运行模式走「固定形状批量」这条路（eager 那条逐请求路径留着当参考）。
+
+```bash
+python -m pytest tests/step69 -q                      # 27 项（drafter padding 9 + cudagraph 18）
+python benchmarks/check_step69_cudagraph.py           # 26 项（配置 / 键 / 一致性 / 不留痕 / profiler / drafter）
+```
+
+> 实测（tiny、单请求、greedy）：非投机 kernel launch **121 → 4.2 / step**；投机 K=3
+> **381.6 → 296.4 / step**（draft 自己的前向仍是 eager，见下）；eager 与图 greedy **逐 token 相同**，
+> 故意污染 padding 缓冲后**真实块 KV 逐位不变**；profiler 里能看到 `cudaGraphLaunch`。
+> 能力边界写在 `docs/step69_alignment.md` §6：**没有 torch.compile 一轴**（配置期拒绝）、
+> **没有 PIECEWISE**（混合 prefill/decode 批回退 eager）、**drafter 不做图**（上游只在 PIECEWISE 下做），
+> 图内注意力会物化 K/V gather（长上下文显存吃紧）。
+
+设计与差异见 [`docs/step69_alignment.md`](../docs/step69_alignment.md)，实测记录见
+[`docs/results.json`](../docs/results.json)（`step69.results`）。
+
 
 设计与差异（四种模式的行索引、掩码试走/回滚、采样约束处理顺序表、三态矩阵与复核后的更正）见
 [`docs/step68_alignment.md`](../docs/step68_alignment.md)，实测记录见

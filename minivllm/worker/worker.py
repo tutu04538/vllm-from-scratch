@@ -55,6 +55,19 @@ class Worker:
         self.kv_cache_config = kv_cache_config
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
+    def compile_or_warm_up_model(self) -> None:
+        """捕获 CUDA Graph（69 关；对应上游 `Worker.compile_or_warm_up_model()`）。
+
+        上游这里还做"编译 + 按 profile 结果定容"，本仓库没有编译路径，
+        所以只剩捕获这一步：`GPUModelRunner.capture_model()` 按 `CudagraphDispatcher`
+        列出的档位逐个热身 + 捕获。模式为 NONE（eager）时它是空操作。
+        """
+        if self.model_runner is None:
+            return
+        capture_model = getattr(self.model_runner, "capture_model", None)
+        if capture_model is not None:
+            capture_model()
+
     # -------- 执行 --------
 
     def execute_model(self, scheduler_output):

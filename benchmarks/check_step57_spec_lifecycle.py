@@ -43,10 +43,11 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def build(spec_tokens=3, method="ngram", blocks=16, budget=16, model=TINY_DIR,
-          hf_config=TINY_CONFIG, draft_config=None, seqs=2, block_size=4):
+          hf_config=TINY_CONFIG, draft_config=None, seqs=2, block_size=4,
+          enforce_eager=False):
     config = VllmConfig(
         model_config=ModelConfig(model=model, dtype="float32", max_model_len=64,
-                                 hf_config=hf_config),
+                                 hf_config=hf_config, enforce_eager=enforce_eager),
         cache_config=CacheConfig(block_size=block_size, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=seqs,
                                          max_num_batched_tokens=budget),
@@ -146,7 +147,9 @@ check("2. 每轮结束时进度都恰好是 num_tokens - 1（被拒的草稿退�
 engine.shutdown()
 
 # 预算刚好只够 1 行：K=3 的草稿必须被截成 0（只剩 b 那一行）
-engine, scheduler = build(spec_tokens=3, budget=1)
+# enforce_eager=True：预算小到装不下一个统一 decode 批（1+K=4 行）时没有任何合法图档位，
+# 配置期会明确报错——本用例考的是**预算语义**，所以显式关图（图档位那套由 tests/step69 盯）
+engine, scheduler = build(spec_tokens=3, budget=1, enforce_eager=True)
 runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
 recorder = Recorder(scheduler, runner)
 engine.add_request("r", PROMPT, SamplingParams(max_tokens=3, temperature=0.0, eos_token_id=999))
@@ -162,7 +165,8 @@ engine.shutdown()
 
 # ------------------------------------------------ 3. 抢占清空草稿
 
-engine, scheduler = build(spec_tokens=3, blocks=3, seqs=2, budget=16)
+# blocks=4：69 关起 0 号块留白当 CUDA Graph 的 padding 垃圾桶，可用块数 = blocks - 1
+engine, scheduler = build(spec_tokens=3, blocks=4, seqs=2, budget=16)
 runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
 engine.add_request("r1", PROMPT, SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
 engine.add_request("r2", PROMPT, SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))

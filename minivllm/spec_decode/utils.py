@@ -81,6 +81,9 @@ class FirstPassPlan:
     sample_req_ids: list[str] = field(default_factory=list)
     # 每条请求的 AR 起点（= 有效历史末尾）：第 k 枚草稿的输入位置 = history_end + k - 2
     history_end: dict[str, int] = field(default_factory=dict)
+    # 69 关：每条请求本轮**被拒**的行数（= 采用数 - 接受数）。它决定"draft 的上下文长度要从
+    # 乐观值里减掉多少"，也决定 padded 批里哪些行是 padding（见 `prepare_inputs_padded`）。
+    num_rejected: list[int] = field(default_factory=list)
 
 
 def expand_draft_inputs(rows: list[DraftInputRows]) -> tuple[list[int], list[int], list[int],
@@ -174,3 +177,106 @@ def update_scheduler_for_invalid_drafts(spec_token_ids: list[int],
         return list(spec_token_ids)
     valid = max(0, min(int(num_valid_draft_tokens), len(spec_token_ids)))
     return [token for token in spec_token_ids[:valid] if token >= 0]
+
+
+# ---------------- 69 关：投机输入的 padding（对应上游同名两个 kernel 的 eager 版）----------------
+
+
+def prepare_inputs_padded(cu_num_draft_tokens: torch.Tensor,
+                          valid_sampled_tokens_count: torch.Tensor,
+                          query_start_loc: torch.Tensor, num_reqs: int,
+                          ) -> tuple[torch.Tensor, torch.Tensor]:
+    """上游 `eagle_prepare_inputs_padded_kernel`（`v1/spec_decode/utils.py:136-175`）的等价实现。
+
+    它回答两个问题，**都在 device 上算、不做 CPU 同步**（上游的整个 padding 设计的要点）：
+
+        token_indices_to_sample[i]   第 i 条请求要从**它的哪一行**取 hidden 去采样第一枚草稿
+        num_rejected_tokens_gpu[i]   这条请求本轮采用 K_i 枚草稿、实际活了 v_i 枚，
+                                     被拒的是 `K_i + 1 - v_i` 行（v 含纠正/奖励那一枚）
+
+    为什么要用"补空位"的坐标来算：padding 之后每条请求的第一遍输入**包含会被拒的那些行**
+    （它们物理存在、槽位是哨兵、值是 padding），所以"该从哪一行采样"不能再拿"最后一行"当答案，
+    必须由"有效个数"反推——这正是本函数存在的理由。
+
+    约定与上游一致：`cu_num_draft_tokens` 是**包含式**前缀和（第 0 项就是第 0 条请求的草稿数，
+    不是 0），`query_start_loc` 长度 `num_reqs + 1`。返回两个 int32 张量，长度都为 `num_reqs`。
+    """
+    if cu_num_draft_tokens.shape[0] != num_reqs or valid_sampled_tokens_count.shape[0] != num_reqs:
+        raise ValueError(
+            f"逐请求张量长度必须是 num_reqs={num_reqs}：收到 "
+            f"cu_num_draft_tokens={tuple(cu_num_draft_tokens.shape)} / "
+            f"valid={tuple(valid_sampled_tokens_count.shape)}")
+    if query_start_loc.shape[0] != num_reqs + 1:
+        raise ValueError(
+            f"query_start_loc 长度必须是 num_reqs+1={num_reqs + 1}，"
+            f"收到 {tuple(query_start_loc.shape)}")
+    device = cu_num_draft_tokens.device
+    # num_draft[i] = cu[i] - cu[i-1]（第 0 项前面补 0，与内核里的分支等价）
+    previous_cu = torch.cat([torch.zeros(1, dtype=cu_num_draft_tokens.dtype, device=device),
+                             cu_num_draft_tokens[:-1]])
+    num_draft_tokens = cu_num_draft_tokens - previous_cu
+    # 没有草稿的请求（K_i=0）不算"被拒"：它这一轮的 1 行是纠正/bonus 行
+    num_rejected = torch.where(
+        num_draft_tokens > 0,
+        num_draft_tokens + 1 - valid_sampled_tokens_count.to(num_draft_tokens.dtype),
+        torch.zeros_like(num_draft_tokens))
+    # query_start_loc[i+1] - 1 = 这条请求 query 块的最后一行（全局行号）
+    index_to_sample = query_start_loc[1:num_reqs + 1] - 1 - num_rejected
+    return index_to_sample.to(torch.int32), num_rejected.to(torch.int32)
+
+
+def eagle_step_update_slot_mapping_and_metadata(
+        positions_1d: torch.Tensor, block_table_tensor: torch.Tensor,
+        seq_lens: torch.Tensor, block_size: int, max_model_len: int,
+        out_clamped_positions: torch.Tensor, out_slot_mapping: torch.Tensor,
+        input_batch_size: int | None = None) -> None:
+    """上游 `eagle_step_update_slot_mapping_and_metadata()`（同文件 L88-133）的等价实现。
+
+    EAGLE 自回归提议的每一步都要做同样的三件事，上游把它们**融进一个 kernel**（省两次
+    launch）：位置 +1、按位置查块表得到 KV 槽位、上下文长度 +1。本仓库没有 Triton 版本的
+    必要（draft 的提议循环本来就是 CPU 驱动的），但**算法逐条对齐**：
+
+        new_position = position + 1
+        超过 max_model_len          → 位置钳到 0、槽位 = PADDING_SLOT_ID(-1)、seq_len 回到 1
+        block_number = min(new_pos // block_size, n_blocks_per_req - 1)     ← 越界时钳住再查表
+        slot = block_table[req, block_number] * block_size + new_pos % block_size
+
+    两个张量参数是**原地**语义（与上游一致）：`seq_lens` 原地 +1；`out_*` 是输出缓冲。
+    `input_batch_size > batch_size` 时，多出来的行（CUDA Graph 的 padding 行）只写哨兵槽位
+    ——它们不是任何请求的 KV，写进去会把别人的缓存覆盖掉。
+    """
+    batch_size = positions_1d.shape[0]
+    if input_batch_size is None:
+        input_batch_size = batch_size
+    if out_slot_mapping.shape[0] < input_batch_size:
+        raise ValueError(
+            f"槽位缓冲只有 {out_slot_mapping.shape[0]} 行，放不下 input_batch_size="
+            f"{input_batch_size}：padding 行会写到缓冲外面")
+    n_blocks_per_req = block_table_tensor.shape[1]
+
+    new_position = positions_1d[:batch_size].to(torch.int64) + 1
+    exceeds_max = new_position >= max_model_len
+    clamped_position = torch.where(exceeds_max,
+                                   torch.zeros_like(new_position), new_position)
+    block_number = torch.minimum(clamped_position // block_size,
+                                 torch.tensor(n_blocks_per_req - 1,
+                                              device=clamped_position.device))
+    req_index = torch.arange(batch_size, device=clamped_position.device)
+    block_id = block_table_tensor[req_index, block_number].to(torch.int64)
+    slot_id = block_id * block_size + clamped_position % block_size
+    slot_id = torch.where(exceeds_max,
+                          torch.full_like(slot_id, PADDING_SLOT_ID), slot_id)
+
+    out_clamped_positions[:batch_size].copy_(clamped_position.to(
+        out_clamped_positions.dtype))
+    out_slot_mapping[:batch_size].copy_(slot_id.to(out_slot_mapping.dtype))
+    if input_batch_size > batch_size:
+        # padding 行：只有槽位需要打哨兵（位置/长度没人读）
+        out_slot_mapping[batch_size:input_batch_size].fill_(PADDING_SLOT_ID)
+    # 上下文长度 +1；越界的那种行回到 1（上游语义：这条请求从"新一轮"开始，不再累积）
+    new_seq_len = torch.where(exceeds_max, torch.ones_like(new_position),
+                              seq_lens[:batch_size].to(torch.int64) + 1)
+    seq_lens[:batch_size].copy_(
+        torch.minimum(new_seq_len,
+                      torch.tensor(max_model_len, device=new_seq_len.device)
+                      ).to(seq_lens.dtype))

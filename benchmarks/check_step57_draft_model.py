@@ -488,9 +488,11 @@ try:
 
     # 7.5 真实抢占 + 恢复：要求确实抢占，且输出与非投机 greedy 完全一致
     def preemption_run(k):
-        # blocks=3：58 的双预算让每轮能排的 target token 变少，原来 blocks=4 已经不再抢占；
-        # 缩到 3 才能继续覆盖"抢占后恢复"（两边都必须 preemptions>0 且输出一致）
-        engine, core, _runner = build_engine(k=k, budget=4, blocks=3, policy="priority")
+        # blocks=4：58 的双预算让每轮能排的 target token 变少，原来 blocks=4 已经不再抢占；
+        # 缩到"可用块"更少才能继续覆盖"抢占后恢复"（两边都必须 preemptions>0 且输出一致）。
+        # 69 关起 0 号块留白（CUDA Graph 的 padding 垃圾桶）→ 可用块数 = blocks - 1，
+        # 所以这里给 4 才等于原来的"可用 3 块"
+        engine, core, _runner = build_engine(k=k, budget=4, blocks=4, policy="priority")
         for req, priority in (("A", 0), ("B", 5)):
             engine.add_request(req, [1, 2], SamplingParams(max_tokens=8, temperature=0.0,
                                                            eos_token_id=999),

@@ -54,7 +54,14 @@ def test_prefill_first_pass_layout(tiny_dir, hf_config):
     assert entry["positions"] == list(range(target.target_rows + 1))
     assert entry["rejected"] == [0] * entry["num_tokens"]
     assert entry["input_ids"][:target.target_rows] == [1, 2, 3, 4, 5, 6]
-    assert entry["slots"] == list(range(entry["num_tokens"]))
+    # 槽位 = 这条请求块表里**第一个物理块**的偏移展开。69 关起第一个块不再是 0 号块：
+    # 开了 CUDA Graph 时 0 号块留白当垃圾桶（padding 行的 slot 会被 clamp 到它），
+    # 所以这里断言的是"按块表算出来的槽位"，而不是写死的 range（断言强度不变）。
+    first_block = int(runner.input_batch.block_table.cpu[0, 0])
+    block_size = runner.block_size
+    assert first_block != 0, "0 号块必须留白（CUDA Graph 的 padding 垃圾桶）"
+    assert entry["slots"] == [first_block * block_size + offset
+                              for offset in range(entry["num_tokens"])]
     engine.shutdown()
 
 
@@ -144,11 +151,13 @@ def test_chunked_prefill_syncs_only_scheduled_range(tiny_dir, hf_config):
 
 def test_rows_invariant_under_preemption(tiny_dir, hf_config):
     """抢占恢复后仍然满足 rows ≤ target_rows + 1，且输出与非投机一致。"""
+    # blocks=4 而不是 3：69 关起 0 号块留白当垃圾桶（CUDA Graph 的 padding 落点），
+    # 可用块数 = blocks - 1，所以想让"可用块数"仍然是 3 就必须多给一块。
     reference = greedy_outputs(spec_k=None, tiny_dir=tiny_dir, hf_config=hf_config,
                                prompts=(("A", [1, 2]), ("B", [3, 4])), max_tokens=8,
-                               budget=4, blocks=3, max_num_seqs=2)
+                               budget=4, blocks=4, max_num_seqs=2)
     engine, core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, spec_k=3,
-                                       budget=4, blocks=3, max_num_seqs=2)
+                                       budget=4, blocks=4, max_num_seqs=2)
     trace = WorkspaceTrace(runner)
     for req_id, prompt in (("A", [1, 2]), ("B", [3, 4])):
         engine.add_request(req_id, prompt, SamplingParams(max_tokens=8, temperature=0.0,
