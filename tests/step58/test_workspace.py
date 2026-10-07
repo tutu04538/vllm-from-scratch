@@ -120,8 +120,12 @@ def test_failure_state_blocks_next_step(tiny_dir, hf_config):
         raise RuntimeError("injected-draft-forward-failure")
 
     runner.proposer._forward = injected
+    # 70 关：异步调度下"提议"发生在**结果结账**那一刻（比同步晚一轮），所以失败可能在第二次
+    # step 才暴露。断言不变的是语义：**一旦失败就停摆**（这点由下面两处钉住：失败必须出现、
+    # 之后每一轮都拒绝）。允许"晚一轮暴露"不是放宽断言，而是异步的定义（结果本来就不当轮交付）。
     with pytest.raises(RuntimeError):
-        engine.step()
+        for _ in range(3):
+            engine.step()
     runner.proposer._forward = original
     assert runner.failure is not None
     with pytest.raises(RuntimeError):

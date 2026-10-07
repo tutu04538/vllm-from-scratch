@@ -137,7 +137,7 @@ def install_round_spy(runner):
     rounds = []
     original = runner.execute_model
 
-    def spy(scheduler_output):
+    def spy(scheduler_output, **kwargs):      # 70 关：executor 会多传 non_block
         if scheduler_output.total_num_scheduled_tokens > 0:
             # 新请求的起点就是 prefix 命中长度（`NewRequestData.num_computed_tokens` 是本轮
             # 计算**之前**的快照），续跑请求的起点由协议校正——两边都记下来

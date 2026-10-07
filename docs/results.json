@@ -17,7 +17,8 @@
     "step66": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑；Medusa 与上游真实类的每 head logits 与候选列顺序 max|Δ|=0.0；mlp_speculator 只交版本缺口证明，生产路径不支持）",
     "step67": "implemented + self-verified（用户已声明不再逐关找验收方；VocabMapping 与上游逐位差分、tiny 异构词表对端到端一致；概率草稿的 TLI 按上游边界配置期拒绝）",
     "step68": "已实现并自检（67 项 pytest + 53 项 benchmark）：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性），并确认 logprobs=-1 的入口归一化是本项目待对齐项",
-    "step69": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）"
+    "step69": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
+    "step70": "partial + self-verified（状态机/批队列/异步交付自检通过；端到端明确拒绝并记录实测证据）"
   },
   "step58": {
     "results": {
@@ -3336,6 +3337,83 @@
         "用途": "真实权重上确认 eager 与图 greedy 逐 token 相同；发现并修掉 bf16 图内注意力不升 fp32 会翻 token 的问题",
         "revision": "本机快照（无 HF revision）"
       }
+    }
+  },
+  "step70": {
+    "results": {
+      "step": 70,
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/070_异步调度占位符与GPU结果回传.md",
+      "status": "partial + self-verified：状态机（占位符/结账/stale）、有界批队列、异步交付句柄与缓冲生命周期按上游实现并自检（tests/step70 14 项 + check_step70_async.py 17 项）；端到端async_scheduling=True **明确拒绝**（未接线，实测证据见 docs/step70_alignment.md §6.2：与前缀缓存同开触发 device-side assert；长跑下偶发与同步不一致）。",
+      "recorded_at": "2026-10-07T09:27:31+00:00",
+      "git": {
+        "baseline_commit_at_record_time": "bf4d6f3",
+        "implementation_commit": "见本轮提交（step70：异步调度占位符与 GPU 结果回传）"
+      },
+      "package": {
+        "root": "minivllm/",
+        "python_files": 93,
+        "sha256": "28000cef2d5d6548f3c5d968322cee55ccb317a8d6a405c637395d32326d6646",
+        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+        "python": "3.12.14",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "vllm": "0.28.0（只作冻结源码对照；生产路径不 import）",
+        "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+      },
+      "commands": [
+        {
+          "cmd": "python -m pytest tests/step70 -q",
+          "result": "14 passed（状态机 9 + 缓冲生命周期 5，纯 CPU 确定性）"
+        },
+        {
+          "cmd": "python -m pytest tests/step58 .. tests/step70 -q",
+          "result": "547 passed（505 + 28 + 14）"
+        },
+        {
+          "cmd": "python benchmarks/check_step70_async.py",
+          "result": "全部通过（17 项：A 配置 4 / B 状态机 6 / C 交付句柄 7）"
+        },
+        {
+          "cmd": "python benchmarks/check_step57_*.py 与 check_step58..69_*.py",
+          "result": "全部通过"
+        }
+      ],
+      "execution_trace": {
+        "async_machinery": {
+          "占位公式": "num_new = num_tokens_with_spec + placeholders - computed（调度）/ 结账按实际交付长度",
+          "队列": "batch_queue_size = 2（上游 1 + pp_size，本仓库无 PP）",
+          "交付": "AsyncGPUModelRunnerOutput：构造即发起侧流 D2H + pinned 缓冲 + blocking 事件；get_output() 幂等"
+        },
+        "config_boundary": {
+          "explicit_true": "NotImplementedError（端到端未接线）",
+          "explicit_true+prefix_cache": "NotImplementedError（实测会 device assert）",
+          "explicit_true+spec": "NotImplementedError（草稿值/行起点口径未对齐）",
+          "default_and_false": "同步路径（533 项旧回归全绿证明未受影响）"
+        },
+        "evidence_for_rejection": {
+          "prefix_caching": "device-side assert triggered（Indexing.cu indexSelectSmallIndex 越界读词表）",
+          "long_run_divergence": "异步 {'A': [7, 0, 4, 4, 4, 4]} vs 同步 {'A': [7, 1, 1, 1, 1, 1]}（偶发）"
+        },
+        "unverified": [
+          "实际 GPU 下同步/异步 greedy 一致（端到端未启用）",
+          "trace 显示重叠（同上）",
+          "结果未回时 abort / 复用 slot 的端到端路径（同上）"
+        ]
+      },
+      "known_gaps": [
+        "端到端 async_scheduling=True 未接线（需执行侧 GPU 驻留：prev_sampled_token_ids scatter + 进度校正），属 74/75 关",
+        "异步 + 前缀缓存未接线（行起点有两个来源，口径未对齐）",
+        "异步 + 投机未接线（草稿必须留在执行侧，本仓库提议器是 CPU 驱动的）",
+        "无 _process_aborts_queue / DP / PP / drop_stale_output（本仓库没有对应结构）",
+        "结构化输出 + 异步的 deferred 采样代码已就位但随端到端一起未启用"
+      ]
+    },
+    "models": {
+      "tiny": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（状态机与句柄测试都用它造调度器/句柄，纯 CPU）",
+      "real": "本关未用真实权重（端到端未接线；骨架层不需要模型）"
     }
   }
 }

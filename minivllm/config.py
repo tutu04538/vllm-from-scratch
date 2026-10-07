@@ -212,6 +212,9 @@ class SchedulerConfig:
     max_num_seqs: int = 8
     max_num_batched_tokens: int = 64
     policy: str = "fcfs"          # "fcfs" / "priority"
+    # 70 关：异步调度（CPU 不等 GPU 结果就排下一轮）。`None` = 按上游规则自动推断
+    # （见 `resolve_async_scheduling`）；显式 True/False 就用用户给的值。
+    async_scheduling: bool | None = None
 
     def __post_init__(self):
         if self.max_num_seqs <= 0:
@@ -221,6 +224,9 @@ class SchedulerConfig:
                              f"{self.max_num_batched_tokens}")
         if self.policy not in ("fcfs", "priority"):
             raise ValueError(f"policy 只能是 'fcfs' / 'priority'，收到 {self.policy!r}")
+        if self.async_scheduling is not None and not isinstance(self.async_scheduling, bool):
+            raise ValueError(f"async_scheduling 只能是 True/False/None，收到 "
+                             f"{self.async_scheduling!r}")
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1040,68 @@ class CompilationConfig:
                     f"cudagraph_capture_sizes 的最大值 "
                     f"{self.cudagraph_capture_sizes[-1]} 与 max_cudagraph_capture_size "
                     f"{self.max_cudagraph_capture_size} 不一致")
+
+
+#: 上游允许开异步调度的投机方法白名单（`config/vllm.py:1194-1203` 的那串判断）。
+#: Eagle 系（eagle / eagle3 / mtp 各别名）、GPU ngram、draft_model；其余方法（CPU ngram、
+#: suffix、medusa、extract_hidden_states、用户插件）自动**关**异步——本仓库照抄这份白名单，
+#: 不自己放宽也不自己解释原因（上游源码里只给了 warning，没有写理由）。
+_ASYNC_SPEC_METHODS = frozenset({
+    "eagle", "eagle3", "mtp", "draft_model", "ngram_gpu", "dspark",
+    *MTP_MODEL_TYPES,
+})
+
+
+def resolve_async_scheduling(vllm_config: "VllmConfig",
+                             executor_supports_async: bool) -> bool:
+    """把 `SchedulerConfig.async_scheduling` 解析成最终布尔值（对应上游 `VllmConfig.__post_init__`
+    里那段 `async_scheduling is None` 的推断，`config/vllm.py:1185-1234`）。
+
+    与上游的差异只有一处、而且是**结构差异**：上游在 `VllmConfig.__post_init__` 里做，那里它能
+    从 `executor_backend` 字符串查到 executor 类并问 `supports_async_scheduling()`；本仓库的
+    `VllmConfig` 不持有 executor（executor 是 `EngineCore` 的构造参数），所以这部分由
+    `EngineCore.__init__` 调用本函数完成，规则逐条照抄：
+
+        显式 True   → 用；但 executor 不支持就**报错**（上游同款：`raise ValueError`）
+        显式 False  → 用
+        None        → 默认开；除非 executor 不支持、或投机方法不在白名单里（打 warning 后关）
+    """
+    requested = vllm_config.scheduler_config.async_scheduling
+    if requested is True:
+        if not executor_supports_async:
+            raise ValueError(
+                "显式要求 async_scheduling=True，但当前 executor 不支持异步调度"
+                "（上游同样直接报错，不静默降级）")
+        # ⚠️ 本项目**未接线的组合**（70 关只做到骨架，证据见 `docs/step70_alignment.md` §6）：
+        # 异步要求"下一轮输入不必等上一轮结果"——上游靠执行侧把上一轮采样的 token 与草稿留在
+        # GPU 侧、直接 scatter 进输入缓冲（`prev_sampled_token_ids`），而本仓库的输入组装
+        # （`_prepare_inputs`）与全部提议器都是 CPU 驱动的。照抄的结果是"行起点/草稿值的口径
+        # 与调度器的乐观计划错位"：实测（a）与前缀缓存同开会算错进度并触发 device-side assert；
+        # （b）长跑下偶发与同步输出不一致。宁可拒绝，也不要一个偶尔给出错结果的引擎。
+        raise NotImplementedError(
+            "async_scheduling=True 在本仓库尚未接线到端到端：70 关交付了状态机骨架"
+            "（占位符/批队列/异步交付/缓冲生命周期，单测覆盖并实测通过），但执行侧的输入组装"
+            "仍是 CPU 驱动的，无法在「不等上一轮结果」的前提下组装下一轮输入。"
+            "要放开需要把输入组装搬到 GPU 侧（上游的 prev_sampled_token_ids scatter），"
+            "属 74/75 关那条路。默认（async_scheduling=None 或 False）走同步路径，一切照旧。")
+    # `None`（自动推断）：**本仓库的默认是关**，与上游默认开不同，理由写在
+    # `docs/step70_alignment.md` §6.1：上游的 runner 能把"上一轮采样的 token 与草稿"留在
+    # GPU 侧直接 scatter 进下一轮输入（所以整条链都不需要 D2H），而本仓库的输入组装
+    # （`_prepare_inputs`）与全部提议器都是 CPU 驱动的——异步在这里必须先把上一轮的结果
+    # 结清才能组装下一轮输入。状态机、占位符、批队列、异步拷贝都已按上游实现并验证，
+    # 但"默认开"要等执行侧真正 GPU 驻留（74/75 关那条路）才算兑现。
+    if not executor_supports_async:
+        return False
+    speculative_config = vllm_config.speculative_config
+    if speculative_config is not None \
+            and speculative_config.method not in _ASYNC_SPEC_METHODS:
+        import warnings
+
+        warnings.warn(
+            f"async scheduling 与 {speculative_config.method} 投机不兼容（上游同款白名单），"
+            f"显式开启时也会按上游规则关掉", stacklevel=2)
+        return False
+    return False
 
 
 @dataclass(frozen=True)

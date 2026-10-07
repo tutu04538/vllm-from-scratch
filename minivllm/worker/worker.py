@@ -43,6 +43,13 @@ class Worker:
         if self.model_runner is not None:
             return
         self.model_runner = GPUModelRunner(self.vllm_config, self.device)
+        # 70 关：执行侧也要知道"这一轮走不走异步"（它决定草稿从哪来：协议里的值 vs 自己
+        # 上一轮提的那份）。解析规则只有一份（`config.resolve_async_scheduling`），
+        # 引擎侧问的是同一个问题、同一套输入，所以两边答案必然一致。
+        from ..config import resolve_async_scheduling
+
+        self.model_runner.async_scheduling = resolve_async_scheduling(
+            self.vllm_config, self.supports_async_scheduling())
         self.model_runner.load_model()
 
     def initialize_from_config(self, kv_cache_config) -> None:
@@ -70,15 +77,24 @@ class Worker:
 
     # -------- 执行 --------
 
-    def execute_model(self, scheduler_output):
+    def supports_async_scheduling(self) -> bool:
+        """70 关：这个执行端支不支持异步调度（上游 `Executor.supports_async_scheduling()`）。
+
+        本仓库的执行端是**同进程直连**（没有 RPC 序列化），而"异步"在这里的含义不是"换线程"，
+        而是"把结果的 D2H 放到侧流上、把等待推到交付边界"——这件事由 Runner 自己保证（它持有
+        显存与 pinned 缓冲），所以本仓库支持。上游的多进程 executor 还要看它有没有异步 RPC。
+        """
+        return True
+
+    def execute_model(self, scheduler_output, non_block: bool = False):
         if self.model_runner is None:
             raise RuntimeError("Worker 没有 model_runner：先 load_model()")
-        return self.model_runner.execute_model(scheduler_output)
+        return self.model_runner.execute_model(scheduler_output, non_block=non_block)
 
-    def sample_tokens(self, grammar_output):
+    def sample_tokens(self, grammar_output, non_block: bool = False):
         if self.model_runner is None:
             raise RuntimeError("Worker 没有 model_runner，无法采样（见 execute_model 的说明）")
-        return self.model_runner.sample_tokens(grammar_output)
+        return self.model_runner.sample_tokens(grammar_output, non_block=non_block)
 
     def take_draft_token_ids(self):
         if self.model_runner is None:

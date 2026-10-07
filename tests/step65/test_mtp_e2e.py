@@ -248,7 +248,7 @@ def test_misaligned_target_hidden_changes_the_drafts():
         if shift:
             original = runner._target_hidden_states_by_req
 
-            def spy(scheduler_output, num_reqs):
+            def spy(scheduler_output, num_reqs, **kwargs):   # 70 关：多传 non_block
                 by_req = original(scheduler_output, num_reqs)
                 if by_req is None:
                     return None
@@ -286,7 +286,7 @@ def test_rejected_positions_are_recomputed_next_round():
     rounds = []
     original = runner.execute_model
 
-    def spy(scheduler_output):
+    def spy(scheduler_output, **kwargs):      # 70 关：executor 会多传 non_block
         if scheduler_output.total_num_scheduled_tokens > 0:
             starts = {data.req_id: data.num_computed_tokens
                       for data in scheduler_output.scheduled_new_reqs}

@@ -133,6 +133,15 @@ class Request:
         self._all_token_ids: list[int] = list(self.prompt_token_ids)
 
         self.spec_token_ids: list[int] = []
+        # 70 关（异步调度）：**暂时预留的输出位置**个数。异步路径下 Scheduler 不等这一轮的
+        # GPU 结果就排下一轮，于是先乐观地按"最多 K+1 个新 token"占位；结果回来后再按实际
+        # 长度减掉。它**不是**用户可见的 token，也不算进 `num_tokens`——凡是要"已确认的
+        # token"的地方（停止判定、prefix 发布、用户输出）都必须把它排除。
+        self.num_output_placeholders: int = 0
+        # 70 关：抢占会把这个请求**在飞的**输出标记成 stale（结果照常交付，但不许再改计数）。
+        # 每轮在结果回来时按"这一轮排了多少行"抵扣，抵完为止（上游 `num_stale_output_tokens`）。
+        self.num_stale_output_tokens: int = 0
+        self.num_in_flight_tokens: int = 0
         self.num_computed_tokens = 0
         # 派生判断：这一轮还没算到已有历史的末尾（中间 prefill 块）。由 Scheduler 在
         # `_update_after_schedule()` 里更新。

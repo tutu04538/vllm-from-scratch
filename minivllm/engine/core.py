@@ -16,6 +16,8 @@
 但接口留着，"草稿在一步之后才取回来"这条时序差异是真实存在的。
 """
 
+from collections import deque
+
 from ..outputs import EngineCoreOutputs
 from . import EngineCoreRequest  # noqa: F401  （类型提示用；实际转换在 add_request）
 
@@ -52,10 +54,26 @@ class EngineCore:
         from ..structured_output import StructuredOutputManager
 
         self.structured_output_manager = StructuredOutputManager(vllm_config)
-        self.scheduler = Scheduler(vllm_config.scheduler_config, self.kv_cache_manager,
-                                   max_model_len=vllm_config.model_config.max_model_len,
-                                   speculative_config=vllm_config.speculative_config,
-                                   structured_output_manager=self.structured_output_manager)
+        # 70 关：先定"这一轮走不走异步"（要问 executor 支不支持），再选调度器类。
+        # 异步与同步的差别只有两个钩子（占位符怎么加、结果回来怎么结账），所以是**同一个
+        # Scheduler 的子类**，不是两套调度逻辑（需求 070 §2：不复制整个 schedule）。
+        from ..config import resolve_async_scheduling
+
+        self.async_scheduling = resolve_async_scheduling(
+            vllm_config, self.model_executor.supports_async_scheduling())
+        scheduler_cls = Scheduler
+        if self.async_scheduling:
+            from ..core.sched.async_scheduler import AsyncScheduler
+
+            scheduler_cls = AsyncScheduler
+        self.scheduler = scheduler_cls(vllm_config.scheduler_config, self.kv_cache_manager,
+                                       max_model_len=vllm_config.model_config.max_model_len,
+                                       speculative_config=vllm_config.speculative_config,
+                                       structured_output_manager=self.structured_output_manager)
+        # 执行/采样 future 的队列：**有界**（上游 `batch_queue_size = 1 + pp_size`）。
+        # 本仓库没有流水线并行，所以是 2：允许"排下一轮"与"上一轮还在跑"重叠一层。
+        self.batch_queue_size = 2
+        self.batch_queue = deque() if self.async_scheduling else None
 
     # -------- 请求 --------
 
@@ -143,6 +161,74 @@ class EngineCore:
 
     # -------- 一轮 --------
 
+    def step_with_batch_queue(self) -> tuple[EngineCoreOutputs, bool]:
+        """异步调度的一轮（对应上游 `EngineCore.step_with_batch_queue()`，L624-738）。
+
+        与同步 `step()` 的**唯一区别**是"谁等谁"：
+
+            同步：排 → 跑 → 采 → **等结果** → 提交 → 再排下一轮（CPU 与 GPU 交替空转）
+            异步：排 → 跑 → 采 → 入队 → **立刻去排下一轮**；队列满了才回头等最早那一轮
+
+        于是"调度"（预算、KV 分配、占位记账）发生在上一轮结果还没回来的时候——这正是占位符
+        存在的理由：排进去的宽度是**乐观的**，结果回来时再结账。
+
+        `deferred_scheduler_output`（68 关结构化输出）：语法掩码要按"上一轮真实裁过的草稿"
+        算，而那一刻草稿还没回来，所以这一轮的**采样**推迟到上一轮结果处理完之后（上游同一
+        分支，连处理顺序都一致）。
+        """
+        try:
+            return self._step_with_batch_queue()
+        except Exception as exc:                     # noqa: BLE001 —— 半轮状态不可重试
+            self.failure = f"{type(exc).__name__}: {exc}"
+            raise
+
+    def _step_with_batch_queue(self) -> tuple[EngineCoreOutputs, bool]:
+        batch_queue = self.batch_queue
+        assert batch_queue is not None
+        assert len(batch_queue) < self.batch_queue_size, "队列不该超过容量"
+
+        model_executed = False
+        deferred_scheduler_output = None
+        if self.scheduler.has_requests():
+            scheduler_output = self.scheduler.schedule()
+            exec_future = self.model_executor.execute_model(scheduler_output, non_block=True)
+            model_executed = scheduler_output.total_num_scheduled_tokens > 0
+            if model_executed:
+                if not scheduler_output.has_structured_output_requests:
+                    grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+                    future = self.model_executor.sample_tokens(grammar_output, non_block=True)
+                else:
+                    deferred_scheduler_output = scheduler_output
+                    future = exec_future
+            else:
+                future = exec_future
+            if deferred_scheduler_output is None:
+                batch_queue.appendleft((future, scheduler_output, exec_future))
+                if len(batch_queue) < self.batch_queue_size and (
+                        model_executed or self.scheduler.has_requests()):
+                    # 队列没满：**不等结果**，交一个空输出回去让上层再调一次
+                    return EngineCoreOutputs(), model_executed
+        elif not batch_queue:
+            return EngineCoreOutputs(), False
+
+        # 队列满了（或没东西可排）：等最早那一轮，提交它的结果
+        future, scheduler_output, exec_future = batch_queue.pop()
+        model_output = future.result()
+        if model_output is None:
+            exec_future.result()
+            raise RuntimeError("sample_tokens() 交回 None：说明 execute_model() 那一步失败了")
+        # **交付边界**：异步句柄在这里才真的等拷贝完成（同步路径拿到的已经是 CPU 结果）
+        if hasattr(model_output, "get_output"):
+            model_output = model_output.get_output()
+        engine_core_outputs = self.scheduler.update_from_output(scheduler_output, model_output)
+
+        if deferred_scheduler_output is not None:
+            # 上一轮结果处理完了（草稿也裁过了）→ 现在可以算掩码并发起这一轮的采样
+            grammar_output = self.scheduler.get_grammar_bitmask(deferred_scheduler_output)
+            future = self.model_executor.sample_tokens(grammar_output, non_block=True)
+            batch_queue.appendleft((future, deferred_scheduler_output, exec_future))
+        return engine_core_outputs, model_executed
+
     def step(self) -> tuple[EngineCoreOutputs, bool]:
         """调度、执行、采样、更新。返回 (本轮输出, 是否真的跑了模型)。
 
@@ -183,7 +269,14 @@ class EngineCore:
                 f"本关不做故障恢复，请重建引擎（197 §9 的失败策略）")
 
     def post_step(self, model_executed: bool) -> None:
-        """执行之后的收尾。57A 无投机，所以是空操作（接口按 195 §7 保留）。"""
+        """执行之后的收尾：把执行侧提的草稿收进 Scheduler（供**下一轮**采用）。
+
+        70 关（异步调度）：这一步**不做**——上游注释原话："when using async scheduling we
+        can't get draft token ids in advance, so we update draft token ids in the worker
+        process"。异步下 Scheduler 只按占位宽度排计划，真实草稿留在执行侧。
+        """
+        if self.async_scheduling:
+            return
         if model_executed and self.speculative_config is not None:
             draft_token_ids = self.model_executor.take_draft_token_ids()
             self.scheduler.update_draft_token_ids(draft_token_ids)

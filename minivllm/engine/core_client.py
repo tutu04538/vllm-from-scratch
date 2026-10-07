@@ -42,8 +42,14 @@ class InprocClient:
         self.engine_core.add_request(engine_request)
 
     def get_output(self) -> EngineCoreOutputs:
-        outputs, model_executed = self.engine_core.step()
-        self.engine_core.post_step(model_executed)
+        # 70 关：异步调度时走"带 batch queue 的一轮"（它自己决定"排队"还是"等结果"），
+        # 同步路径一字未改。两条路的 `post_step` 都要调：它负责把草稿收进 Scheduler。
+        engine_core = self.engine_core
+        if getattr(engine_core, "async_scheduling", False):
+            outputs, model_executed = engine_core.step_with_batch_queue()
+        else:
+            outputs, model_executed = engine_core.step()
+        engine_core.post_step(model_executed)
         return outputs
 
     def abort_requests(self, request_ids: list[str]) -> None:

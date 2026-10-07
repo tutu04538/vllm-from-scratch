@@ -348,6 +348,35 @@ python benchmarks/check_step69_cudagraph.py           # 26 项（配置 / 键 / 
 > **没有 PIECEWISE**（混合 prefill/decode 批回退 eager）、**drafter 不做图**（上游只在 PIECEWISE 下做），
 > 图内注意力会物化 K/V gather（长上下文显存吃紧）。
 
+## 第七十关：异步调度占位符与 GPU 结果回传（骨架 + 明确边界）
+
+同步路径下 CPU 必须等这一轮的 GPU 结果拷回来才知道「生成了什么」，然后才敢排下一轮。异步调度让
+CPU **不等**：排完这一轮立刻去排下一轮。代价是「排下一轮时不知道上一轮的结果」，于是引入**占位符**：
+
+```
+预留（placeholder） → 已确认（committed） → （抢占时）作废（stale）
+```
+
+- `AsyncScheduler`：只覆写 `_update_after_schedule`（按 `1 + K` 记占位）与
+  `_update_request_with_output`（按**实际交付长度**结账）；抢占把在飞输出标成 stale，回传时只交付、
+  不再改计数（否则负占位）。
+- `EngineCore.step_with_batch_queue()`：有界批队列（= 2，上游 `1 + pp_size`）——先把下一轮排出去，
+  队列满了才回头取最早那一轮的结果；结构化输出的语法掩码需要上一轮结果，所以它的采样走 deferred 分支。
+- `AsyncGPUModelRunnerOutput`：构造即把 D2H 发到**侧流**、写进 pinned 缓冲、记 blocking 事件；
+  `get_output()` 才是交付边界（幂等）。
+
+```bash
+python -m pytest tests/step70 -q                 # 14 项（状态机 9 + 缓冲生命周期 5，纯 CPU）
+python benchmarks/check_step70_async.py          # 17 项（配置边界 / 占位状态机 / 交付句柄）
+```
+
+> ⚠️ **本项目默认关，显式开启会被 `NotImplementedError` 拒绝**（不静默降级）。原因不是「没写」，
+> 而是「照抄会静默算错」——实测两条证据：与前缀缓存同开触发 device-side assert；长跑下偶发与同步
+> 输出不一致。根因是「不等上一轮结果就组装下一轮输入」要求执行侧 **GPU 驻留**（上游的
+> `prev_sampled_token_ids` scatter + 进度校正），而本仓库的输入组装（`_prepare_inputs`）与全部
+> 提议器都是 CPU 驱动的；放开它属 74/75 关那条路。差异与证据见
+> [`docs/step70_alignment.md`](../docs/step70_alignment.md) §6。
+
 设计与差异见 [`docs/step69_alignment.md`](../docs/step69_alignment.md)，实测记录见
 [`docs/results.json`](../docs/results.json)（`step69.results`）。
 

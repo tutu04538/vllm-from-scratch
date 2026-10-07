@@ -41,7 +41,7 @@ from ..compilation import (CUDAGraphWrapper, graph_capture,
 from ..config import CUDAGraphMode
 from ..cudagraph_dispatcher import CudagraphDispatcher
 from ..forward_context import BatchDescriptor, set_forward_context
-from ..outputs import ModelRunnerOutput
+from ..outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from ..outputs import DraftTokenIds
 from ..sample import RejectionSampler, Sampler, SamplingMetadata
 from ..spec_decode.metadata import SpecDecodeMetadata
@@ -76,6 +76,110 @@ class CachedRequestState:
         """执行侧认为的完整历史。它与控制端的长度会**短暂**不一致（控制端可能已经提交了
         执行侧还不知道的 token），下一轮协议里的 `num_output_tokens` 会把镜像校正回来。"""
         return list(self.prompt_token_ids) + list(self.output_token_ids)
+
+
+class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
+    """异步结果句柄（对应 vLLM `v1/worker/gpu_model_runner.py::AsyncGPUModelRunnerOutput`）。
+
+    它持有三样东西，**在 `get_output()` 之前都不能被覆盖**：
+
+        sampler_output   产生结果的 device 张量（拷贝的源）
+        _cpu_buffers     这块结果专用的 pinned 主机缓冲（拷贝的目标）
+        event            侧流上的完成事件（判断"值可不可用"的唯一依据）
+
+    生命周期由 Runner 保证：`get_output()` 只允许调用一次，调用后归还缓冲；下一轮的
+    `execute_model()` 会先把欠账结清，所以"同一块 pinned 缓冲被两轮同时用"不会发生
+    （`test_async_buffer_lifetime.py` 用**事件门闩**把这条钉住，而不是靠 sleep 猜时序）。
+    """
+
+    def __init__(self, runner, state, sampler_output, kind: str = "plain") -> None:
+        import torch
+
+        self._runner = runner
+        self._state = state
+        # "plain" = 普通采样（每行 1 个 token）；"spec" = 验证批（`[B, K+1]`，被拒位置 -1）。
+        # 两者的 device 张量同形（都是二维），差别在**怎么解析**：验证批要走
+        # `RejectionSampler.parse_output`（同一张 valid_mask 裁 token 与 logprobs）。
+        self._kind = kind
+        self._sampler_output = sampler_output
+        self._delivered = False
+        self._result: ModelRunnerOutput | None = None
+        # 事件用 blocking=True：等的时候让出 CPU，不做忙轮询（上游同款注释）
+        self._event = torch.cuda.Event(blocking=True) if torch.cuda.is_available() else None
+        self._started = False
+        # 构造即发起拷贝（上游同款：`__init__` 里就把 D2H 发到侧流上）。
+        # **别等到 get_output() 才拷**：那样"异步"就只剩一个名字了。
+        self.start_non_blocking_copy()
+
+    def start_non_blocking_copy(self) -> None:
+        """在侧流上发起 D2H（非阻塞）并记事件。
+
+        为什么要单独一条流：拷贝要和"下一次前向"重叠。为什么要 pinned 内存：只有 pinned
+        的 `non_blocking=True` 拷贝才是真异步（普通页内存会退化成同步拷贝，等于没异步）。
+        """
+        import torch
+
+        if self._started or not torch.cuda.is_available():
+            return
+        self._started = True
+        sampler_output = self._sampler_output
+        # 结果就是这份 device 张量；拷贝到 pinned 主机缓冲（生命周期与句柄绑定）
+        self._tokens_cpu = torch.empty_like(sampler_output.sampled_token_ids,
+                                            device="cpu", pin_memory=True)
+        source = sampler_output.sampled_token_ids
+        if source.is_cuda:
+            stream = torch.cuda.Stream()
+            with torch.cuda.stream(stream):
+                stream.wait_stream(torch.cuda.current_stream())
+                self._tokens_cpu.copy_(source, non_blocking=True)
+                self._event.record(stream)
+        else:
+            self._tokens_cpu.copy_(source)
+            self._event.record()
+
+    def get_output(self) -> ModelRunnerOutput:
+        """等拷贝完成 → 解析 → 记账 + 提议 → 交出 CPU 结果。
+
+        **记账部分只做一次**（`_delivered` 守住）：那是一段有副作用的逻辑（写镜像、提草稿），
+        重跑会把同一批 token 提交两遍。但**结果可以重复读**：交付之后拿到的是我们自己的
+        Python list，不再指向被复用的缓冲，所以"再来一次 `get_output()`"是安全的——
+        本仓库有两个等待点（下一步 `execute_model()` 的输入组装前、引擎的交付边界），
+        两边都可能先到。
+        """
+        if self._delivered:
+            return self._result
+        self._delivered = True
+        if self._event is not None:
+            self._event.synchronize()
+        runner = self._runner
+        try:
+            # 拷贝回来的那份替换掉 device 张量：后半段与同步路径共用同一段实现
+            sampler_output = replace(self._sampler_output,
+                                     sampled_token_ids=self._tokens_cpu
+                                     if self._started else self._sampler_output
+                                     .sampled_token_ids)
+            if self._kind == "spec":
+                sampled, logprobs_by_req = runner._parse_spec_sampler_output(
+                    self._state, sampler_output)
+            else:
+                sampled = sampler_output.sampled_token_ids.tolist()
+                logprobs_by_req = runner._logprobs_by_request(
+                    sampler_output.logprobs_tensors, self._state.sample_rows)
+            try:
+                self._result = runner._finish_async_output(
+                    self._state, sampled, logprobs_by_req)
+            except Exception as exc:                 # noqa: BLE001 —— 与同步路径同一条约定
+                # 70 关：异步下"记账 + 提议"发生在这里（同步路径发生在 sample_tokens），
+                # 所以失败态也要在这里记：清掉未交付的草稿、让 Runner 停摆（下一轮在调度前
+                # 就拒绝）。漏了这一步 = 半轮状态被当成正常状态继续跑。
+                runner.pending_draft_token_ids = None
+                runner.pending_draft_probs = None
+                runner.failure = f"{type(exc).__name__}: {exc}"
+                raise
+            return self._result
+        finally:
+            runner._pending_async_output = None
+            self._sampler_output = None          # 释放 device 张量引用（缓冲可复用）
 
 
 class _PaddedRun(NamedTuple):
@@ -195,6 +299,14 @@ class GPUModelRunner:
         self.token_ids_gpu_tensor: torch.Tensor | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.execute_model_state: ExecuteModelState | None = None
+        # 70 关：异步调度下"已经算完、还没拷回"的那一份结果（None = 没有欠账）。
+        self._pending_async_output: "AsyncGPUModelRunnerOutput | None" = None
+        # 是否走异步调度（由 Worker 在 load_model 时按"配置 + executor 能力"解析后写入；
+        # 默认 False = 同步，直接构造 Runner 的测试不受影响）
+        self.async_scheduling = False
+        # 本轮"真正要验证的草稿"（同步 = 协议里的值；异步 = 执行侧补的真实值）。
+        # 由 `_update_states()` 每轮重设；放在这里只是给"还没跑过一轮"的读取一个默认值。
+        self._resolved_spec_decode_tokens: dict[str, list[int]] = {}
         self.failure: str | None = None
 
         # ---------------- 69 关：CUDA Graph ----------------
@@ -477,6 +589,20 @@ class GPUModelRunner:
             state.num_computed_tokens = cached.num_computed_tokens[index]
             num_output_tokens = cached.num_output_tokens[index]
             row_index = self.input_batch.req_id_to_index.get(req_id)
+                        # 70 关（异步调度）：协议的进度里含**乐观预留**的行，而执行侧的 positions、
+            # ready 判据、提议起点都必须建立在**已确认历史**上——所以这里校正一次：
+            # 只要这条请求还有占位没兑现（协议报的输出数 > 执行侧已提交的输出数），行起点就是
+            # "最后那个已确认 token 的位置" = `num_tokens_no_spec - 1`（与同步路径的不变量同形）。
+            # 上游在 GPU 侧做同一件事（`update_num_computed_tokens_for_batch_change`），
+            # 本仓库的输入组装在 CPU 上，所以用 CPU 镜像校正——注意这一步能成立，是因为
+            # 上一轮的异步结果已经在 `execute_model()` 入口结清（镜像里的历史是最新的）。
+            if self.async_scheduling:
+                has_pending_placeholders = (
+                    num_output_tokens > len(state.output_token_ids)
+                    if row_index is not None else False)
+                if has_pending_placeholders:
+                    state.num_computed_tokens = max(
+                        self.input_batch.num_tokens_no_spec[row_index] - 1, 0)
             if num_output_tokens < len(state.output_token_ids):
                 # 控制端认为只提交了这么多：未提交的尾部（如 EOS 之后被截掉的候选）要丢掉
                 del state.output_token_ids[num_output_tokens:]
@@ -499,6 +625,7 @@ class GPUModelRunner:
 
             if row_index is not None:
                 # 请求已经在批里：**镜像也要跟着协议改**——进度与块表两样都要。
+                # （异步下上面可能已经把 `state.num_computed_tokens` 校正过，这里写的是校正值）
                 #
                 # 进度用协议值覆盖（不是自增）：`positions` 就是拿这个值算的，它必须是
                 # "本轮开始前算到哪"。漏了这一步的话镜像会一直停在创建时的值，
@@ -534,10 +661,15 @@ class GPUModelRunner:
         self._resumed_req_ids = set(scheduler_output.scheduled_cached_reqs.resumed_req_ids)
 
         # 投机：把本轮采用的草稿写进输入缓冲（在**插块表/进度之后**做，因为要按
-        # "已提交历史"的位置写；协议里没带的请求会被清空）
+        # "已提交历史"的位置写；协议里没带的请求会被清空）。
+        #
+        # 草稿的**值**来自协议（`scheduled_spec_decode_tokens`）。异步调度下协议里会是
+        # 占位符（-1）、值由执行侧补——那条路要求提议器与输入组装都在 GPU 侧，本仓库还没接线，
+        # 所以在配置期就拒绝了 `async_scheduling=True` + 投机（见 `config.resolve_async_scheduling`）。
+        spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
         for req_id in scheduled_req_ids:
-            self.input_batch.update_req_spec_token_ids(
-                req_id, scheduler_output.scheduled_spec_decode_tokens)
+            self.input_batch.update_req_spec_token_ids(req_id, spec_decode_tokens)
+        self._resolved_spec_decode_tokens = spec_decode_tokens
 
         # 60 关：批已经稳定（增删/压实都做完）→ 增量维护 ngram_gpu 的显存历史。
         # 顺序与上游一致（上游也在 `_update_states` 末尾做）。搬运规则见
@@ -625,7 +757,7 @@ class GPUModelRunner:
                 np.array(num_scheduled, dtype=np.int32))
             spec_metadata = self._calc_spec_decode_metadata(
                 num_draft_tokens_np, cu_num_scheduled_tokens_np, input_ids,
-                scheduler_output.scheduled_spec_decode_tokens)
+                self._resolved_spec_decode_tokens)
             logits_indices = spec_metadata.logits_indices
 
         # 只对 **ready 行** 采样：算完之后已经追平已知历史（prompt + 已产出）才谈得上"下一个 token"。
@@ -1223,8 +1355,12 @@ class GPUModelRunner:
     # -------- 执行侧的两步协议 --------
 
     @torch.inference_mode()
-    def execute_model(self, scheduler_output):
+    def execute_model(self, scheduler_output, non_block: bool = False):
         """第一步：合并状态、跑模型、存下 logits。返回 `None` 表示"等 sample_tokens"。
+
+        `non_block`（70 关，异步调度）：本仓库不在这里分叉——CUDA 的 kernel 提交本来就是
+        异步的，"不阻塞"由上层体现（executor 把返回值包成 Future、`sample_tokens` 交异步
+        句柄）。参数收下是为了接口与上游三层同参，不是装饰。
 
         **`torch.inference_mode()` 不是装饰性的**（vLLM 在同样的位置也有这个装饰器）：模型的
         参数默认 `requires_grad=True`，而 KV 写入是 `index_copy_`——没有这个边界的话，每次
@@ -1235,6 +1371,9 @@ class GPUModelRunner:
         测试里的直接前向用到；本关只在**每步的入口**（执行与采样）划这条线。
         """
         self._check_usable()
+        # 70 关：先把上一轮欠下的异步结果结清（见 `wait_for_pending_async_output` 的说明）。
+        # 放在最前面：`_update_states()` 要按镜像里"上一轮产出的 token"校正缓冲。
+        self.wait_for_pending_async_output()
         if self.execute_model_state is not None:
             raise RuntimeError(
                 "上一轮 execute_model() 的结果还没被 sample_tokens() 消费，不能开始新的一轮："
@@ -1307,8 +1446,12 @@ class GPUModelRunner:
         return None
 
     @torch.inference_mode()
-    def sample_tokens(self, grammar_output=None):
+    def sample_tokens(self, grammar_output=None, non_block: bool = False):
         """第二步：消费 logits 采样，并产出 `ModelRunnerOutput`（同样在推理边界内）。
+
+        `non_block=True`（70 关，异步调度）：**不在这里把结果拷回 CPU**，而是把采样结果
+        （device 张量）连同一条侧流上的异步拷贝包成一个句柄返回；真正的拷回、解析与记账
+        发生在 `get_output()`（= 交付边界）。这样 CPU 可以去调度下一轮，而不必干等拷贝。
 
         `grammar_output`（68 关）：Scheduler 算好的语法掩码。**先打掩码再采样**是上游的顺序
         （`apply_grammar_bitmask` 在 `_sample` 之前），执行与采样分开的意义之一就是给这类
@@ -1329,6 +1472,8 @@ class GPUModelRunner:
         state = state._replace(grammar_output=grammar_output)
 
         try:
+            if non_block:
+                return self._sample_and_propose_async(state)
             return self._sample_and_propose(state)
         except Exception as exc:                     # noqa: BLE001 —— 任何异常都让 Runner 停摆
             # 未交付的草稿/概率不能留着：下一轮若被消费，会把失败轮的假设当成有效提议
@@ -1337,6 +1482,58 @@ class GPUModelRunner:
             self.failure = f"{type(exc).__name__}: {exc}"
             raise
 
+    def _sample_and_propose_async(self, state) -> "AsyncGPUModelRunnerOutput":
+        """异步路径：采样照旧**同步执行**（内核发射本来就是异步的），只是**不把结果拷回来**。
+
+        与上游的差异（写在 `docs/step70_alignment.md` §6）：上游的采样结果本身就以 device
+        张量形式存在，账也在 GPU 侧记；本仓库的 `_bookkeeping_sync` 与提议器都是 CPU 驱动的
+        （要 token 的 Python 值），所以"记账 + 提议"只能推迟到 `get_output()`——也就是
+        "等到值真的被需要时"。收益没有消失：**调度下一轮（预算/KV/占位）与这次拷贝重叠**，
+        而调度正是异步调度要抢出来的那段时间。
+        """
+        self._apply_grammar_bitmask(state)
+        # 草稿统一从 `_resolved_spec_decode_tokens` 读（本轮 `_update_states()` 里写的同一份：
+        # 同步路径就是协议里的值）——"验证的候选"与"写进输入缓冲的候选"因此永远是同一份。
+        scheduled_spec = self._resolved_spec_decode_tokens
+        spec_metadata = state.spec_metadata
+        if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
+            sampler_output = self._run_spec_sampler(state, spec_metadata, scheduled_spec)
+            kind = "spec"
+        else:
+            sampling_metadata = SamplingMetadata.from_input_batch(
+                self.input_batch, state.sample_rows, device=self.device,
+                scheduled_spec_decode_tokens=scheduled_spec,
+                logprobs_mode=self.logprobs_mode)
+            sampler_output = self.sampler.forward(state.logits, sampling_metadata)
+            kind = "plain"
+        handle = AsyncGPUModelRunnerOutput(
+            runner=self, state=state, sampler_output=sampler_output, kind=kind)
+        self._pending_async_output = handle
+        return handle
+
+    def _finish_async_output(self, state, sampled, logprobs_by_req) -> ModelRunnerOutput:
+        """`get_output()` 里的后半段：记账 + 提议（同步路径后半段的同一段实现）。
+
+        传进来的是**已经解析成 CPU 结果**的 token/logprobs，所以"异步只改时机、不改语义"：
+        两条路径共用同一段记账与提议代码，不可能算出不同结果。
+        """
+        output = self._bookkeeping_sync(state, sampled, logprobs_by_req)
+        self.pending_draft_token_ids = self._propose_draft_tokens(state, sampled)
+        return output
+
+    def wait_for_pending_async_output(self) -> None:
+        """把上一轮还没交付的异步结果**结清**（幂等）。
+
+        调用点是下一步 `execute_model()` 的最前面：那一步的输入组装要读执行端镜像
+        （`token_ids_cpu` 等），而镜像是上一轮记账写进去的——**没结清就读 = 读到旧历史**
+        （不报错、只是喂给模型错的 token）。上游靠"把上一轮采样的 token 直接 scatter 进
+        GPU 输入缓冲"避免这次等待；本仓库的输入组装在 CPU 上，所以必须在组装前等一次。
+        """
+        handle = self._pending_async_output
+        if handle is None:
+            return
+        handle.get_output()
+
     def _sample_and_propose(self, state):
         """`sample_tokens()` 的正常路径（单独一层，好让失败态只包一层 try）。"""
         # 68 关：结构化输出的掩码必须在**采样之前**打到 logits 上（上游同序：
@@ -1344,7 +1541,10 @@ class GPUModelRunner:
         # 所以掩码之后的那份就是采样器看到的那一份——`processed_*` 模式的 logprobs
         # 因此天然包含掩码，不存在"交付的 logprobs 认为非法 token 还有概率"。
         self._apply_grammar_bitmask(state)
-        scheduled_spec = state.scheduler_output.scheduled_spec_decode_tokens
+        # 草稿的"值来源"：同步路径就是协议里的（执行侧照抄了它），异步路径是执行侧自己补的
+        # 那份（`_update_states` 里解析并记下）。两条路都用 `_resolved_spec_decode_tokens`，
+        # 于是"验证的候选"与"写进输入缓冲的候选"永远是同一份。
+        scheduled_spec = self._resolved_spec_decode_tokens
         spec_metadata = state.spec_metadata
         if spec_metadata is not None and spec_metadata.draft_token_ids.shape[0] > 0:
             # ---- 投机路径：验证草稿 ----
@@ -1452,14 +1652,25 @@ class GPUModelRunner:
         68 关：logprobs 与 token **用同一张 valid_mask 裁**（同一处 `parse_output`），
         所以被拒绝的候选位在两边同时消失——这就是"截断后的尾部不能漏出"的机制。
         """
+        sampler_output = self._run_spec_sampler(state, spec_metadata, scheduled_spec)
+        return self._parse_spec_sampler_output(state, sampler_output)
+
+    def _run_spec_sampler(self, state, spec_metadata, scheduled_spec):
+        """**只跑验证内核**（结果仍是 device 张量，不拷回）——异步路径在这里就返回句柄。"""
         sampling_metadata = SamplingMetadata.from_input_batch(
             self.input_batch, list(range(self.input_batch.num_reqs)), device=self.device,
             scheduled_spec_decode_tokens=scheduled_spec,
             logprobs_mode=self.logprobs_mode)
         draft_probs = self._get_spec_decode_draft_probs(spec_metadata)
-        sampler_output = self.rejection_sampler(
+        return self.rejection_sampler(
             spec_metadata, draft_probs, state.logits, sampling_metadata)
 
+    def _parse_spec_sampler_output(self, state, sampler_output):
+        """验证内核的 device 结果 → 每请求一串 token（无效位置裁掉、非 ready 的给空）。
+
+        **这是投机路径上唯一的 D2H**（`parse_output` 里的 `cpu().numpy()`）：同步路径当场做，
+        异步路径推迟到 `get_output()`（交付边界）。
+        """
         # 未 ready 的行整行丢弃（中间 prefill 块：logits 有效，但这一轮不该产出 token）。
         # 上游用同一个 `discard_req_indices` 参数（它的 `discard_request_mask`），
         # 并在那里顺手把对应 generator 的 offset 退回去。

@@ -154,6 +154,23 @@ class ModelRunnerOutput:
         return cls(req_ids=[], req_id_to_index={}, sampled_token_ids=[])
 
 
+class AsyncModelRunnerOutput:
+    """执行侧交回的**异步结果句柄**（对应 vLLM `v1/outputs.py::AsyncModelRunnerOutput`）。
+
+    为什么要有这一层：同步路径下 `sample_tokens()` 返回的就是 CPU 上的
+    `ModelRunnerOutput`（token 已经是 Python list）；异步路径下**先别把结果拷回来**——
+    拷贝在一条单独的 CUDA 流上跑着，句柄先交出去，谁真的需要值谁调 `get_output()`。
+
+    好处是 CPU 不必在"拷回"上干等：调度下一轮的预算/KV/占位都可以和这次拷贝重叠。
+    代价是**缓冲生命周期**：句柄没交出结果之前，产生它的那份 device 显存和那块 pinned
+    主机缓冲都不能被复用（70 关的 `test_async_buffer_lifetime.py` 就盯这条）。
+    """
+
+    def get_output(self) -> "ModelRunnerOutput":
+        """等拷贝完成并把结果交出来（**只允许交付一次**：二次交付等于用一份可能被复用的缓冲）。""" 
+        raise NotImplementedError
+
+
 @dataclass
 class RequestOutput:
     """用户可见的结果：累计 token（不是增量），外加结束状态。`text` 由 tokenizer 提供。

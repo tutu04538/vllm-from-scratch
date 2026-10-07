@@ -52,6 +52,11 @@ _MAX_NO_PROGRESS_STEPS = 2
 _MAX_TRACE_STEPS = 200
 
 
+#: 每步每请求采样的 token 数（自回归模型恒为 1）。异步调度的占位宽度 =
+#: `num_sampled_tokens_per_step + 本轮采用的草稿数`（上游同名字段）。
+NUM_SAMPLED_TOKENS_PER_STEP = 1
+
+
 class Scheduler:
     def __init__(self, scheduler_config, kv_cache_manager, max_model_len: int,
                  speculative_config=None, structured_output_manager=None) -> None:
@@ -265,8 +270,13 @@ class Scheduler:
             # 超出已提交历史的那部分" = 采用的草稿数（预算不够时自动截短，多余的草稿丢掉——
             # 它们没被验证，留着下一轮就会拿旧草稿去对新的历史）
             if request.spec_token_ids:
+                # 异步调度下 `num_tokens_with_spec` 里含**占位符**（还没兑现的输出位置），
+                # 所以要减掉 `num_output_placeholders` 才是"本轮真正要验证的草稿数"
+                # （上游同一行公式：`num_new_tokens + num_computed_tokens - num_tokens
+                #  - num_output_placeholders`）。
                 num_spec_tokens = (num_new_tokens + request.num_computed_tokens
-                                   - request.num_tokens)
+                                   - request.num_tokens
+                                   - request.num_output_placeholders)
                 if num_spec_tokens > 0:
                     scheduled_spec_decode_tokens[request.request_id] = \
                         request.spec_token_ids[:num_spec_tokens]
@@ -376,7 +386,12 @@ class Scheduler:
         """
         if start is None:
             start = request.num_computed_tokens
-        num_new_tokens = request.num_tokens_with_spec - start
+        # 70 关：异步调度下**占位符也要算进"本轮要算的行数"**——占位符对应的输出位置已经
+        # 被算过/正在算，而 `num_tokens_with_spec` 只数**已确认**的 token，所以要加回来
+        # （上游同一行：`num_tokens_with_spec + num_output_placeholders - num_computed_tokens`，
+        # 注释原话："output placeholders are also included in the computed tokens count"）。
+        num_new_tokens = (request.num_tokens_with_spec
+                          + request.num_output_placeholders - start)
         num_new_tokens = min(num_new_tokens, token_budget, input_budget - self.draft_slots)
         # 给本轮采样出来的 token 留位置：算到 start + n 之后还要能放下 1 个新 token
         num_new_tokens = min(num_new_tokens,
@@ -394,8 +409,15 @@ class Scheduler:
             new_block_ids.append(req_to_new_blocks[req_id].get_block_ids(allow_none=True))
             # 注意：resumed 请求的"新增块"是**整张表**（见 sched/output.py 的说明），
             # 执行侧靠 resumed_req_ids 区分"替换"与"追加"两种语义
+            # 70 关：`num_computed_tokens` 照上游原样发（异步下它含**乐观预留**的行）。
+            # 执行侧会把它校正成"已确认历史"再用来算 positions——上游在 GPU 侧做同一件事
+            # （`update_num_computed_tokens_for_batch_change`：`prev_computed + valid_count`），
+            # 本仓库在校正阶段用 CPU 镜像做（见 `GPUModelRunner._update_states` 的 async 分支）。
             num_computed_tokens.append(request.num_computed_tokens)     # 旧值
-            num_output_tokens.append(request.num_output_tokens)
+            # `num_output_tokens` 要**加上占位**（上游同款）：执行侧拿它判断"这条请求已有
+            # 多少输出"，不报占位就会把执行侧刚写进去的那一段当成"该丢弃的尾部"。
+            num_output_tokens.append(request.num_output_tokens
+                                     + request.num_output_placeholders)
             if req_id not in self.prev_step_scheduled_req_ids:
                 # 上一轮没被调度过（新接纳、或刚从抢占恢复）：执行侧可能没有它的历史，
                 # 带上完整 token 列表。**不是每轮都复制全部历史**。
@@ -433,6 +455,12 @@ class Scheduler:
         request.status = RequestStatus.PREEMPTED
         request.num_computed_tokens = 0
         request.spec_token_ids = []
+        # 70 关（异步调度）：被抢占时**这一轮已经发出去、还没回来的**输出变成 stale。
+        # 它的 token 照常交付给用户（丢掉会扰动投机的接受判决），但**不许再改计数**——
+        # 进度已经归零、占位也要清零，stale 的那份结果再减就会减出负数（上游同款注释：
+        # "a stale delivery must not decrement them (it would underflow)"）。
+        request.num_stale_output_tokens = request.num_in_flight_tokens
+        request.num_output_placeholders = 0
         request.num_preemptions += 1
         self.num_preemptions += 1
         # 放到 waiting **队首**：它已经有一条历史了，应该比新来的先得到机会
@@ -471,9 +499,15 @@ class Scheduler:
         for req_id, num_scheduled_token in scheduler_output.num_scheduled_tokens.items():
             request = self.requests[req_id]
             request.num_computed_tokens += num_scheduled_token
+            # 70 关：在飞的 token 数（抢占时用它把"在飞的那部分"标成 stale，见
+            # `update_from_output` 的抵扣与 `_preempt_request`）。上游在同一处 +。
+            request.num_in_flight_tokens += num_scheduled_token
             # 派生判断：还没算到已有历史的末尾（中间 prefill 块）。57A 没有代码依赖它，
             # 但它是"这轮该不该产出 token"的权威口径，执行侧按同一口径判 ready。
-            request.is_prefill_chunk = request.num_computed_tokens < request.num_tokens
+            # 70 关：`num_tokens` 是**已确认**的，异步下还要加上占位（上游同款）——不然
+            # "还在飞的输出"会被当成"还没算到的历史"，请求会被长期判成中间 prefill 块。
+            request.is_prefill_chunk = request.num_computed_tokens < (
+                request.num_tokens + request.num_output_placeholders)
             # 68 关：只有"已在解码阶段"的结构化输出请求才算数。中间 prefill 块这一轮不产出
             # token，给它填掩码纯属浪费（它的 grammar 也还没开始走）。上游同一个位置置位。
             scheduler_output.has_structured_output_requests |= (
@@ -527,6 +561,19 @@ class Scheduler:
         # 去结果里取——**不能**按 Runner 的行顺序 zip（Runner 允许重排）。
         for req_id, _num_scheduled in scheduler_output.num_scheduled_tokens.items():
             request = self.requests.get(req_id)
+            # 70 关：先按"这一轮排了多少行"抵扣 stale 份额（上游按 num_scheduled_tokens 抵扣，
+            # 不是按交付的 token 数——stale 的结果可能整批被丢弃）。
+            stale = False
+            if request is not None:
+                request.num_in_flight_tokens = max(
+                    0, request.num_in_flight_tokens - _num_scheduled)
+                if request.num_stale_output_tokens > 0:
+                    stale = True
+                    request.num_stale_output_tokens -= _num_scheduled
+                    if request.num_stale_output_tokens < 0:
+                        raise RuntimeError(
+                            f"{req_id!r} 的 stale 份额被抵扣成负数：说明 stale 记账与调度"
+                            f"口径不一致（上游同款断言）")
             if request is None or request.is_finished():
                 # 执行期间被 abort 掉了：跳过（它的收尾已经在 abort 路径里做过）
                 continue
@@ -542,8 +589,13 @@ class Scheduler:
             if scheduled_spec_token_ids and new_token_ids:
                 num_accepted = max(len(new_token_ids) - 1, 0)      # 去掉最后那个 token
                 num_rejected = len(scheduled_spec_token_ids) - num_accepted
-                if request.num_computed_tokens > 0:
-                    request.num_computed_tokens -= num_rejected
+                # stale 的结果对应的是抢占**之前**那一轮的计划：那时的被拒数已经随进度归零
+                # 一起作废了，再减一次等于重复回退（上游同款保护）。
+                if not stale:
+                    if request.num_computed_tokens > 0:
+                        request.num_computed_tokens -= num_rejected
+                    if request.num_output_placeholders > 0:
+                        request.num_output_placeholders -= num_rejected
                 # 59：统计**已经验证过**的候选（排了 K 枚、验完接受 a 枚）。
                 # 提议数（上一轮提了多少）不能拿来做接受数：这一轮可能只采用了它的前缀。
                 spec_decoding_stats = self.make_spec_decoding_stats(
@@ -553,7 +605,8 @@ class Scheduler:
 
             stopped = False
             if new_token_ids:
-                new_token_ids, stopped = self._update_request_with_output(request, new_token_ids)
+                new_token_ids, stopped = self._update_request_with_output(
+                    request, new_token_ids, is_stale=stale)
 
             # 68 关：**只有真正提交的 token** 才推进 grammar（068 §2）。
             # 掩码阶段对草稿的试走已经回滚过，所以这里推的是"实际发生的历史"；
@@ -588,7 +641,7 @@ class Scheduler:
             # 那一层也已经写完——同一个 group 的各层都有效，才能声明"完整可复用"（199 §9）。
             # 这条不变量由 check_step57_draft_model.py §6 的用例盯着（发布边界 ≤ draft 进度，
             # 且发布位置上的 draft KV 确实非零）。
-            self._publish_blocks(request)
+            self._publish_blocks(request, is_stale=stale)
 
             should_emit = bool(new_token_ids) or stopped
             if not should_emit:
@@ -614,6 +667,15 @@ class Scheduler:
         if stopped_running:
             stopped_ids = {request.request_id for request in stopped_running}
             self.running = [r for r in self.running if r.request_id not in stopped_ids]
+            # 70 关（异步调度）：停下来的请求**也可能正排在 waiting 里**——它在结果回来之前
+            # 被抢占过（抢占把它放回 waiting），而它的结果随后才到、并且停止判定在这里发生。
+            # 不清 waiting 的话会留下一个"已经结束、已经从 requests 里摘掉"的幽灵：下一轮
+            # 调度把它从 waiting 捞出来放进计划，`_update_after_schedule()` 当场 KeyError
+            # （上游同样处理这一种：它的 `stopped_preempted_reqs` 集合就是干这个的）。
+            waiting_ids = set(self.waiting.request_ids())
+            for request in stopped_running:
+                if request.request_id in waiting_ids:
+                    self.waiting.remove_request(request)
 
         self.spec_decoding_stats = spec_decoding_stats
         return EngineCoreOutputs(outputs=outputs, finished_requests=finished_now)
@@ -634,18 +696,39 @@ class Scheduler:
                                          num_accepted_tokens=num_accepted_tokens)
         return spec_decoding_stats
 
-    def _publish_blocks(self, request: Request) -> None:
+    def _publish_blocks(self, request: Request, is_stale: bool = False) -> None:
         """把这条请求已经确定的完整块登记进前缀缓存（关缓存时是空操作）。
 
         发布上限是 `floor(min(num_computed_tokens, num_tokens)/block_size)`：最后一个不满的
         块、以及预留给提议者的 lookahead 位置**都不算**（"预留块不等于 token 已计算"）。
+
+        70 关（异步调度）：还要再减掉 `num_output_placeholders`——那些位置是**乐观预留**的，
+        "预计会被接受"的 token 绝不能进 hash/发布（否则别的请求会命中一段根本没算出来的 KV）。
+        stale 的那一批结果连碰都不该碰发布（抢占已经把块还回去了）。
         """
+        if is_stale:
+            return
         if self.enable_prefix_caching:
-            self.kv_cache_manager.cache_blocks(request, request.num_computed_tokens)
+            self.kv_cache_manager.cache_blocks(request, self.publish_bound(request))
+
+    @staticmethod
+    def publish_bound(request: Request) -> int:
+        """能被发布的"已确认进度"上界（同步路径下就是 `num_computed_tokens`）。
+
+        `AsyncScheduler` 覆写它（减去占位符）。上游把这条减法写在
+        `AsyncScheduler._update_request_with_output()` 里；本仓库放在"发布口径"这一处，
+        好处是"同步/异步只差一个表达式"，不会两处各减一次。
+        """
+        return request.num_computed_tokens
 
     def _update_request_with_output(self, request: Request,
-                                    new_token_ids: list[int]) -> tuple[list[int], bool]:
-        """逐 token 提交 + 判停。停下就**截断本轮剩余候选**（后面的 token 不提交）。"""
+                                    new_token_ids: list[int],
+                                    is_stale: bool = False) -> tuple[list[int], bool]:
+        """逐 token 提交 + 判停。停下就**截断本轮剩余候选**（后面的 token 不提交）。
+
+        `is_stale`（70 关）：这一批结果属于抢占前的计划——只交付 token、不改占位计数。
+        `AsyncScheduler` 覆写本方法时用它（同步路径恒 False，行为一字不变）。
+        """
         stopped = False
         for num_new, output_token_id in enumerate(new_token_ids, 1):
             request.append_output_token_ids(output_token_id)

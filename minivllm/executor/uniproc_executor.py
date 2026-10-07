@@ -14,7 +14,16 @@ Executor 回答的是"**交给哪种执行部署**"：本关只有单进程一�
 3 层同名的转发看着冗余，但换部署方式（多进程、远端）时改的只有这一层。
 """
 
+from concurrent.futures import Future
+
 from ..worker.worker import Worker
+
+
+def _as_future(value):
+    """把已经算出来的值包成一个**已完成**的 Future（同进程执行端的 `non_block` 语义）。"""
+    future = Future()
+    future.set_result(value)
+    return future
 
 
 class UniProcExecutor:
@@ -45,11 +54,27 @@ class UniProcExecutor:
         self.driver_worker.initialize_from_config(kv_cache_config)
         self.driver_worker.compile_or_warm_up_model()
 
-    def execute_model(self, scheduler_output):
-        return self.driver_worker.execute_model(scheduler_output)
+    def supports_async_scheduling(self) -> bool:
+        """转问 Worker（上游同样是 executor 层问一次，`config/vllm.py:1147`）。
 
-    def sample_tokens(self, grammar_output):
-        return self.driver_worker.sample_tokens(grammar_output)
+        上游这里要按 executor backend 分派（多进程 executor 支持、某些分布式后端不支持）；
+        本仓库只有同进程一种，直接转发。
+        """
+        return bool(self.driver_worker.supports_async_scheduling())
+
+    def execute_model(self, scheduler_output, non_block: bool = False):
+        """`non_block=True`（70 关）返回 `concurrent.futures.Future`。
+
+        本仓库的同进程执行端在**调用返回时**就已经把 GPU 工作发射出去了（CUDA 是异步提交），
+        所以 Future 立刻是完成态——"非阻塞"在这里的含义是"调用方不必等结果值"，而不是
+        "另起一个线程"。上游多进程 executor 的 Future 要跨 RPC，语义相同。
+        """
+        output = self.driver_worker.execute_model(scheduler_output, non_block=non_block)
+        return _as_future(output) if non_block else output
+
+    def sample_tokens(self, grammar_output, non_block: bool = False):
+        output = self.driver_worker.sample_tokens(grammar_output, non_block=non_block)
+        return _as_future(output) if non_block else output
 
     def take_draft_token_ids(self):
         return self.driver_worker.take_draft_token_ids()
