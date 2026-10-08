@@ -243,6 +243,24 @@ class Eagle3ForCausalLM(nn.Module):
         # 本关只用它把**采样出来的 draft id** 映射回 target id（完整 TLI 采样空间语义属 67 关）。
         self.d2t = None
         self.t2d = None
+        # 72 关（P-EAGLE）：并行提议时并行槽位的特征要换成模型自带的常量向量。
+        # 上游在 `parallel_drafting=True` 时注册一个**非持久** buffer `mask_hidden`
+        # （形状 `(1, fc_input_size)`，`fc_input_size = hidden × 辅助层数`），
+        # 并要求权重文件里带这一项（`qwen3_eagle3.py:421-426`：找不到就直接报错）——
+        # 所以"串行训练的 EAGLE3 权重开并行"在上游是加载期错误，本仓库照抄这条边界。
+        # 开关由 `SpeculativeConfig._resolve_parallel_drafting()` 写进 hf 配置（本仓库的模型
+        # 只吃 config dict，上游模型是从 live `vllm_config.speculative_config` 读的）。
+        self.use_parallel_drafting = bool(config.get("parallel_drafting", False))
+        if self.use_parallel_drafting:
+            # 宽度 = 模型**吃进去**的特征宽度（= target_hidden × 辅助层数），
+            # 与上游 `register_buffer("mask_hidden", torch.zeros(1, self.model.fc_input_size))` 同义
+            fc_input_size = int(getattr(self.model, "target_hidden_size",
+                                        config["hidden_size"])) * max(
+                int(getattr(self.model, "num_aux_layers", 1)), 1)
+            self.register_buffer("mask_hidden", torch.zeros(1, fc_input_size),
+                                 persistent=False)
+        else:
+            self.mask_hidden = None
 
     def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
                 hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -305,9 +323,18 @@ class Eagle3ForCausalLM(nn.Module):
         buffers = {}
         model_weights, head_weights = [], []
         has_embed = False
+        includes_mask_hidden = False
         for name, tensor in weights:
             if name in ("d2t", "t2d"):
                 buffers[name] = tensor
+                continue
+            if "mask_hidden" in name:
+                # 72 关：并行提议的常量特征。开了并行而权重里没有 → 加载期报错（上游同款）；
+                # 没开并行却带了它 → 忽略（上游打 warning 跳过，本仓库的"认不出就报错"规则
+                # 不适用于它：这是**模型可选**的 buffer，不是"这个家族没实现的块"）。
+                if self.use_parallel_drafting:
+                    self.mask_hidden.copy_(tensor.reshape(1, -1))
+                    includes_mask_hidden = True
                 continue
             # 检查点把 draft 的 fc/norm 放在**顶层**、那唯一一层叫 `midlayer.*`；
             # 模型里它们在 `model.` 下（上游的权重名映射同样要做这一步）。
@@ -331,6 +358,12 @@ class Eagle3ForCausalLM(nn.Module):
         if head_weights:
             loader = AutoWeightsLoader(self, skip_prefixes=["model."] if model_weights else None)
             loaded |= loader.load_weights(iter(head_weights))
+        if self.use_parallel_drafting and not includes_mask_hidden:
+            raise ValueError(
+                "权重里没有 `mask_hidden`，但模型是按并行提议（parallel_drafting=True）建的："
+                "并行槽位的特征必须用 checkpoint 自带的常量向量（上游 qwen3_eagle3.py:421-426 "
+                "同款报错）。这说明这份 draft 权重是**串行训练**的——不能用它做并行提议，"
+                "请换成按并行草稿训练的 checkpoint（需求 072 §4 最后一条）")
         if "d2t" in buffers:
             self.d2t = buffers["d2t"].to(torch.int64)
         if "t2d" in buffers:

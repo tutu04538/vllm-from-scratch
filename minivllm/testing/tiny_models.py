@@ -131,7 +131,8 @@ def tiny_qwen3_dir(name: str, seed: int = 0) -> str:
 
 
 def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
-                    aux_layers=(0, 1), seed: int = 0) -> str:
+                    aux_layers=(0, 1), seed: int = 0,
+                    parallel_drafting: bool = False, mask_token_id: int | None = None) -> str:
     """生成一份**与 tiny target 规格匹配**的 EAGLE3 draft（随机但确定；只给测试）。
 
     与 `tiny_qwen3_dir` 的区别（这些就是 63 关要适配的东西）：
@@ -166,6 +167,13 @@ def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
         "tie_word_embeddings": False,               # draft 的 lm_head 是自己的（同词表）
         "torch_dtype": target_config.get("torch_dtype", "float32"),
     }
+    if parallel_drafting:
+        # 72 关（P-EAGLE）：按并行草稿训练的 checkpoint 会带这两样东西
+        #   config.mask_token_id   并行槽位填的占位符 id
+        #   权重 mask_hidden        那些槽位的常量特征（形状 (1, hidden × 辅助层数)）
+        # 上游模型在 `parallel_drafting=True` 时注册 `mask_hidden` buffer，加载器找不到就直接报错。
+        config["mask_token_id"] = int(mask_token_id if mask_token_id is not None else 0)
+        config["parallel_drafting"] = True
     generator = torch.Generator().manual_seed(seed)
     scale = 0.02
     def rand(*shape):
@@ -190,10 +198,26 @@ def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
         "midlayer.self_attn.q_norm.weight": torch.ones(head_dim, dtype=torch.float32),
         "midlayer.self_attn.k_norm.weight": torch.ones(head_dim, dtype=torch.float32),
     }
+    if parallel_drafting:
+        weights["mask_hidden"] = rand(1, hidden * num_aux_layers)
     out = Path(tempfile.mkdtemp(prefix=f"minivllm_eagle3_{target_name}_"))
     (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     save_file(weights, str(out / "model.safetensors"))
     return str(out)
+
+
+def tiny_pard_dir(target_name: str = "tiny_gqa", *, pard_token: int = 0, seed: int = 0) -> str:
+    """生成一份**PARD 格式**的 tiny draft（72 关；只给测试）。
+
+    PARD 是"普通 draft model 的并行版"：不吃 target hidden、不左移，输入只多了一条约定——
+    并行槽位要填 checkpoint 自带的 `pard_token`（模型训练时的占位符）。
+    权重就是 tiny qwen3 那一份（同一 seed），只把 `pard_token` 写进 config。
+    """
+    out = tiny_qwen3_dir(target_name, seed=seed)
+    config = json.loads((Path(out) / "config.json").read_text())
+    config["pard_token"] = int(pard_token)
+    (Path(out) / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    return out
 
 
 def tiny_mtp_dir(target_name: str = "tiny_gqa", *, naming: str = "mtp",

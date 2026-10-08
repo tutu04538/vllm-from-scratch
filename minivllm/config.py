@@ -318,6 +318,13 @@ class SpeculativeConfig:
     # 容量）裁剪；`None` = 关（固定用 `num_speculative_tokens`）。
     # 它是"用户给的表"，**不是自适应策略**（不按接受率调 K，需求 071 §1 明确禁止自创）。
     num_speculative_tokens_per_batch_size: list[tuple[int, int, int]] | None = None
+    # 72 关（上游 `SpeculativeConfig.parallel_drafting`，`config/speculative.py:168`）：
+    # 并行提议——一次 forward 同时给出 K 个位置的 hidden（PARD / P-EAGLE），而不是串行跑 K 次。
+    # 它**要求按并行草稿训练的权重**：普通 EAGLE/draft 权重开它不会报错，只会让草稿质量变差
+    # （上游注释原话："requires the speculative model be trained to support parallel drafting"）。
+    # 输入布局随之变化：把"锚点 + K−1 个 mask token"排成一块（见 `max_num_new_slots_for_drafting`
+    # 与 `spec_decode/utils.py::expand_parallel_draft_inputs`）。
+    parallel_drafting: bool = False
 
     @staticmethod
     def _is_custom_proposer_path(model: str | None) -> bool:
@@ -417,6 +424,9 @@ class SpeculativeConfig:
         # 上游是懒校验（在 `Scheduler.__init__` 建查找表时才炸），本仓库把配置错误提前到这里：
         # 症状相同，但启动期就报，而不是排到第一轮调度才炸（差异记 docs/step71_alignment.md §6）。
         self._resolve_dynamic_sd()
+        # 72 关：并行提议的取值校验（上游只在 docstring 里写"只与 EAGLE 和 draft model 兼容"，
+        # 本仓库按"不静默降级"的约定在配置期明确拒绝其它方法）。
+        self._resolve_parallel_drafting()
 
     @staticmethod
     def _draft_model_type(draft_model_config) -> str | None:
@@ -620,6 +630,10 @@ class SpeculativeConfig:
         hf_config = {**target_hf,
                      "n_predict": n_predict,
                      "architectures": ["Qwen3MTPModel"]}
+        if self.parallel_drafting:
+            # 72 关：MTP 的 draft 配置是**从 target 派生**的（没有用户给的 draft 目录），
+            # 所以并行开关要在这里补进 hf 配置，模型才会注册 `mask_hidden` buffer
+            hf_config["parallel_drafting"] = True
         return replace(target_model_config, hf_config=hf_config)
 
     def _resolve_medusa(self) -> None:
@@ -693,6 +707,48 @@ class SpeculativeConfig:
     def uses_medusa(self) -> bool:
         """是否走 Medusa 多头提议（上游 Runner 的分派判据就是 `method == "medusa"`）。"""
         return self.method == "medusa"
+
+    #: 72 关：支持并行提议的方法（上游 docstring："Only compatible with EAGLE and draft model
+    #: methods"）。EAGLE 系与 MTP 都吃 target hidden（`pass_hidden_states_to_model=True`，左移布局），
+    #: draft_model 走不左移布局 —— 这正是 P-EAGLE 与 PARD 两条输入协议。
+    _PARALLEL_DRAFTING_METHODS = ("eagle", "eagle3", "mtp", "draft_model")
+
+    def _resolve_parallel_drafting(self) -> None:
+        """并行提议的取值校验（72 关）。
+
+        上游 `parallel_drafting` 只在 docstring 里声明"只与 EAGLE 和 draft model 兼容"，
+        代码里没有一条检查；不兼容的组合（ngram/suffix/medusa/extract/custom_class）会在
+        `SpecDecodeBaseProposer` 里被 `needs_extra_input_slots` 那条分支静默忽略——
+        也就是"配置写了、实际没生效"。本仓库按约定在配置期明确拒绝。
+
+        K 的约束也在这里：并行提议一次要采 K 行，K=1 时没有 mask 行（P-EAGLE 的净增槽位是 0，
+        仍要能跑），K=0 与串行路径一样不在配置期拦（`num_speculative_tokens=0` 时提议者根本
+        不建）。
+        """
+        if not self.parallel_drafting:
+            return
+        if self.method not in self._PARALLEL_DRAFTING_METHODS:
+            raise ValueError(
+                f"parallel_drafting=True（并行提议）只支持 "
+                f"{self._PARALLEL_DRAFTING_METHODS}，收到 method={self.method!r}："
+                f"这条输入协议要『一次 forward 出 K 个位置』的权重，其余方法的提议者不消费它的"
+                f"mask/槽位（上游没有这条校验，写了会被静默忽略）。DFlash / DSpark 的并行协议不同，"
+                f"按需求顺序在 76/77 关实现（需求 072 §5 明确要求不能拿同一套 mask 代替）")
+        if self.num_speculative_tokens <= 0:
+            raise ValueError(
+                f"parallel_drafting=True 需要 num_speculative_tokens > 0，收到 "
+                f"{self.num_speculative_tokens}：一次并行 forward 要采 1 个锚点 +（K−1）个 mask")
+        # 把开关**写进 draft 的 hf 配置**：本仓库的模型只吃一个 config dict（64 关起就是这个
+        # 约定），而上游模型是从 live `vllm_config.speculative_config` 读这个开关来决定要不要
+        # 注册 `mask_hidden` buffer。不注入的话，一份**合法的 P-EAGLE 权重**会因为模型没建
+        # buffer 而加载失败（权重里的 `mask_hidden` 无处可去）。
+        # 只有吃 target hidden 的 EAGLE 系需要它（PARD 是普通 LM，没有 mask hidden）。
+        if self.use_eagle() and self.draft_model_config is not None:
+            draft_hf = dict(self.draft_model_config.hf_config or {})
+            if not draft_hf.get("parallel_drafting"):
+                draft_hf["parallel_drafting"] = True
+                object.__setattr__(self, "draft_model_config",
+                                   replace(self.draft_model_config, hf_config=draft_hf))
 
     #: 71 关：**能真正按轮改 K** 的方法。判据不是"名字看起来行"，而是上游代码里提议者
     #: 确实把 `num_spec_tokens_to_schedule` 当参数用、且支持变宽/零宽返回：
@@ -851,21 +907,52 @@ class SpeculativeConfig:
     def max_num_new_slots_for_drafting(self) -> int:
         """每条被调度的请求，draft 第一遍比 target query **多**要几个输入槽位。
 
-        上游 `SpeculativeConfig.max_num_new_slots_for_drafting`（本机 0.28.0）的分支是
-        按"用不用 draft 模型 / 是不是并行提议"分的：普通自回归 draft model → **1**，
-        ngram / MTP → 0，P-EAGLE → K-1，DFlash / PARD → K。
+        逐条照抄上游 `SpeculativeConfig.max_num_new_slots_for_drafting`（本机 0.28.0 的
+        `config/speculative.py:1421-1459`）：
 
-        本关只实现**普通自回归 draft**：它保留一个未切片的 token 作为第一遍的最后一行
-        （就是 target 本轮刚采出的那个），所以是 1；ngram 不跑模型、不写 KV，是 0。
-        64 关的 `extract_hidden_states` 也是 0：它不跑 draft 模型，写的是 **target 本轮
-        那些 query 行自己的槽位**（与上游的分支表一致：只有 `uses_draft_model()` 才是 1）。
+        ==================== ============= ======== ==================
+        算法                  method       并行      额外槽位
+        ==================== ============= ======== ==================
+        EAGLE3               eagle3       否       0
+        P-EAGLE              eagle3       是       K − 1
+        DFlash               dflash       是       K        （76 关）
+        DSpark               dspark       是       K − 1    （77 关）
+        MTP                  mtp          否       0
+        N-gram               ngram        否       0
+        Draft model          draft_model  否       1
+        PARD                 draft_model  是       K
+        ==================== ============= ======== ==================
+
+        **为什么 P-EAGLE 是 K−1、PARD 是 K**：并行提议一次要采样的行是"1 个锚点 + (K−1) 个
+        mask"= K 行（`extra_slots_per_request = K`）；而"比 target query 多占几行"取决于那一行
+        能不能复用——EAGLE 左移会把 target 块的最后一行**改放锚点**（位置/槽位不变，不新增行），
+        所以净增 K−1；PARD 不左移，target 那一行原样当内容行、锚点与 mask 全部接在后面，净增 K。
+
+        64 关的 `extract_hidden_states` 也是 0：它不跑 draft 模型，写的是 **target 本轮那些
+        query 行自己的槽位**（与上游的分支表一致：只有 `uses_draft_model()` 才是 1）。
 
         **不要和 `num_lookahead_tokens` 混**：那个是"额外保留几个 KV 位置"（=K），
         这个是"draft 输入工作区每请求多占几行"。
         """
+        if self.uses_dflash():
+            # DFlash 用 1 个 bonus query + K 个 mask query（72 关不实现 DFlash，属 76 关）
+            return self.num_speculative_tokens
+        if self.parallel_drafting:
+            if self.uses_draft_model():
+                # PARD 不左移：K 个 query 位置全部要新槽位
+                return self.num_speculative_tokens
+            # 复用 target 已有的那一行，只有 mask query 要新槽位
+            return self.num_speculative_tokens - 1
         if self.uses_draft_model():
+            # 普通自回归 draft 保留一个未切片的 token（target 本轮刚采出的那个）
             return 1
         return 0
+
+    def uses_dflash(self) -> bool:
+        """DFlash（76 关）。本仓库的配置期校验**不允许** `method="dflash"`，所以这里恒为 False；
+        留着它是为了让 `max_num_new_slots_for_drafting()` 与上游的分支表逐条对应
+        （76 关接进来时只需放开配置校验，槽位口径已经写对）。"""
+        return self.method == "dflash"
 
 
 @dataclass(frozen=True)

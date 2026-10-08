@@ -3629,5 +3629,71 @@
    "draft": "models/Qwen3-1.7B-eagle3（源 HF AngelSlim/Qwen3-1.7B_eagle3，本机，不跟踪）",
    "tiny": "minivllm/testing/tiny_models.py（tiny_gqa + tiny_eagle3_dir，固定 seed）"
   }
+ },
+ "step72": {
+  "results": {
+   "step": 72,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/072_PARD与P_EAGLE并行提议.md",
+   "status": "已实现并自检：parallel_drafting 配置（槽位表 PARD=K / P-EAGLE=K−1）、copy_and_expand_eagle_inputs_kernel 的逐行等价展开（两种 shift，与上游真 kernel 逐值差分）、一次 forward 出 [B,K] 的提议分支、mask token/mask hidden 解析、模型 mask_hidden 加载与缺项报错。⚠️ 本机没有按并行草稿训练的 PARD/P-EAGLE 权重 → 草稿质量与加速比**待验**（不假装通过）。",
+   "recorded_at": "2026-10-08T22:10:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "da488d6",
+    "implementation_commit": "见本轮提交（step72：PARD 与 P-EAGLE 并行提议）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 97,
+    "sha256": "d326837bf3148cad74d8a697aa375412b2c6c8e957db23e5df42154cc794f84d",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（差分测试直接调上游 copy_and_expand_eagle_inputs_kernel；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step72 -q",
+     "result": "30 passed（kernel 差分 6 + 布局 2 + 槽位 6 + 一次 forward 4 + 端到端 6 + 边界 3 + 其他）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 .. tests/step72 -q",
+     "result": "609 passed（579 + 30）"
+    },
+    {
+     "cmd": "python benchmarks/check_step72_parallel_draft.py",
+     "result": "全部通过（18 项：A 槽位 5 / B 内核差分 3 / C 一次 forward 4 / D 端到端 4 / E 模型格式 2）"
+    },
+    {
+     "cmd": "check_step58..71 共 17 个脚本 + check_step57 15 个脚本",
+     "result": "全部通过"
+    }
+   ],
+   "execution_trace": {
+    "kernel_differential": "shift∈{True,False} × K∈{1,2,4} × B=2（target 行数 4/2、被拒 3/1）：input_ids/positions/is_rejected/is_masked/token_indices_to_sample/hidden_state_mapping 与上游 Triton kernel 全等；另加 B=3（3/1/5 行、被拒 2/0/4、base=17）",
+    "pard_layout": "B=2、K=4、被拒 3/1：总行数 = (4+4)+(2+4)=14；请求 A 的行 = [token100@5][锚点901@6][mask×3 @7,8,9][padding×3 @0]；采样行 [1,2,3,4]",
+    "peagle_layout": "K=4、被拒 0：行 = [101,102,103][锚点901][mask×3]（跳过第 0 个 token、锚点复用最后一行），hidden 映射 {0:0,1:1,2:2,3:3}",
+    "one_forward": "tiny K=3、6 步：PARD 每轮 1 次 draft 前向（3 轮 3 次）、P-EAGLE 每轮 1 次（6 轮 6 次）、串行 draft 对照每轮 3 次（3 轮 9 次）",
+    "correctness": "并行 greedy == 非投机（eagle3/draft_model × K=1/4）；B=2 混批（prompt 长度 6/8）并行与串行输出相同 {'A':[7,1,1,1],'B':[7,6,7,2]}",
+    "mask_hidden": "P-EAGLE 8 个 mask 行的 hidden 全等于模型自带 mask 向量（含被拒行与 mask 区重叠的轮次）",
+    "budget": "scheduler.draft_slots == proposer.net_num_new_slots_per_request（PARD 4 / P-EAGLE 3）"
+   },
+   "known_gaps": [
+    "本机没有按并行草稿训练的 PARD/P-EAGLE 权重：models/Qwen3-1.7B-eagle3 的 15 个权重键里没有 mask_hidden、config 里没有 mask_token_id（实测）→ 质量/加速比待验",
+    "drafter 侧 CUDA Graph 属 74 关（本关并行第一遍是 eager），『图重放 == eager』未验",
+    "DFlash / DSpark 的输入协议不同，属 76/77 关（槽位表已按上游写好，但配置期不允许这两个 method）",
+    "MTP + 并行只有 tiny 断言（本机没有可用的并行 MTP checkpoint）",
+    "M-RoPE 未接（配置期拒绝，63 关已知）"
+   ]
+  },
+  "models": {
+   "target": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（2 层 / hidden 32 / vocab 11）",
+   "pard_draft": "tiny_pard_dir('tiny_gqa', pard_token=5)：tiny qwen3 + config 里的 pard_token（本机没有真实 PARD 权重）",
+   "peagle_draft": "tiny_eagle3_dir('tiny_gqa', parallel_drafting=True, mask_token_id=7)：tiny eagle3 + config.mask_token_id + 权重 mask_hidden(1,64)（本机没有真实 P-EAGLE 权重）",
+   "real_serial_eagle3": "models/Qwen3-1.7B-eagle3：**串行**训练（无 mask_hidden / mask_token_id）→ 开并行会在加载期被拒绝（探针 E1）"
+  }
  }
 }

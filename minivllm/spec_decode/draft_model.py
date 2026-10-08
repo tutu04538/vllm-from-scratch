@@ -110,6 +110,18 @@ class SpecDecodeBaseProposer:
         self.max_model_len = vllm_config.model_config.max_model_len
         # 普通自回归 draft：第一遍比 target query 多要 1 行输入（= 新采出的那个 token）
         self.num_new_slots_per_request = spec_config.max_num_new_slots_for_drafting
+        # 72 关（并行提议）：与上游 `llm_base_proposer.py:112-119` 逐行同义，**两个量不要混**：
+        #   extra_slots_per_request       这一块里"要采样"的行数 = 1 个锚点 + (K−1) 个 mask
+        #   net_num_new_slots_per_request 比 target 已经给的那一行**多占**几行
+        # 串行时 extra=1（只采锚点）；net：draft=1（尾部扩容行是新行）、EAGLE=0（左移复用那一行）。
+        self.parallel_drafting = bool(spec_config.parallel_drafting)
+        self.extra_slots_per_request = (
+            1 if not self.parallel_drafting else self.num_speculative_tokens)
+        self.net_num_new_slots_per_request = self.extra_slots_per_request - (
+            1 if (self.pass_hidden_states_to_model and self.method != "dflash") else 0)
+        self.needs_extra_input_slots = self.net_num_new_slots_per_request > 0
+        self.parallel_drafting_token_id = 0
+        self.parallel_drafting_hidden_state_tensor = None
         # 67 关（TLI）：异构词表的映射表。基类默认 None = "draft 与 target 同词表"，
         # 只有 `DraftModelProposer` 在 `use_heterogeneous_vocab` 时建它（上游同款位置）。
         self.vocab_mapping = None
@@ -178,6 +190,11 @@ class SpecDecodeBaseProposer:
         # 由提议者在写缓冲之前用 `combine_hidden_states()` 完成（上游同在 proposer 里做）
         self.hidden_states_cpu, self.hidden_states = _buffer(
             (self.max_num_tokens, hidden_size), dtype)
+        # 72 关：并行提议的 mask token / mask hidden（上游 `_init_parallel_drafting_params()`，
+        # 调用点同在基类 `__init__` 的末尾）。缺字段当场报错——静默用一个错误的 mask token
+        # 不会报错，只会让 K 枚草稿全部基于错的输入。
+        if self.parallel_drafting:
+            self._init_parallel_drafting_params()
 
     # -------- 交给子类 --------
 
@@ -308,6 +325,24 @@ class SpecDecodeBaseProposer:
                 req_ids=list(req_ids),
                 draft_token_ids=[[] for _ in req_ids],
                 draft_probs=None)
+        if self.parallel_drafting:
+            # ---- 72 关（PARD / P-EAGLE）：**一次** forward 出 K 枚 ----
+            # 上游同一处（`llm_base_proposer.py:627-632`）：`K == 1 or parallel_drafting` 共用
+            # 一条早退分支——在"锚点 + K−1 个 mask"这 K 行上各采一枚，然后 `view(-1, K)`。
+            # 采样行按"请求序 × 行内序"给出（`_parallel_first_pass()` 保证），所以每条请求拿到的
+            # 就是 [第1枚, 第2枚, …, 第K枚]；q 也**逐位置**保存（不能广播同一行）。
+            if plan.sample_rows:
+                self._sample_draft_tokens(hidden,
+                                          list(zip(plan.sample_req_ids, plan.sample_rows)),
+                                          input_batch, drafts, probs)
+            probs_rows = [row for req_id in req_ids for row in probs[req_id]]
+            self.num_drafts_proposed += sum(len(drafts[req_id]) for req_id in req_ids)
+            draft_probs = None if (not probs_rows or any(row is None for row in probs_rows)) \
+                else torch.stack(probs_rows)
+            return DraftTokenIds(
+                req_ids=list(req_ids),
+                draft_token_ids=[drafts[req_id] for req_id in req_ids],
+                draft_probs=draft_probs)
         if plan.sample_rows:
             self._sample_draft_tokens(hidden,
                                       list(zip(plan.sample_req_ids, plan.sample_rows)),
@@ -407,6 +442,10 @@ class SpecDecodeBaseProposer:
         **拒绝尾部留在工作区里但被屏蔽**：token 取 padding、position 取 0、slot 取哨兵，
         于是它既不写 KV、也不进新提议的上下文（58 §6）。
         """
+        if self.parallel_drafting:
+            # 72 关（PARD）：不左移 —— 有效行照抄、锚点与 K−1 个 mask 接在后面（一次 forward 出 K 枚）
+            return self._parallel_first_pass(rows, target_hidden_states, target_token_ids,
+                                             target_positions)
         input_rows = []
         for target in rows:
             tokens = all_token_ids[target.req_id]
@@ -549,6 +588,204 @@ class SpecDecodeBaseProposer:
             self.seq_lens_cpu[index] = base
         if self.device != "cpu":
             self.seq_lens[:len(rows)].copy_(self.seq_lens_cpu[:len(rows)])
+
+    # -------- 72 关：并行提议（PARD / P-EAGLE） --------
+
+    def _init_parallel_drafting_params(self) -> None:
+        """解析并行提议要的两个东西（上游 `_init_parallel_drafting_params()`，L350-379）。
+
+        1. **mask token**：并行槽位填哪个 token id。上游按固定顺序找**模型自带**的字段，
+           一个都没有就报错（不许猜）：
+
+               dflash_config.mask_token_id → mask_token_id → dspark_noise_token_id
+               → pard_token → ptd_token_id
+
+           为什么必须来自 checkpoint：这个 token 是模型**训练时**约定的占位符（PARD 的
+           `pard_token`、P-EAGLE 的 `mask_token_id`），换一个 token 不会报错，只会让 K 枚草稿
+           全部基于模型没见过的输入。
+        2. **mask hidden**（只有吃 target hidden 的 EAGLE 系要）：并行槽位的 hidden 要换成
+           模型自带的常量向量 `mask_hidden`（`load_model()` 之后从模型缓冲里取，见
+           `_maybe_fill_parallel_drafting_hidden_state()`）。
+        """
+        draft_hf = (self.spec_config.draft_model_config.hf_config or {}) \
+            if self.spec_config.draft_model_config is not None else {}
+        dflash_config = draft_hf.get("dflash_config") or {}
+        candidates = (
+            ("dflash_config.mask_token_id", dflash_config.get("mask_token_id")),
+            ("mask_token_id", draft_hf.get("mask_token_id")),
+            ("dspark_noise_token_id", draft_hf.get("dspark_noise_token_id")),
+            ("pard_token", draft_hf.get("pard_token")),
+            ("ptd_token_id", draft_hf.get("ptd_token_id")),
+        )
+        for name, value in candidates:
+            if value is not None:
+                self.parallel_drafting_token_id = int(value)
+                break
+        else:
+            raise ValueError(
+                "开了 parallel_drafting 但 draft 配置里找不到 mask token：上游要求 "
+                "`dflash_config.mask_token_id` / `mask_token_id` / `dspark_noise_token_id` / "
+                "`pard_token` / `ptd_token_id` 至少有一个（并行槽位要填模型训练时约定的占位符，"
+                "猜一个不会报错、只会让 K 枚草稿全部基于错的输入）")
+        if self.pass_hidden_states_to_model:
+            # 上游：`torch.empty(self.hidden_size, dtype, device)`；值在模型装好之后从
+            # `self.model.mask_hidden` 取（见 `_maybe_fill_parallel_drafting_hidden_state()`）
+            self.parallel_drafting_hidden_state_tensor = torch.empty(
+                self.hidden_size, dtype=_dtype(self.vllm_config.model_config.dtype),
+                device=self.device if self.device != "cpu" else "cpu")
+
+    def _maybe_fill_parallel_drafting_hidden_state(self) -> None:
+        """把 `mask_hidden` 从 draft 模型搬进 mask 缓冲（上游 `load_model()` 末尾那段，L1416-1424）。
+
+        上游的 EAGLE3 draft 在 `parallel_drafting=True` 时会注册一个**非持久** buffer
+        `mask_hidden`（形状 `(1, fc_input_size)`），权重文件里必须带这一项，否则加载期直接报错
+        （"mask_hidden not found in weights but model is configured for parallel drafting"）——
+        也就是说**串行训练的 EAGLE3 权重不能拿来开并行**，上游用加载期错误挡住了这件事。
+        本仓库照抄这条边界：模型没带 `mask_hidden` 就在这里报错，不静默用一个零向量。
+        """
+        if not (self.parallel_drafting and self.pass_hidden_states_to_model):
+            return
+        model = self.model
+        mask_hidden = getattr(model, "mask_hidden", None)
+        if mask_hidden is None:
+            raise ValueError(
+                "parallel_drafting=True 的 EAGLE 系 draft 必须在权重里带 `mask_hidden`"
+                "（上游模型在并行模式下注册这个 buffer、加载器找不到就直接报错）。"
+                "本机这份 draft 权重是**串行训练**的：不能用它做并行提议，"
+                "请换成按并行草稿训练的 checkpoint（需求 072 §4 最后一条）")
+        flat = mask_hidden.reshape(-1).to(dtype=self.parallel_drafting_hidden_state_tensor.dtype,
+                                          device=self.parallel_drafting_hidden_state_tensor.device)
+        if self.method == "eagle3" and hasattr(model, "combine_hidden_states"):
+            # EAGLE3：mask_hidden 存的是**多个辅助层**的拼接，先过 fc 投影（上游同款）
+            flat = model.combine_hidden_states(flat.reshape(1, -1)).reshape(-1)
+        if flat.numel() != self.parallel_drafting_hidden_state_tensor.numel():
+            raise ValueError(
+                f"mask_hidden 投影后是 {flat.numel()} 维，缓冲是 "
+                f"{self.parallel_drafting_hidden_state_tensor.numel()} 维：draft 的 hidden_size "
+                f"配置与权重不一致")
+        self.parallel_drafting_hidden_state_tensor.copy_(flat)
+
+    def _parallel_first_pass(self, rows: list[TargetRows], target_hidden_states,
+                             target_token_ids, target_positions) -> FirstPassPlan:
+        """并行提议的第一遍：**一次**排出 `[有效行][锚点][K−1 mask][被拒行]`（72 关）。
+
+        与串行的区别只在布局（上游用同一个 kernel，靠 `shift_input_ids` 分叉）：
+
+            P-EAGLE（shift=True，吃 hidden）：跳过 target 块第 0 个 token，锚点复用最后一行
+            PARD   （shift=False，不吃 hidden）：整块原样复制，锚点与 mask 接在后面
+
+        采样行 = 锚点 + 所有 mask 行（共 K 行），**按"请求序 × 行内序"排列** —— 这正是
+        `propose()` 里一次 forward 之后能直接 `view(-1, K)` 的原因。
+
+        与串行路径共享的不变量一条不少：输入与 positions 来自**本轮真正喂进 target 的那份缓冲**
+        （63 关）、被拒尾部打 `is_rejected` 掩码（槽位是哨兵、不算上下文）、
+        槽位用 `compute_new_slot_mapping(num_new_tokens=net)` 按新 positions 重算。
+        """
+        from .utils import ParallelFirstPass, expand_parallel_draft_inputs, \
+            compute_new_slot_mapping, extend_all_queries_by_N
+
+        if target_token_ids is None or target_positions is None:
+            raise ValueError(
+                "并行提议的第一遍需要本轮 target 的原始输入（target_token_ids / target_positions）："
+                "上游 kernel 就是在这两份缓冲上展开的，本仓库不自己重建行")
+        num_tokens_in = sum(int(target.target_rows) for target in rows)
+        tokens = [int(t) for t in target_token_ids[:num_tokens_in]]
+        positions_in = [int(p) for p in target_positions[:num_tokens_in]]
+        if len(tokens) != num_tokens_in or len(positions_in) != num_tokens_in:
+            raise RuntimeError(
+                f"本轮 target 的输入行数 {len(tokens)} 与调度快照的行数之和 {num_tokens_in} "
+                f"不一致：控制面/执行面口径不一致（不是模型问题）")
+
+        expanded: ParallelFirstPass = expand_parallel_draft_inputs(
+            tokens, positions_in, rows,
+            extra_slots_per_request=self.extra_slots_per_request,
+            parallel_drafting_token_id=self.parallel_drafting_token_id,
+            shift_input_ids=self.pass_hidden_states_to_model)
+        num_tokens = expanded.num_tokens
+        if num_tokens > self.max_num_tokens:
+            raise RuntimeError(
+                f"并行第一遍要 {num_tokens} 行，超过输入工作区 {self.max_num_tokens} 行："
+                f"Scheduler 的 input_budget 没按 net={self.net_num_new_slots_per_request} "
+                f"兜住（控制面/执行面口径不一致）")
+
+        self.input_ids_cpu[:num_tokens] = torch.tensor(expanded.input_ids, dtype=torch.int64)
+        self.positions_cpu[:num_tokens] = torch.tensor(expanded.positions, dtype=torch.int64)
+        self.is_rejected_token_mask_cpu[:num_tokens] = torch.tensor(expanded.is_rejected,
+                                                                   dtype=torch.bool)
+        self.is_masked_token_mask_cpu[:num_tokens] = torch.tensor(expanded.is_masked,
+                                                                  dtype=torch.bool)
+        query_start_loc = [0]
+        for target in rows:
+            query_start_loc.append(query_start_loc[-1] + int(target.target_rows))
+        seq_lens = [int(target.start) + int(target.target_rows) for target in rows]
+        query_start_loc, seq_lens = extend_all_queries_by_N(
+            query_start_loc, seq_lens, self.net_num_new_slots_per_request)
+        self.query_start_loc_cpu[:len(query_start_loc)] = torch.tensor(
+            query_start_loc, dtype=torch.int64)
+        self.seq_lens_cpu[:len(seq_lens)] = torch.tensor(seq_lens, dtype=torch.int64)
+        self.slot_mapping_cpu[:num_tokens] = compute_new_slot_mapping(
+            self.block_table_cpu[:len(rows)], [int(target.target_rows) for target in rows],
+            self.positions_cpu[:num_tokens], self.is_rejected_token_mask_cpu[:num_tokens],
+            self.block_size, self.net_num_new_slots_per_request, self.max_model_len)
+        self._check_valid_positions(rows)
+
+        if self.pass_hidden_states_to_model:
+            self._write_parallel_hidden(rows, expanded, target_hidden_states)
+
+        # 采样行：并行槽位按 extra 分组写出来，这里按"请求序 × 行内序"取出来
+        sample_rows: list[int] = []
+        sample_req_ids: list[str] = []
+        for request_index, target in enumerate(rows):
+            base = request_index * self.extra_slots_per_request
+            for local in range(self.extra_slots_per_request):
+                if not target.ready:
+                    continue          # 中间 prefill 块不采样（上游会让 Scheduler 丢掉它的草稿）
+                sample_rows.append(expanded.token_indices_to_sample[base + local])
+                sample_req_ids.append(target.req_id)
+        return FirstPassPlan(
+            num_tokens=num_tokens, num_reqs=len(rows),
+            sample_rows=sample_rows, sample_req_ids=sample_req_ids,
+            sample_positions=[expanded.positions[row] for row in sample_rows],
+            seq_lens=list(seq_lens),
+            history_end={target.req_id: target.history_end for target in rows})
+
+    def _write_parallel_hidden(self, rows: list[TargetRows], expanded, target_hidden_states) -> None:
+        """把特征写进并行第一遍的缓冲（上游 `shift_input_ids=True` 分支的后半段）。
+
+        两件事，顺序不能反：
+
+            1. hidden **不跟着 token 移**：源行 `q_start + i`（target 的第 i 行）的特征写到
+               目标行 `out_start + i`（`out_hidden_state_mapping` 给的映射）；
+            2. **mask 行换成模型自带的常量向量** `mask_hidden`（并行槽位没有真实特征可用）。
+
+        不做第 2 步不会报错，只会让 K 枚草稿全部条件在一个"看起来是特征、其实是上一行残留"的
+        输入上——正是 63 关记过的那类静默错。
+        """
+        if target_hidden_states is None:
+            raise ValueError("并行提议（吃 hidden 的 EAGLE 系）需要本轮 target 的特征")
+        if self.parallel_drafting_hidden_state_tensor is None:
+            raise RuntimeError("mask hidden 缓冲还没建：`_init_parallel_drafting_params()` 没跑过")
+        hidden_rows: list[torch.Tensor] = []
+        num_tokens = expanded.num_tokens
+        for target in rows:
+            rows_hidden = target_hidden_states[target.req_id]
+            if self.method == "eagle3":
+                rows_hidden = self.model.model.combine_hidden_states(rows_hidden)
+            hidden_rows.extend(rows_hidden[i] for i in range(int(target.target_rows)))
+        # **顺序不能反**（上游就是这两句的先后）：先把真实特征按映射搬过去，再用 mask 向量
+        # 覆盖 mask 行。反过来的话，被拒行多的时候（`num_valid + 1 .. target_rows` 落在 mask 区
+        # 里）映射会把 mask 行的常量向量又盖回真实特征——不报错，只是那些槽位的条件全错。
+        # 先整批搬到 **staging 的设备/dtype**（切片赋值能跨设备拷贝，但**花式索引赋值不行**：
+        # `cpu[mask_rows] = cuda_tensor` 会报 "Expected all tensors to be on the same device"）
+        hidden_matrix = torch.stack(hidden_rows).to(
+            device=self.hidden_states_cpu.device, dtype=self.hidden_states_cpu.dtype)
+        for source_row, destination_row in expanded.hidden_state_mapping.items():
+            self.hidden_states_cpu[destination_row] = hidden_matrix[source_row]
+        mask_rows = [index for index, flag in enumerate(expanded.is_masked) if flag]
+        if mask_rows:
+            mask_row = self.parallel_drafting_hidden_state_tensor.to(
+                device=self.hidden_states_cpu.device, dtype=self.hidden_states_cpu.dtype)
+            self.hidden_states_cpu[mask_rows] = mask_row
 
     def _check_valid_positions(self, rows: list[TargetRows]) -> None:
         """内部错误检查（对应 205 §3 保留的那条断言）：有效行/扩容行必须在模型位置上界内。
@@ -849,6 +1086,8 @@ class DraftModelProposer(SpecDecodeBaseProposer):
         self._validate_configs()
         self.model = get_model(self.draft_model_config, self.device)
         self._allocate_kv_caches()
+        # 72 关：并行提议要从权重里的 `mask_hidden` 取出 mask 槽位的常量特征（普通 draft 无此步）
+        self._maybe_fill_parallel_drafting_hidden_state()
         return self.model
 
     def _validate_configs(self) -> None:

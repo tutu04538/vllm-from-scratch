@@ -451,6 +451,36 @@ python benchmarks/check_step71_dynamic_sd.py     # 24 项（A 查找表 / B 配�
 设计、逐轮状态表与差异账本见 [`docs/step71_alignment.md`](../docs/step71_alignment.md)，
 实测记录见 [`docs/results.json`](../docs/results.json)（`step71.results`）。
 
+## 第七十二关：PARD 与 P-EAGLE 并行提议
+
+串行提议要 forward **K 次**（第一遍 + K−1 次自回归）才凑出 K 枚草稿；按并行草稿训练的模型可以
+**一次** forward 同时给出 K 个位置。这一关把那条输入协议接进来：
+
+```
+[有效行] [锚点] [K−1 个 mask token] [被拒尾部]   ← 一次 forward，锚点 + mask 行各采一枚 → [B, K]
+```
+
+- 槽位净增：**PARD = K**（不左移：target 那一行原样当内容行，锚点与 mask 全接在后面）、
+  **P-EAGLE = K−1**（左移：锚点复用 target 块最后一行，位置/槽位不变）、K=1 时 P-EAGLE 为 0；
+  串行 draft 仍是 1、串行 EAGLE 仍是 0（与上游 `max_num_new_slots_for_drafting` 表逐条一致）。
+- `spec_decode/utils.py::expand_parallel_draft_inputs()` 是上游 `copy_and_expand_eagle_inputs_kernel`
+  的逐行等价（两种 shift）：mask 区、`is_rejected`/`is_masked` 两个掩码、采样行索引、hidden 映射
+  （hidden **不跟着 token 移**，随后 mask 行才被 `mask_hidden` 覆盖——顺序反了会静默用错特征）。
+- mask token / `mask_hidden` 必须来自 checkpoint：缺 mask token → 配置期报错；开了并行而权重里没有
+  `mask_hidden` → 加载期报错（上游同款）。**所以串行训练的 EAGLE3 权重不能拿来开并行**。
+- 槽位与 metadata 按**新 positions** 重算（`compute_new_slot_mapping(num_new_tokens=net)` +
+  `extend_all_queries_by_N`），不是只把 `seq_lens` 加个数字。
+
+```bash
+python -m pytest tests/step72 -q                        # 30 项（含与上游 Triton kernel 的逐值差分）
+python benchmarks/check_step72_parallel_draft.py        # 18 项（槽位 / 输入协议 / 一次 forward / 端到端 / 边界）
+```
+
+实测（tiny、K=3）：并行每轮 **1 次** draft 前向、串行 **3 次**；并行 greedy 与非投机逐 token 相同；
+与上游 kernel 的六组用例全字段相等。⚠️ 本机**没有按并行草稿训练的 PARD/P-EAGLE 权重**，
+所以草稿质量与加速比标「集成待验」（清单见
+[`docs/step72_alignment.md`](../docs/step72_alignment.md) §3）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
@@ -491,6 +521,7 @@ python benchmarks/check_step65_mtp.py                # 17 项：MTP 别名/加�
 python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/加载/行选择/端到端 + 上游逐值对照 + MLP 缺口证明
 python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映射/上游逐位差分/配置边界/异构词表集成
 python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 / 配置改写（图+DP）/ 两轮时序 / K=0 端到端 / q 宽度
+python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / 上游内核逐值差分 / 一次 forward / 端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -503,6 +534,7 @@ python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 
 python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构造/映射/上游差分/配置边界/异构词表集成）
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
+python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

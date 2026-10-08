@@ -127,6 +127,115 @@ def expand_draft_inputs(rows: list[DraftInputRows]) -> tuple[list[int], list[int
     return input_ids, positions, is_rejected, token_indices_to_sample
 
 
+@dataclass
+class ParallelFirstPass:
+    """并行提议（PARD / P-EAGLE）第一遍的展开结果（上游 kernel 的全部输出）。
+
+    与普通 draft 的 `expand_draft_inputs()` 是**同一个算法的两个分支**：上游把它们写在同一个
+    `copy_and_expand_eagle_inputs_kernel` 里，靠 `shift_input_ids` 与 `num_padding_slots_per_request`
+    两个参数分叉。字段逐个对应：
+
+        input_ids / positions   每个物理行的 token 与位置
+        is_rejected             被拒尾部（物理存在、不写 KV、不算上下文）
+        is_masked               并行槽位（token = mask token；EAGLE 的 hidden 也会被换成 mask hidden）
+        token_indices_to_sample 要采样的行（= 锚点 + 所有 mask 行，按 请求序 × 行内序 排列）
+        hidden_state_mapping    {源行 → 目标行}：只有 shift 模式有（hidden **不跟着移**）
+        num_tokens             总物理行数（= Σ(target 行数 + net)）
+    """
+
+    input_ids: list[int] = field(default_factory=list)
+    positions: list[int] = field(default_factory=list)
+    is_rejected: list[int] = field(default_factory=list)
+    is_masked: list[int] = field(default_factory=list)
+    token_indices_to_sample: list[int] = field(default_factory=list)
+    hidden_state_mapping: dict[int, int] = field(default_factory=dict)
+    num_tokens: int = 0
+
+
+def expand_parallel_draft_inputs(target_token_ids, target_positions, rows, *,
+                                 extra_slots_per_request: int,
+                                 parallel_drafting_token_id: int,
+                                 shift_input_ids: bool) -> ParallelFirstPass:
+    """上游 `copy_and_expand_eagle_inputs_kernel`（L308-454）的**逐行等价实现**。
+
+    两种布局（`shift_input_ids`）就在"第 0 行放什么"上分叉：
+
+        shift=True  （P-EAGLE / EAGLE 系）：跳过本请求 target 块的第 0 个 token，
+                     行 j 放 `target[q_start + 1 + j]` → 有效行数 = target 行数 − 被拒 − 1
+        shift=False （PARD / 普通 draft）：整块原样复制，
+                     行 j 放 `target[q_start + j]`     → 有效行数 = target 行数 − 被拒
+
+    之后两者的**块内结构完全一样**（j 从 0 数起）：
+
+        [0, num_valid)                              有效行（token/位置来自 target）
+        j == num_valid                              **锚点**：target 刚采出的 token（要采样）
+        (num_valid, num_valid + extra)              并行槽位：token = mask token（要采样）
+        [num_valid + extra, + num_rejected)         被拒尾部：token=padding、position=0、slot=哨兵
+
+    位置一律 `start_pos + j`（**不随 shift 移动**，上游注释："Positions are NOT shifted"），
+    被拒行取 0。要采样的行数 = `extra`（1 个锚点 + extra−1 个 mask），与 K 相等。
+
+    **每请求多占的行数** = 总行数 − target 行数 = `num_valid + extra + rejected − target_rows`
+    = `extra − (1 if shift else 0)`，也就是 `net_num_new_slots_per_request`
+    （P-EAGLE：K−1，PARD：K）—— 调度侧的 `draft_slots` 就是按它给的。
+
+    `rows` 是 `TargetRows`（顺序 = 批行序），`target_token_ids` / `target_positions` 必须是
+    **本轮真正喂进 target 的那份缓冲**（63 关的不变量：同源，不许按"看起来等价"重建）。
+    """
+    out = ParallelFirstPass()
+    cursor = 0                      # target 缓冲里本请求块的起点
+    for row in rows:
+        rejected = int(row.num_rejected)
+        target_rows = int(row.target_rows)
+        # 有效输入区的**闭区间**终点（上游 `query_end_loc = query_start_loc[1:] - 1 - rejected`）
+        num_valid = target_rows - rejected - (1 if shift_input_ids else 0)
+        if num_valid < 0:
+            raise ValueError(
+                f"{row.req_id!r} 的被拒行数 {rejected} 吃掉了整个 target 块"
+                f"（{target_rows} 行）：并行第一遍至少要留 1 行有效输入"
+                f"（shift 模式要留 2 行）")
+        start_pos = int(target_positions[cursor])
+        out_start = len(out.input_ids)
+        for j in range(num_valid):
+            index = cursor + (1 if shift_input_ids else 0) + j
+            out.input_ids.append(int(target_token_ids[index]))
+            out.positions.append(start_pos + j)
+            out.is_rejected.append(0)
+            out.is_masked.append(0)
+        # 锚点行：target 本轮采出的 token（上游 `is_bonus_region`）
+        out.input_ids.append(int(row.next_token_id))
+        out.positions.append(start_pos + num_valid)
+        out.is_rejected.append(0)
+        out.is_masked.append(0)
+        out.token_indices_to_sample.append(out_start + num_valid)
+        # 并行槽位：K−1 个 mask token（上游 `is_parallel_draft_region`）
+        for j in range(num_valid + 1, num_valid + extra_slots_per_request):
+            out.input_ids.append(int(parallel_drafting_token_id))
+            out.positions.append(start_pos + j)
+            out.is_rejected.append(0)
+            out.is_masked.append(1)
+            out.token_indices_to_sample.append(out_start + j)
+        # 被拒尾部：padding 行（不写 KV、不算上下文）
+        for _ in range(rejected):
+            out.input_ids.append(PADDING_TOKEN_ID)
+            out.positions.append(0)
+            out.is_rejected.append(1)
+            out.is_masked.append(0)
+        if shift_input_ids:
+            # hidden **不跟着移**：源行 i（target 的第 i 行）的特征放到目标行 `out_start + i`
+            for i in range(target_rows):
+                out.hidden_state_mapping[cursor + i] = out_start + i
+        cursor += target_rows
+    out.num_tokens = len(out.input_ids)
+    # 总行数 = Σ(target 行数) + 请求数 × net；被拒行**已经在 target 行数里**（不能重复计）
+    expected = cursor + len(rows) * (extra_slots_per_request - (1 if shift_input_ids else 0))
+    if out.num_tokens != expected:
+        raise RuntimeError(
+            f"并行第一遍展开出 {out.num_tokens} 行，按公式应为 {expected} 行："
+            f"展开逻辑与 net_num_new_slots_per_request 的口径不一致")
+    return out
+
+
 def compute_new_slot_mapping(block_table: torch.Tensor,
                              query_lens: list[int],
                              new_positions: torch.Tensor,

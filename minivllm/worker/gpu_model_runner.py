@@ -1509,8 +1509,12 @@ class GPUModelRunner:
         # 63/65 关：EAGLE 系（EAGLE3 与 **MTP**）的第一遍都要"本轮 target 真正喂进去的那两行"
         # 做整体左移 + 打补丁，所以要把它们留到提议时刻。判据是**方法**而不是
         # `capture_aux_hidden_states`：MTP 不吃辅助层（那个开关是 False），但同样需要这两份输入。
+        # 72 关：**并行提议**（PARD）不吃特征，但它的第一遍同样要在 target 的 token/positions
+        # 缓冲上展开（上游 kernel 就是按 target 行块铺出 [有效行][锚点][mask][被拒行] 的），
+        # 所以判据加上 `parallel_drafting`。
         needs_target_rows = (self.speculative_config is not None
-                             and self.speculative_config.use_eagle())
+                             and (self.speculative_config.use_eagle()
+                                  or self.speculative_config.parallel_drafting))
         self.execute_model_state = ExecuteModelState(
             scheduler_output=scheduler_output, logits=logits, sample_rows=inputs.sample_rows,
             spec_metadata=inputs.spec_metadata,
@@ -1927,10 +1931,14 @@ class GPUModelRunner:
                 # 而不是"两条路各算一次、谁错都看不出来"。
                 kwargs["token_indices_to_sample"], kwargs["num_rejected_tokens_gpu"] = \
                     self._padded_draft_token_indices(state, sampled_by_row)
-            if getattr(self.proposer, "pass_hidden_states_to_model", False):
+            if (getattr(self.proposer, "pass_hidden_states_to_model", False)
+                    or getattr(self.proposer, "parallel_drafting", False)):
                 # EAGLE 系（含 MTP）的提议者才收特征；普通 draft/假提议者的签名不变。
                 # `target_token_ids` / `target_positions` 就是**本轮 target 真正喂进去的行**
                 # （含被拒草稿）：上游 `set_inputs_first_pass` 拿的正是这两份 + 特征。
+                # 72 关：**并行提议**（PARD 不吃特征）同样要在这两份缓冲上展开（上游 kernel
+                # 就是按 target 的行块 + positions 铺出 [有效行][锚点][mask][被拒行] 的），
+                # 所以这里按"要吃特征 **或** 开了并行"传参。
                 kwargs["target_hidden_states"] = self._target_hidden_states_by_req(
                     state.scheduler_output, len(self.input_batch.req_ids))
                 kwargs["target_token_ids"] = state.target_token_ids_cpu

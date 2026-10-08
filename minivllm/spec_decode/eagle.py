@@ -65,6 +65,8 @@ class EagleProposer(DraftModelProposer):
         self._validate_configs()
         self.model = get_model(self.draft_model_config, self.device)
         self._allocate_kv_caches()
+        # 72 关：并行提议要从权重里的 `mask_hidden` 取出 mask 槽位的常量特征
+        self._maybe_fill_parallel_drafting_hidden_state()
         return self.model
 
     def share_embeddings(self, target_model) -> None:
@@ -103,6 +105,11 @@ class EagleProposer(DraftModelProposer):
         可用的单份 hidden**（MTP 是 target 最后一层，宽度就是 draft 的 hidden_size），原样写进
         缓冲即可——MTP 自己的 `fc`/`eh_proj` 才是做拼接投影的地方（在模型里，不在提议者里）。
         """
+        if self.parallel_drafting:
+            # 72 关（P-EAGLE）：左移 + 复用 target 块最后一行放锚点，再补 K−1 个 mask，
+            # 一次 forward 出 K 枚（与串行 no-extra-slots 通路的区别就在这块 mask 区）
+            return self._parallel_first_pass(rows, target_hidden_states, target_token_ids,
+                                             target_positions)
         if target_hidden_states is None:
             raise ValueError(
                 "EAGLE 提议者需要本轮 target 的 hidden states（target_hidden_states）："
