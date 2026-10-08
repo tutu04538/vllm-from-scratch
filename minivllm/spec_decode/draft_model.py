@@ -123,6 +123,12 @@ class SpecDecodeBaseProposer:
         # 58 之前的版本用它当"从哪开始补算"的第二套权威（新请求=0 于是命中前缀也整段重算）；
         # 现在起点由本轮调度快照的 `TargetRows.start` 决定，这里只留给测试/排查对账。
         self._draft_computed: dict[str, int] = {}
+        # 自回归步的两个起点（每轮第一遍之后重设，见 `propose()`）：
+        #   _ar_anchor_position  采样行自己的 position（第 k 枚草稿的位置 = 它 + k）
+        #   _ar_base_seq_len     第一遍 seq_lens 减掉被拒行数（第 k 枚的上下文 = 它 + k）
+        # 两个都**不能**从 `history_end` 之类的量反推：EAGLE 与 draft 的采样行不是同一行。
+        self._ar_anchor_position: dict[str, int] = {}
+        self._ar_base_seq_len: dict[str, int] = {}
         self._draft_generators: dict[str, torch.Generator] = {}
         # 63 关：AR 步要用的 draft 自己的 hidden（每请求一行，`_forward` 的第二返回值）
         self._ar_hidden: dict[str, torch.Tensor] = {}
@@ -291,6 +297,10 @@ class SpecDecodeBaseProposer:
             self._draft_computed[target.req_id] = target.history_end      # 观测用
         self._check_padded_sample_rows(plan, rows)
         self._apply_num_rejected_to_seq_lens(plan, rows)
+        # 自回归步的起点 = 第一遍**采样行自己的位置**（上游同源：`positions =
+        # self.positions[token_indices_to_sample]`）。K=0 时没有自回归步，但这两个字典照样
+        # 填好——它们只是"这一轮第一遍的事实"，不参与任何判断。
+        self._ar_anchor_position = dict(zip(plan.sample_req_ids, plan.sample_positions))
         # 71 关：K=0 时**第一遍已经跑完**（KV 与 target 同步过了），但一枚草稿都不采——
         # 采样会消耗随机流、也会白算一次 lm_head；上游在同样的位置直接返回 `[B, 0]`。
         if self.num_speculative_tokens == 0:
@@ -305,7 +315,15 @@ class SpecDecodeBaseProposer:
 
         # ---- 自回归补足 K 枚：上一枚当输入，位置接在它后面（**复用同一个工作区**）----
         #
-        # 第 k 枚草稿写在位置 `history_end + k - 2`，那是 target 本轮 query 之外的位置：
+        # 起点 = **第一遍采样行自己的 position**（`plan.sample_positions`），之后每步 +1：
+        # 上游就是 `positions = self.positions[token_indices_to_sample]` 再交给
+        # `_update_positions_dependent_metadata()`（每步 `position + 1`）。
+        # 为什么不能在外面反推：两种布局的采样行不同——EAGLE 是 target 行块的**最后一行**
+        # （位置原样、内容被换成新采样的 token），draft 是尾部**扩容行**；用 `history_end`
+        # 之类的量反推只在 `rejected == 1` 时巧合相等，其它情况会把自回归行写到错的位置
+        # （实测 `rejected=3` 时落回第一遍刚写过的行，覆盖掉刚写的 KV）。
+        #
+        # 第 k 枚草稿写在采样行位置 + k，那是 target 本轮 query 之外的位置：
         # 调度侧为此预留了 `num_lookahead_tokens` 个 KV 槽位。但预留可能被 `max_model_len`
         # 截掉、上下文也可能刚好走到尽头，所以每写一枚都要过**两个**边界：模型自己的位置范围
         # （逻辑）与块表覆盖（物理）。过不了就少提几枚——草稿只是候选，不写就不会越界。
@@ -315,7 +333,10 @@ class SpecDecodeBaseProposer:
                 req_id = target.req_id
                 if not 0 < len(drafts[req_id]) < self.num_speculative_tokens:
                     continue
-                position = target.history_end + len(drafts[req_id]) - 1
+                anchor = self._ar_anchor_position.get(req_id)
+                if anchor is None:
+                    continue
+                position = anchor + len(drafts[req_id])
                 if not 0 <= position < self.max_model_len:
                     continue
                 if not input_batch.block_table.covers(target.row, position):
@@ -437,6 +458,9 @@ class SpecDecodeBaseProposer:
             num_tokens=num_tokens, num_reqs=len(rows),
             sample_rows=[sample_indices[index] for index in ready],
             sample_req_ids=[rows[index].req_id for index in ready],
+            # 采样行（= 扩容行）自己的 position：自回归步从这里 +1 开始（上游同款）
+            sample_positions=[positions[sample_indices[index]] for index in ready],
+            seq_lens=list(seq_lens),
             history_end={target.req_id: target.history_end for target in rows})
 
     def _check_padded_sample_rows(self, plan: FirstPassPlan, rows: list[TargetRows]) -> None:
@@ -481,7 +505,7 @@ class SpecDecodeBaseProposer:
                                         rows: list[TargetRows]) -> None:
         """把被拒的 padding 行从 draft 的上下文长度里减掉（上游同名动作）。
 
-        上游（`llm_base_proposer.py:682-685`）：
+        上游（`llm_base_proposer.py:654-660`）：
 
             if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
                 common_attn_metadata.seq_lens -= num_rejected_tokens_gpu
@@ -490,13 +514,18 @@ class SpecDecodeBaseProposer:
         既没写 KV、也不该成为上下文。不减的话，自回归步的 query 位置会落在"从未写过的位置"上
         （读到上一轮的残留 KV），草稿的条件就是错的——不报错，只是草稿变差。
 
-        为什么在**第一遍之后**才减：第一遍的 query 行是 `[b, d1..dK]` 连续排布，
-        `seq_len - query_len` 必须等于本轮的起点；减了它，第一遍的位置假设就塌了。
-        自回归步每请求只有 1 行，`seq_len - 1` 才是"刚写下的那一行"的位置，减完正好对上。
+        起点是**第一遍自己的 `seq_lens`**（`plan.seq_lens`），不是外面重算的公式：
+        上游减的就是 `common_attn_metadata.seq_lens`（第一遍用的那份）。EAGLE 的第一遍
+        `seq_lens` 不含额外槽位（net=0），draft 的含 1 个扩容行——用同一个公式反推会在其中
+        一种布局上多算一行。
 
-        本仓库的 AR 步位置是直接算出来的（`history_end + k - 1`），所以这里的作用是**把
-        device 侧的 `seq_lens` 起点摆正**：`eagle_step_update_slot_mapping_and_metadata()`
-        是"原地 +1"的语义（上游同款），起点错了后面每一步都会错。
+        为什么在**第一遍之后**才减：第一遍的 query 行是本轮的连续排布，
+        `seq_len - query_len` 必须等于本轮的起点；减了它，第一遍的位置假设就塌了。
+        自回归步每请求只有 1 行，减完正好是"真历史"的长度，之后每步 +1。
+
+        本仓库的 AR 步位置是由采样行位置 +1 递推的，所以这里的产物是**上下文长度**：
+        设备侧的 `seq_lens` 也要一起改（AR 步的内核按"上一步 + 1"更新它），否则 device 与
+        CPU 两套账会在自回归步里差出被拒行数。
         """
         plan.num_rejected = [target.num_rejected for target in rows]
         recorded = self.last_padded_inputs
@@ -508,10 +537,16 @@ class SpecDecodeBaseProposer:
                     f"{device_rejected}，CPU 侧（58 关的 TargetRows）{plan.num_rejected}："
                     f"draft 的上下文长度会按错误的值修剪")
         if self.num_speculative_tokens <= 1:
-            # 上游同款条件：K=1 时第一遍只有两行，修正与不修正等价
+            # 上游同款条件：K=1 时没有自回归步，第一遍的乐观长度就是最终长度
             return
+        if len(plan.seq_lens) != len(rows):
+            raise RuntimeError(
+                f"第一遍的 seq_lens 有 {len(plan.seq_lens)} 项，本轮请求数 {len(rows)}："
+                f"`set_inputs_first_pass()` 必须逐请求填全（否则上下文长度会张冠李戴）")
         for index, target in enumerate(rows):
-            self.seq_lens_cpu[index] = target.start + target.num_valid + 1
+            base = plan.seq_lens[index] - target.num_rejected
+            self._ar_base_seq_len[target.req_id] = base
+            self.seq_lens_cpu[index] = base
         if self.device != "cpu":
             self.seq_lens[:len(rows)].copy_(self.seq_lens_cpu[:len(rows)])
 
@@ -551,9 +586,12 @@ class SpecDecodeBaseProposer:
             torch.tensor(batch_rows, dtype=torch.int64))
         self.is_rejected_token_mask_cpu[:num_reqs] = False
         self.query_start_loc_cpu[:num_reqs + 1] = torch.arange(num_reqs + 1, dtype=torch.int64)
-        # 第 k 枚草稿的上下文 = 它自己的位置 + 1（之前几枚的 KV 已经写进缓存）
+        # 第 k 枚草稿的上下文 = 修正后的第一遍长度 + k（本步之前已经写进去 k-1 行，
+        # 加上本步这一行）。上游同序：`seq_lens` 先减被拒数，再由
+        # `eagle_step_update_slot_mapping_and_metadata()` 每步 +1。
         self.seq_lens_cpu[:num_reqs] = torch.tensor(
-            [position + 1 for _, position in pending], dtype=torch.int64)
+            [self._ar_base_seq_len[target.req_id] + len(drafts[target.req_id])
+             for target, _ in pending], dtype=torch.int64)
         self._fill_block_table_rows(batch_rows, input_batch.block_table)
         # 69 关：上面几步就是上游 `_update_positions_dependent_metadata()` 里的那三件事
         # （位置 +1、查块表得槽位、上下文 +1），上游把它们融进一个 kernel。这里在 device 上用

@@ -3559,5 +3559,75 @@
    "tiny": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（2 层 / hidden 32 / vocab 11；两轮时序与端到端一致性都在它上面做）",
    "real": "models/Qwen3-1.7B（bf16，本机权重，不跟踪）：只用于『真实引擎上动态 K 的逐轮 trace 与图模式命中』（ngram 提议者，短 trace，不做吞吐矩阵）"
   }
+ },
+ "step63_ar_positions": {
+  "results": {
+   "step": "63（2026-10-08 复核修复）",
+   "requirement": "复核项来自需求 071 讨论中的疑问；修正对象是需求 063 交付的 EAGLE 自回归提议步坐标",
+   "status": "已修复并自检：EAGLE/MTP 自回归步的起点改为上游口径（位置 = 第一遍采样行 position + k；上下文 = (第一遍 seq_lens − 被拒数) + k）。实测接受长度**不变**（1.1211 → 1.1213），故 63 关的接受长度差距不在自回归坐标上；同 prompt 对照上游为 1.2819。",
+   "recorded_at": "2026-10-08T20:40:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "670bf3e",
+    "implementation_commit": "见本轮提交（step63 复核修复：自回归步坐标对齐上游）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 97,
+    "sha256": "34ddba62e94ea84b41839e38492daa645294dc895a86ca6ca25d64ae81073b29",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.28.0",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step63/test_eagle_ar_alignment.py -q",
+     "result": "2 passed（R1/R2 逐轮验算；要求被拒>0 与被拒=0 两种情形都出现）"
+    },
+    {
+     "cmd": "判别力反证：把公式临时改回旧的再跑",
+     "result": "eagle3 那一项 FAILED、draft_model 那一项仍通过（证明测试钉得住这个差异）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 .. tests/step71 -q",
+     "result": "579 passed（577 + 新增 2）"
+    },
+    {
+     "cmd": "python benchmarks/check_step63_eagle_inputs.py",
+     "result": "全部通过（8 → 11 项：新增 F1/F2/F3）"
+    },
+    {
+     "cmd": "16 个 check_step58..71 + 15 个 check_step57 脚本",
+     "result": "全部通过"
+    },
+    {
+     "cmd": "本仓库接受长度（5 prompt × 128 token，K=2，真实权重）",
+     "result": "drafted=1022 accepted=124 acc_len=1.1213；第1枚 115/511=22.5%、第2枚 9/511=1.8%"
+    },
+    {
+     "cmd": "上游引擎同 prompt 对照（VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0）",
+     "result": "drafted=816 accepted=230 acc_len=1.2819；第1枚 170/408=41.7%、第2枚 60/408=14.7%"
+    }
+   ],
+   "execution_trace": {
+    "修复前（tiny，3 token prompt、K=3）": "第1轮 AR positions 4、5；第2轮（被拒3）positions 5、6（落回第一遍刚写过的行）",
+    "修复后": "第1轮 AR positions 3、4；第2轮 positions 7、8；seq_lens 5、6（= (第一遍 7 − 被拒 3) + k）",
+    "上游规则来源": "llm_base_proposer.py:634 positions = self.positions[token_indices_to_sample]；:698 每步 _update_positions_dependent_metadata（position+1）；:654-660 seq_lens -= num_rejected_tokens_gpu"
+   },
+   "known_gaps": [
+    "BUG-5（接受长度差距）未解决：修坐标后 acc_len 不变 → 差距在 draft 第一遍/自回归的条件本身",
+    "线索：真实 draft head 的 draft 空间 argmax 有 22/32 行落在 id<124（多为 id=1），草稿退化",
+    "下一步：本进程实例化上游 Eagle3LlamaForCausalLM，用同一份 hidden/positions 做逐值对照（配方见 AGENTS §2.1）；线索文件 vllm_bugs/LEAD_20261008_eagle3_draft_quality.md"
+   ]
+  },
+  "models": {
+   "target": "models/Qwen3-1.7B（bf16，本机，不跟踪）",
+   "draft": "models/Qwen3-1.7B-eagle3（源 HF AngelSlim/Qwen3-1.7B_eagle3，本机，不跟踪）",
+   "tiny": "minivllm/testing/tiny_models.py（tiny_gqa + tiny_eagle3_dir，固定 seed）"
+  }
  }
 }

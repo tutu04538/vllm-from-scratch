@@ -79,6 +79,17 @@ class FirstPassPlan:
     # 这是 57E 就记在差异账本里的"更早一步"（少跑 K 次试探性前向）。
     sample_rows: list[int] = field(default_factory=list)
     sample_req_ids: list[str] = field(default_factory=list)
+    # 每条请求**采集样行自身的 position**（与 `sample_req_ids` 同序）。
+    # 自回归步的起点就是它：上游 `positions = self.positions[token_indices_to_sample]`
+    # （`llm_base_proposer.py:634`），之后每步 +1。EAGLE 与 draft 的采样行**不是同一行**
+    # （EAGLE 是 target 行块的最后一行、draft 是尾部扩容行），所以这个位置必须由布局自己给出，
+    # 不能在外面用 `history_end` 之类的量反推——反推只在 `rejected == 1` 时巧合相等
+    # （实测 rejected=3 时反推出来的位置会落回第一遍刚写过的那几行，把 KV 覆盖掉）。
+    sample_positions: list[int] = field(default_factory=list)
+    # 第一遍用的逐请求 `seq_lens`（**乐观值**：含本轮 query 的全部行）。
+    # 自回归步的上下文起点 = 它减去被拒行数（上游 `seq_lens -= num_rejected_tokens_gpu`），
+    # 之后每步 +1。
+    seq_lens: list[int] = field(default_factory=list)
     # 每条请求的 AR 起点（= 有效历史末尾）：第 k 枚草稿的输入位置 = history_end + k - 2
     history_end: dict[str, int] = field(default_factory=dict)
     # 69 关：每条请求本轮**被拒**的行数（= 采用数 - 接受数）。它决定"draft 的上下文长度要从

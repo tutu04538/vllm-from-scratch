@@ -144,3 +144,88 @@ python -m pytest tests/step58 tests/step59 tests/step60 tests/step61 \
                  tests/step62 tests/step63 tests/step64 -q         # 314 passed（含 64 关）
 python benchmarks/check_step63_eagle_inputs.py                     # 8 项 PASS（只测生产路径）
 ```
+
+---
+
+## 7. 2026-10-08 复核修复：自回归步的起点必须与上游同源
+
+> 本轮由用户在需求 72 之前点名复核："EAGLE3/MTP 自回归提议步的 positions/seq_lens 是否偏离上游"。
+> 结论：**偏离属实，已修**；同时量到一个重要的**否定结论**——63 关一直挂着的接受长度差距
+> **不是**这里造成的。
+
+### 7.1 问题（复核前）
+
+提议循环里自回归步的位置/上下文长度是**反推**出来的：
+
+```
+position = history_end + 已提枚数 − 1
+seq_len  = start + num_valid + 1          （在 `_apply_num_rejected_to_seq_lens()` 里）
+```
+
+上游不是反推，而是**从第一遍的采样行直接取**（`llm_base_proposer.py:634` + `:698`）：
+
+```
+positions = self.positions[token_indices_to_sample]      # 采样行自己的 position
+每步：positions = _update_positions_dependent_metadata(positions)   # 内核里 position + 1、seq_len + 1
+seq_lens 起点 = 第一遍 seq_lens − num_rejected_tokens_gpu           # :654-660
+```
+
+反推公式对 **draft 布局**恰好等价（它的采样行就是尾部扩容行，位置 = `history_end − 1`），
+但对 **EAGLE 布局**（采样行 = target 行块的**最后一行**，token 内容被换成新采样的 token）会差
+`1 − 被拒数` 格：
+
+| 场景（3 token prompt、K=3） | 修复前 | 上游规则 | 后果 |
+|---|---|---|---|
+| 第 1 轮（被拒 0） | positions 4、5 | 3、4 | 位置整体偏 +1 |
+| 第 2 轮（被拒 3） | positions 5、6 | 7、8 | **落回第一遍刚写过的行**，把刚写的 KV 覆盖掉 |
+
+EAGLE 与 draft 的采样行**不是同一行**，所以任何"用历史长度反推"的公式都只对其中一种布局成立——
+这正是当初写错的原因。
+
+### 7.2 修法（对齐上游）
+
+* `FirstPassPlan` 增加两个字段：`sample_positions`（采样行自己的 position）与 `seq_lens`（第一遍的
+  逐请求长度）；`DraftModelProposer.set_inputs_first_pass()` 与 `EagleProposer.set_inputs_first_pass()`
+  各自按自己的布局填。
+* 提议循环：`position = sample_position[req] + 已提枚数`；
+  上下文 `= (第一遍 seq_lens − 被拒数) + 已提枚数`（`_apply_num_rejected_to_seq_lens()` 里把设备侧
+  `seq_lens` 也改成修正后的值——上游就是在 device 批量上做 `-=`，自回归步的内核再逐步 +1）。
+* draft 布局的数值**逐值不变**（回归由 `test_draft_model_autoregressive_steps_follow_the_same_rule` 盯着）。
+
+### 7.3 验证
+
+| 检查 | 结果 |
+|---|---|
+| `tests/step63/test_eagle_ar_alignment.py`（新，2 项） | R1：`位置 == 采样行位置 + k`；R2：`上下文 == (第一遍长度 − 被拒) + k`。EAGLE3 与 draft_model 各一项，且要求"被拒>0 / 被拒=0"两种情形都出现 |
+| 判别力（故意把公式改回旧的再跑） | EAGLE3 那一项**失败**、draft_model 那一项仍通过 → 测试确实钉住了这个差异 |
+| `benchmarks/check_step63_eagle_inputs.py` | 8 → **11 项**（新增 F1/F2/F3） |
+| 全量回归 | `pytest tests/step58..71` → **579 passed**（577 + 2）；16 个 `check_step58..71` + 15 个 `check_step57` 全绿 |
+
+### 7.4 否定结论：接受长度**没有**因为这个修复而变化
+
+同一份真实权重（`models/Qwen3-1.7B` + `Qwen3-1.7B-eagle3`）、K=2、5 个 prompt × 128 token：
+
+| | drafted | accepted | acc_len（1+acc/draft） | 每轮产出 token | 第1枚被接受的比例 | 第2枚被接受的比例 |
+|---|---|---|---|---|---|---|
+| 本仓库·修复前 | 1024 | 124 | **1.1211** | 1.2500 | — | — |
+| 本仓库·修复后 | 1022 | 124 | **1.1213** | 1.2524 | 115/511 = 22.5% | 9/511 = **1.8%** |
+| **上游引擎**（同机、同权重、同 prompt、同 K） | 816 | 230 | **1.2819** | 1.5686 | 170/408 = 41.7% | 60/408 = 14.7% |
+
+（上游那行是本次实跑：`VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0`，脚本与原始
+数字记在 `docs/results.json` → `step63_ar_positions`。第 2 枚的"被接受比例"含"第 1 枚也被接受"这个前提。）
+
+**两条差距都不在自回归步的坐标上**：
+
+* 第 2 枚（自回归产出的那一枚）：1.8% vs 14.7% —— 把坐标改对之后**没有改善**，说明自回归步的
+  **条件本身**（喂进去的 hidden / 上一步写下的 KV / 注意力上下文）还有别的问题；
+* 第 1 枚（第一遍产出、与自回归无关）：22.5% vs 41.7% —— **第一遍就已经差了一半**，这是更大的一块。
+
+本轮顺手量到的一条线索（写进 `vllm_bugs/`，供后续复核）：在
+`test_eagle3_real_e2e.py` 那个 prompt 上，真实 draft head 的 **draft 空间 argmax 有 22/32 行落在
+id < 124**（其中多数是 id=1），也就是草稿几乎退化成同一个 token。这不像"坐标差一格"能解释的，
+更像 draft 前向的输入（特征拼接 / prenorm / 注意力上下文）仍有偏差——**这与 §5 第 3 条（draft 解码层
+逐值对照）是同一件事**，仍待定位；本文件不声称 BUG-5 已解决。
+
+> ⚠️ 由此修正一条旧记录的措辞：§5 第 2 条里"本机跑不了上游引擎"**已过时**——2026-10-06 复核澄清，
+> 加 `VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0` 就能跑上游引擎
+> （`vllm_bugs/VERIFICATION_REPORT_20261006.md`），本次对照就是这么做的。

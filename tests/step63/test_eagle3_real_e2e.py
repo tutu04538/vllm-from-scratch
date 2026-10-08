@@ -10,8 +10,10 @@
 
   1. 开了投机（K=2）与非投机的 greedy 输出**逐 token 相同**；
   2. 草稿 id 全部落在 `t2d` 标记的可用集合里（id 空间正确的直接证据）；
-  3. 反证：把这些 id "退回" draft 空间（不做映射时提议者会交出的那些 id）就大量落在 `t2d` 之外
-     ——这正是"不映射也不会报错、只是全错"的样子。
+  3. 反证：同一份 hidden 上取 **draft 空间的 argmax**（= 不做映射时会交出的 id），逐枚与
+     `argmax + d2t` 对照 —— 不映射时 id 会变（`d2t` 里 99.6% 的偏移非 0），也就是"不报错、
+     只是每枚草稿都指到别的字"。⚠️ 判据**不是**"这些 id 在不在 `t2d` 里"：`t2d` 的低位
+     target id 大部分是恒等映射，用那个当判据会时灵时不灵（2026-10-08 修自回归位置时踩过）。
 
 真实权重在 `models/`（不入库）；缺权重或没有 CUDA 时**跳过并写明原因**（不是"通过"）。
 
@@ -90,7 +92,15 @@ def run(engine, core, prompt_ids):
 
 
 def install_draft_spy(runner):
-    drafts = []
+    """记录每枚草稿 id，**并**记录"不做 d2t 映射时会交出去的那个 id"。
+
+    后者是反证的关键：提议者拿到 `compute_logits()` 的结果就 `argmax`。把映射去掉时它 argmax 的
+    是 **draft 空间**的 logits（`draft_vocab_logits()`），得到的 id 会被当成 target id 使用。
+    这个量**只取决于模型在这批 hidden 上的输出**，与"哪几枚草稿被接受/被拒"无关——所以反证
+    不会因为草稿质量变化而时灵时不灵（63 关修自回归位置时就踩过：草稿一变，原来的"逆表反推"
+    反证偶然全落在合法集合里，断言失效）。
+    """
+    drafts, unmapped = [], []
     original = runner.take_draft_token_ids
 
     def spy():
@@ -100,7 +110,19 @@ def install_draft_spy(runner):
         return result
 
     runner.take_draft_token_ids = spy
-    return drafts
+
+    model = runner.proposer.model
+    original_logits = model.compute_logits
+
+    def logits_spy(hidden_states, *args, **kwargs):
+        out = original_logits(hidden_states, *args, **kwargs)
+        if getattr(model, "d2t", None) is not None:
+            raw = model.draft_vocab_logits(hidden_states).argmax(dim=-1)
+            unmapped.extend(int(token) for token in raw.tolist())
+        return out
+
+    model.compute_logits = logits_spy
+    return drafts, unmapped
 
 
 @pytest.fixture(scope="module")
@@ -118,7 +140,7 @@ def real_run():
         plain_engine.shutdown()
 
     spec_engine, core, runner = make_engine(with_spec=True)
-    drafts = install_draft_spy(runner)
+    drafts, unmapped = install_draft_spy(runner)
     try:
         spec, totals = run(spec_engine, core, prompt_ids)
         model = runner.proposer.model
@@ -129,8 +151,9 @@ def real_run():
     print(f"[step63-real] 非投机 {len(plain)} token == 投机 {len(spec)} token: {plain == spec}；"
           f"草稿 {len(drafts)} 枚；整段统计 drafted={totals['drafted']} "
           f"accepted={totals['accepted']}（{totals['rounds']} 个请求·轮）")
-    return {"plain": plain, "spec": spec, "drafts": drafts, "totals": totals,
-            "d2t": d2t, "t2d": t2d, "draft_vocab_size": draft_vocab_size,
+    return {"plain": plain, "spec": spec, "drafts": drafts, "unmapped": unmapped,
+            "totals": totals, "d2t": d2t, "t2d": t2d,
+            "draft_vocab_size": draft_vocab_size,
             "target_vocab_size": target_vocab_size}
 
 
@@ -179,11 +202,29 @@ def test_real_draft_ids_live_in_target_space(real_run):
     assert bool(t2d[ids].all()), "有草稿 id 不在 t2d 标记的可用集合里"
     assert int(ids.max()) < target_vocab_size
 
-    # 逆表：target id → draft id（d2t 是偏移量：target = draft + d2t[draft]）
-    targets = torch.arange(draft_vocab_size) + d2t
-    inverse = torch.full((target_vocab_size,), -1, dtype=torch.long)
-    inverse[targets] = torch.arange(draft_vocab_size)
-    raw = inverse[ids]
-    assert int(raw.min()) >= 0
-    assert not torch.equal(raw, ids)                 # 真实 checkpoint 上 99.6% 的偏移非 0
-    assert not bool(t2d[raw].all()), "不做映射居然也全在 t2d 里？那这条反证就没有区分度了"
+    # 逐枚对照：`compute_logits()` = 把 draft 空间的 logits scatter 到 target 宽度，所以
+    # **贪心交出的 id 必须恰好等于 `draft 空间 argmax + d2t[argmax]`**（scatter 是一一映射，
+    # 非映射位置是 -inf）。这一条把"映射发生在 softmax/argmax 之前"钉死，比反推逆表直接得多。
+    unmapped = real_run["unmapped"]
+    assert unmapped, "没记到 draft 空间的 argmax，反证没有证据"
+    assert len(unmapped) == len(ids), (len(unmapped), len(ids))
+    raw = torch.tensor(unmapped, dtype=torch.long)
+    assert int(raw.max()) < draft_vocab_size
+    assert torch.equal(raw + d2t[raw], ids), (
+        "交出去的草稿 id 不等于『draft 空间 argmax + d2t』：映射没接在 compute_logits 里，"
+        "或者 argmax 与映射的先后顺序反了")
+
+    # 反证：**不做映射时交出去的就是 `raw`**——`d2t` 里 99.6% 的偏移非 0，也就是那些 id 会指到
+    # 别的字（都 < 151936，不报错，只是每枚草稿都错）。
+    # 注意**不能**用"这些 id 在不在 `t2d` 里"当判据：`t2d` 的前 20813 个 target id 恰好是
+    # 恒等映射，而模型偏好的 draft id 多半落在这一段，所以"落在 t2d 里"并不代表"映射没起作用"。
+    offsets = d2t[raw]
+    changed = int((offsets != 0).sum())
+    # 运行级：**至少有一枚**草稿在不映射时会指到别的字（本机实测 32 枚里 10 枚；
+    # 这个比例取决于模型 argmax 落在哪一段，所以只断言 > 0，比例写进断言消息备查）。
+    assert changed > 0, (
+        f"{len(unmapped)} 枚草稿在不做映射时 id 一个都不会变（{offsets.tolist()}）："
+        f"这条反证在本轮没有区分度")
+    # 表级（与运行无关的确定性事实）：draft 词表里 99.6% 的 id 都需要偏移，
+    # 也就是说"不映射"不是少几个 token，而是绝大多数的 id 都指到别的字。
+    assert float((d2t != 0).float().mean()) > 0.99, "d2t 表本身几乎全是恒等映射？那映射就不是关键"

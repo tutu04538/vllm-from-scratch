@@ -171,4 +171,10 @@ class EagleProposer(DraftModelProposer):
             num_tokens=num_tokens, num_reqs=len(rows),
             sample_rows=[token_indices_to_sample[index] for index in ready],
             sample_req_ids=[rows[index].req_id for index in ready],
+            # **采样行自己的 position**（= target 行块的最后一行，位置原样未移）：自回归步从
+            # `它 + 1` 开始（上游 `positions = self.positions[token_indices_to_sample]`，之后
+            # 每步 +1）。EAGLE 的采样行与 draft 的尾部扩容行**不是同一行**，所以这个起点必须
+            # 由布局自己给出，不能在提议循环里反推。
+            sample_positions=[positions[token_indices_to_sample[index]] for index in ready],
+            seq_lens=list(seq_lens),
             history_end={target.req_id: target.history_end for target in rows})

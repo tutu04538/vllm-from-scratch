@@ -9,6 +9,9 @@
   C. 采样行 = 每请求最后一行
   D. "被拒位置下一轮必被重算"（`next_start == start + num_valid`）——喂被拒草稿无害的前提
   E. greedy 端到端：投机输出 == 非投机输出，且真的提了草稿
+  F. **自回归步的起点**（2026-10-08 复核修复）：第 k 枚草稿的位置 = 采样行位置 + k、
+     上下文 = (第一遍 seq_lens − 被拒数) + k —— 上游 `positions =
+     self.positions[token_indices_to_sample]` + 每步 `+1` 的口径
 """
 
 import sys
@@ -21,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "step63"))
 
 import test_eagle_e2e as e2e  # noqa: E402  只借夹具（起引擎/跑请求）
+from minivllm import SamplingParams  # noqa: E402
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 FAIL = []
@@ -106,6 +110,64 @@ check("D. 被拒位置下一轮必被重算（next_start == start + num_valid）
 rejected_seen = sum(1 for entry in rounds if entry["row"].num_rejected > 0)
 check("D2. 本轮确实出现过被拒行（否则上面那条没有区分力）", rejected_seen > 0,
       f"{rejected_seen}/{len(rounds)} 轮")
+
+# ---- F. 自回归步的起点（上游 `positions = self.positions[token_indices_to_sample]`）----
+
+
+def collect_ar_steps(method="eagle3", spec_k=3):
+    """跑一轮，记录每轮第一遍的采样行位置/长度与随后每个自回归步的位置/长度。"""
+    engine, _core, runner = e2e.make_engine(spec_k=spec_k, max_num_seqs=1)
+    rounds = []
+    proposer = runner.proposer
+    original_first = proposer.set_inputs_first_pass
+    original_ar = proposer._set_autoregressive_inputs
+
+    def first(*args, **kwargs):
+        plan = original_first(*args, **kwargs)
+        rounds.append({"sample_positions": list(plan.sample_positions),
+                       "first_pass_seq_lens": list(plan.seq_lens), "ar": []})
+        return plan
+
+    def ar(pending, drafts, input_batch):
+        result = original_ar(pending, drafts, input_batch)
+        rounds[-1]["ar"].append({
+            "positions": [int(position) for _, position in pending],
+            "seq_lens": [int(x) for x in proposer.seq_lens_cpu[:len(pending)]],
+            "num_drafted": [len(drafts[target.req_id]) for target, _ in pending],
+            "rejected": [int(target.num_rejected) for target, _ in pending]})
+        return result
+
+    proposer.set_inputs_first_pass = first
+    proposer._set_autoregressive_inputs = ar
+    try:
+        engine.add_request("a", [1, 2, 3, 4, 5, 6],
+                           SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
+        for _ in range(200):
+            if not engine.has_unfinished_requests():
+                break
+            engine.step()
+    finally:
+        proposer.set_inputs_first_pass = original_first
+        proposer._set_autoregressive_inputs = original_ar
+        engine.shutdown()
+    return rounds
+
+
+ar_rounds = collect_ar_steps()
+step_count = sum(len(round_["ar"]) for round_ in ar_rounds)
+position_ok = all(step["positions"][index] == round_["sample_positions"][index]
+                  + step["num_drafted"][index]
+                  for round_ in ar_rounds for step in round_["ar"]
+                  for index in range(len(step["positions"])))
+seq_ok = all(step["seq_lens"][index] == round_["first_pass_seq_lens"][index]
+             - step["rejected"][index] + step["num_drafted"][index]
+             for round_ in ar_rounds for step in round_["ar"]
+             for index in range(len(step["seq_lens"])))
+check("F1. 自回归步的位置 = 采样行位置 + k（上游 R1）", position_ok and step_count > 0,
+      f"{step_count} 个自回归步")
+check("F2. 自回归步的上下文 = (第一遍 seq_lens − 被拒) + k（上游 R2）", seq_ok)
+check("F3. 被拒 > 0 的轮也验到了（否则被拒那一支没有区分力）",
+      any(step["rejected"][0] > 0 for round_ in ar_rounds for step in round_["ar"]))
 
 # 端到端：与非投机逐 token 一致
 base_engine, base_core, _ = e2e.make_engine(with_spec=False)
