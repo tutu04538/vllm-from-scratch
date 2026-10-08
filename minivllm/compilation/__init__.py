@@ -13,6 +13,8 @@
 
 from .cuda_graph import (CUDAGraphEntry, CUDAGraphOptions, CUDAGraphWrapper, graph_capture)
 from .monitor import set_cudagraph_capturing_enabled, validate_cudagraph_capturing_enabled
+from .stats import CUDAGraphLogging, CUDAGraphStat
 
-__all__ = ["CUDAGraphEntry", "CUDAGraphOptions", "CUDAGraphWrapper", "graph_capture",
+__all__ = ["CUDAGraphEntry", "CUDAGraphLogging", "CUDAGraphOptions", "CUDAGraphStat",
+           "CUDAGraphWrapper", "graph_capture",
            "set_cudagraph_capturing_enabled", "validate_cudagraph_capturing_enabled"]

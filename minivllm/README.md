@@ -337,16 +337,46 @@ CUDA Graph 只有在「形状固定 + 地址固定」时才成立，而投机的
   是直通、捕获还是重放；注意力后端按运行模式走「固定形状批量」这条路（eager 那条逐请求路径留着当参考）。
 
 ```bash
-python -m pytest tests/step69 -q                      # 27 项（drafter padding 9 + cudagraph 18）
-python benchmarks/check_step69_cudagraph.py           # 26 项（配置 / 键 / 一致性 / 不留痕 / profiler / drafter）
+python -m pytest tests/step69 -q                      # 37 项（drafter padding 9 + cudagraph 19 + piecewise 9）
+python benchmarks/check_step69_cudagraph.py           # 28 项（配置 / 键 / 一致性 / 不留痕 / profiler / drafter）
 ```
 
 > 实测（tiny、单请求、greedy）：非投机 kernel launch **121 → 4.2 / step**；投机 K=3
 > **381.6 → 296.4 / step**（draft 自己的前向仍是 eager，见下）；eager 与图 greedy **逐 token 相同**，
 > 故意污染 padding 缓冲后**真实块 KV 逐位不变**；profiler 里能看到 `cudaGraphLaunch`。
 > 能力边界写在 `docs/step69_alignment.md` §6：**没有 torch.compile 一轴**（配置期拒绝）、
-> **没有 PIECEWISE**（混合 prefill/decode 批回退 eager）、**drafter 不做图**（上游只在 PIECEWISE 下做），
-> 图内注意力会物化 K/V gather（长上下文显存吃紧）。
+> **drafter 不做图**（上游只在 PIECEWISE 下做），图内注意力会物化 K/V gather（长上下文显存吃紧）。
+
+### 第六十九关补充：PIECEWISE 分段图（71 关的前置）
+
+混合 prefill/decode 批过去只能回退 eager，因为「每请求 query 长度不同」的注意力没有固定形状。
+这一份把另一半补上：**每个 decoder 层切成"注意力前段 / 注意力核心 / 后段"，只把前/后两段录进图**，
+注意力留在图外（eager）。于是混合批也能用图，而 `CUDAGraphMode` 的五值语义与上游一致了：
+
+| 模式 | decode 批 | 混合批 |
+|---|---|---|
+| `full_decode_only` | 全图 | eager |
+| `piecewise` | 分段图 | 分段图 |
+| `full_and_piecewise`（**默认**，= 上游 V1 默认） | 全图 | 分段图 |
+
+- **能力协商**：注意力后端声明 `AttentionCGSupport`（本仓库 Torch 后端 = `UNIFORM_BATCH`），
+  `VllmConfig.resolve_cudagraph_mode_and_sizes()` 按上游规则决定最终模式——显式要 `full`
+  （混合批也进图）会被降级成 `FULL_AND_PIECEWISE` 并打 warning，不是静默变 eager。
+- **键与填充**：PIECEWISE 的键**不带请求数**（`num_reqs=None`，图只认 token 数），
+  只补 token 行；请求级缓冲（`query_start_loc`/`seq_lens`/块表）保持真实数并**切片**给注意力。
+- **段间静态缓冲**：embedding 输出与注意力输出各拷一次进静态缓冲（图里记的是指针）；
+  缓冲按 `max_num_batched_tokens` 开一次，不随档位重建。
+- **图命中统计**：每一轮（含"没走图"）记一条 `CUDAGraphStat`，`CUDAGraphLogging.generate_metric_table()`
+  打出 `| Unpadded | Padded | Paddings | Mode | Count |` 表。
+- ⚠️ 与上游的差别（`docs/step69b_piecewise_cudagraph.md` §6）：上游靠 **torch.compile + `splitting_ops`**
+  在编译期把注意力算子拆出图，本仓库是**手工分段**（段内是未融合的 eager 算子序列，没有 compile cache
+  与 custom pass）；段间地址我们显式拷贝（上游依赖分配器确定性）；drafter 图仍未做（属 74 关）。
+- 实测（真实 Qwen3-1.7B bf16，档位 `[1,2,4,8,16]`）：捕获 9 张 / 2.70 s / 图池 3758 MiB
+  （其中分段图只多占 252 MiB，共享池）；`none` / `full_decode_only` / `full_and_piecewise`
+  以及混合批场景四种模式 **greedy 逐 token 相同**。
+- 实测每步 kernel 启动（tiny，decode 步）：eager **125.1** → 纯 `piecewise` **49.9** →
+  `full_and_piecewise` **4.4**。分段图确实省启动，但**纯分段远不如 FULL**（注意力留在图外），
+  所以默认是"能走 FULL 就走 FULL，混合批才落到分段图"。
 
 ## 第七十关：异步调度占位符与 GPU 结果回传（骨架 + 明确边界）
 

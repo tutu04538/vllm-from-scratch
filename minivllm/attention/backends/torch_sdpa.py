@@ -34,16 +34,31 @@ CUDA Graph 要求形状固定 + 无 CPU 同步，而上面那条逐请求路径�
     * padding 行的槽位是 `PADDING_SLOT_ID(-1)`，写 KV 时**夹到 0 号块**（垃圾桶）。
       这就是上游把 0 号块留白的原因：夹取换掉了分支，代价是必须有一块"写了也没人读"的地方。
 
-**能力边界（明确写出来）**：本仓库的图只覆盖"统一 decode"这一类批。prefill、chunked prefill、
-混合批、以及"每条请求 K_i 不同"的投机批都没有图（`dispatch()` 会回退 NONE 走 eager）。
-要把它们也纳入图，需要 PIECEWISE（把注意力拆到图外）或分块 kernel，本仓库都没有实现。
+**能力边界（明确写出来）**：本仓库的图只覆盖"统一 decode"这一类批（`_forward_padded`）。
+prefill、chunked prefill、混合批、以及"每条请求 K_i 不同"的投机批都**不能把注意力录进图**
+（`_forward_generic` 里有 `int(张量)` 同步）。它们只能走 **PIECEWISE**：把注意力留在图外、
+只把每层的"注意力前/后"两段（norm/gemm/MLP）录进图——这正是 `AttentionCGSupport.UNIFORM_BATCH`
+这一档的含义，也是上游 `FULL + UNIFORM_BATCH → FULL_AND_PIECEWISE` 那条降级规则的由来。
 """
 
 import math
 
 import torch
 
-from ..metadata import AttentionMetadata
+from ..backend import AttentionCGSupport
+from ..metadata import AttentionMetadata, AttentionMetadataBuilder
+
+
+class TorchAttentionMetadataBuilder(AttentionMetadataBuilder):
+    """本后端的元数据构造器（上游 `TorchAttentionMetadataBuilder` 的位置）。
+
+    它比基类只多一件事：**声明这个后端的图能力**。上游把能力放在 backend 类上
+    （`AttentionBackend.get_builder_cls().get_cudagraph_support(...)`），本仓库没有后端
+    注册表，所以能力挂在这唯一一个 builder 上，由 Runner 在初始化图之前读一次。
+    """
+
+    #: 只有"每请求 query 长度相同"的批能把注意力录进图（见模块开头的能力边界）。
+    _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
 
 
 class TorchAttentionImpl:
@@ -103,18 +118,25 @@ class TorchAttentionImpl:
 
     @staticmethod
     def _graph_dispatched() -> bool:
-        """这一轮是不是"图分派"的轮次（= 后端要不要走固定形状那条路）。
+        """这一轮的**注意力本身**是不是跑在捕获的图里（= 运行模式是 FULL）。
 
-        唯一真相是 forward 上下文里的运行模式：Runner 在 `set_forward_context()` 里写它，
-        图包装器也用同一个字段决定捕获/重放。**没有上下文**（例如测试直接调模型）时按
-        eager 处理——与上游 `is_forward_context_available()` 的用法同源。
+        两个用处，都只对"图内"成立：
+
+            `write_kv` 的 `clamp_min(0)`（图里不能有数据相关分支）
+            `forward()` 走 `_forward_padded`（固定形状的批量路径）
+
+        **为什么 PIECEWISE 不算**：分段图把注意力**留在图外**（只把每层注意力前后的
+        norm/gemm/MLP 录进图），所以这一轮的注意力就是普通 eager 代码——可以用 `slots >= 0`
+        掩掉 padding 行（不必依赖 0 号垃圾桶），也可以走逐请求的通用路径。把 PIECEWISE 也算成
+        "图内"会让一条 eager 路径去做只有图才需要的妥协（更强的假设、更差的数值路径）。
         """
+        from ...config import CUDAGraphMode
         from ...forward_context import (get_forward_context,
                                         is_forward_context_available)
 
         if not is_forward_context_available():
             return False
-        return get_forward_context().cudagraph_runtime_mode.value != 0
+        return get_forward_context().cudagraph_runtime_mode == CUDAGraphMode.FULL
 
     # -------- 2) 算注意力 --------
 
@@ -256,3 +278,20 @@ class TorchAttentionImpl:
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                            # [H, q, d]
         return out.transpose(0, 1).reshape(query_len, heads * head_size).to(query.dtype)
+
+
+class TorchAttentionBackend:
+    """后端契约（上游 `AttentionBackend` 的**只有调用方的**那一部分）。
+
+    上游的后端还要回答名字、支持的 head size、是否用级联注意力、KV cache 形状等；本仓库
+    只有一个后端、一种分页 KV，所以这里只保留真的被调用的三件事——其中前两件是 71 关新增的
+    "能力协商"入口：
+    """
+
+    @staticmethod
+    def get_builder_cls():
+        return TorchAttentionMetadataBuilder
+
+    @staticmethod
+    def get_impl_cls():
+        return TorchAttentionImpl

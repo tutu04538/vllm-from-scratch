@@ -36,7 +36,8 @@ import numpy as np
 import torch
 
 from ..attention import Attention, AttentionMetadataBuilder
-from ..compilation import (CUDAGraphWrapper, graph_capture,
+from ..attention.backends.torch_sdpa import TorchAttentionBackend
+from ..compilation import (CUDAGraphLogging, CUDAGraphStat, CUDAGraphWrapper, graph_capture,
                            set_cudagraph_capturing_enabled)
 from ..config import CUDAGraphMode
 from ..cudagraph_dispatcher import CudagraphDispatcher
@@ -264,7 +265,9 @@ class GPUModelRunner:
             # 词表大小来自 **config**（不是等模型加载完再问）：InputBatch 在 __init__ 就要建，
             # 而 top_k 的归一化规则要用它。假执行路径的 config 没有 hf_config → None
             vocab_size=(vllm_config.model_config.hf_config or {}).get("vocab_size"))
-        self.attn_metadata_builder = AttentionMetadataBuilder(self.block_size)
+        # 用**后端自己的** builder（而不是基类）：71 关的能力协商要读它声明的图能力档位
+        # （`get_cudagraph_support()`），基类的档位是 NEVER（= 不能进图）。
+        self.attn_metadata_builder = TorchAttentionBackend.get_builder_cls()(self.block_size)
         # 68 关：logprobs 的四种模式是**引擎级**配置（上游 `ModelConfig.logprobs_mode`），
         # 采样器与拒绝采样器都要知道它——拒绝采样器还要据此决定"交付 raw 还是 processed 那份"。
         self.logprobs_mode = vllm_config.model_config.logprobs_mode
@@ -325,6 +328,8 @@ class GPUModelRunner:
         # 不是靠日志猜。字段名与 README/对齐文档里的表一致。
         self.cudagraph_selections: list[dict] = []
         self.cudagraph_capture_stats: dict | None = None
+        # 图命中统计（`CUDAGraphLogging`）：`initialize_cudagraph_capture()` 里按最终模式建
+        self.cudagraph_logging: CUDAGraphLogging | None = None
 
     # -------- 初始化 --------
 
@@ -884,22 +889,20 @@ class GPUModelRunner:
         """确定图模式、建键表、包装模型、开静态工作区（对应上游
         `initialize_cudagraph_capture()` + `CudagraphDispatcher.initialize_cudagraph_keys()`）。
 
+        顺序与上游一致，四步：
+
+            1. 环境事实：没有 CUDA 就没有图（退 eager 并记录原因）
+            2. **能力协商**：注意力后端的能力档位决定最终模式（`full` 可能被降级）
+            3. 建键表（PIECEWISE + FULL 两张），再按模式包装模型：
+               含 FULL → 外层包一张全图；含 PIECEWISE → 让模型给每层装两段分段图
+            4. 开静态工作区（图里记的是指针，缓冲必须常驻）
+
         与上游的差异只有一条、而且是环境事实：**本机没有 CUDA 时强制 NONE**。
         `VllmConfig` 是按 `DeviceConfig.device` 字符串解析的，而"字符串写着 cuda"不等于
         "这台机器真的有 CUDA"（跨机器跑同一份配置时就会不同）；真去 `torch.cuda.CUDAGraph()`
         只会在捕获时炸，不如在这里就退成 eager 并**记录下来**。
         """
         mode = self.compilation_config.cudagraph_mode
-        if mode == CUDAGraphMode.FULL:
-            # 非分段 FULL 会给**混合 prefill/decode 批**也建图，而那种批的注意力没有固定形状
-            # （每请求 query 长度不同），只能走 `_forward_generic` 里的逐请求循环——那里的
-            # `int(张量)` 是 CPU 同步，录进图之后重放会读到**录制时**的那些数字（静默算错）。
-            # 所以这里明确拒绝，指向我们真正支持的那一档。
-            raise NotImplementedError(
-                "cudagraph_mode='full'（非分段）本仓库不支持：它会把混合 prefill/decode 批也"
-                "录进图，而本仓库的注意力只有「统一 decode」这一条图内路径。"
-                "请用 'full_decode_only'（decode 走图、混合批自动回退 eager，与上游"
-                "CUDAGraphMode.FULL_DECODE_ONLY 同义）")
         if mode != CUDAGraphMode.NONE and not torch.cuda.is_available():
             self.cudagraph_unsupported_reason = (
                 "配置要求 CUDA Graph，但这台机器没有可用的 CUDA：退成 eager")
@@ -909,10 +912,24 @@ class GPUModelRunner:
             self.compilation_config.max_cudagraph_capture_size = 0
         else:
             self.cudagraph_unsupported_reason = None
+        # 能力协商（对应上游 `_check_and_update_cudagraph_mode`）：**注意力后端先开口**，
+        # 再决定最终模式。为什么必须在图键初始化之前：`FULL` 的含义是"混合批也录全图"，
+        # 而本仓库的图内注意力只认"每请求行数相同"的批（能力档位 UNIFORM_BATCH），
+        # 所以请求 full 会被降级成 FULL_AND_PIECEWISE（混合批改走分段图）并打 warning。
+        if mode != CUDAGraphMode.NONE:
+            builder_cls = type(self.attn_metadata_builder)
+            min_support = builder_cls.get_cudagraph_support(self.vllm_config)
+            mode = self.vllm_config.resolve_cudagraph_mode_and_sizes(
+                min_support, builder_cls.__name__, self.uniform_decode_query_len)
+        # 命中统计（上游 `CUDAGraphStat`/`CUDAGraphLogging`）：**每一轮**都记一条，
+        # 包括"这一轮没走图"（模式 NONE）——验收要能回答"为什么没走图"，而只记命中时
+        # 这个问题的答案恰好缺失。
+        self.cudagraph_logging = CUDAGraphLogging(
+            mode, self.compilation_config.cudagraph_capture_sizes)
         self.cudagraph_dispatcher.initialize_cudagraph_keys(
             mode, self.uniform_decode_query_len)
         # draft 侧单独一套键（上游 `self.drafter.initialize_cudagraph_keys(cudagraph_mode)`）：
-        # EAGLE 系只支持 PIECEWISE 图，本仓库没有 PIECEWISE，于是它恒为 NONE。
+        # 草稿模型的图属 74 关，本仓库的 drafter 恒为 NONE。
         if self.proposer is not None:
             initialize_keys = getattr(self.proposer, "initialize_cudagraph_keys", None)
             if initialize_keys is not None:
@@ -921,7 +938,18 @@ class GPUModelRunner:
             self._init_padded_buffers()
             # 图包装器只包模型前向（`compute_logits` 留在图外：它只在"要采样的行"上做，
             # 行数每轮不同，属于动态索引）。上游同款：`self.model = CUDAGraphWrapper(...)`。
-            self.model = CUDAGraphWrapper(self.model, self.vllm_config, CUDAGraphMode.FULL)
+            # 只有模式里**含 FULL** 时才包外层全图；纯 PIECEWISE 时外层不包（每层两段各自进图）。
+            if mode.has_full_cudagraphs():
+                self.model = CUDAGraphWrapper(self.model, self.vllm_config,
+                                              CUDAGraphMode.FULL)
+            if mode.has_piecewise_cudagraphs():
+                # 分段图：让模型把每层切成"注意力前段 / 后段"并各包一个 PIECEWISE 包装器。
+                # 段间缓冲按**输入工作区容量**（max_num_batched_tokens）开一次，此后不重建：
+                # 它服务的是"所有模式"（超过最大档位的批会回退 eager，但那时这些缓冲照样要用），
+                # 所以不能用"图档位上限"当容量——实测那样会在第 6 行就写不下（档位上限才 4）。
+                self.model.enable_piecewise_pieces(
+                    self.vllm_config,
+                    self.vllm_config.scheduler_config.max_num_batched_tokens)
 
     def _init_padded_buffers(self) -> None:
         """静态输入工作区（对应上游 `_init_input_buffers()` 里与图相关的那几块）。
@@ -995,6 +1023,14 @@ class GPUModelRunner:
             "uniform": batch_descriptor.uniform,
             "mode": str(mode), "key": str(batch_descriptor),
         })
+        # 上游在 `_determine_batch_execution_and_padding()` 里建这条记录、由调用方 observe；
+        # 本仓库把两者放在这一处（同一个写入点），数值口径完全一样。
+        if self.cudagraph_logging is not None:
+            self.cudagraph_logging.observe(CUDAGraphStat(
+                num_unpadded_tokens=num_tokens,
+                num_padded_tokens=batch_descriptor.num_tokens,
+                num_paddings=batch_descriptor.num_tokens - num_tokens,
+                runtime_mode=str(mode)))
 
     def _padded_attn_metadata(self, batch_descriptor: BatchDescriptor):
         """取（或第一次建）这个图键的 attention 元数据对象。
@@ -1107,9 +1143,34 @@ class GPUModelRunner:
         self.input_batch.block_table.cpu[num_reqs:num_reqs_padded].zero_()
         self.input_batch.block_table.commit_block_table(num_reqs_padded)
 
+    def _piecewise_attn_metadata(self, num_reqs: int, num_tokens_padded: int):
+        """分段图这一轮的元数据（**每轮新建**，不缓存）。
+
+        为什么与 FULL 相反、可以不缓存：分段图里**注意力在图外**，它的元数据没有任何张量会被
+        图读到——所以不必满足"张量必须是静态缓冲"，也不必把 `num_reqs` 定死在键里。
+        口径：
+
+            `num_reqs`               = **真实**请求数（不是补齐后的）
+            `uniform_query_len=None` → 注意力走逐请求的 eager 路径（图外允许 CPU 同步）
+            `slot_mapping`           = **补齐后**的静态缓冲（必须与图输出的行数同形；
+                                        padding 行是 -1，写 KV 时被掩掉）
+        """
+        buffers = self._padded_buffers
+        return self.attn_metadata_builder.build(
+            query_start_loc=buffers["query_start_loc"][:num_reqs + 1],
+            seq_lens=buffers["seq_lens"][:num_reqs],
+            block_table=self.input_batch.block_table.gpu[:num_reqs],
+            slot_mapping=buffers["slot_mapping"][:num_tokens_padded],
+            num_reqs=num_reqs, uniform_query_len=None)
+
     def _prepare_inputs_padded(self, inputs: PreparedInputs, mode: CUDAGraphMode,
                               batch_descriptor: BatchDescriptor) -> None:
         """eager 的紧凑输入 → 图要的补齐输入（对应上游 `prepare_inputs_padded` 的效果）。
+
+        两种模式的**补齐口径不同**，这是 PIECEWISE 与 FULL 的关键区别：
+
+            FULL       token 行与**请求行**都补齐（图里的注意力按 `num_reqs` 定形状）
+            PIECEWISE  只补 token 行；请求行保持真实数（注意力在图外，按真实请求数算）
 
         与上游的差别要说清楚：上游的 padding 发生在**草稿第一遍**（drafter 侧，
         `SpecDecodeBaseProposer.prepare_inputs_padded()` 用 Triton kernel 算
@@ -1120,13 +1181,18 @@ class GPUModelRunner:
         也不需要动采样/掩码/logprobs 的行映射（它们是这个前缀的子集，见
         `tests/step69/test_spec_cudagraph.py::test_padded_rows_extend_the_compact_layout`）。
         """
-        num_reqs_padded = batch_descriptor.num_reqs
-        uniform_query_len = self.uniform_decode_query_len if batch_descriptor.uniform else None
+        if mode == CUDAGraphMode.PIECEWISE:
+            num_reqs_padded = self.input_batch.num_reqs
+            uniform_query_len = None
+        else:
+            num_reqs_padded = batch_descriptor.num_reqs
+            uniform_query_len = (self.uniform_decode_query_len
+                                 if batch_descriptor.uniform else None)
         self._fill_padded_buffers(inputs.num_tokens, self.input_batch.num_reqs,
                                   inputs.num_scheduled_tokens,
                                   batch_descriptor.num_tokens, num_reqs_padded,
                                   uniform_query_len, source=inputs)
-        if batch_descriptor not in self._padded_metadata:
+        if mode == CUDAGraphMode.FULL and batch_descriptor not in self._padded_metadata:
             # 正常路径不会走到这里（键要么在 capture_model 里建过，要么分派器不会返回它）。
             # 走到这里说明"图没建好就想重放"：明确报错，不要顺手补一个（那会带着旧地址建图）。
             raise RuntimeError(
@@ -1184,6 +1250,13 @@ class GPUModelRunner:
             metadata = self._build_padded_attn_metadata(
                 batch_descriptor, num_tokens_padded=num_tokens,
                 num_reqs_padded=num_reqs, uniform_query_len=uniform_query_len)
+        elif cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE:
+            # 分段图：只补 token 行，请求行保持真实数；元数据每轮新建（注意力在图外）
+            self._fill_padded_buffers(num_tokens, num_reqs, num_scheduled_tokens,
+                                      batch_descriptor.num_tokens, num_reqs,
+                                      uniform_query_len)
+            metadata = self._piecewise_attn_metadata(num_reqs,
+                                                     batch_descriptor.num_tokens)
         else:
             num_reqs_padded = batch_descriptor.num_reqs or num_reqs
             self._fill_padded_buffers(num_tokens, num_reqs, num_scheduled_tokens,
@@ -1400,10 +1473,16 @@ class GPUModelRunner:
                 hidden_states = self._run_model(inputs)
             else:
                 self._prepare_inputs_padded(inputs, mode, batch_descriptor)
+                # FULL 用**缓存**在键下的那份元数据（张量必须是静态缓冲）；PIECEWISE 每轮
+                # 新建（注意力在图外，没有"图读元数据"这回事）。
+                metadata = (self._piecewise_attn_metadata(
+                                self.input_batch.num_reqs, batch_descriptor.num_tokens)
+                            if mode == CUDAGraphMode.PIECEWISE
+                            else self._padded_attn_metadata(batch_descriptor))
                 hidden_states = self._run_model_padded(
                     _PaddedRun(batch_descriptor=batch_descriptor, mode=mode,
                                num_tokens=batch_descriptor.num_tokens),
-                    metadata=self._padded_attn_metadata(batch_descriptor), inputs=inputs)
+                    metadata=metadata, inputs=inputs)
                 # 图路径的 hidden 缓冲是**补齐后**的行数（含尾部 padding 行）。后续所有消费者
                 # （采样行选择、logprobs、掩码、提议者取特征）用的都是**紧凑行号**，而紧凑行
                 # 正好是补齐布局的前缀，所以在这里切一刀即可——不是"重新映射"，是"去掉尾巴"。

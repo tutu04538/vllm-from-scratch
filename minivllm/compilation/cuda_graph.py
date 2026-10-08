@@ -40,8 +40,12 @@ def graph_capture(device: str = "cuda"):
 
     为什么要专用池：图会把捕获期间的显存分配**录下来**（重放时不再走分配器），所以这些块
     必须独占、生命周期与图一致。不隔离的话，别的张量复用同一段地址，重放就会写花别人的数据。
+
+    **池是全进程共享的一个**（上游 `current_platform.get_global_graph_pool()` 同款）：
+    PIECEWISE 下"每层两段 × 每个档位"会有几十上百张图，一张图一个池会让显存按图数增长；
+    共享池是安全的——同一条流上任何时刻只有一张图在重放。
     """
-    pool = torch.cuda.graph_pool_handle() if torch.cuda.is_available() else None
+    pool = _get_global_graph_pool()
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -50,6 +54,19 @@ def graph_capture(device: str = "cuda"):
     finally:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+
+
+_GLOBAL_GRAPH_POOL = None
+
+
+def _get_global_graph_pool():
+    """全进程唯一的图显存池（第一次调用时创建；CPU 上返回 None 并保持 None）。"""
+    global _GLOBAL_GRAPH_POOL
+    if not torch.cuda.is_available():
+        return None
+    if _GLOBAL_GRAPH_POOL is None:
+        _GLOBAL_GRAPH_POOL = torch.cuda.graph_pool_handle()
+    return _GLOBAL_GRAPH_POOL
 
 
 @dataclass
@@ -143,7 +160,7 @@ class CUDAGraphWrapper:
             validate_cudagraph_capturing_enabled()
             entry.input_addresses = [x.data_ptr() for x in args if isinstance(x, torch.Tensor)]
             cudagraph = torch.cuda.CUDAGraph()
-            pool = torch.cuda.graph_pool_handle()
+            pool = _get_global_graph_pool()
             # 注意引用管理：捕获期间 `output` 由图的显存池管理，出了 `with` 之后只留弱引用，
             # 否则这块显存看起来永远"有人用"。
             with torch.cuda.graph(cudagraph, pool=pool):

@@ -19,8 +19,11 @@
 """
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import torch
+
+from .backend import AttentionCGSupport
 
 
 @dataclass
@@ -38,8 +41,22 @@ class AttentionMetadata:
 class AttentionMetadataBuilder:
     """从 InputBatch + 块表构造 metadata。**只做张量准备，不做模型数学**。"""
 
+    #: 本后端的图能力档位。基类是 `NEVER`（上游同款默认），具体后端覆写它；
+    #: 不要直接读这个字段，要用 `get_cudagraph_support()`（它给的是"对这份配置"的答案）。
+    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
+
     def __init__(self, block_size: int) -> None:
         self.block_size = block_size
+
+    @classmethod
+    def get_cudagraph_support(cls, vllm_config, kv_cache_spec=None) -> AttentionCGSupport:
+        """这个后端在**这份引擎配置**下支持到哪一档（对应上游同名方法）。
+
+        上游各后端还会看 `kv_cache_spec`（例如 MLA / 滑动窗口的实现差异）与 dtype。
+        本仓库只有一个后端、一种分页 KV，能力只取决于 `_cudagraph_support` 这个类属性；
+        `kv_cache_spec` 参数保留是为了调用点与上游同形（将来加后端时不用改调用方）。
+        """
+        return cls._cudagraph_support
 
     def build(self, query_start_loc: torch.Tensor, seq_lens: torch.Tensor,
               block_table: torch.Tensor, slot_mapping: torch.Tensor,

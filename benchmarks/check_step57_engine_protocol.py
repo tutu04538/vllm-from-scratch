@@ -219,14 +219,16 @@ original_sample = runner.sample_tokens
 calls = []
 
 
-def traced_execute(packet):
+def traced_execute(packet, non_block: bool = False):
+    # 70 关：executor 会给执行侧传 `non_block`（同进程执行端用它决定"结果包不包 Future"），
+    # 所以这个观测包装器必须收下并原样转发——断言仍然只看**调用顺序**。
     calls.append("execute")
-    return original_execute(packet)
+    return original_execute(packet, non_block=non_block)
 
 
-def traced_sample(grammar_output):
+def traced_sample(grammar_output=None, non_block: bool = False):
     calls.append("sample")
-    return original_sample(grammar_output)
+    return original_sample(grammar_output, non_block=non_block)
 
 
 runner.execute_model, runner.sample_tokens = traced_execute, traced_sample

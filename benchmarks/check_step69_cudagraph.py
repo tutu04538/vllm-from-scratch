@@ -53,14 +53,23 @@ def check(name, ok, detail=""):
     TRACE.append({"item": name, "ok": bool(ok), "detail": str(detail)[:400]})
 
 
+def _raises(fn, exc_type) -> bool:
+    """调用 fn，期待它抛 exc_type（"配了不生效就报错"这类断言的公共写法）。"""
+    try:
+        fn()
+    except exc_type:
+        return True
+    return False
+
+
 if DEVICE != "cuda":
     print("FAIL  设备：CUDA Graph 与投机验证都需要 CUDA（本机没有）——本关待验，不是通过")
     sys.exit(1)
 
 # ---------------------------------------------------------------- A 配置与解析
 config = make_config(tiny_dir=TINY, hf_config=HF, device="cuda")
-check("A1. 默认解析：CUDA + 未开 enforce_eager → FULL_DECODE_ONLY",
-      config.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_DECODE_ONLY
+check("A1. 默认解析：CUDA + 未开 enforce_eager → FULL_AND_PIECEWISE（= 上游 V1 默认）",
+      config.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_AND_PIECEWISE
       and config.compilation_config.cudagraph_capture_sizes,
       f"mode={config.compilation_config.cudagraph_mode} "
       f"sizes={config.compilation_config.cudagraph_capture_sizes}")
@@ -79,24 +88,29 @@ sizes = spec_config.compilation_config.cudagraph_capture_sizes
 check("A4. K=2 → 档位全部取整到 1+K=3 的倍数（上游 issue #28207 的修法）",
       sizes and all(size % 3 == 0 for size in sizes), f"sizes={sizes}")
 
-rejections = []
-for kwargs in ({"cudagraph_mode": "piecewise"}, {"cudagraph_mode": "full_and_piecewise"},
-               {"mode": CompilationMode.VLLM_COMPILE}, {"compile_sizes": [8]}):
-    try:
-        CompilationConfig(**kwargs)
-        rejections.append((kwargs, None))
-    except NotImplementedError as exc:
-        rejections.append((kwargs, str(exc)[:60]))
-check("A5. 不支持的编译/图模式在配置期明确报错（不静默退化）",
-      all(reason for _kwargs, reason in rejections), str(rejections))
+# PIECEWISE 已实现（69 关补充/71 关前置），所以这里断言的是"它被接受 + 切分点被记下"；
+# 仍然必须报错的是"配了却不生效"的那几项：编译模式、compile_sizes、不可配置的 splitting_ops。
+accepted = CompilationConfig(cudagraph_mode="piecewise")
+check("A5. PIECEWISE 被接受且切分点被记下；不可生效的配置项仍然明确报错",
+      accepted.cudagraph_mode is CUDAGraphMode.PIECEWISE
+      and accepted.splitting_ops == ["minivllm::attention_core"]
+      and accepted.splitting_ops_contain_attention()
+      and _raises(lambda: CompilationConfig(mode=CompilationMode.VLLM_COMPILE),
+                  NotImplementedError)
+      and _raises(lambda: CompilationConfig(compile_sizes=[8]), NotImplementedError)
+      and _raises(lambda: CompilationConfig(cudagraph_mode="piecewise", splitting_ops=[]),
+                  NotImplementedError),
+      f"{accepted.splitting_ops}")
 
-try:
-    make_engine(tiny_dir=TINY, hf_config=HF, mode="full")
-    full_reason = None
-except NotImplementedError as exc:
-    full_reason = str(exc)
-check("A6. 非分段 FULL（混合批也要进图）被明确拒绝，并指向 full_decode_only",
-      full_reason is not None and "full_decode_only" in full_reason, str(full_reason))
+# 非分段 `full` 要求后端支持任意批（ALWAYS），本仓库的 Torch 后端是 UNIFORM_BATCH
+# → 按能力协商**降级**成 FULL_AND_PIECEWISE（带 warning），不是字面执行、也不是静默变 eager
+_engine, _core, full_runner = make_engine(tiny_dir=TINY, hf_config=HF, mode="full")
+check("A6. 非分段 FULL 被能力协商降级为 FULL_AND_PIECEWISE（不静默、不字面执行）",
+      full_runner.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_AND_PIECEWISE
+      and full_runner.cudagraph_dispatcher.cudagraph_mode
+      is CUDAGraphMode.FULL_AND_PIECEWISE,
+      str(full_runner.compilation_config.cudagraph_mode))
+_engine.shutdown()
 
 # ---------------------------------------------------------------- B 键与分派
 harness = DispatcherHarness(budget=64, max_num_seqs=4, mode="full_decode_only",

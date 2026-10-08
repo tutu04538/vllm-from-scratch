@@ -50,7 +50,10 @@ class FakeRunner:
 
     # -------- 执行侧的两步协议 --------
 
-    def execute_model(self, scheduler_output):
+    def execute_model(self, scheduler_output, non_block: bool = False):
+        # 70 关：执行侧三层同参（executor → worker → runner）都带 `non_block`。这个假 Runner
+        # 没有异步交付（它本来就只产出 CPU 结果），所以参数收下不用——但**必须收**，
+        # 否则 `Worker.execute_model` 传下来时会 TypeError（`benchmarks/check_step57_*` 就是这么发现的）。
         self._check_protocol(scheduler_output)
         self._apply_new_requests(scheduler_output.scheduled_new_reqs)
         self._apply_cached_requests(scheduler_output.scheduled_cached_reqs)
@@ -68,7 +71,8 @@ class FakeRunner:
         self.num_forward_tokens += scheduler_output.total_num_scheduled_tokens
         return None                                    # 状态存下，等 sample_tokens() 消费
 
-    def sample_tokens(self, grammar_output):
+    def sample_tokens(self, grammar_output=None, non_block: bool = False):
+        # 同上：参数收下不用（`non_block` 只影响"结果怎么交回引擎"，不影响算出来的 token）。
         if self.pending is None:
             return ModelRunnerOutput.make_empty()
         pending, self.pending = self.pending, None

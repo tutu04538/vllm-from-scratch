@@ -69,6 +69,7 @@ from ..sample import Sampler
 from ..sample.metadata import SAMPLING_EPS
 from ..sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 from ..attention import Attention, AttentionMetadataBuilder, set_forward_context
+from ..attention.backends.torch_sdpa import TorchAttentionBackend
 from .utils import (DraftInputRows, FirstPassPlan, TargetRows, compute_new_slot_mapping,
                     expand_draft_inputs, extend_all_queries_by_N)
 
@@ -115,7 +116,8 @@ class SpecDecodeBaseProposer:
         self.use_heterogeneous_vocab = bool(getattr(spec_config, "use_heterogeneous_vocab", False))
         self.model = None                     # 子类加载
         self.kv_caches: dict[str, torch.Tensor] = {}
-        self.metadata_builder = AttentionMetadataBuilder(self.block_size)
+        # 草稿模型与 target 用同一个注意力后端（能力档位一致）；草稿侧的图属 74 关
+        self.metadata_builder = TorchAttentionBackend.get_builder_cls()(self.block_size)
         self.sampler = Sampler()
         # **观测字段，不参与任何决策**（58 §5）：上一次第一遍把 draft 的 KV 覆盖到哪。
         # 58 之前的版本用它当"从哪开始补算"的第二套权威（新请求=0 于是命中前缀也整段重算）；

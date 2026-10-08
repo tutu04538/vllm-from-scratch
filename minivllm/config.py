@@ -922,6 +922,12 @@ _CUDAGRAPH_MODE_ALIASES = {
     "full_and_piecewise": CUDAGraphMode.FULL_AND_PIECEWISE,
 }
 
+#: "分段图的切分点"。上游 `CompilationConfig._attention_ops` 填的是**编译期**要拆出来的
+#: 注意力算子名（`vllm::unified_attention_with_output` 等），`splitting_ops_contain_attention()`
+#: 靠比较这份名单来回答"切分点是不是注意力"。本仓库没有编译期算子名可拆，切分点是模型结构里
+#: 的 `Attention` 边界，所以这里放的是**同一个语义的名字**：图里不含注意力核心，只含它前后的段。
+_ATTENTION_SPLIT_OPS = ["minivllm::attention_core"]
+
 
 @dataclass
 class CompilationConfig:
@@ -970,12 +976,25 @@ class CompilationConfig:
             raise NotImplementedError(
                 "compile_sizes 需要编译路径（本仓库 mode 只能是 NONE）：配了却不生效的字段"
                 "比报错更危险")
-        if self.cudagraph_mode is not None and self.cudagraph_mode.has_piecewise_cudagraphs():
+        if self.splitting_ops is not None:
             raise NotImplementedError(
-                f"cudagraph_mode={self.cudagraph_mode.name} 含 PIECEWISE：分段图要求把注意力"
-                f"算子从被编译的图里拆出来（上游靠 mode=VLLM_COMPILE + splitting_ops），"
-                f"本仓库没有编译路径，所以只支持 FULL 系（full / full_decode_only）"
-                f"——见 docs/step69_alignment.md §2 的三态矩阵")
+                f"splitting_ops 在本仓库不可配置（收到 {self.splitting_ops!r}）：上游靠它"
+                f"指定编译期切分点，而本仓库的切分点由模型结构决定（每层注意力边界），"
+                f"配置它不会有任何效果——配了不生效比报错更危险")
+        # 切分点是**模型结构**决定的常量（不是配置出来的）：每层拆成"注意力前段 / 注意力核心 /
+        # 后段"，图只录前/后两段。上游在 `mode=VLLM_COMPILE` 时把这里填成注意力算子名，
+        # 我们填的是同一语义的名字（`_ATTENTION_SPLIT_OPS`），供降级规则里的
+        # `splitting_ops_contain_attention()` 使用——它恒为 True，因为我们的切分点就在注意力处。
+        self.splitting_ops = list(_ATTENTION_SPLIT_OPS)
+
+    def splitting_ops_contain_attention(self) -> bool:
+        """切分点里有没有注意力（上游同名方法）。
+
+        上游比较的是"用户配的算子名 vs 各注意力后端的算子名"；本仓库的切分点由模型结构决定
+        （`_ATTENTION_SPLIT_OPS`），所以这个答案是常量 True——它在降级规则里的作用不变：
+        "切分点在注意力处 = 分段图可行"（上游在这一点上降 PIECEWISE，否则降 NONE/纯 decode）。
+        """
+        return any(op in _ATTENTION_SPLIT_OPS for op in (self.splitting_ops or []))
 
     @staticmethod
     def _as_compilation_mode(value) -> CompilationMode:
@@ -1131,17 +1150,13 @@ class VllmConfig:
             enforce_eager=True            → NONE（上游同款开关）
             设备不是 CUDA                 → NONE（CPU 上没有图可捕获）
             用户显式给了 NONE             → NONE
-            其它（None / FULL / 含 FULL） → FULL_DECODE_ONLY
+            其它（None / FULL / 含 FULL） → FULL_AND_PIECEWISE（= 上游 V1 的默认）
 
-        为什么默认解析成 `FULL_DECODE_ONLY` 而不是上游的 `FULL_AND_PIECEWISE`：
-        PIECEWISE 要求"把注意力算子从被编译的图里拆出来单独做图"，那需要 torch.compile +
-        算子拆分（本仓库没有编译路径，配置期明确拒绝，见 `CompilationConfig.__post_init__`）。
-        在"只有 FULL 可用"的子集里，`FULL_DECODE_ONLY` 正是上游给"只对 decode 建全图"准备的
-        模式名：混合 prefill/decode 批没有对应的图键 → 按 `dispatch()` 的规则回退 eager。
-
-        与上游的差异（记在文档里）：上游 `compilation_config` 的默认 `cudagraph_mode=None`
-        最终解析成 `FULL_AND_PIECEWISE`；本仓库解析成 `FULL_DECODE_ONLY`，因为 piecewise
-        这一半我们没有实现——**不是**把它当成不需要。
+        这里只做"**粗解析**"：把 None 变成默认值、把 CUDA 不可用变成 NONE。真正"这个模式在
+        这份配置下能不能成立"要等**注意力后端就绪**才能回答（能力档位决定 FULL 能不能用于
+        混合批），那一步在 `GPUModelRunner.initialize_cudagraph_capture()` 里调用
+        `resolve_cudagraph_mode_and_sizes()` ——与上游的分工一致
+        （上游 `_set_cudagraph_sizes()` 管档位，`_check_and_update_cudagraph_mode()` 管降级）。
         """
         compilation_config = self.compilation_config
         requested = compilation_config.cudagraph_mode
@@ -1149,7 +1164,7 @@ class VllmConfig:
         if self.model_config.enforce_eager or str(device) != "cuda":
             resolved = CUDAGraphMode.NONE
         elif requested is None:
-            resolved = CUDAGraphMode.FULL_DECODE_ONLY
+            resolved = CUDAGraphMode.FULL_AND_PIECEWISE
         else:
             resolved = requested
         compilation_config.cudagraph_mode = resolved
@@ -1159,6 +1174,100 @@ class VllmConfig:
         else:
             self._set_cudagraph_sizes()
         compilation_config.post_init_cudagraph_sizes()
+
+    def resolve_cudagraph_mode_and_sizes(self, min_cg_support, min_cg_attn_backend: str,
+                                         uniform_decode_query_len: int = 1) -> CUDAGraphMode:
+        """按**注意力后端的能力**决定最终模式（对应上游 `CompilationConfig.
+        resolve_cudagraph_mode_and_sizes()`，`config/compilation.py:1369-1470`）。
+
+        为什么必须有这一步：`FULL` 的含义是"混合 prefill/decode 批也录全图"，而那要求注意力
+        后端支持任意批（`AttentionCGSupport.ALWAYS`）。本仓库的 Torch 后端只支持"每请求行数
+        相同"的批（`UNIFORM_BATCH`），所以请求 `full` 必须被**降级**到
+        `FULL_AND_PIECEWISE`（decode 全图 + 混合批分段图），而不是照字面执行、然后在捕获时炸。
+
+        三条检查，逐条与上游同义（上游还有 SP/inductor 分支，本仓库没有对应能力，故略）：
+
+            1. `mixed_mode() == FULL` 但能力不是 ALWAYS → 降到 FULL_AND_PIECEWISE
+               （切分点含注意力时）/ FULL_DECODE_ONLY（不含时，本仓库恒为前者）
+            2. `decode_mode() == FULL` 但能力是 NEVER   → 降到 PIECEWISE，或（切分点不含注意力
+               时）降到 NONE
+            3. 投机（`1+K > 1`）且能力低于 UNIFORM_BATCH → 同样降级
+            最后再确认一次：降级完还要求 FULL 而能力是 NEVER → 明确报错（不静默变 eager）
+
+        降级一律**带 warning 且改的是 `compilation_config.cudagraph_mode`**（调用方与图包装器
+        读的都是它），所以"实际用了什么模式"在配置对象上是可查的，不是只在日志里。
+        """
+        from .attention.backend import AttentionCGSupport
+
+        compilation_config = self.compilation_config
+        cudagraph_mode = compilation_config.cudagraph_mode
+        if cudagraph_mode is None or cudagraph_mode == CUDAGraphMode.NONE:
+            return CUDAGraphMode.NONE
+
+        def _warn(message: str) -> None:
+            import logging
+
+            logging.getLogger(__name__).warning(message)
+
+        # 1) 混合批要全图 → 必须 ALWAYS
+        if (cudagraph_mode.mixed_mode() == CUDAGraphMode.FULL
+                and min_cg_support != AttentionCGSupport.ALWAYS):
+            msg = (f"CUDAGraphMode.{cudagraph_mode.name} 不被 {min_cg_attn_backend} 后端支持"
+                   f"（能力档位 {min_cg_support.name}）：它要求把**混合 prefill/decode 批**"
+                   f"也录进一张图，而这个后端的图内路径只认'每请求行数相同'的批")
+            if compilation_config.splitting_ops_contain_attention():
+                msg += "；降级为 cudagraph_mode=FULL_AND_PIECEWISE（混合批走分段图）"
+                cudagraph_mode = CUDAGraphMode.FULL_AND_PIECEWISE
+            else:
+                msg += "；降级为 cudagraph_mode=FULL_DECODE_ONLY（混合批回退 eager）"
+                cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
+            _warn(msg)
+
+        # 2) decode 要全图但后端完全不能进图
+        if (cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+                and min_cg_support == AttentionCGSupport.NEVER):
+            msg = (f"CUDAGraphMode.{cudagraph_mode.name} 不被 {min_cg_attn_backend} 后端支持"
+                   f"（能力档位 NEVER）")
+            if compilation_config.splitting_ops_contain_attention():
+                msg += "；降级为 cudagraph_mode=PIECEWISE（注意力留在图外）"
+                cudagraph_mode = CUDAGraphMode.PIECEWISE
+            else:
+                msg += "；降级为 cudagraph_mode=NONE（没有可用的分段图）"
+                cudagraph_mode = CUDAGraphMode.NONE
+            _warn(msg)
+
+        # 3) 投机：图内注意力要求"每请求 1+K 行"，低于 UNIFORM_BATCH 的后端做不到
+        if (cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+                and uniform_decode_query_len > 1
+                and min_cg_support.value < AttentionCGSupport.UNIFORM_BATCH.value):
+            msg = (f"投机解码（每请求 {uniform_decode_query_len} 行）下 "
+                   f"CUDAGraphMode.{cudagraph_mode.name} 不被 {min_cg_attn_backend} 支持"
+                   f"（能力档位 {min_cg_support.name}）")
+            if compilation_config.splitting_ops_contain_attention():
+                msg += "；降级为 cudagraph_mode=PIECEWISE"
+                cudagraph_mode = CUDAGraphMode.PIECEWISE
+            else:
+                msg += "；降级为 cudagraph_mode=NONE"
+                cudagraph_mode = CUDAGraphMode.NONE
+            _warn(msg)
+
+        # 降级完仍要求全图、而后端完全不能进图 → 明确报错（不静默变 eager）
+        if (cudagraph_mode.has_full_cudagraphs()
+                and min_cg_support == AttentionCGSupport.NEVER):
+            raise ValueError(
+                f"cudagraph_mode={cudagraph_mode.name} 要求全图，但 {min_cg_attn_backend} "
+                f"后端的能力档位是 NEVER：请显式改成 cudagraph_mode='piecewise'")
+
+        compilation_config.cudagraph_mode = cudagraph_mode
+        # 模式变了（尤其 NONE ↔ 非 NONE）就要重算档位表：NONE 下档位表必须是空的，
+        # 从 NONE 降级过来的路径不会再跑 `_set_cudagraph_sizes()`。
+        if cudagraph_mode == CUDAGraphMode.NONE:
+            compilation_config.max_cudagraph_capture_size = 0
+            compilation_config.cudagraph_capture_sizes = []
+        elif not compilation_config.cudagraph_capture_sizes:
+            self._set_cudagraph_sizes()
+        compilation_config.post_init_cudagraph_sizes()
+        return cudagraph_mode
 
     def _set_cudagraph_sizes(self) -> None:
         """图档位表（上游 `VllmConfig._set_cudagraph_sizes` 的等价实现，去掉 SP/LoRA 分支）。

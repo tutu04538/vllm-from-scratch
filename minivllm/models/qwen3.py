@@ -94,7 +94,14 @@ class Qwen3Attention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
 
-    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+    def attention_pre(self, positions: torch.Tensor, hidden_states: torch.Tensor,
+                      ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """注意力的**前半段**：qkv 投影 + q/k norm + RoPE。返回 `(q, k, v)`。
+
+        PIECEWISE 图的分段点在这里：这一段与下面的 `attention_post` 形状只取决于**行数**，
+        所以能录进图；中间那一次 `self.attn(...)` 的形状取决于每请求 query 长度，留在图外
+        （`docs/step70_alignment.md` 之后的 `step69` 补充文档里画了这条边界）。
+        """
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.qkv_proj.kv_size, self.qkv_proj.kv_size],
                             dim=-1)
@@ -102,6 +109,10 @@ class Qwen3Attention(nn.Module):
         q = self.q_norm(q.view(-1, self.num_heads, self.head_dim)).view(q.shape)
         k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim)).view(k.shape)
         q, k = self.rotary_emb(positions, q, k)
+        return q, k, v
+
+    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        q, k, v = self.attention_pre(positions, hidden_states)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
@@ -123,18 +134,96 @@ class Qwen3DecoderLayer(nn.Module):
         self.mlp = Qwen2MLP(config, prefix=maybe_prefix(prefix, "mlp"))
         self.input_layernorm = RMSNorm(config["hidden_size"], eps=eps)
         self.post_attention_layernorm = RMSNorm(config["hidden_size"], eps=eps)
+        # 分段图（PIECEWISE）的两段 + 它们之间的静态缓冲；默认 None = 不开分段图，
+        # `forward()` 走原来那条一字未改的路径。
+        self._piece_pre = None
+        self._piece_post = None
+        self._attn_out_stage: torch.Tensor | None = None
+
+    # -------- 分段图（PIECEWISE）：把注意力核心之外的部分录进图 --------
+
+    def attention_pre(self, positions: torch.Tensor, hidden_states: torch.Tensor,
+                      residual: torch.Tensor | None):
+        """第一段：融合 add-RMSNorm + qkv/norm/RoPE。返回 `(q, k, v, residual)`。
+
+        第一层（`residual is None`）的特判与原来的 `forward` 完全一致：此时残差流的起点就是
+        输入自己，`RMSNorm` 走单参数分支返回裸张量。返回的 `residual` 因此就是**输入张量本身**
+        ——它在分段路径里是 Runner 的静态缓冲（地址稳定），正好满足"下一段图的输入必须是静态
+        缓冲"的要求。
+        """
+        if residual is None:
+            residual_out = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual_out = self.input_layernorm(hidden_states, residual)
+        q, k, v = self.self_attn.attention_pre(positions, hidden_states)
+        return q, k, v, residual_out
+
+    def attention_post(self, attn_output: torch.Tensor, residual: torch.Tensor):
+        """第三段：o_proj + 融合 add-RMSNorm + MLP。返回 `(hidden_states, residual)`。"""
+        hidden_states, _ = self.self_attn.o_proj(attn_output)
+        hidden_states, residual_out = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states, residual_out
+
+    def enable_piecewise_pieces(self, vllm_config, max_num_tokens: int,
+                               hidden_size: int) -> None:
+        """把两段包成 PIECEWISE 图包装器，并开好段间静态缓冲（71 关/69 关补充）。
+
+        三件事，各有理由：
+
+        1. **包装器只在模式匹配时生效**（`CUDAGraphWrapper.__call__`）：运行模式是 PIECEWISE
+           时走图，是 FULL 时直通（外面那张全图会连这两段一起录进去），是 NONE 时直通（热身）。
+           ——这就是"嵌套包装器各管各的模式"那条上游设计。
+        2. **`_attn_out_stage` 静态缓冲**：注意力核心是 eager 的，它的输出每次都是新张量，
+           地址不稳定；而它是下一段图的输入。所以在两段之间显式拷进静态缓冲。上游不这么做
+           （它依赖分配器的确定性 + 仅在 DEBUG 下校验地址），这是本仓库**主动收紧**的一处，
+           差异记在文档里。
+        3. `max_num_tokens` 来自图档位上限，缓冲按**上限**开一次，此后不随档位重建
+           （AGENTS §8：稳定工作区不重新分配）。
+        """
+        from ..compilation import CUDAGraphWrapper
+        from ..config import CUDAGraphMode
+
+        device = self.input_layernorm.weight.device
+        dtype = self.input_layernorm.weight.dtype
+        # 注意宽度是**注意力输出的宽度**（`num_heads * head_dim`），不是 hidden_size：
+        # Qwen3 显式给了 head_dim 时两者可以不等（tiny_gqa 就是 64 vs 32）。
+        attn_out_size = self.self_attn.q_size
+        self._attn_out_stage = torch.zeros(max_num_tokens, attn_out_size,
+                                           dtype=dtype, device=device)
+        self._piece_pre = CUDAGraphWrapper(self.attention_pre, vllm_config,
+                                           CUDAGraphMode.PIECEWISE)
+        self._piece_post = CUDAGraphWrapper(self.attention_post, vllm_config,
+                                            CUDAGraphMode.PIECEWISE)
+
+    def stage_attention_output(self, attn_output: torch.Tensor) -> torch.Tensor:
+        """把 eager 注意力的输出拷进静态缓冲（地址稳定），供下一段图读。"""
+        if self._attn_out_stage is None:
+            return attn_output
+        rows = attn_output.shape[0]
+        out = self._attn_out_stage[:rows]
+        out.copy_(attn_output)
+        return out
 
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor,
                 residual: torch.Tensor | None):
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-        hidden_states = self.self_attn(positions, hidden_states)
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual
+        if self._piece_pre is None:
+            # 未开分段图：**原路径一字未改**（eager / FULL 都走这里，回归基线靠它）
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states = self.self_attn(positions, hidden_states)
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            hidden_states = self.mlp(hidden_states)
+            return hidden_states, residual
+        # 分段路径：两段可能进图，中间那次注意力一定在外面
+        q, k, v, residual = self._piece_pre(positions, hidden_states, residual)
+        attn_output = self.self_attn.attn(q, k, v)
+        attn_output = self.stage_attention_output(attn_output)
+        return self._piece_post(attn_output, residual)
 
 
 class Qwen3Model(nn.Module):
@@ -165,6 +254,24 @@ class Qwen3Model(nn.Module):
         self.norm = RMSNorm(config["hidden_size"], eps=config.get("rms_norm_eps", 1e-6))
         # 63 关（EAGLE3）：要输出的辅助层编号。空 tuple = 不采集（默认，零开销）。
         self.aux_hidden_state_layers: tuple[int, ...] = ()
+        # 分段图（PIECEWISE）：embedding 的输出要拷进这块静态缓冲，才能当第一段图的输入。
+        # None = 不开分段图（`forward()` 里那条分支根本不执行）。
+        self._hidden_in_stage: torch.Tensor | None = None
+
+    def enable_piecewise_pieces(self, vllm_config, max_num_tokens: int) -> None:
+        """开分段图：静态化 embedding 输出 + 给每层装两段图的包装器（Runner 在初始化图时调）。
+
+        为什么 embedding 的输出要单独静态化：它是**第一段图的输入**，而 embedding 每次前向
+        都新分配输出（地址不稳）。上游不显式做这一步（靠分配器确定性 + DEBUG 期校验地址），
+        本仓库选择显式拷贝——代价是每步一次 `[行数, hidden]` 的拷贝，换来"地址必然稳定"。
+        """
+        hidden_size = self.config["hidden_size"]
+        device = self.embed_tokens.weight.device
+        dtype = self.embed_tokens.weight.dtype
+        self._hidden_in_stage = torch.zeros(max_num_tokens, hidden_size,
+                                            dtype=dtype, device=device)
+        for layer in self.layers:
+            layer.enable_piecewise_pieces(vllm_config, max_num_tokens, hidden_size)
 
     def set_aux_hidden_state_layers(self, layers) -> None:
         """上游 `SupportsEagle3.set_aux_hidden_state_layers`：指定哪些层顺带输出 hidden states。"""
@@ -190,6 +297,12 @@ class Qwen3Model(nn.Module):
         """
         capture_aux = bool(self.aux_hidden_state_layers)
         hidden_states = self.embed_input_ids(input_ids)
+        if self._hidden_in_stage is not None:
+            # 分段图：embedding 的输出必须落在静态缓冲上（第一段图的输入地址要稳定）
+            rows = hidden_states.shape[0]
+            staged = self._hidden_in_stage[:rows]
+            staged.copy_(hidden_states)
+            hidden_states = staged
         residual = None
         aux_hidden_states: list[torch.Tensor] = []
         for index, layer in enumerate(self.layers):
@@ -236,6 +349,10 @@ class Qwen3ForCausalLM(nn.Module):
 
     def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
         return self.model(input_ids, positions)
+
+    def enable_piecewise_pieces(self, vllm_config, max_num_tokens: int) -> None:
+        """开分段图（Runner 在图初始化时调；见 `Qwen3Model.enable_piecewise_pieces`）。"""
+        self.model.enable_piecewise_pieces(vllm_config, max_num_tokens)
 
     def set_aux_hidden_state_layers(self, layers) -> None:
         self.model.set_aux_hidden_state_layers(layers)

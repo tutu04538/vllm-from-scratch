@@ -16,8 +16,7 @@ CUDA Graph 的键是"补齐后的批次形状"（`BatchDescriptor`）。而真�
 **为什么键里必须有 num_reqs**：FULL 图把整段前向录成一张图，图里的 kernel 网格、workspace
 大小、注意力元数据的形状都按请求数定死；请求数变了就是另一张图。PIECEWISE 图则允许任意请求数
 （注意力被拆在图外，图里的部分只看 token 数），所以那里的键把 `num_reqs` 置空——上游用
-`replace(batch_desc, num_reqs=None, uniform=False)` 表达这件事，本仓库照抄（虽然本仓库不实现
-PIECEWISE，键的构造规则仍照抄，这样"为什么不支持"有据可依）。
+`replace(batch_desc, num_reqs=None, uniform=False)` 表达这件事，本仓库照抄。
 
 **`uniform` 是投机解码与图的接缝**：只有"每请求恰好 `1 + K` 行"的批，行数才是请求数的整数倍，
 形状才固定。上游因此给它单独起名 uniform decode，并把 `uniform_decode_query_len = 1 + K`
@@ -38,10 +37,9 @@ class CudagraphDispatcher:
     1. **没有 LoRA**：上游的 `_get_lora_cases()` 会按 `lora_config` 决定要不要为"带 LoRA"
        单独捕获一套图；本仓库没有 LoRA，所以那一支恒为 `[0]`（= 只有"不带 LoRA"一种情况）。
        `BatchDescriptor.has_lora / num_active_loras` 字段照抄保留，值恒 False/0。
-    2. **只支持 FULL 系模式**：PIECEWISE 需要编译期算子拆分，`CompilationConfig` 在构造期就
-       拒绝了它；这里仍然保留 `cudagraph_keys[PIECEWISE]` 这张表与相应的构造分支，
-       因为 `get_capture_descs()`/`dispatch()` 的形状必须与上游一致，删掉反而看不出对应关系。
-    3. 没有 `breakable_cudagraph` / sequence-parallel / DP 协调：那三样都要求多卡或编译路径。
+    2. 没有 `breakable_cudagraph` / sequence-parallel / DP 协调：那三样都要求多卡或编译路径。
+    3. **PIECEWISE 的切分点是手工的**（模型结构里的注意力边界），不是上游那种"编译期按
+       `splitting_ops` 拆 fx 图"；对分派器来说两者无差别（键与模式完全一样）。
     """
 
     def __init__(self, vllm_config) -> None:
@@ -161,10 +159,6 @@ class CudagraphDispatcher:
         if cudagraph_mode == CUDAGraphMode.NONE:
             self.keys_initialized = True
             return
-        if cudagraph_mode.has_piecewise_cudagraphs():
-            raise NotImplementedError(
-                f"cudagraph_mode={cudagraph_mode.name} 需要 PIECEWISE 图（编译期拆分算子），"
-                f"本仓库未实现；配置层本应拦下它，这里再挡一道")
 
         self._compute_bs_to_padded_graph_size()
 

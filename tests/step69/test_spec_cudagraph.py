@@ -84,24 +84,39 @@ def test_capture_desc_order_is_largest_first():
 
 
 def test_unsupported_modes_are_rejected_loudly():
-    """PIECEWISE / torch.compile 在配置期就明确拒绝（不静默退化）。"""
-    with pytest.raises(NotImplementedError, match="PIECEWISE"):
-        CompilationConfig(cudagraph_mode="piecewise")
-    with pytest.raises(NotImplementedError, match="PIECEWISE"):
-        CompilationConfig(cudagraph_mode="full_and_piecewise")
+    """**还**不支持的东西在配置期明确拒绝（不静默退化）。
+
+    71 关补充：PIECEWISE 已实现（手工分段），所以这里断言的是"它被接受且切分点被记下"；
+    仍然拒绝的是"配了不生效"的那几项——torch.compile 模式、`compile_sizes`、
+    以及**不可配置的 `splitting_ops`**（本仓库的切分点由模型结构决定）。改动理由与
+    期望值变化的记录见提交信息（207 §8：改期望值、不改断言强度）。
+    """
+    piecewise = CompilationConfig(cudagraph_mode="piecewise")
+    assert piecewise.cudagraph_mode is CUDAGraphMode.PIECEWISE
+    assert piecewise.splitting_ops == ["minivllm::attention_core"]
+    assert piecewise.splitting_ops_contain_attention()
+    both = CompilationConfig(cudagraph_mode="full_and_piecewise")
+    assert both.splitting_ops == ["minivllm::attention_core"]
     with pytest.raises(NotImplementedError, match="mode"):
         CompilationConfig(mode=CompilationMode.VLLM_COMPILE)
     with pytest.raises(NotImplementedError, match="compile_sizes"):
         CompilationConfig(compile_sizes=[8])
+    with pytest.raises(NotImplementedError, match="splitting_ops"):
+        CompilationConfig(cudagraph_mode="piecewise",
+                          splitting_ops=["vllm::unified_attention_with_output"])
     with pytest.raises(ValueError):
         CompilationConfig(cudagraph_mode="does_not_exist")
 
 
 def test_config_resolution_and_enforce_eager():
-    """默认解析：CUDA → FULL_DECODE_ONLY；CPU / enforce_eager → NONE。"""
+    """默认解析：CUDA → FULL_AND_PIECEWISE（= 上游 V1 默认）；CPU / enforce_eager → NONE。
+
+    71 关补充：以前本仓库默认解析成 FULL_DECODE_ONLY，因为 PIECEWISE 那一半没实现；
+    现在分段图有了，默认值回到上游的 `FULL_AND_PIECEWISE`（decode 走全图、混合批走分段图）。
+    """
     tiny_dir, hf = __import__("spec69_helpers").tiny_model()
     cuda_cfg = make_config(tiny_dir=tiny_dir, hf_config=hf, device="cuda")
-    assert cuda_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_DECODE_ONLY
+    assert cuda_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_AND_PIECEWISE
     assert cuda_cfg.compilation_config.cudagraph_capture_sizes
     cpu_cfg = make_config(tiny_dir=tiny_dir, hf_config=hf, device="cpu")
     assert cpu_cfg.compilation_config.cudagraph_mode is CUDAGraphMode.NONE
@@ -112,12 +127,20 @@ def test_config_resolution_and_enforce_eager():
     assert eager_cfg.compilation_config.max_cudagraph_capture_size == 0
 
 
-def test_explicit_plain_full_is_rejected_at_engine_init(tiny_dir, hf_config):
-    """`cudagraph_mode='full'`（非分段）会让混合批也进图 → 本仓库明确拒绝。"""
+def test_explicit_plain_full_is_downgraded_at_engine_init(tiny_dir, hf_config):
+    """`cudagraph_mode='full'`（非分段）会被**能力协商**降级成 FULL_AND_PIECEWISE。
+
+    71 关补充：`full` 的含义是"混合 prefill/decode 批也录一张全图"，而那要求注意力后端
+    支持任意批（`AttentionCGSupport.ALWAYS`）。本仓库的 Torch 后端只支持"每请求行数相同"
+    的批（`UNIFORM_BATCH`），所以这里按上游的降级规则变成 `FULL_AND_PIECEWISE`：decode 仍走
+    全图，混合批改走分段图。以前这条是"直接 NotImplementedError"，现在是"按规则降级 + warning"，
+    断言强度不变（都要求"不许静默按字面执行"）。
+    """
     if DEVICE != "cuda":
         pytest.skip("只在 CUDA 上会走到建图那条路")
-    with pytest.raises(NotImplementedError, match="full_decode_only"):
-        make_engine(tiny_dir=tiny_dir, hf_config=hf_config, mode="full")
+    _engine, _core, runner = make_engine(tiny_dir=tiny_dir, hf_config=hf_config, mode="full")
+    assert runner.compilation_config.cudagraph_mode is CUDAGraphMode.FULL_AND_PIECEWISE
+    assert runner.cudagraph_dispatcher.cudagraph_mode is CUDAGraphMode.FULL_AND_PIECEWISE
 
 
 # ---------------------------------------------------------------- 2. 捕获与重放（要 CUDA）

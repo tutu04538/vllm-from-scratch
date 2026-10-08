@@ -3,6 +3,8 @@
 对应 vLLM `v1/attention/backends/`。本关只有一个教学后端（逐请求 gather + Torch 数学）。
 """
 
-from .torch_sdpa import TorchAttentionImpl
+from .torch_sdpa import (TorchAttentionBackend, TorchAttentionImpl,
+                         TorchAttentionMetadataBuilder)
 
-__all__ = ["TorchAttentionImpl"]
+__all__ = ["TorchAttentionBackend", "TorchAttentionImpl",
+           "TorchAttentionMetadataBuilder"]
