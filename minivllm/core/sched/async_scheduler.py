@@ -6,7 +6,8 @@
 代价是"排下一轮时还不知道上一轮的结果"，于是要引入**占位符**：
 
     num_output_placeholders   乐观预留的输出位置个数（最多 K+1 个）
-    spec_token_ids = [-1]*K   乐观预留的草稿宽度（值还不知道，宽度先占上）
+    spec_token_ids = [-1]*K   乐观预留的草稿宽度（值还不知道，宽度先占上；K 是**本轮选出的**那个，
+                              动态投机长度（71 关）下逐轮不同）
 
 结果回来后再"结账"：按实际交付的长度减掉占位、按实际被拒数回退进度与占位。
 
@@ -28,8 +29,9 @@ from .scheduler import NUM_SAMPLED_TOKENS_PER_STEP, Scheduler
 class AsyncScheduler(Scheduler):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # 可复用的"占位草稿"列表：每轮按本轮要排的草稿数切片（上游同款，避免每轮新建）
-        self._spec_token_placeholders: list[int] = [-1] * self.num_speculative_tokens
+        # "占位草稿"列表：每轮按**本轮选出的 K**重建（上游同款写法）。初值用最大 K ——
+        # 只是给"还没跑过一轮"的读取一个合法值，第一轮 `_update_after_schedule()` 就会覆盖它。
+        self._spec_token_placeholders: list[int] = [-1] * self.num_spec_tokens
 
     # -------- 调度之后：加占位 --------
 
@@ -44,11 +46,17 @@ class AsyncScheduler(Scheduler):
         worker 里做，注释原话："when using async scheduling we can't get draft token ids in
         advance, so we update draft token ids in the worker process"）。
 
+        71 关（动态投机长度）：占位宽度**必须是本轮选出的 K**（`num_spec_tokens_to_schedule`），
+        不是配置的最大 K——上游就在这一行取这个字段（注释原话："Use the latest num of scheduled
+        draft tokens in next step as placeholder"）。用最大 K 会让"下一轮要排几行"凭空多出来，
+        预算/占位/验证长度三处跟着错位。
+
         中间 prefill 块跳过：它这一轮不产出 token，也不需要草稿宽度。
         """
         super()._update_after_schedule(scheduler_output)
         spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
-        num_spec_to_schedule = len(self._spec_token_placeholders)
+        # 宽度按**本轮**的 K 重建（它控制的是下一轮要提议的草稿宽度）；索引 0 不用
+        self._spec_token_placeholders = [-1] * scheduler_output.num_spec_tokens_to_schedule
         for req_id in scheduler_output.num_scheduled_tokens:
             request = self.requests[req_id]
             if request.is_prefill_chunk:
@@ -58,7 +66,7 @@ class AsyncScheduler(Scheduler):
                 NUM_SAMPLED_TOKENS_PER_STEP + cur_num_spec_tokens)
             # 占位草稿：宽度按**下一轮**要排的草稿数给（本轮的草稿已经用掉了）
             # （`num_in_flight_tokens` 由基类在 `_update_after_schedule()` 里累加 ✓）
-            request.spec_token_ids = self._spec_token_placeholders[:num_spec_to_schedule]
+            request.spec_token_ids = self._spec_token_placeholders
 
     # -------- 结果回来：结账 --------
 

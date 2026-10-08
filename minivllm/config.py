@@ -312,6 +312,12 @@ class SpeculativeConfig:
     # **TLI 目前只允许 greedy**（上游同款限制）：概率草稿要把 q 从 draft 空间搬到 target 空间，
     # 上游还没实现（代码里留着 TODO），需求 067 §3.5 明确要求不得自行放开。
     draft_sample_method: str = "greedy"
+    # 71 关（动态投机长度，上游 `SpeculativeConfig.num_speculative_tokens_per_batch_size`）：
+    # **闭区间**三元组表 `[(start, end, K), ...]`——批大小落在 [start, end] 内时本轮猜 K 枚。
+    # 段间空隙与尾部沿用前一段/最后一段的 K，表里的 K 一律按 `num_speculative_tokens`（最大
+    # 容量）裁剪；`None` = 关（固定用 `num_speculative_tokens`）。
+    # 它是"用户给的表"，**不是自适应策略**（不按接受率调 K，需求 071 §1 明确禁止自创）。
+    num_speculative_tokens_per_batch_size: list[tuple[int, int, int]] | None = None
 
     @staticmethod
     def _is_custom_proposer_path(model: str | None) -> bool:
@@ -406,6 +412,11 @@ class SpeculativeConfig:
             self._resolve_eagle()
         elif self.uses_extract_hidden_states():
             self._resolve_extract_hidden_states()
+        # 71 关：动态投机长度**放在最后**——它要读 `method` 与最终的 `num_speculative_tokens`，
+        # 而这两者可能被上面的分支改写（别名归一、ngram 的 K 缺省、extract 的 K=1 校验…）。
+        # 上游是懒校验（在 `Scheduler.__init__` 建查找表时才炸），本仓库把配置错误提前到这里：
+        # 症状相同，但启动期就报，而不是排到第一轮调度才炸（差异记 docs/step71_alignment.md §6）。
+        self._resolve_dynamic_sd()
 
     @staticmethod
     def _draft_model_type(draft_model_config) -> str | None:
@@ -682,6 +693,65 @@ class SpeculativeConfig:
     def uses_medusa(self) -> bool:
         """是否走 Medusa 多头提议（上游 Runner 的分派判据就是 `method == "medusa"`）。"""
         return self.method == "medusa"
+
+    #: 71 关：**能真正按轮改 K** 的方法。判据不是"名字看起来行"，而是上游代码里提议者
+    #: 确实把 `num_spec_tokens_to_schedule` 当参数用、且支持变宽/零宽返回：
+    #:   * `llm_base_proposer.propose(num_speculative_tokens, ...)`：可变宽，且 K=0 时
+    #:     **先跑完第一遍**（同步 draft KV）再返回 `[B, 0]`——draft_model / eagle / eagle3 / mtp
+    #:   * `ngram_proposer.propose(num_speculative_tokens, ...)`：`assert K <= self.k`，可变宽
+    #: 其余方法的提议者都写死了"K == 配置值"的断言（ngram_gpu / suffix / medusa /
+    #: extract_hidden_states），custom_class 则根本收不到 K（上游调用形态里没有这个参数），
+    #: 所以对它们开动态表**上游会断言失败或静默不生效**。本仓库按约定在配置期明确拒绝，
+    #: **不去删上游的断言**（需求 071 §3.6 点名要求）。
+    _DYNAMIC_SD_METHODS = ("draft_model", "eagle", "eagle3", "mtp", "ngram")
+
+    def uses_dynamic_speculative_decoding(self) -> bool:
+        """要不要按批大小动态选 K（上游同名方法，`config/speculative.py:1489-1490`）。
+
+        判据只有一个：`num_speculative_tokens_per_batch_size` 是不是 None。调度器、图模式降级、
+        DP 回退三处都读它，**不各自再判一遍**（否则会出现"配置说开、图说关"的分叉）。
+        """
+        return self.num_speculative_tokens_per_batch_size is not None
+
+    def _resolve_dynamic_sd(self) -> None:
+        """动态投机长度的配置校验（71 关；上游在这个字段上是**懒校验**）。
+
+        三件事，顺序不能反：
+
+        1. **表本身的规则**全部交给上游同名函数 `validate_and_normalize_dynamic_sd_schedule`
+           （首段从 1 开始、区间正数/不重叠、K≥0、逐项 int 转换）——不在这里重写一遍规则，
+           免得两处口径分叉。校验结果（排序 + 转 int + 转 tuple）写回字段：它是这个配置的
+           **唯一权威表示**，后面 `build_dynamic_sd_schedule_lookup` 与测试都读它。
+        2. **容量**：`num_speculative_tokens` 是最大 K（工作区、KV lookahead、掩码缓冲都按它建），
+           表里的 K 只是被它裁剪，**不能反向放大容量**。所以它必须 > 0
+           （上游 `build_dynamic_sd_schedule_lookup` 里同一句 `vllm_num_speculative_tokens <= 0`
+           检查；本仓库提前到配置期）。
+        3. **方法边界**：只允许 `_DYNAMIC_SD_METHODS`，其余明确报错。
+        """
+        schedule = self.num_speculative_tokens_per_batch_size
+        if schedule is None:
+            return
+        from .spec_decode.dynamic.utils import (
+            validate_and_normalize_dynamic_sd_schedule)
+
+        normalized = validate_and_normalize_dynamic_sd_schedule(schedule)
+        object.__setattr__(self, "num_speculative_tokens_per_batch_size", normalized)
+        if self.num_speculative_tokens <= 0:
+            raise ValueError(
+                f"开 num_speculative_tokens_per_batch_size 时 num_speculative_tokens"
+                f"（最大 K，工作区/图/掩码都按它建）必须 > 0，收到 "
+                f"{self.num_speculative_tokens}：表里的 K 只会被它**裁剪**，"
+                f"不能反向放大容量（上游 build_dynamic_sd_schedule_lookup 同款检查）")
+        if self.method not in self._DYNAMIC_SD_METHODS:
+            raise ValueError(
+                f"num_speculative_tokens_per_batch_size（动态投机长度）不支持 "
+                f"method={self.method!r}：只有 {self._DYNAMIC_SD_METHODS} 的提议者能按轮改 K。"
+                f"上游对其余方法是固定 K 的硬断言（ngram_gpu `assert num_speculative_tokens "
+                f"== self.k`、suffix 与 medusa `assert num_speculative_tokens == "
+                f"self.num_speculative_tokens`、extract_hidden_states 恒 K=1），"
+                f"而 custom_class 的调用形态里根本不传 K"
+                f"（动态表对它静默无效）。本仓库不删这些断言、也不静默忽略配置，"
+                f"在配置期直接拒绝（需求 071 §3.6）")
 
     def _resolve_eagle(self) -> None:
         """EAGLE 的取值校验：必须有 draft 模型目录、K > 0（上游同样要求）。
@@ -1152,6 +1222,10 @@ class VllmConfig:
             用户显式给了 NONE             → NONE
             其它（None / FULL / 含 FULL） → FULL_AND_PIECEWISE（= 上游 V1 的默认）
 
+        粗解析之后还有 71 关的两条**配置期改写**（见下面两个 `_maybe_*` 方法）：动态投机
+        长度在 DP>1 下被关掉、在含 full graph 时把模式降成 PIECEWISE。两条都发生在这里，
+        所以外部读到的模式/档位表已经是"最终会执行的那个"。
+
         这里只做"**粗解析**"：把 None 变成默认值、把 CUDA 不可用变成 NONE。真正"这个模式在
         这份配置下能不能成立"要等**注意力后端就绪**才能回答（能力档位决定 FULL 能不能用于
         混合批），那一步在 `GPUModelRunner.initialize_cudagraph_capture()` 里调用
@@ -1168,12 +1242,83 @@ class VllmConfig:
         else:
             resolved = requested
         compilation_config.cudagraph_mode = resolved
+        # 71 关：动态投机长度的两条**配置期改写**，位置与上游一致
+        # （上游 `config/vllm.py:1414-1415`，都在 `_set_cudagraph_sizes()` 之前）：
+        # 1) DP>1 直接关掉动态表（各 rank 选的 K 可能不同 → 分歧/死锁）；
+        # 2) V1 的 full graph 降级成 PIECEWISE（每轮 1+K 的形状都在变，全图冻结不了形状）。
+        # 顺序不能反：DP 关掉表之后，"是不是动态投机"就已经是 False，第 2 条自然不再触发。
+        self._maybe_disable_dynamic_sd_for_data_parallel()
+        self._maybe_override_dynamic_sd_cudagraph_mode()
         if resolved == CUDAGraphMode.NONE:
             compilation_config.max_cudagraph_capture_size = 0
             compilation_config.cudagraph_capture_sizes = []
         else:
             self._set_cudagraph_sizes()
         compilation_config.post_init_cudagraph_sizes()
+
+    def _maybe_disable_dynamic_sd_for_data_parallel(self) -> None:
+        """DP>1 时关掉动态投机长度（对应上游 `VllmConfig._maybe_disable_dynamic_sd_for_data_parallel`，
+        `config/vllm.py:929-946`）。
+
+        为什么 DP 与动态表不能共存：K 由**每个 rank 自己的**本轮批大小决定，而 DP 的各 rank
+        数据不同 → 选的 K 不同 → 提议/验证长度的形状不一致 → 集合通信里就是分歧与死锁
+        （上游注释原话："causing DP divergence and deadlocks"）。所以上游不是"警告后继续"，
+        而是**把这个配置项清掉**、退回固定 K，并留一条 warning。
+
+        本仓库的差异（记在 docs/step71_alignment.md §6）：本项目是**单进程单卡**，没有
+        `ParallelConfig` 这一轴，所以 `parallel_config` 不存在时按 `data_parallel_size=1` 处理
+        （这条判断因此在本仓库的正常路径上不可达）。规则本身照抄，测试用一个带
+        `data_parallel_size` 的替身对象把它钉住——**不是**"写了不跑"的死代码。
+        """
+        speculative_config = self.speculative_config
+        if (speculative_config is None
+                or not speculative_config.uses_dynamic_speculative_decoding()):
+            return
+        data_parallel_size = getattr(
+            getattr(self, "parallel_config", None), "data_parallel_size", 1)
+        if data_parallel_size <= 1:
+            return
+
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "动态投机长度不支持 data parallel（DP=%d）：各 rank 可能选出不同的 K，"
+            "导致 DP 分歧与死锁。已清空 num_speculative_tokens_per_batch_size，"
+            "回退到固定 num_speculative_tokens=%d（上游同款处理）",
+            data_parallel_size, speculative_config.num_speculative_tokens)
+        # 配置是 frozen dataclass，只能这样清（上游那里是普通赋值，效果相同）
+        object.__setattr__(speculative_config,
+                           "num_speculative_tokens_per_batch_size", None)
+
+    def _maybe_override_dynamic_sd_cudagraph_mode(self) -> None:
+        """动态投机长度 + full graph → 降级成 PIECEWISE（对应上游
+        `VllmConfig._maybe_override_dynamic_sd_cudagraph_mode`，`config/vllm.py:910-927`）。
+
+        为什么必须降：full CUDA graph 的形状（请求数、每请求行数）在捕获时就冻结了，而动态
+        投机长度**每轮都可能换 K** → 1+K 也在变。上游 V1 的处理是"不用全图，改用分段图"
+        （分段图只锁 token 数、注意力留在图外，见 69b）。V2 runner 支持在动态 K 下capture
+        多组 query 长度，上游因此放行了 `use_v2_model_runner`；**本仓库没有 V2 runner 这一轴**
+        （属 73/74 关），所以那半个条件恒为真——差异记在 docs/step71_alignment.md §6。
+
+        只改模式、不改档位表：`_set_cudagraph_sizes()` 在这一步之后才跑，所以投机的
+        "档位取整到 1+K 的倍数"也不会再发生（那一步本来就只在 decode FULL 时做）。
+        """
+        speculative_config = self.speculative_config
+        if (speculative_config is None
+                or not speculative_config.uses_dynamic_speculative_decoding()):
+            return
+        compilation_config = self.compilation_config
+        if not compilation_config.cudagraph_mode.has_full_cudagraphs():
+            return
+
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "动态投机长度会逐轮改变验证长度，full CUDA graph 冻结不了这个形状："
+            "把 cudagraph_mode 从 %s 降级为 PIECEWISE（上游同款；"
+            "要保留全图需要 V2 model runner，本仓库没有这一轴）",
+            compilation_config.cudagraph_mode.name)
+        compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
 
     def resolve_cudagraph_mode_and_sizes(self, min_cg_support, min_cg_attn_backend: str,
                                          uniform_decode_query_len: int = 1) -> CUDAGraphMode:

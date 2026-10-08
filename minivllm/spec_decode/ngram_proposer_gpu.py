@@ -208,7 +208,9 @@ class NgramProposerGPU:
         """把本轮新采样的 token 写进 GPU 历史，再跑 kernel 提议。
         `num_tokens_no_spec` 是**只读**的长度输入；返回 `(drafts [B,k], num_valid [B])`。
         """
-        # 上游同款断言：K 是固定值（动态 K 属 71 关，不能为了它偷偷放开）
+        # 上游同款断言：K 是固定值。**71 关不放开它**——动态投机长度在配置期就把
+        # `ngram_gpu` 明确拒绝（GPU 提议者返回固定宽度 `[B,k]`，逐轮改宽要改 kernel 的输出
+        # 形状与有效个数缓冲）。需求 071 §3.6 明确要求保留这条断言、不宣称全方法支持。
         assert num_speculative_tokens == self.k
         assert token_ids_gpu.device == self.device
         assert num_tokens_no_spec.device == self.device

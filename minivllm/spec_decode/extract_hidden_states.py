@@ -171,6 +171,8 @@ class ExtractHiddenStatesProposer:
           `torch.stack(list, dim=1)` 是同一份布局，用例里有逐值对照）；
         - `common_attn_metadata`：本轮 target 用的那份元数据（槽位就是它里面的 `slot_mapping`）。
         """
+        # 71 关：保持固定 K=1（上游在构造期就是 `assert K == 1`）——这个方法不猜 token，
+        # 动态投机长度对它没有意义；配置期已拒绝这个组合。
         if num_speculative_tokens != self.num_speculative_tokens:
             raise ValueError(
                 f"本轮的草稿数 {num_speculative_tokens} 与配置的 "

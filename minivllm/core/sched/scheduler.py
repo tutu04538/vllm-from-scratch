@@ -66,14 +66,29 @@ class Scheduler:
         # 68 关：结构化输出的管理器由引擎建（它持有 grammar 编译环境），Scheduler 只调它
         # 三件事：算掩码、判断要不要推进、收草稿时裁剪（上游同一条分工）。
         self.structured_output_manager = structured_output_manager
-        self.num_speculative_tokens = (speculative_config.num_speculative_tokens
-                                       if speculative_config is not None else 0)
+        self.num_spec_tokens = (speculative_config.num_speculative_tokens
+                                if speculative_config is not None else 0)
+        # 71 关：动态投机长度的**稠密查找表**（`dense_schedule[批大小] = K`），索引 0 不用。
+        # 名字与上游一致（`Scheduler.dynamic_sd_lookup`，`scheduler.py:257-263`）。它是
+        # **唯一权威**：本轮的 K 就是 `dynamic_sd_lookup[len(num_scheduled_tokens)]`，
+        # 不在别处再算一遍。None = 关（固定用 `num_spec_tokens`）。
+        self.dynamic_sd_lookup: list[int] | None = None
+        if speculative_config is not None and \
+                speculative_config.uses_dynamic_speculative_decoding():
+            from ...spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
+
+            self.dynamic_sd_lookup = build_dynamic_sd_schedule_lookup(
+                speculative_config.num_speculative_tokens_per_batch_size,
+                vllm_max_batch_size=scheduler_config.max_num_seqs,
+                vllm_num_speculative_tokens=self.num_spec_tokens)
         # 给提议者预留的 KV 槽位（vLLM `VllmConfig.num_lookahead_tokens` 的规则）：
         # draft 模型要往 target query 之外写 K 个位置，所以预留 K 个；ngram 不写 KV → 0。
         # 63 关：EAGLE 的 draft 也自己写 K 个位置的 KV（和 draft_model 一样要预留）；
         # ngram/suffix/custom 不写 KV → 0。
+        # 71 关：预留按**最大** K（`num_spec_tokens`）——它是容量，逐轮 K 只会更小，
+        # 所以动态表不需要改这里的口径（工作区/块表也不随 K 重开）。
         self.num_lookahead_tokens = (
-            self.num_speculative_tokens
+            self.num_spec_tokens
             if speculative_config is not None
             and (speculative_config.method == "draft_model" or speculative_config.use_eagle())
             else 0)
@@ -355,6 +370,16 @@ class Scheduler:
             scheduled_running_reqs + scheduled_resumed_reqs, req_to_new_blocks,
             resumed_req_ids={request.request_id for request in scheduled_resumed_reqs})
 
+        # 71 关（动态投机长度）：本轮该提几枚草稿——**按实际被调度的请求数**查表
+        # （上游 `scheduler.py:1255-1258` 同款；需求 071 §3.2 明确：不是 waiting+running 的总数，
+        # 没排上的请求这一轮既不产生草稿也不该影响 K）。
+        # ⚠️ 时序：这个 K 控制的是**本轮采完之后要提的草稿**（下一轮才被验证）；本轮验证的是
+        # 上一轮提的候选，它的宽度在 `scheduled_spec_decode_tokens` 里，**与这个 K 无关**。
+        # 需求 071 §3.3 点名禁止"一改 K 就重新解释旧候选的长度/q"。
+        num_spec_tokens_to_schedule = self.num_spec_tokens
+        if self.dynamic_sd_lookup is not None and len(num_scheduled_tokens) > 0:
+            num_spec_tokens_to_schedule = self.dynamic_sd_lookup[len(num_scheduled_tokens)]
+
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,
@@ -364,6 +389,7 @@ class Scheduler:
             # 注意是**引用**当前的集合，下面 `_update_after_schedule()` 会把它绑定到新对象上；
             # 清空（而不是重新绑定）会让这里已经发出去的快照跟着变空。
             finished_req_ids=self.finished_req_ids,
+            num_spec_tokens_to_schedule=num_spec_tokens_to_schedule,
         )
 
         # ---- 4) 空转保护（教学扩展）----
@@ -691,7 +717,7 @@ class Scheduler:
         if not num_draft_tokens:
             return None
         if spec_decoding_stats is None:
-            spec_decoding_stats = SpecDecodingStats.new(self.num_speculative_tokens)
+            spec_decoding_stats = SpecDecodingStats.new(self.num_spec_tokens)
         spec_decoding_stats.observe_draft(num_draft_tokens=num_draft_tokens,
                                          num_accepted_tokens=num_accepted_tokens)
         return spec_decoding_stats
@@ -827,6 +853,10 @@ class Scheduler:
             "running": [request.request_id for request in self.running],
             # 用 request_ids()：priority 队列是堆，不能直接迭代（而且堆里有懒惰删除的旧条目）
             "waiting": self.waiting.request_ids(),
+            # 71 关：本轮选出的 K（动态投机长度时它随批大小变）。**必须记在 trace 里**：
+            # "这一轮为什么只提了 1 枚"要能一眼看出来，而不是靠推测（需求 071 §4 要求
+            # B 跨区间时检查 SchedulerOutput 与实际 proposal 的对应关系）。
+            "num_spec_tokens_to_schedule": scheduler_output.num_spec_tokens_to_schedule,
             **self.kv_cache_manager.block_stats(),
         })
         if len(self.trace) > _MAX_TRACE_STEPS:

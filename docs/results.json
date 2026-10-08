@@ -3494,5 +3494,70 @@
     "用途": "分段图的捕获代价/显存与 greedy 一致性（脚本 /tmp/pw_real.py，非跟踪产物）"
    }
   }
+ },
+ "step71": {
+  "results": {
+   "step": 71,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/071_动态投机长度与调度Graph兼容.md",
+   "status": "已实现并自检：配置表（闭区间三元组 → 稠密查找表，与上游工具函数逐值差分）+ Scheduler 按『本轮实际被调度的请求数』查表 + SchedulerOutput 携带本轮 K + 提议者按轮 K（K=0 仍跑 draft 第一遍）+ full graph 降级 PIECEWISE + DP>1 关表 + 方法边界（ngram_gpu/suffix/medusa/extract/custom_class 配置期拒绝）。",
+   "recorded_at": "2026-10-08T09:35:25+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "8a9b346",
+    "implementation_commit": "见本轮提交（step71：动态投机长度与调度 Graph 兼容）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 97,
+    "sha256": "04a66dda00233281a2c1cf1e0c78869a7635a29c802dc5bcaf5ed0c64524d176",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（只作冻结源码对照：dynamic/utils.py 与配置改写函数；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step71 -q",
+     "result": "21 passed（查找表差分/配置边界/图与 DP 改写/异步占位/两轮时序/工作区稳定性/K=0 端到端/ngram 旧列/q 宽度）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 .. tests/step71 -q",
+     "result": "577 passed（556 + 21）"
+    },
+    {
+     "cmd": "python benchmarks/check_step71_dynamic_sd.py",
+     "result": "全部通过（24 项：A 查找表 6 / B 配置改写 6 / C 调度器 6 / D 端到端 6）"
+    },
+    {
+     "cmd": "python benchmarks/check_step58..70_*.py 与 check_step57_*.py",
+     "result": "全部通过（回归，见 step70 条目同一命令集）"
+    }
+   ],
+   "execution_trace": {
+    "lookup_differential": "9 张表 × max_batch_size{1,2,4,8,16,64,200} × max_K{1,2,3,4,8} = 315 组：与 vllm.v1.spec_decode.dynamic.utils 逐值一致（含报错种类）",
+    "doc_example": "[(1,2,4),(5,8,1)] @ max_num_seqs=8, max K=4 -> [0,4,4,4,4,1,1,1,1]（B=3/4 空隙沿用前段）",
+    "tiny_rounds": "表 [(1,1,4),(2,2,0),(3,8,2)]：K 序列 [4,4,0,2,2,2,0,4]；第 2 轮 K=0 时仍验证第 1 轮提的 4 枚，draft 第一遍次数=1（其余 K>0 轮为 4/2）",
+    "output_identity": "不开投机 / 固定 K=3 / 动态表 [(1,1,0),(2,8,3)] 三者贪心输出逐 token 相同：[7,1,1,1,1,1]",
+    "graph_rewrite": "None/full/full_decode_only/full_and_piecewise -> PIECEWISE；piecewise 不变；none -> NONE。档位表：动态 [1,2,4,8,16]，静态 full_decode_only [5,10]（不再取整到 1+K）",
+    "real_model_trace": "Qwen3-1.7B bf16 + ngram + 表 [(1,1,4),(2,2,0),(3,8,2)]：14 轮全部命中 PIECEWISE（捕获 8 张图，FULL 0 次）；B=1→K=4 / B=2→K=0 / B=3→K=2 / B 回落→K=4；11 步 0.70 s（含 warmup）",
+    "workspace": "K 从 0 变到 3 期间 proposer.input_ids/positions/slot_mapping 的 data_ptr() 只有一组取值",
+    "ngram_stale_columns": "同一份定宽缓冲：K=4->[1,2,3,4]、K=1->[1]、K=0->[]、K=5->明确报错"
+   },
+   "known_gaps": [
+    "V2 runner 的多 decode_query_len 全图捕获（上游 v1/worker/gpu/cudagraph_utils.py:197-207）不做：本仓库没有 V2 runner 这条轴（73/74 关）",
+    "DP 分支在本仓库正常路径不可达（单进程单卡无 ParallelConfig）：规则照抄，用带 data_parallel_size 的替身钉住",
+    "上游的『新 decode 请求补齐到 1+K』（scheduler.py:938，仅 dynamic_sd_lookup is None 时）本仓库没有（69 关已记差异）；动态表 + PIECEWISE 下也不需要",
+    "端到端 async_scheduling=True 仍按 70 关明确拒绝（占位宽度已按本轮 K 对齐，只有调度器侧可单测）",
+    "ngram_gpu / suffix / medusa / extract_hidden_states / custom_class 的动态 K 不支持（上游是固定 K 断言或静默无效），本仓库配置期拒绝"
+   ]
+  },
+  "models": {
+   "tiny": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（2 层 / hidden 32 / vocab 11；两轮时序与端到端一致性都在它上面做）",
+   "real": "models/Qwen3-1.7B（bf16，本机权重，不跟踪）：只用于『真实引擎上动态 K 的逐轮 trace 与图模式命中』（ngram 提议者，短 trace，不做吞吐矩阵）"
+  }
  }
 }

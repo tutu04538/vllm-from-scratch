@@ -103,6 +103,8 @@ class MedusaProposer:
         argmax 提议，不看采样参数、也不写 KV。本仓库保留参数（调用形态与上游逐字一致），
         但 Runner 只传真正用得上的那两个。
         """
+        # 71 关：这里保持**固定 K**（上游也是 `assert K == self.num_speculative_tokens`）——
+        # head 数就是 K，逐轮改 K 等于逐轮改 head 数；配置期已拒绝动态投机长度 + medusa。
         if num_speculative_tokens != self.num_speculative_tokens:
             raise RuntimeError(
                 f"Medusa 提议者按 K={self.num_speculative_tokens} 建的 head，"

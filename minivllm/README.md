@@ -415,6 +415,42 @@ python benchmarks/check_step70_async.py          # 17 项（配置边界 / 占�
 [`docs/step68_alignment.md`](../docs/step68_alignment.md)，实测记录见
 [`docs/results.json`](../docs/results.json)（`step68.results`）。
 
+## 第七十一关：动态投机长度与调度 Graph 兼容
+
+低并发「一次猜 4 枚」划算、高并发「猜 1 枚甚至不猜」更快——投机唯一的收益是**一次权重读取喂多条
+token**，并发越高越被摊薄。这一关把这件事实做成一张**用户给的表**（不自行发明按接受率调的策略）：
+
+```
+num_speculative_tokens_per_batch_size = [(1, 2, 4), (5, 8, 1)]   # 闭区间：批 1~2 猜 4、批 5~8 猜 1
+
+Scheduler.schedule():  本轮 K = dynamic_sd_lookup[本轮**实际被调度**的请求数]
+SchedulerOutput.num_spec_tokens_to_schedule  ──▶  Runner  ──▶  proposer.propose(num_speculative_tokens=K)
+```
+
+- 表的语义（与上游 `spec_decode/dynamic/utils.py` 逐值一致）：段间空隙沿用**前一段**的 K、尾部延续
+  **最后一段**的 K、每项按 `num_speculative_tokens`（最大容量）**裁剪**；索引 0 不用。
+- **两轮时序**：本轮 K 管「本轮采完后要提的草稿」，本轮验证的是**上一轮**提的候选——改 K 不许重新
+  解释旧候选的长度或概率行（q 按 `req_id` 的行偏移对齐）。
+- **K=0 不是「什么都不做」**：写 KV 的提议者（draft_model / EAGLE / MTP）**仍跑完第一遍**再返回空草稿
+  （跳过第一遍会让已发布的完整块在 draft 那几层是空的）；ngram 不写 KV，K=0 直接空草稿。
+- **配置期两条改写**（都在图档位表之前）：含 full graph 的模式 → `PIECEWISE`（full 图冻结不了逐轮变化的
+  `1+K` 形状）；DP>1 → 清空表、退回固定 K（各 rank 选不同 K 会分歧/死锁）。
+- **方法边界**：动态表只支持 `draft_model / eagle / eagle3 / mtp / ngram`；`ngram_gpu / suffix / medusa /
+  extract_hidden_states / custom_class` 在**配置期明确拒绝**（上游是固定 K 的硬断言或收不到 K），
+  不删上游断言、不静默忽略。
+- 容量不随 K 重建：工作区 / KV lookahead / 图档位 / 掩码缓冲都按**最大 K** 开一次。
+
+```bash
+python -m pytest tests/step71 -q                 # 21 项（查找表差分 / 配置 / 两轮时序 / K=0 端到端 / q 宽度）
+python benchmarks/check_step71_dynamic_sd.py     # 24 项（A 查找表 / B 配置改写 / C 调度器 / D 端到端）
+```
+
+实测（真实 1.7B + ngram + 表 `[(1,1,4),(2,2,0),(3,8,2)]`）：14 轮全部命中 PIECEWISE（捕获 8 张图、FULL 0 次）；
+`B=1→K=4 / B=2→K=0 / B=3→K=2`，其中 K=0 的那一轮仍在验证上一轮提的 4 枚。
+
+设计、逐轮状态表与差异账本见 [`docs/step71_alignment.md`](../docs/step71_alignment.md)，
+实测记录见 [`docs/results.json`](../docs/results.json)（`step71.results`）。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
@@ -454,6 +490,7 @@ python benchmarks/check_step64_hidden_cache.py       # 18 项：cache-only 路�
 python benchmarks/check_step65_mtp.py                # 17 项：MTP 别名/加载（两派命名）/胶水与上游逐值对照/端到端反证
 python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/加载/行选择/端到端 + 上游逐值对照 + MLP 缺口证明
 python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映射/上游逐位差分/配置边界/异构词表集成
+python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 / 配置改写（图+DP）/ 两轮时序 / K=0 端到端 / q 宽度
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -465,6 +502,7 @@ python -m pytest tests/step65 -q                     # 47 项：step65（MTP 配
 python -m pytest tests/step66 -q                     # 51 项：step66（Medusa 配置/模型/加载/行选择/端到端 + MLP 支持缺口）
 python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构造/映射/上游差分/配置边界/异构词表集成）
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
+python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

@@ -1797,6 +1797,17 @@ class GPUModelRunner:
         """
         if self.proposer is None:
             return None
+        # 71 关（动态投机长度）：本轮要提几枚草稿由**调度快照**说了算（上游
+        # `propose_draft_token_ids()` 里同一行：`num_spec_tokens_to_schedule =
+        # scheduler_output.num_spec_tokens_to_schedule`）。静态 K 时它等于配置的 K，
+        # 所以"提议宽度只有一个来源"这件事在两条路径上都成立。
+        # 上界必须现场判：工作区/KV 预留/块表都按配置的最大 K 开，超了就是调度侧口径错了。
+        num_spec_tokens = state.scheduler_output.num_spec_tokens_to_schedule
+        max_num_spec_tokens = self.speculative_config.num_speculative_tokens
+        if not 0 <= num_spec_tokens <= max_num_spec_tokens:
+            raise RuntimeError(
+                f"本轮 K={num_spec_tokens} 超出 [0, {max_num_spec_tokens}]：动态投机长度的"
+                f"查找表只被最大 K 裁剪（工作区/图/掩码缓冲按它开），调度侧不该发出更大的值")
         req_ids = list(self.input_batch.req_ids)
         if not req_ids:
             return None
@@ -1879,7 +1890,11 @@ class GPUModelRunner:
                 sample_rows=state.sample_rows, token_ids_gpu=self.token_ids_gpu_tensor,
                 num_tokens_no_spec_gpu=self.num_tokens_no_spec_gpu)
         elif self.speculative_config is not None and self.speculative_config.method == "ngram":
-            drafts = self.proposer.propose_drafts(rows, all_token_ids, self.input_batch)
+            # 71 关：ngram（CPU）收本轮 K——上游 `drafter.propose(num_spec_tokens_to_schedule, ...)`。
+            # 它不跑模型、不写 KV，所以 K=0 就是"空草稿"，没有第一遍要同步。
+            drafts = self.proposer.propose_drafts(
+                rows, all_token_ids, self.input_batch,
+                num_speculative_tokens=num_spec_tokens)
         elif self.speculative_config is not None and self.speculative_config.method == "suffix":
             # 61 关：suffix decoding 的输入就是 InputBatch 的三个 CPU 缓冲
             # （token_ids_cpu / num_tokens_no_spec / num_prompt_tokens），
@@ -1898,6 +1913,11 @@ class GPUModelRunner:
         else:
             # 恢复过的请求：它的块表整表换过 → draft 只从本轮协议给的有效前缀重新开始
             kwargs = {"reset_req_ids": set(self._resumed_req_ids)}
+            # 71 关：LLM 系提议者（draft_model / EAGLE / MTP）的 `propose()` 收本轮 K——
+            # 上游同一处传 `num_speculative_tokens=num_spec_tokens_to_schedule`
+            # （`gpu_model_runner.py:5380`）。K=0 时它**仍然跑第一遍**同步 draft KV，
+            # 只是返回 `[B, 0]`（需求 071 §3.4）。
+            kwargs["num_speculative_tokens"] = num_spec_tokens
             if getattr(self.proposer, "supports_padded_first_pass", False):
                 # 69 关：按上游 `drafter.prepare_inputs_padded(...)` 的**同一套输入**算出
                 # "该从哪一行采样"与"每请求被拒了几行"，再按上游的参数名传进 propose()。

@@ -223,7 +223,8 @@ class SpecDecodeBaseProposer:
                 target_token_ids: torch.Tensor | None = None,
                 target_positions: torch.Tensor | None = None,
                 token_indices_to_sample: torch.Tensor | None = None,
-                num_rejected_tokens_gpu: torch.Tensor | None = None) -> DraftTokenIds:
+                num_rejected_tokens_gpu: torch.Tensor | None = None,
+                num_speculative_tokens: int | None = None) -> DraftTokenIds:
         """对每个被调度的请求都跑一遍：**同步 KV**，并给其中 ready 的那些提草稿。
 
         `rows` 是本轮 target 侧的事实（`TargetRows`：起点 `start`、本轮行数 `target_rows`、
@@ -235,10 +236,29 @@ class SpecDecodeBaseProposer:
         这一轮就会发布出去（199 §9）。**草稿只给 ready 的请求提**：中间 prefill 块没有可验证的
         next token，提了 Scheduler 也会丢（vLLM 的 `update_draft_token_ids` 同款规则）。
 
+        **71 关：`num_speculative_tokens` 是本轮要提几枚**（`None` = 用配置的 K，直接调用本方法的
+        单测不受影响）。上游在 `propose()` 开头就是 `self.num_speculative_tokens =
+        num_speculative_tokens`（`llm_base_proposer.py:533`），本仓库照抄这个**逐轮改写**：
+        自回归循环的上界、`_apply_num_rejected_to_seq_lens` 的 K>1 分支都读它。
+        容量（工作区/KV lookahead/块表）仍然按配置的最大 K 开，**不随 K 重建**。
+        **K=0 不是"什么都不做"**：第一遍照样跑（draft 的 KV 必须继续与 target 同源同步），
+        只是不提任何草稿就返回——上游同款（"the prefill forward pass above already ran to
+        keep the drafter KV cache in sync, so just return an empty tensor"）。跳过第一遍会让
+        之后恢复 K>0 的那一轮缺历史（不报错，只是草稿质量变差）。
+
         **生命周期**（205 §4.4，与 Controller 的分工）：没被调度的请求根本不进 `rows`，
         状态保留；抢占恢复（`reset_req_ids`）只重置进度、随机流继续；结束/abort 由
         `remove_requests()` 显式删除。
         """
+        if num_speculative_tokens is None:
+            num_speculative_tokens = self.spec_config.num_speculative_tokens
+        if not 0 <= num_speculative_tokens <= self.spec_config.num_speculative_tokens:
+            raise ValueError(
+                f"本轮 K={num_speculative_tokens} 超出 [0, "
+                f"{self.spec_config.num_speculative_tokens}]：工作区/KV 预留按最大 K 开，"
+                f"逐轮 K 只能是它的前缀（调度侧的表也被这个上界裁剪）")
+        # 上游同款：本轮的 K 写在实例上，自回归循环与 seq_lens 修正都读它
+        self.num_speculative_tokens = num_speculative_tokens
         self._reset_requests(reset_req_ids or set())
         req_ids = [target.req_id for target in rows]
         # 69 关：把 Runner 按上游口径算出来的两个索引收下（长度 = 本轮批的请求数）。
@@ -271,6 +291,13 @@ class SpecDecodeBaseProposer:
             self._draft_computed[target.req_id] = target.history_end      # 观测用
         self._check_padded_sample_rows(plan, rows)
         self._apply_num_rejected_to_seq_lens(plan, rows)
+        # 71 关：K=0 时**第一遍已经跑完**（KV 与 target 同步过了），但一枚草稿都不采——
+        # 采样会消耗随机流、也会白算一次 lm_head；上游在同样的位置直接返回 `[B, 0]`。
+        if self.num_speculative_tokens == 0:
+            return DraftTokenIds(
+                req_ids=list(req_ids),
+                draft_token_ids=[[] for _ in req_ids],
+                draft_probs=None)
         if plan.sample_rows:
             self._sample_draft_tokens(hidden,
                                       list(zip(plan.sample_req_ids, plan.sample_rows)),

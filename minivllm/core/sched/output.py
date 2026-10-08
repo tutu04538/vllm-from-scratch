@@ -89,6 +89,13 @@ class SchedulerOutput:
     #: 68 关：这一轮有没有"已经在解码阶段的结构化输出请求"。没有的话引擎连掩码都不必算
     #: （上游同名字段，在 `_update_after_schedule()` 里置位）。
     has_structured_output_requests: bool = False
+    #: 71 关（动态投机长度）：本轮调度器选出的 K——执行侧要按它提议**下一轮**的草稿
+    #: （上游 `SchedulerOutput.num_spec_tokens_to_schedule`，`output.py:267-269`）。
+    #: 默认 0 = "这条路径没有投示意图"（`make_empty()` 与手工构造的非投机包）；引擎路径上
+    #: `Scheduler.schedule()` **总会**填（静态 K 时就是配置的 K）。
+    #: ⚠️ 它与 `scheduled_spec_decode_tokens` 的长度的含义不同：那个是"本轮要**验证**的旧候选"
+    #: （上一轮提的，可能被预算截短），这个是"本轮要**提**的新草稿宽度"。
+    num_spec_tokens_to_schedule: int = 0
 
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":

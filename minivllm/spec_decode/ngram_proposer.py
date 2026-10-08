@@ -191,7 +191,8 @@ class NgramProposer:
 
     def propose_drafts(self, rows: list[TargetRows], all_token_ids: dict[str, list[int]],
                        input_batch=None,
-                       reset_req_ids: set[str] | None = None) -> DraftTokenIds:
+                       reset_req_ids: set[str] | None = None,
+                       num_speculative_tokens: int | None = None) -> DraftTokenIds:
         """Runner 的入口（与 draft_model 提议者同一套协议）。
 
         `rows` 的顺序就是**批行序**，第 i 项对应第 i 行；`input_batch` 给了就直接用它的
@@ -200,7 +201,18 @@ class NgramProposer:
         （本轮新采样的 token 已经记进历史、**不含**草稿），`ready` 就是"这一轮采样出了
         token"（中间 prefill 块不是 ready → 上游会跳过）。匹配只看 `[:history_end]`，不看上一轮
         遗留的草稿区——那部分可能刚被覆盖。
+
+        71 关（动态投机长度）：`num_speculative_tokens` 是本轮要提几枚（`None` = 配置的 K）。
+        ngram **不跑模型、不写 KV**，所以 K=0 就是"直接返回空草稿"——没有第一遍要同步
+        （这与 `draft_model`/EAGLE 的 K=0 语义不同，需求 071 §3.4 的"仍要跑第一遍"只针对
+        写 KV 的那几类提议者）。上游允许的 K 上界是 `self.k`（`assert K <= self.k`）。
         """
+        if num_speculative_tokens is None:
+            num_speculative_tokens = self.k
+        if not 0 <= num_speculative_tokens <= self.k:
+            raise ValueError(
+                f"本轮 K={num_speculative_tokens} 超出 [0, {self.k}]：ngram 的草稿缓冲按最大 K "
+                f"开，逐轮 K 只能是它的前缀（上游同一处是 `assert K <= self.k`）")
         if input_batch is not None:
             token_ids = input_batch.token_ids_cpu.numpy()          # [max_num_reqs, max_model_len]
             num_tokens_no_spec = input_batch.num_tokens_no_spec.numpy()
@@ -220,7 +232,8 @@ class NgramProposer:
                 # 只用来标记"本轮采样过"（内容不参与匹配，匹配只看 token_ids_cpu）
                 sampled_token_ids[index] = [0]
 
-        drafts = self.propose(self.k, sampled_token_ids, num_tokens_no_spec, token_ids)
+        drafts = self.propose(num_speculative_tokens, sampled_token_ids,
+                              num_tokens_no_spec, token_ids)
         return DraftTokenIds(req_ids=[target.req_id for target in rows],
                              draft_token_ids=drafts)
 

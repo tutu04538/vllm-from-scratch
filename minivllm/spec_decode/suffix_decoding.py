@@ -92,6 +92,8 @@ class SuffixDecodingProposer:
             - 非空 = target 已经确认这一行的输出，先追加进树，再拿它去找后缀匹配。
         返回的 `draft_token_ids[i]` 是第 i 行的草稿，**长度不定、可以为空**。
         """
+        # 上游同款断言：K 固定（**71 关不放开**：suffix 的长度上界由树深与配置 K 共同决定，
+        # 逐轮改宽要重建树；配置期已明确拒绝动态投机长度 + suffix 这个组合）
         assert num_speculative_tokens == self.num_speculative_tokens
         draft_token_ids: list[list[int]] = []
         for i, sampled_ids in enumerate(sampled_token_ids):
