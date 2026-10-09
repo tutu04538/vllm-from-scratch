@@ -3695,5 +3695,76 @@
    "peagle_draft": "tiny_eagle3_dir('tiny_gqa', parallel_drafting=True, mask_token_id=7)：tiny eagle3 + config.mask_token_id + 权重 mask_hidden(1,64)（本机没有真实 P-EAGLE 权重）",
    "real_serial_eagle3": "models/Qwen3-1.7B-eagle3：**串行**训练（无 mask_hidden / mask_token_id）→ 开并行会在加载期被拒绝（探针 E1）"
   }
+ },
+ "step63_anchor_row": {
+  "results": {
+   "step": "63（2026-10-08 第二轮复核修复）",
+   "requirement": "复核项；修正对象是需求 063 交付的 EAGLE 第一遍锚点（采样行）布局",
+   "status": "已修复并自检：EAGLE 把新采出的 token 打在**最后一枚有效行**（块起点 + target_rows − 1 − num_rejected，上游 padded 通路的 token_indices_to_sample），而不是块的最后一行。实测接受长度 1.1213 → **1.2162**（位置1 22.5% → 36.5%、位置2 1.8% → 6.8%），上游同 prompt 1.2819（位置1 41.7%、位置2 14.7%）——差距收窄但未消失。",
+   "recorded_at": "2026-10-08T23:40:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "598cde0",
+    "implementation_commit": "见本轮提交（step63 二轮复核修复：EAGLE 锚点行）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 97,
+    "sha256": "bac6aa71170c586f4ed15a45e49b7d215de6fc8eefc9d5f3cb2af6cb3428f2a7",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.28.0",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "upstream_engine": "VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0；逐值对照时必须再加 VLLM_USE_V2_MODEL_RUNNER=0 才是 V1 路径"
+   },
+   "commands": [
+    {
+     "cmd": "上游 V1 轨迹插桩（VLLM_USE_V2_MODEL_RUNNER=0，真实 Qwen3-1.7B + eagle3，K=3）",
+     "result": "decode 轮 rows=4/被拒1：sample_rows=[2]=4−1−1 ✓；AR out positions=[22] seq_lens=[23] → position == seq_len − 1 ✓"
+    },
+    {
+     "cmd": "本仓库修复后同样的真实权重插桩",
+     "result": "rows=4/被拒2：采样行=1、采样位置=20、AR1 position=21 / seq_len=22 → 不变量成立（修复前是 position=23 / seq_len=22）"
+    },
+    {
+     "cmd": "判别力反证：把锚点行改回块的最后一行",
+     "result": "tests/step63/test_eagle_ar_alignment.py 的 eagle3 项 FAILED、draft_model 项仍通过"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 .. tests/step72 -q",
+     "result": "609 passed"
+    },
+    {
+     "cmd": "python benchmarks/check_step63_eagle_inputs.py",
+     "result": "全部通过（11 → 13 项：新增 F4 锚点行 / F5 position==seq_len−1）"
+    },
+    {
+     "cmd": "18 个 check_step58..72 + 15 个 check_step57 脚本",
+     "result": "全部通过"
+    },
+    {
+     "cmd": "接受长度 A/B（5 prompt × 128 token，K=2，真实权重）",
+     "result": "本仓库 1.2162（drafted=888 accepted=192；位置1 162/444=36.5%、位置2 30/444=6.8%）；上游 V1 与 V2 同值 1.2819（816/230；位置1 170/408=41.7%、位置2 60/408=14.7%）"
+    }
+   ],
+   "execution_trace": {
+    "上游 V1 轨迹": "prefill: first positions [0..18] sample_rows [18] → AR out [19]/[20]、[20]/[21]；decode(rows=4,rejected=1): first positions [19..22] sample_rows [2] → AR out [22]/[23]、[23]/[24]",
+    "本仓库修复后": "decode(rows=4,rejected=2): 采样行 1、采样位置 20 → AR1 position 21 / seq_len 22；decode(rows=4,rejected=3): 采样行 0、采样位置 21 → AR1 position 22 / seq_len 23（不变量全部成立）",
+    "三方校验": "_check_padded_sample_rows() 现在比三份账：runner device 值、CPU 公式、**提议者内部 plan.sample_rows**（只对 net=0 的 EAGLE 串行布局）"
+   },
+   "known_gaps": [
+    "接受长度仍有差距（1.2162 vs 1.2819）：位置2 6.8% vs 14.7% 是主要缺口，属 draft 第一遍/自回归的条件本身",
+    "上游默认跑 V2 runner + V2 EagleSpeculator；本 workload 下 V1/V2 接受数字完全相同，但逐值对照必须先钉路径",
+    "MTP 走同一个 EagleProposer，因此本修复同样适用于 MTP（无单独实测权重）"
+   ]
+  },
+  "models": {
+   "target": "models/Qwen3-1.7B（bf16，本机，不跟踪）",
+   "draft": "models/Qwen3-1.7B-eagle3（串行训练；源 HF AngelSlim/Qwen3-1.7B_eagle3）",
+   "tiny": "minivllm/testing/tiny_models.py（tiny_gqa + tiny_eagle3_dir）"
+  }
  }
 }

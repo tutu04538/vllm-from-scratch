@@ -229,3 +229,97 @@ id < 124**（其中多数是 id=1），也就是草稿几乎退化成同一个 t
 > ⚠️ 由此修正一条旧记录的措辞：§5 第 2 条里"本机跑不了上游引擎"**已过时**——2026-10-06 复核澄清，
 > 加 `VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ENABLE_V1_MULTIPROCESSING=0` 就能跑上游引擎
 > （`vllm_bugs/VERIFICATION_REPORT_20261006.md`），本次对照就是这么做的。
+
+---
+
+## 8. 2026-10-08 第二轮复核修复：**锚点（采样行）选错了行**
+
+> §7 修掉的是"自回归步的起点公式"；这一节修的是更根上的一处：**第一遍把新采出的 token
+> 打在哪一行、以及从哪一行采第 1 枚草稿**。§7 的修复没让接受率变好，就是因为锚点本身摆错了。
+
+### 8.1 怎么发现的（把上游 V1 的真实轨迹打出来对照）
+
+用 `VLLM_USE_V2_MODEL_RUNNER=0` 强制上游跑 **V1**（本仓库对齐的那条路径），真实
+Qwen3-1.7B + `Qwen3-1.7B-eagle3`、K=3，只读插桩 `EagleProposer`：
+
+```
+第一遍 positions=[0..18]  seq_lens=[19]  sample_rows=[18]        ← prefill 19 行
+  AR1 in [18]/[19] → out [19]/[20]        AR2 in [19]/[20] → out [20]/[21]
+
+第一遍 positions=[19,20,21,22]  seq_lens=[23]  sample_rows=[2]   ← decode 4 行、被拒 1 枚
+  AR1 in [21]/[22] → out [22]/[23]        AR2 in [22]/[23] → out [23]/[24]
+```
+
+两条结论：
+
+1. §7 的 R1/R2（位置 + k、上下文 = 第一遍 − 被拒 + k）在上游**成立** ✓；
+2. 更要紧的那条不变量：`position == seq_len − 1`（自回归行必须落在自己的上下文里）——
+   上游每一轮都成立；而**本仓库在被拒 > 0 时不成立**（实测 `position=23 / seq_len=22`）。
+
+### 8.2 根因：两个"采样行"来源不一致
+
+| 来源 | 公式 | rows=4、被拒 2 时的行号 |
+|---|---|---|
+| runner 给的 padded 索引（69 关与上游 `prepare_inputs_padded` 逐值对齐过） | `块起点 + target_rows − 1 − num_rejected` | **1** |
+| `EagleProposer` 内部实际用的（也是写 bonus 的那一行） | `块起点 + target_rows − 1`（块的最后一行） | **3** |
+
+上游 V1 用的是**前者**（默认走 padded 通路：`token_indices_to_sample` 由 `prepare_inputs_padded`
+给出），也就是"**最后一枚有效 token 所在的行**"：
+
+```
+start=19、rows=4、被拒 2：
+  行 0: d₁（位移副本）          行 1: bonus ← 锚点写这里、也从这里采样
+  行 2: d₂（被拒草稿的位移副本）  行 3: d₃（同上，写了 KV 但被"长度减被拒"排除）
+  base = 23 − 2 = 21 → AR1 position 22、seq_len 23 → 22 == 23 − 1 ✓
+```
+
+本仓库把锚点放在**块的最后一行**（行 3、位置 23），于是：
+
+* 第 1 枚草稿的采样行位置/上下文都偏出 2 格，而且它的上下文里装的是**被拒草稿**（d₁/d₂/d₃）、
+  真正的 bonus 反而读不到；
+* 自回归行随之掉到上下文之外（`position ≠ seq_len − 1`）——**这是唯一能自动识破它的不变量**。
+
+为什么一直没被发现：`_check_padded_sample_rows()` 只比"runner 的 device 值 vs CPU 公式"（两套外部来源
+彼此自洽），**没有比"提议者内部真正用的那一行"**；而被拒行 = 0 时两个公式恰好重合。
+
+### 8.3 修法
+
+* `EagleProposer.set_inputs_first_pass()`：采样行/写 bonus 的行改成
+  `cursor + target_rows − 1 − num_rejected`（就是 runner 已经在算、且与上游内核逐值对齐过的那个索引）；
+* `_check_padded_sample_rows()` 增加**第三条账**：`plan.sample_rows` 必须等于 runner 给的
+  `token_indices_to_sample`（只对"锚点写在 target 行块内部"的布局，即 EAGLE 串行 net=0；
+  draft_model / 并行提议是 kernel 语义，锚点在有效行之后的新行上）；
+* `tests/step63/test_eagle_ar_alignment.py` 增加 **R3a**（锚点行公式）与 **R3b**
+  （`position == seq_len − 1`，两种布局都成立）；`benchmarks/check_step63_eagle_inputs.py` 8 → 13 项；
+* 两处旧期望按新布局更新（都在注释里写明"为什么变"）：
+  `test_eagle_e2e.py::test_first_pass_inputs_follow_eagle_alignment`（bonus 行与采样行）、
+  `test_drafter_padding.py::test_draft_first_pass_sample_row_layouts`（EAGLE 采样行 `[3,6]` → `[1,6]`）。
+
+**判别力**：把锚点行改回"块的最后一行"，`test_eagle_ar_alignment.py` 的 eagle3 那一项立刻 FAIL、
+draft_model 那一项仍通过。
+
+### 8.4 实测效果（真实权重、同 prompt、K=2，5 prompt × 128 token）
+
+| | drafted | accepted | acc_len | 位置1 接受率 | 位置2 接受率 |
+|---|---|---|---|---|---|
+| 本仓库·两轮修复前 | 1024 | 124 | 1.1211 | 22.5% | 1.8% |
+| 本仓库·只修自回归坐标（§7） | 1022 | 124 | 1.1213 | 22.5% | 1.8% |
+| **本仓库·再修锚点行（本节）** | 888 | 192 | **1.2162** | **36.5%** | **6.8%** |
+| 上游引擎（同 prompt、V1 与 V2 实测同值） | 816 | 230 | **1.2819** | 41.7% | 14.7% |
+
+位置 1 的差距从 22.5% vs 41.7% 收窄到 36.5% vs 41.7%；位置 2 从 1.8% 提到 6.8%（上游 14.7%）。
+**差距没有消失**：剩下的部分仍在 draft 第一遍/自回归的条件本身（特征拼接、prenorm、注意力上下文），
+线索见 `vllm_bugs/LEAD_20261008_eagle3_draft_quality.md`。
+
+### 8.5 顺带澄清：上游引擎在本机默认跑的是 **V2**
+
+```
+use_v2_model_runner = True
+runner:  vllm.v1.worker.gpu.model_runner.GPUModelRunner（V2）
+drafter: vllm.v1.worker.gpu.spec_decode.eagle.speculator.EagleSpeculator（V2）
+```
+
+要跑本仓库对齐的 V1 路径必须加 `VLLM_USE_V2_MODEL_RUNNER=0`。好消息：**本 workload 下 V1 与 V2
+的接受长度、逐位置接受数完全相同**（816/230/1.2819、per-pos [170, 60] 两次实测一致），
+所以之前"上游 1.2819"的对照数字在 V1/V2 口径下都成立；但以后要与上游做逐值对照（而不是比接受率）
+时，必须先钉住是哪条路径。V2 的 speculator 本身是路线图里的 73/74 关。

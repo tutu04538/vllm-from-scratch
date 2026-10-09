@@ -526,6 +526,7 @@ class SpecDecodeBaseProposer:
             return
         actual = recorded["token_indices_to_sample"]
         cursor = 0
+        sample_index = 0
         for index, target in enumerate(rows):
             if target.target_rows <= 0:
                 raise RuntimeError(f"{target.req_id!r} 本轮的 target 行数为 0，无法定位采样行")
@@ -539,6 +540,21 @@ class SpecDecodeBaseProposer:
                     f"（起点 {target.start}、{target.target_rows} 行、被拒 {target.num_rejected} 行）"
                     f"算出来应是第 {want} 行。这会让第一枚草稿条件在错误的 token 上"
                     f"（不报错、只是草稿变差）")
+            # **第三条账**：提议者内部真正用来采样/放锚点的那一行，必须与上面两套一致。
+            # 少了这条校验，2026-10-08 那个 bug（EAGLE 把锚点放在"块的最后一行"）就能一路跑下去：
+            # 两个"外部"来源彼此自洽，只有提议者自己用错了行。
+            # 只对**不扩容**的布局成立（EAGLE 串行：net=0，bonus 就写在这两套给的那一行）；
+            # draft_model / 并行提议的第一遍是 kernel 语义（bonus 打在有效行之后的**新行**上），
+            # 采样行由布局自己算，与 target 侧的 `token_indices_to_sample` 不是同一个量。
+            if not self.needs_extra_input_slots and not self.parallel_drafting \
+                    and target.ready and sample_index < len(plan.sample_rows):
+                internal = plan.sample_rows[sample_index]
+                sample_index += 1
+                if internal != got:
+                    raise RuntimeError(
+                        f"{target.req_id!r} 的锚点行与 runner 给的采样行不一致：提议者内部用第 "
+                        f"{internal} 行，runner（上游 prepare_inputs_padded 算法）给的是第 {got} 行。"
+                        f"锚点行错 = 第 1 枚草稿的位置/上下文全错（自回归行会掉到上下文之外）")
 
     def _apply_num_rejected_to_seq_lens(self, plan: FirstPassPlan,
                                         rows: list[TargetRows]) -> None:

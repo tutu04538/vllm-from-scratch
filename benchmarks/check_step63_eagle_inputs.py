@@ -4,9 +4,10 @@
 按用户要求删掉它们之后，本脚本改为**直接驱动 tiny 引擎**，对着提议者写进工作区的内容做检查
 （口径与 `tests/step63/test_eagle_e2e.py` 一致，但脚本式 PASS/FAIL，供回归用）：
 
-  A. 上游不扩容分支的四行：行数 = 本轮 target 行数、整体左移一格、每请求最后一格换新 token
+  A. 上游不扩容分支的四行：行数 = 本轮 target 行数、整体左移一格、
+     新 token 打在**最后一枚有效行**（`target_rows − 1 − num_rejected`，上游 padded 通路）
   B. positions 与特征**逐行原样**（第 i 行配第 i 行的特征）
-  C. 采样行 = 每请求最后一行
+  C. 采样行 = 最后一枚有效行（= 锚点行）
   D. "被拒位置下一轮必被重算"（`next_start == start + num_valid`）——喂被拒草稿无害的前提
   E. greedy 端到端：投机输出 == 非投机输出，且真的提了草稿
   F. **自回归步的起点**（2026-10-08 复核修复）：第 k 枚草稿的位置 = 采样行位置 + k、
@@ -82,25 +83,30 @@ rounds, outputs, stats = collect_rounds()
 shifted_ok = positions_ok = hidden_ok = sample_ok = True
 for entry in rounds:
     row = entry["row"]
+    # 新采出的 token 打在**最后一枚有效行**上（上游 padded 通路的 `token_indices_to_sample`）：
+    # 那一行之前仍是位移副本，之后（被拒行的位移副本）保持原样。（2026-10-08 复核修正）
+    bonus_row = row.target_rows - 1 - row.num_rejected
     if len(entry["input_ids"]) != row.target_rows:
         shifted_ok = False
-    elif entry["input_ids"][:-1] != entry["round_tokens"][1:]:
+    elif entry["input_ids"][:bonus_row] != entry["round_tokens"][1:1 + bonus_row]:
         shifted_ok = False
-    elif entry["input_ids"][-1] != row.next_token_id:
+    elif entry["input_ids"][bonus_row] != row.next_token_id:
+        shifted_ok = False
+    elif entry["input_ids"][bonus_row + 1:] != entry["round_tokens"][bonus_row + 1:]:
         shifted_ok = False
     if entry["positions"] != entry["round_positions"]:
         positions_ok = False
     if not all(torch.allclose(entry["hidden"][i].float(), entry["combined"][i].float())
                for i in range(row.target_rows)):
         hidden_ok = False
-    if entry["plan"].sample_rows[0] != row.target_rows - 1:
+    if entry["plan"].sample_rows[0] != bonus_row:
         sample_ok = False
 
-check("A. 行数 = 本轮 target 行数；整体左移一格；每请求最后一格 = 新 token",
+check("A. 行数 = 本轮 target 行数；整体左移一格；新 token 打在最后一枚有效行（锚点行）",
       shifted_ok, f"{len(rounds)} 轮")
 check("B1. positions 与 target 逐行相同（不被移位带走）", positions_ok)
 check("B2. 特征逐行原样（第 i 行配第 i 行的特征）", hidden_ok)
-check("C. 采样行 = 每请求最后一行", sample_ok)
+check("C. 采样行 = 最后一枚有效行（= 上一条里的锚点行）", sample_ok)
 
 recompute_ok = all(next_entry["row"].start == entry["row"].start + entry["row"].num_valid
                    for entry, next_entry in zip(rounds, rounds[1:]))
@@ -168,6 +174,19 @@ check("F1. 自回归步的位置 = 采样行位置 + k（上游 R1）", position
 check("F2. 自回归步的上下文 = (第一遍 seq_lens − 被拒) + k（上游 R2）", seq_ok)
 check("F3. 被拒 > 0 的轮也验到了（否则被拒那一支没有区分力）",
       any(step["rejected"][0] > 0 for round_ in ar_rounds for step in round_["ar"]))
+
+# 2026-10-08 第二轮修复：锚点行 = **最后一枚有效行**（上游 padded 通路），而且自回归行必须落在
+# 自己的上下文里（`position == seq_len − 1`）——后者是唯一能识破"锚点选错行"的不变量。
+# collect_rounds 只记"单请求"的轮次（`row = rows[0] if len(rows) == 1`）→ 块起点恒为 0
+anchor_ok = all(row["plan"].sample_rows[0]
+                == row["row"].target_rows - 1 - row["row"].num_rejected
+                for row in rounds if row["row"] is not None and row["row"].ready)
+check("F4. 锚点行 = 块起点 + target_rows − 1 − 被拒行数（上游 padded 通路的采样行）",
+      anchor_ok, f"{len(rounds)} 轮")
+inside_ok = all(step["positions"][index] == step["seq_lens"][index] - 1
+                for round_ in ar_rounds for step in round_["ar"]
+                for index in range(len(step["positions"])))
+check("F5. 自回归行落在自己的上下文里（position == seq_len − 1）", inside_ok)
 
 # 端到端：与非投机逐 token 一致
 base_engine, base_core, _ = e2e.make_engine(with_spec=False)

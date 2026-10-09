@@ -199,8 +199,10 @@ def test_draft_first_pass_sample_row_layouts(tiny_dir, hf_config, eagle3_dir):
 
     draft_model（`SpecDecodeBaseProposer`）：工作区 = [有效行][扩容行][被拒行]，
         采样行 = 块起点 + num_valid = target 行号 + 请求序号 + 1
-    EAGLE（`EagleProposer`）：沿用 target 的行块、把扩容 token 打在最后一行，
-        采样行 = 块起点 + target_rows - 1 = target 行号 + 请求序号
+    EAGLE（`EagleProposer`）：沿用 target 的行块、把新采出的 token 打在**最后一枚有效行**上，
+        采样行 = 块起点 + target_rows - 1 - num_rejected
+        （⚠️ 2026-10-08 复核修正：以前写的是"块的最后一行"`target_rows - 1`，被拒行 > 0 时
+        锚点/采样行的位置与上下文会偏出 num_rejected 格；见 docs/step63_alignment.md §8）
     """
     from minivllm.spec_decode.utils import TargetRows
 
@@ -239,7 +241,8 @@ def test_draft_first_pass_sample_row_layouts(tiny_dir, hf_config, eagle3_dir):
         rows, all_token_ids, target_hidden_states=hidden,
         target_token_ids=torch.tensor(list(range(10))),
         target_positions=torch.tensor(list(range(10))))
-    assert eagle_plan.sample_rows == [3, 6]
+    # a：块起点 0 + 4 - 1 - 被拒 2 = 1；b：块起点 4 + 3 - 1 - 被拒 0 = 6
+    assert eagle_plan.sample_rows == [1, 6]
     eagle_engine.shutdown()
 
 

@@ -1,6 +1,14 @@
 """step63 补充：EAGLE / draft 提议者**自回归步的起点**必须与上游同源（2026-10-08 复核修复）。
 
-### 这条测试钉的是什么
+### 这条测试钉的是什么（2026-10-08 两轮修复）
+
+第一轮修的是**自回归步的起点**（位置/上下文长度的公式，见下面 R1/R2）；
+第二轮修的是**锚点（采样行）本身选错了行**——EAGLE 把新采出的 token 打在"块的最后一行"，
+而上游（padded 通路，`prepare_inputs_padded` 的 `token_indices_to_sample`）打在
+**最后一枚有效行** `块起点 + target_rows − 1 − num_rejected` 上。两轮的关系是：
+锚点行错的时候，R1/R2 也会"自洽地错"，症状只有一条能识破——**自回归行掉到自己的上下文之外**
+（`position != seq_len − 1`），所以本文件把这条不变量单独钉住（R3）。
+
 
 上游 `SpecDecodeBaseProposer.propose()`（`llm_base_proposer.py:634`）：
 
@@ -58,12 +66,18 @@ class ArRecorder:
         self.proposer = proposer
         self.rounds: list[dict] = []
         self._patched = []
+        self._last_rows: list = []
 
         original_first = proposer.set_inputs_first_pass
 
         def first(*args, **kwargs):
             plan = original_first(*args, **kwargs)
+            self._last_rows = list(args[0]) if args else []
             self.rounds.append({
+                "rows": [(int(target.target_rows), int(target.num_rejected))
+                         for target in self._last_rows],
+                "target_row_start": self._row_starts(plan),
+                "sample_rows": list(plan.sample_rows),
                 "sample_positions": list(plan.sample_positions),
                 "first_pass_seq_lens": list(plan.seq_lens),
                 "ar": [],
@@ -89,6 +103,14 @@ class ArRecorder:
 
             proposer._set_autoregressive_inputs = ar
             self._patched.append(("_set_autoregressive_inputs", original_ar))
+
+    def _row_starts(self, plan) -> list[int]:
+        """每条请求在**工作区**里的块起点（= Σ 前面请求的 target 行数）。"""
+        starts, cursor = [], 0
+        for target in self._last_rows:
+            starts.append(cursor)
+            cursor += int(target.target_rows)
+        return starts
 
     def restore(self) -> None:
         for name, original in self._patched:
@@ -117,10 +139,26 @@ def _run_and_record(*, method: str, spec_k: int, max_tokens: int = 6, budget: in
 
 
 def _check_rules(recorder) -> tuple[int, int]:
-    """逐轮验算 R1/R2；返回 (被拒>0 的轮数, 被拒==0 的轮数)。"""
+    """逐轮验算 R1/R2/R3；返回 (被拒>0 的轮数, 被拒==0 的轮数)。"""
     zero_rounds = rejected_rounds = 0
     checked_steps = 0
     for round_index, round_ in enumerate(recorder.rounds):
+        # R3a：锚点行 = 最后一枚有效行（上游 padded 通路的索引）。
+        # **只对"锚点写在 target 行块内部"的布局成立**（EAGLE 串行：net=0）；
+        # draft_model / 并行提议的第一遍是 kernel 语义——锚点打在有效行之后的**新行**上
+        # （`块起点 + target_rows`），那一行不属于 target 的块，不能用这个公式比。
+        anchor_inside_block = (not recorder.proposer.needs_extra_input_slots
+                               and not recorder.proposer.parallel_drafting)
+        for index, (target_rows, rejected) in enumerate(round_["rows"]):
+            if not anchor_inside_block:
+                break
+            if not round_["sample_rows"] or index >= len(round_["sample_rows"]):
+                continue
+            want_row = round_["target_row_start"][index] + target_rows - 1 - rejected
+            assert round_["sample_rows"][index] == want_row, (
+                f"第 {round_index} 轮请求 {index} 的锚点行 {round_['sample_rows'][index]} "
+                f"!= 块起点 {round_['target_row_start'][index]} + {target_rows} − 1 − 被拒 "
+                f"{rejected} = {want_row}（上游 padded 通路）")
         if not round_["ar"]:
             continue                     # K=1：没有自回归步
         for step in round_["ar"]:
@@ -135,6 +173,12 @@ def _check_rules(recorder) -> tuple[int, int]:
                     f"第 {round_index} 轮第 {k} 枚草稿的上下文 {step['seq_lens'][index]} "
                     f"!= (第一遍 {round_['first_pass_seq_lens'][index]} − 被拒 "
                     f"{step['rejected'][index]}) + {k}（上游 R2）")
+                # R3b（真正能识破"锚点选错行"的那条）：自回归行必须在自己的上下文里。
+                # 锚点行偏了 rejected 格时，position 会落在 seq_len 之外 —— 不报错，只是草稿变差。
+                assert step["positions"][index] == step["seq_lens"][index] - 1, (
+                    f"第 {round_index} 轮第 {k} 枚草稿：position={step['positions'][index]} 但 "
+                    f"seq_len={step['seq_lens'][index]}（应当 position == seq_len − 1）——"
+                    f"自回归行掉到自己的上下文之外，说明锚点行/上下文起点选错了")
                 checked_steps += 1
             if step["rejected"][0] > 0:
                 rejected_rounds += 1

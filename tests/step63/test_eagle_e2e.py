@@ -165,9 +165,19 @@ def test_first_pass_inputs_follow_eagle_alignment():
     #   行数 = 本轮 target 的行数（含被拒行）；positions/特征**原样逐行**；
     #   token 整体左移一格，最后一格（每条请求的）换成新采出的 token。
     assert len(input_ids) == row.target_rows
-    round_tokens = entry["round_tokens"]
-    assert input_ids[:-1] == round_tokens[1:], "整体左移一格"
-    assert input_ids[-1] == row.next_token_id, "每请求最后一格 = 新 token"
+    # 只取**这条请求的行块**：runner 交来的缓冲可能带补齐行（图路径的 padded 工作区），
+    # 提议者自己按 Σ target_rows 切片，测试也要按同一口径切。
+    round_tokens = entry["round_tokens"][:row.target_rows]
+    bonus_row = row.target_rows - 1 - row.num_rejected
+    # 整体左移一格 —— **锚点那一行除外**（它被换成新采出的 token），锚点之后仍是位移副本
+    assert input_ids[:bonus_row] == round_tokens[1:1 + bonus_row], "左移一格（锚点之前）"
+    assert input_ids[bonus_row + 1:] == round_tokens[bonus_row + 1:], "锚点之后仍是位移副本"
+    # 新 token 打在**最后一枚有效 token 所在的那一行**（= `target_rows − 1 − num_rejected`），
+    # 不是"块的最后一行"：上游 padded 通路的 `token_indices_to_sample` 就是这个索引
+    # （`prepare_inputs_padded`，69 关已与上游内核逐值对过）。2026-10-08 复核修正，见
+    # `docs/step63_alignment.md` §8：两个索引在没有被拒行时重合，只有 num_rejected > 0 才分得开
+    # ——本用例挑的就是这种轮次。
+    assert input_ids[bonus_row] == row.next_token_id, "新 token 打在最后一枚有效行上（锚点行）"
     # positions 与 target 逐行相同（不被移位带走）
     assert positions == entry["round_positions"], positions
     assert positions == list(range(row.start, row.start + row.target_rows)), positions
@@ -176,7 +186,7 @@ def test_first_pass_inputs_follow_eagle_alignment():
     for index in range(row.target_rows):
         assert torch.allclose(entry["hidden"][index].float(), source[index].float()), \
             f"第 {index} 行的特征必须取 target 同一行（上游就是逐行原样拷贝）"
-    assert entry["plan"].sample_rows[0] == row.target_rows - 1, "采样行 = 每请求最后一行"
+    assert entry["plan"].sample_rows[0] == bonus_row, "采样行 = 最后一枚有效行（锚点行）"
 
 
 def test_rejected_positions_are_recomputed_next_round():

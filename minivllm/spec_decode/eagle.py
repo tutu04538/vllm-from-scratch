@@ -131,11 +131,20 @@ class EagleProposer(DraftModelProposer):
         input_ids = list(tokens)
         if num_tokens > 1:
             input_ids[:num_tokens - 1] = tokens[1:]
-        # 2) 每条请求的**最后一格**换成这条请求新采出的 token
+        # 2) 把这条请求新采出的 token 打到**最后一枚有效 token 所在的那一格**
+        #    （上游 padded 通路的 `token_indices_to_sample`，`prepare_inputs_padded` 的产物：
+        #     块起点 + target_rows − 1 − num_rejected；69 关已与上游内核逐值对过）
+        #
+        # ⚠️ 这里**不能**写成"块的最后一行"（`target_rows − 1`）：被拒的那几行在真历史里不存在，
+        # 把锚点（以及第 1 枚草稿的采样行）放在最后一行会让它的**位置与上下文都偏出 rejected 格**，
+        # 上下文里装的还是被拒草稿的 KV；症状是 `position != seq_len − 1`（自回归行掉到自己的
+        # 上下文之外），不报错、只是第 1 枚草稿质量崩（实测真实 EAGLE3：位置1 接受率 22.5% vs
+        # 上游 41.7%）。2026-10-08 复核发现并修正，见 docs/step63_alignment.md §8。
         token_indices_to_sample: list[int] = []
         cursor = 0
         for target in rows:
-            token_indices_to_sample.append(cursor + target.target_rows - 1)
+            token_indices_to_sample.append(
+                cursor + target.target_rows - 1 - target.num_rejected)
             cursor += target.target_rows
         for index, target in zip(token_indices_to_sample, rows):
             input_ids[index] = target.next_token_id
