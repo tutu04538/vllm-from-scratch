@@ -186,7 +186,13 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 1. **V2 的 CUDA Graph / 融合多步 decode** 属 **74 关**：本关 `init_cudagraph_manager()` 对
    非 NONE 模式直接报错，`validate_v2_model_runner()` 也在配置期挡住（可跑 `enforce_eager`）。
 2. **块验证（block）与合成接受率（synthetic）** 属 **75 关**：配置期与 `RejectionSampler`
-   双重拒绝。
+   双重拒绝。⚠️ 诚实交代：`rejection_sampler_utils.py` 里与 block verification 相关的三个内核
+   （`_compute_cumulative_log_p_kernel` / `_compute_local_residual_mass_kernel` /
+   `_compute_global_residual_mass`）是**逐行搬运但未被测试跑过**的（本关差分固定
+   `use_block_verification=False`）；75 关接它们时要先补差分。
+   另一个口径说明：`rejection_sample` 交回的 `sampled` 是 `new_empty`，某请求的草稿数少于 K 时
+   其尾部**两个实现都不写**（是回收显存），所以差分断言写成"`num_sampled` 逐值相等 + 每请求
+   `[:num_sampled[r]]` 前缀逐值相等，且写满时整张张量逐值相等"——不是放宽已定义的位。
 3. **V2 只支持 EAGLE/EAGLE3**：DFlash(76)/DSpark(77)/多模块 MTP(80) 明确报错；原生 MTP 的 V2
    speculator 未接（本机无 checkpoint 可验收，V1 路径仍可用）。
 4. **异步调度仍未放开**（70 关的边界）：V2 提供了"状态按 slot 落 GPU + 侧流交付"这两块地基，
