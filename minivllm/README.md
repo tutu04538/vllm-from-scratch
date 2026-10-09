@@ -481,9 +481,49 @@ python benchmarks/check_step72_parallel_draft.py        # 18 项（槽位 / 输�
 所以草稿质量与加速比标「集成待验」（清单见
 [`docs/step72_alignment.md`](../docs/step72_alignment.md) §3）。
 
+## 第七十三关：Runner V2（常驻 slot 请求状态与投机执行路径）
+
+V1 把「请求的身份」和「本轮的 batch 行号」绑在一起：谁走了就把最后一行搬进空洞，
+所有按行存的东西都得跟着搬（上游 V1 的 `swap_states()` 一次要动 27 个成员，漏一个不报错、
+只是把别人的随机流/块表/惩罚计数给了这条请求）。V2 把两者分开：
+
+```
+请求身份  常驻 slot（req_id_to_index / free_indices，生命周期内不变）
+本轮座位  idx_mapping [B]         batch 行 → slot
+          expanded_idx_mapping    logits 行 → slot（投机时每请求 1+K 行 logits 共用一个 slot）
+```
+
+- `worker/gpu/states.py::RequestState` 按 slot 存 `all_token_ids`（**UVA**：host 常驻、GPU 可见，
+  几 GB 的大表不占显存）/ `total_len` / `num_computed_tokens` / `last_sampled_tokens` / `draft_tokens`，
+  并把 `prompt_len`（用户给的）与 `prefill_len`（喂进 runner 的）**分开**——抢占恢复时后者更大。
+- `worker/gpu/input_batch.py` 的 7 个内核负责"本轮输入"：`cu_num_logits` 含前导 0、
+  prefill 行从历史里取、`positions/seq_lens` 现算、上一轮采样 + 本轮草稿写回 `input_ids`、
+  `post_update` **按 slot 就地写回**采样结果（CPU 不需要知道采了几个/拒了几个）。
+- `worker/gpu/spec_decode/` 是 V2 的提议者：第一遍**直接读 target 的输入缓冲**左移打补丁
+  （锚点 = 最后一枚有效行 `query_start + query_len − 1`，`query_len` 已扣掉 GPU 上的
+  `num_rejected`），自回归步每步 1 行/请求；验证走 V2 版拒绝采样内核（slot 寻址、每行 K 可不同）。
+- 交付侧 `AsyncOutput` 在**侧流**上非阻塞 D2H，句柄先交出去、`get_output()` 才等。
+- 入口：`VLLM_USE_V2_MODEL_RUNNER=1`（与上游同名同义）；**默认仍是 V1**，因为本仓库 V2 目前只覆盖
+  EAGLE/EAGLE3 + standard 验证，其余组合在**配置期**明确报错（不静默退回 V1）。
+
+```bash
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 50 项（含与上游内核逐值差分）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step73_v2_runner.py   # 23 项
+# 用 V2 跑一段生成（V2 本关只做 eager，所以配 --enforce-eager；非投机/投机都支持）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
+    python minivllm/demo.py --device cuda --model models/Qwen3-1.7B --enforce-eager "问题"
+```
+
+实测：tiny 与**真实 Qwen3-1.7B + eagle3**（K=2、bf16）上 **V1 与 V2 greedy 逐 token 相同**
+（真实权重下 `drafted/accepted/轮次` 三项也全等），含 4 次抢占恢复的场景。
+⚠️ V2 的 CUDA Graph 与融合多步 decode 属 74 关、块验证/synthetic 属 75 关、
+DFlash/DSpark 属 76/77 关；差异账本（15 条）见 [`docs/step73_alignment.md`](../docs/step73_alignment.md) §5。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
+V2 入口（73 关）当前只覆盖 EAGLE/EAGLE3 + standard 验证，图与融合、块验证、DFlash/DSpark、
+多模块 MTP 都还没接（各自报错并写明归属关卡）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -522,6 +562,7 @@ python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/�
 python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映射/上游逐位差分/配置边界/异构词表集成
 python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 / 配置改写（图+DP）/ 两轮时序 / K=0 端到端 / q 宽度
 python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / 上游内核逐值差分 / 一次 forward / 端到端
+python benchmarks/check_step73_v2_runner.py          # 23 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 边界
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -535,6 +576,7 @@ python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
+python -m pytest tests/step73 -q                     # 50 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

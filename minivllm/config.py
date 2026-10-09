@@ -176,6 +176,19 @@ class ModelConfig:
                 "都要它）。请先把 hf_config 读进来（模型目录里的 config.json）")
         return int(self.hf_config["vocab_size"])
 
+    def get_hidden_size(self) -> int:
+        """hidden 宽度（对应上游 `ModelConfig.get_hidden_size()`）。
+
+        73 关起 V2 的提议者要按它开特征缓冲：EAGLE 系 draft 的 hidden 可能与 target 不同
+        （上游注释点名 Llama 3.3 70B），所以取的是 **draft 这份 config** 的值。
+        缺字段时报错而不是猜：宽度猜错只会让特征缓冲与模型对不上（不报错的静默错）。
+        """
+        if not self.hf_config or "hidden_size" not in self.hf_config:
+            raise ValueError(
+                "模型配置里没有 hidden_size，无法确定特征宽度（V2 提议者的特征缓冲要它）。"
+                "请先把 hf_config 读进来（模型目录里的 config.json）")
+        return int(self.hf_config["hidden_size"])
+
 
 #: 上游 `config/model.py` 的 `LogprobsMode`（四种模式）。前两种是"概率"、后两种是"logits"本身
 #: （上游允许直接交付 logits，用于需要未归一化分数的场景）。
@@ -1295,6 +1308,9 @@ class VllmConfig:
 
     def __post_init__(self):
         self._resolve_cudagraph_config()
+        # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
+        # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
+        self.validate_v2_model_runner()
 
     def _resolve_cudagraph_config(self) -> None:
         """把 `cudagraph_mode=None` 解析成本仓库**真的支持**的模式，并算出图档位表。
@@ -1571,3 +1587,59 @@ class VllmConfig:
         """
         return (self.speculative_config.num_speculative_tokens
                 if self.speculative_config is not None else 0)
+
+    @property
+    def use_v2_model_runner(self) -> bool:
+        """走 V2 Model Runner 还是 V1（对应上游 `VllmConfig.use_v2_model_runner`）。
+
+        上游的规则是"**默认 V2**（除少数不支持 V2 的配置外），环境变量
+        `VLLM_USE_V2_MODEL_RUNNER` 可以强制覆盖"。本仓库 73 关起提供 V2 入口，但**默认仍是
+        V1**，只有显式 `VLLM_USE_V2_MODEL_RUNNER=1` 才切过去。为什么默认值不同（记在
+        `docs/step73_alignment.md` 差异账本）：本仓库 V2 目前只覆盖 EAGLE/EAGLE3 + 标准验证
+        （其余方法明确报错），而 58–72 关的既有能力（ngram / suffix / medusa / extract /
+        自定义 proposer / 异步调度 / PIECEWISE 图）都只在 V1 路径上——把默认改成 V2 会让
+        这些已验收能力"因为默认值变化而消失"。环境变量名与上游**同名同义**，所以
+        "上游怎么切，本仓库就怎么切"这条仍然成立。
+        """
+        import os
+
+        value = os.environ.get("VLLM_USE_V2_MODEL_RUNNER")
+        if value is None:
+            return False
+        return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+    def validate_v2_model_runner(self) -> None:
+        """V2 路径的**配置期**支持矩阵（对应上游 `VllmConfig._validate_v2_model_runner`）。
+
+        上游在这里"不支持就报错，而不是悄悄退回 V1"（退回会让用户以为跑的是 V2）。
+        本仓库 73 关的 V2 能力边界：
+
+            投机方法    只支持 EAGLE / EAGLE3（`init_speculator()` 的其余分支明确报错）
+            CUDA Graph  本关不做（74 关补）→ 解析出来的图模式必须是 NONE
+            异步调度    引擎层本来就拒绝（70 关），这里再挡一道
+        """
+        if not self.use_v2_model_runner:
+            return
+        spec = self.speculative_config
+        if spec is not None and spec.method not in ("eagle", "eagle3"):
+            raise NotImplementedError(
+                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3')，收到 "
+                f"{spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
+                f"（其余方法各自的归属关卡见 spec_decode/__init__.py 的报错）"
+            )
+        if spec is not None and spec.rejection_sample_method != "standard":
+            raise NotImplementedError(
+                f"V2 的 {spec.rejection_sample_method!r} 验证方式属 75 关；"
+                f"本关只支持 standard"
+            )
+        mode = self.compilation_config.cudagraph_mode
+        if mode is not None and mode != CUDAGraphMode.NONE:
+            raise NotImplementedError(
+                f"V2 的 CUDA Graph 属 74 关；73 关的 V2 只支持 eager，"
+                f"收到 cudagraph_mode={mode}。请设 enforce_eager=True（或 "
+                f"cudagraph_mode='NONE'），或改用 V1 路径（VLLM_USE_V2_MODEL_RUNNER=0）"
+            )
+        if self.scheduler_config.async_scheduling:
+            raise NotImplementedError(
+                "异步调度在 70 关只做到骨架、端到端明确拒绝；V2 侧的执行路径要等 74/75 关"
+            )

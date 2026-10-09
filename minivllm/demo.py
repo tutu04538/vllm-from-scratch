@@ -78,6 +78,10 @@ def main(argv=None):
     parser.add_argument("--max-model-len", type=int, default=512)
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--max-num-batched-tokens", type=int, default=64)
+    parser.add_argument("--enforce-eager", action="store_true",
+                        help="不做 CUDA Graph（对应上游同名开关；默认是 FULL_AND_PIECEWISE）。"
+                             "73 关的 V2 入口目前只支持 eager，所以配 VLLM_USE_V2_MODEL_RUNNER=1 "
+                             "时要带上它")
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--num-kv-blocks", type=int, default=64)
     parser.add_argument("--no-prefix-caching", action="store_true",
@@ -143,7 +147,8 @@ def main(argv=None):
     hf_config = json.loads((model_dir / "config.json").read_text())
     config = VllmConfig(
         model_config=ModelConfig(model=str(model_dir), dtype=args.dtype,
-                                 max_model_len=args.max_model_len, hf_config=hf_config),
+                                 max_model_len=args.max_model_len, hf_config=hf_config,
+                                 enforce_eager=args.enforce_eager),
         cache_config=CacheConfig(block_size=args.block_size, num_gpu_blocks=args.num_kv_blocks,
                                  enable_prefix_caching=not args.no_prefix_caching),
         scheduler_config=SchedulerConfig(max_num_seqs=args.max_num_seqs,
@@ -190,17 +195,23 @@ def main(argv=None):
                   f"{cache.shape[1] * cache.shape[2] * cache.shape[3] * cache.element_size() / 1024:.0f} KB"
                   f"，槽位与本轮 KV 同源（64 关）")
 
-    # --trace：只记第一轮。这是"协议 → 模型输入"这一段的真实数字，后面的轮次结构相同
-    original_prepare = runner._prepare_inputs
+    # --trace：只记第一轮。这是"协议 → 模型输入"这一段的真实数字，后面的轮次结构相同。
+    # 它是 **V1 的探针**（打印的是 V1 `PreparedInputs` 的字段）。V2 的输入视图是 `InputBatch`
+    # （字段不同，见 docs/step73_alignment.md §4.2），这里不造一个"看起来一样"的打印——要 trace 就用 V1。
     trace = {}
-
-    def traced_prepare(scheduler_output):
-        inputs = original_prepare(scheduler_output)
-        trace.setdefault("packet", dict(scheduler_output.num_scheduled_tokens))
-        trace.setdefault("inputs", inputs)
-        return inputs
-
     if args.trace:
+        if not hasattr(runner, "_prepare_inputs"):
+            raise SystemExit(
+                "--trace 目前只支持 V1 路径：V2（VLLM_USE_V2_MODEL_RUNNER=1）的输入视图是 "
+                "InputBatch，字段与 V1 的 PreparedInputs 不同。去掉 V2 的环境变量再跑 trace。")
+        original_prepare = runner._prepare_inputs
+
+        def traced_prepare(scheduler_output):
+            inputs = original_prepare(scheduler_output)
+            trace.setdefault("packet", dict(scheduler_output.num_scheduled_tokens))
+            trace.setdefault("inputs", inputs)
+            return inputs
+
         runner._prepare_inputs = traced_prepare
 
     for index, question in enumerate(questions):
@@ -240,7 +251,8 @@ def main(argv=None):
                 finished[output.request_id] = output.finish_reason.name
         steps += 1
     seconds = time.perf_counter() - start
-    runner._prepare_inputs = original_prepare
+    if args.trace:
+        runner._prepare_inputs = original_prepare
 
     if args.logprobs is not None:
         for request_id, output in last_output.items():
@@ -270,7 +282,6 @@ def main(argv=None):
         print(f"\n答[{request_id}]: {answers.get(request_id, '')}")
         print(f"   结束原因 {finished.get(request_id)}")
     generated = sum(len(tokenizer.encode(text)) for text in answers.values())
-    stats = runner.input_batch.block_table  # noqa: F841  （只是提醒：块表在执行侧）
     kv_manager = engine.engine_core.engine_core.kv_cache_manager
     print(f"\n{steps} 轮调度、{generated} 个 token、{seconds:.2f}s"
           f"（{generated / max(seconds, 1e-9):.1f} tok/s；本关是逐请求的 Torch attention，"

@@ -59,7 +59,8 @@ NUM_SAMPLED_TOKENS_PER_STEP = 1
 
 class Scheduler:
     def __init__(self, scheduler_config, kv_cache_manager, max_model_len: int,
-                 speculative_config=None, structured_output_manager=None) -> None:
+                 speculative_config=None, structured_output_manager=None,
+                 use_v2_model_runner: bool = False) -> None:
         # 投机只影响两件事：预算里**算上草稿**（`num_tokens_with_spec` 已经含了）、
         # 以及把草稿发给执行侧。所以这里只需要"开没开"这一条信息。
         self.speculative_config = speculative_config
@@ -133,6 +134,11 @@ class Scheduler:
         self.finished_req_ids: set[str] = set()
         # 上一轮被调度的请求：不在里面的请求要带上完整 token 历史（执行侧可能没有它的状态）
         self.prev_step_scheduled_req_ids: set[str] = set()
+        # 73 关：执行路径是 V2 还是 V1。差别只有两处打包口径（上游 `scheduler.py` 同样只在
+        # 这两处分支）：① 恢复（抢占后重排）的请求按 **NewRequestData** 发，并带上
+        # `prefill_token_ids`（V2 的常驻状态要一次性建好）；② 续跑请求不再随包带
+        # `all_token_ids`（V2 的状态在 runner 里按 slot 常驻，不需要重建）。
+        self.use_v2_model_runner = use_v2_model_runner
 
         # 统计与 trace（测试与排查用；vLLM 放 metrics）
         self.num_steps = 0
@@ -361,11 +367,23 @@ class Scheduler:
         self.last_input_budget = input_budget
 
         # ---- 3) 打包快照（进度是**旧值**）----
-        new_reqs_data = [
-            NewRequestData.from_request(request, req_to_new_blocks[request.request_id]
-                                        .get_block_ids())
-            for request in scheduled_new_reqs
-        ]
+        if self.use_v2_model_runner:
+            # V2：恢复的请求按"新请求"发（带完整 token 历史），runner 侧先删旧状态再重建
+            # （上游 `scheduler.py:1194-1204` 逐行同义）。
+            scheduled_new_reqs.extend(scheduled_resumed_reqs)
+            scheduled_resumed_reqs = []
+            new_reqs_data = [
+                NewRequestData.from_request(
+                    request, req_to_new_blocks[request.request_id].get_block_ids(),
+                    list(request.all_token_ids))
+                for request in scheduled_new_reqs
+            ]
+        else:
+            new_reqs_data = [
+                NewRequestData.from_request(request, req_to_new_blocks[request.request_id]
+                                            .get_block_ids())
+                for request in scheduled_new_reqs
+            ]
         cached_reqs_data = self._make_cached_request_data(
             scheduled_running_reqs + scheduled_resumed_reqs, req_to_new_blocks,
             resumed_req_ids={request.request_id for request in scheduled_resumed_reqs})
@@ -444,9 +462,10 @@ class Scheduler:
             # 多少输出"，不报占位就会把执行侧刚写进去的那一段当成"该丢弃的尾部"。
             num_output_tokens.append(request.num_output_tokens
                                      + request.num_output_placeholders)
-            if req_id not in self.prev_step_scheduled_req_ids:
+            if not self.use_v2_model_runner and req_id not in self.prev_step_scheduled_req_ids:
                 # 上一轮没被调度过（新接纳、或刚从抢占恢复）：执行侧可能没有它的历史，
                 # 带上完整 token 列表。**不是每轮都复制全部历史**。
+                # 73 关：V2 的 runner 不读这一份（状态按常驻 slot 存），所以 V2 下不发。
                 all_token_ids[req_id] = list(request.all_token_ids)
         return CachedRequestData(
             req_ids=req_ids,

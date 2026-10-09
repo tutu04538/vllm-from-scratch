@@ -69,7 +69,10 @@ class EngineCore:
         self.scheduler = scheduler_cls(vllm_config.scheduler_config, self.kv_cache_manager,
                                        max_model_len=vllm_config.model_config.max_model_len,
                                        speculative_config=vllm_config.speculative_config,
-                                       structured_output_manager=self.structured_output_manager)
+                                       structured_output_manager=self.structured_output_manager,
+                                       # 73 关：打包口径按执行路径分叉（V2 的恢复请求按
+                                       # NewRequestData 发、且不再随包带 all_token_ids）。
+                                       use_v2_model_runner=vllm_config.use_v2_model_runner)
         # 执行/采样 future 的队列：**有界**（上游 `batch_queue_size = 1 + pp_size`）。
         # 本仓库没有流水线并行，所以是 2：允许"排下一轮"与"上一轮还在跑"重叠一层。
         self.batch_queue_size = 2

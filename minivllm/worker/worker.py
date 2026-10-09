@@ -39,10 +39,22 @@ class Worker:
         return None
 
     def load_model(self) -> None:
-        """建 Runner 并装模型。注入了 Runner（测试）时什么都不做。"""
+        """建 Runner 并装模型。注入了 Runner（测试）时什么都不做。
+
+        73 关：**两条执行路径由配置分派**（对应上游 `gpu_worker.py:424-435` 的同位置分派）——
+        `VLLM_USE_V2_MODEL_RUNNER=1` 时建 `worker/gpu/model_runner.py::GPUModelRunner`（V2），
+        否则建 V1 的 `worker/gpu_model_runner.py::GPUModelRunner`。两条路径共用
+        Engine/Scheduler 协议，但**不互相调用对方的输入准备**（需求 073 §2）。
+        """
         if self.model_runner is not None:
             return
-        self.model_runner = GPUModelRunner(self.vllm_config, self.device)
+        if self.vllm_config.use_v2_model_runner:
+            # 支持矩阵在配置期已校验（`VllmConfig.validate_v2_model_runner`），这里只做分派。
+            from .gpu.model_runner import GPUModelRunner as GPUModelRunnerV2
+
+            self.model_runner = GPUModelRunnerV2(self.vllm_config, self.device)
+        else:
+            self.model_runner = GPUModelRunner(self.vllm_config, self.device)
         # 70 关：执行侧也要知道"这一轮走不走异步"（它决定草稿从哪来：协议里的值 vs 自己
         # 上一轮提的那份）。解析规则只有一份（`config.resolve_async_scheduling`），
         # 引擎侧问的是同一个问题、同一套输入，所以两边答案必然一致。

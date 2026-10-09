@@ -21,7 +21,7 @@
 
 import enum
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 import numpy as np
 import torch
@@ -214,16 +214,43 @@ class LogprobsTensors(NamedTuple):
     拒绝掉的候选位在这里根本不存在——它们在 `parse_output` 里已被 `valid_mask` 滤掉。
 
     **只保留被用到的子集**（AGENTS §8：生产包不留没有调用方的代码）：上游还有
-    `to_cpu_nonblocking()`（异步 D2H）、`cat()`（按请求拼接）、`empty_cpu()`（prompt logprobs 占位），
-    它们的调用方分别属于异步调度（70 关）、上游的张量版拼接、prompt logprobs（本项目未接入）；
+    `to_cpu_nonblocking()`（异步 D2H）、`empty_cpu()`（prompt logprobs 占位）；
     本项目对应位置用的是 `tolists()` + `filter()`，拼接在 CPU numpy 上做
-    （`Runner._concat_logprobs_in_req_order`）。等 70 关/接入 prompt logprobs 时再按上游补回来。
+    （`Runner._concat_logprobs_in_req_order`）。
+    `cat()` 是 73 关补上的（V2 拒绝采样按 chunk 验证，多个 chunk 的 logprobs 必须拼起来，
+    调用点 `worker/gpu/spec_decode/rejection_sampler.py`），与上游同名同语义。
     """
 
     logprob_token_ids: torch.Tensor
     logprobs: torch.Tensor
     selected_token_ranks: torch.Tensor
     cu_num_generated_tokens: list[int] | None = None
+
+    @staticmethod
+    def cat(
+        tensors: "Sequence[LogprobsTensors]",
+        cu_num_generated_tokens: list[int] | None = None,
+    ) -> "LogprobsTensors":
+        """Concatenate flattened logprob tensors（上游 `v1/outputs.py:136` 逐行同义）。"""
+        assert tensors
+        assert cu_num_generated_tokens is not None or all(
+            tensor.cu_num_generated_tokens is None for tensor in tensors
+        )
+        if len(tensors) == 1:
+            tensor = tensors[0]
+            if cu_num_generated_tokens is None:
+                return tensor
+            return tensor._replace(cu_num_generated_tokens=cu_num_generated_tokens)
+        return LogprobsTensors(
+            logprob_token_ids=torch.cat(
+                [tensor.logprob_token_ids for tensor in tensors]
+            ),
+            logprobs=torch.cat([tensor.logprobs for tensor in tensors]),
+            selected_token_ranks=torch.cat(
+                [tensor.selected_token_ranks for tensor in tensors]
+            ),
+            cu_num_generated_tokens=cu_num_generated_tokens,
+        )
 
     def tolists(self, cu_num_generated_tokens: list[int] | None = None) -> "LogprobsLists":
         """转成 CPU numpy（跨执行边界传的就是这一份）。"""
@@ -233,6 +260,16 @@ class LogprobsTensors(NamedTuple):
             self.selected_token_ranks.cpu().numpy(),
             cu_num_generated_tokens if cu_num_generated_tokens is not None
             else self.cu_num_generated_tokens,
+        )
+
+    def to_cpu_nonblocking(self) -> "LogprobsTensors":
+        """非阻塞拷到 CPU（上游同名方法；V2 的 `AsyncOutput` 在侧流上调用它）。"""
+        if self.logprob_token_ids.device.type == "cpu":
+            return self
+        return LogprobsTensors(
+            self.logprob_token_ids.to("cpu", non_blocking=True),
+            self.logprobs.to("cpu", non_blocking=True),
+            self.selected_token_ranks.to("cpu", non_blocking=True),
         )
 
     def filter(self, mask: torch.Tensor) -> "LogprobsTensors":

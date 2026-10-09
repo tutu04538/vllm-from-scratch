@@ -35,9 +35,14 @@ class NewRequestData:
     sampling_params: SamplingParams
     block_ids: tuple[list[int], ...]
     num_computed_tokens: int          # 本轮计算**之前**的快照
+    #: 73 关（V2）：要喂进 runner 的**全部** token（= prompt + 抢占恢复时需要重算的已生成 token）。
+    #: V1 从"自己镜像里的历史 + prompt"拼出来，所以这条为空；V2 的常驻状态由这条一次性建好
+    #: （上游 `NewRequestData.prefill_token_ids`，`scheduler.py:1194-1204`）。
+    prefill_token_ids: list[int] | None = None
 
     @classmethod
-    def from_request(cls, request, block_ids: tuple[list[int], ...]) -> "NewRequestData":
+    def from_request(cls, request, block_ids: tuple[list[int], ...],
+                     prefill_token_ids: list[int] | None = None) -> "NewRequestData":
         return cls(
             req_id=request.request_id,
             # 复制：执行侧改这个列表不能影响 Scheduler 手里的 Request
@@ -45,6 +50,8 @@ class NewRequestData:
             sampling_params=request.sampling_params,
             block_ids=block_ids,
             num_computed_tokens=request.num_computed_tokens,
+            prefill_token_ids=(None if prefill_token_ids is None
+                               else list(prefill_token_ids)),
         )
 
 
