@@ -1,6 +1,6 @@
 """73 关验收探针：V2 Model Runner（常驻 slot 请求状态 + 投机执行路径 + V1/V2 差分）。
 
-跑法：`python benchmarks/check_step73_v2_runner.py`（退出码非 0 = 失败）。
+跑法：`python benchmarks/check_step73_v2_runner.py`（退出码非 0 = 失败；24 项）。
 
 分段（对应需求 073 §4 的六条验收）：
 
@@ -10,6 +10,7 @@
     D V1/V2 差分      同一 tiny 模型 greedy 逐 token 相同（K=1/3；含抢占恢复与混合 prefill）
     E 投机管道        草稿进批、num_rejected = num_logits − num_sampled、-1 占位协议
     F logprobs        V2 与 V1 同值；每个位置第 0 项是实际采到的 token
+    F3 语法掩码       结构化输出 + 投机走**真实 InputBatch**（cu_num_logits 前导 0、带草稿行）
     G 边界            非 EAGLE 方法 / CUDA Graph / 异步调度在配置期明确拒绝；零请求轮不碰模型
 
 ⚠️ 本机 tiny 权重是**随机**的：探针验的是**寻址与协议**（V1/V2 逐 token 一致 + 自洽计数），
@@ -278,6 +279,44 @@ top_ok = all(tok in out2.logprobs[pos] and out2.logprobs[pos][tok].rank == 1
 check("F1. V2 与 V1 的 logprobs 逐位置同值、行数 = 交付 token 数", same_values,
       f"tokens={out2.token_ids}")
 check("F2. 每个位置第 0 项是实际采到的 token（rank=1）", top_ok)
+
+# 语法掩码走真实 InputBatch（结构化输出 + 投机）
+schema = ('{"type": "object", "properties": {"x": {"const": 1}}, '
+          '"required": ["x"], "additionalProperties": false}')
+so_seen, so_tokens = [], {}
+for v2_flag in (False, True):
+    engine, _core, runner = make_engine(v2=v2_flag, spec_k=3, max_num_seqs=1, structured=True)
+    if v2_flag:
+        worker = runner.structured_outputs_worker
+        original = worker.apply_grammar_bitmask
+
+        def spy(logits, input_batch, req_ids, bitmask, _o=original):
+            so_seen.append({"num_reqs": int(input_batch.num_reqs),
+                            "cu": list(input_batch.cu_num_logits_np),
+                            "drafts": int(getattr(input_batch, "num_draft_tokens", 0))})
+            return _o(logits, input_batch, req_ids, bitmask)
+
+        worker.apply_grammar_bitmask = spy
+    try:
+        from minivllm import StructuredOutputsParams
+        engine.add_request("A", [2, 5],
+                           SamplingParams(max_tokens=12, temperature=0.0, eos_token_id=1,
+                                          structured_outputs=StructuredOutputsParams(json=schema)))
+        outs = []
+        for _ in range(200):
+            if not engine.has_unfinished_requests():
+                break
+            outs += list(engine.step())
+        so_tokens[v2_flag] = list(outs[-1].token_ids)
+    finally:
+        engine.shutdown()
+check("F3. 语法掩码走 V2 的真实 InputBatch（cu_num_logits 前导 0、至少一轮带草稿行），"
+      "且结构化输出下 V1/V2 逐 token 相同",
+      bool(so_seen) and all(c["cu"][0] == 0 and len(c["cu"]) == c["num_reqs"] + 1
+                            for c in so_seen)
+      and any(c["drafts"] > 0 for c in so_seen)
+      and so_tokens[False] == so_tokens[True],
+      f"calls={len(so_seen)} tokens={so_tokens[True]}")
 
 # ---------------------------------------------------------------- G 边界
 

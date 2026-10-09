@@ -146,10 +146,10 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest tests/step73 -q` | **50 passed**（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 8） |
-| `python -m pytest tests/step58 … tests/step73 -q` | **659 passed**（609 + 50，无回归） |
-| `python benchmarks/check_step73_v2_runner.py` | **23 项全部通过**（A 常驻 slot 3 / B 输入组装 6 / C 状态所有权 4 / D V1-V2 差分 3 / E 投机管道 3 / F logprobs 2 / G 边界 2） |
-| `check_step58…check_step72` 18 个脚本 | 全部通过（58/59/60/61/62/63/64/65/66/67/68×2/69/70/71/72），`check_step73` 23 项 |
+| `python -m pytest tests/step73 -q` | **51 passed**（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9） |
+| `python -m pytest tests/step58 … tests/step73 -q` | **660 passed**（609 + 51，无回归） |
+| `python benchmarks/check_step73_v2_runner.py` | **24 项全部通过**（A 常驻 slot 3 / B 输入组装 6 / C 状态所有权 4 / D V1-V2 差分 3 / E 投机管道 3 / F logprobs 2 + 语法掩码 1 / G 边界 2） |
+| `check_step58…check_step72` 18 个脚本 | 全部通过（58/59/60/61/62/63/64/65/66/67/68×2/69/70/71/72），`check_step73` 24 项 |
 | `check_step57_*.py` 15 个脚本 | 全部通过（350 项） |
 
 关键数字：
@@ -157,6 +157,8 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 - **V1 与 V2 在同一 tiny 模型 + EAGLE3 上 greedy 输出逐 token 相同**（K=1、K=3；三条请求、
   混合 prefill 长度；以及 `num_gpu_blocks=6` 压出 **4 次抢占恢复**的场景）。
 - **V2 真的在投机**：每轮草稿行数 = K（3），`num_rejected = num_logits − num_sampled` 逐轮自洽。
+- **结构化输出 + 投机**：语法掩码走 V2 的**真实 `InputBatch`**（`cu_num_logits` 含前导 0、至少一轮带草稿行），
+  且该请求在 V1/V2 下逐 token 相同、文本以 `{"x": 1` 开头（探针 F3 / `test_v2_spec_pipeline.py::test_v2_structured_output_uses_real_input_batch`）。
 - **常驻 slot 例子**（需求 §4 第一条）：A=slot 5、B=slot 2、batch `[B,A]` →
   `idx_mapping=[2,5]`、`cu_num_logits=[0,3,6]`、`expanded_idx_mapping=[2,2,2,5,5,5]`、
   块表 gather 后第 0 行 = B 的块、第 1 行 = A 的块、`slot_mapping=[14,15,28,20,21,22]`（批尾 `-1`）。

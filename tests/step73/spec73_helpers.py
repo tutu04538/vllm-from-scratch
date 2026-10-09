@@ -29,7 +29,7 @@ from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig,  # noqa
                       UniProcExecutor, VllmConfig, Worker)
 from minivllm.config import CompilationConfig  # noqa: E402
 from minivllm.testing.tiny_models import (tiny_eagle3_dir, tiny_qwen3_config,  # noqa: E402
-                                          tiny_qwen3_dir)
+                                          tiny_qwen3_dir, tiny_structured_dir)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 #: V2 的输入组装/采样/验证全是 Triton 内核 + UVA 常驻状态 → 没有 CUDA 就不跑（不是"通过"）。
@@ -52,15 +52,34 @@ def draft_config(max_model_len: int = 64) -> ModelConfig:
 
 def make_config(*, v2: bool, method: str = "eagle3", spec_k: int | None = 3,
                 mode="none", budget: int = 64, blocks: int = 64, max_num_seqs: int = 3,
-                max_model_len: int = 64, spec=None):
-    """建配置。`spec_k=None` = 不开投机；`v2=True` 走 V2 分派（环境变量先设好）。"""
+                max_model_len: int = 64, spec=None, structured: bool = False):
+    """建配置。`spec_k=None` = 不开投机；`v2=True` 走 V2 分派（环境变量先设好）。
+
+    `structured=True` 换成 68 关那份**带 JSON tokenizer 的 tiny 对**（`tiny_mqa` + 匹配的
+    eagle3 draft）：`tiny_gqa` 的词表只有 11 个 id、没有 tokenizer，任何 JSON 语法都拼不出来
+    （实测 xgrammar 会允许一个词表里不存在的 token → 调度器的严格校验当场报错）。
+    """
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1" if v2 else "0"
+    target_dir, target_hf, draft_dir_path = TINY, HF, DRAFT
+    if structured:
+        target_dir = tiny_structured_dir("tiny_mqa")
+        target_hf = tiny_qwen3_config("tiny_mqa")
+        draft_dir_path = tiny_eagle3_dir("tiny_mqa")
     if spec is None and spec_k is not None:
-        spec = SpeculativeConfig(method=method, num_speculative_tokens=spec_k,
-                                 draft_model_config=draft_config(max_model_len))
+        if structured:
+            draft_hf = json.loads((Path(draft_dir_path) / "config.json").read_text())
+            spec = SpeculativeConfig(
+                method=method, num_speculative_tokens=spec_k,
+                draft_model_config=ModelConfig(model=draft_dir_path, dtype="float32",
+                                               max_model_len=max_model_len, hf_config=draft_hf))
+        else:
+            spec = SpeculativeConfig(method=method, num_speculative_tokens=spec_k,
+                                     draft_model_config=draft_config(max_model_len))
     return VllmConfig(
-        model_config=ModelConfig(model=TINY, dtype="float32", max_model_len=max_model_len,
-                                 hf_config=HF),
+        model_config=ModelConfig(model=target_dir, dtype="float32",
+                                 max_model_len=max_model_len, hf_config=target_hf,
+                                 # 结构化输出的管理器从 ModelConfig.tokenizer_path 读 tokenizer
+                                 tokenizer=target_dir if structured else None),
         cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=max_num_seqs,
                                          max_num_batched_tokens=budget),
@@ -71,7 +90,14 @@ def make_config(*, v2: bool, method: str = "eagle3", spec_k: int | None = 3,
 
 def make_engine(**kwargs):
     config = make_config(**kwargs)
-    engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+    # 结构化输出要 tokenizer（grammar 编译要用它）；没有 tokenizer 的 tiny 模型目录返回 None。
+    try:
+        from minivllm.tokenizer_utils import cached_tokenizer_from_config
+
+        tokenizer = cached_tokenizer_from_config(config.model_config)
+    except Exception:  # noqa: BLE001 —— tiny_gqa 目录里没有 tokenizer 文件
+        tokenizer = None
+    engine = LLMEngine(config, UniProcExecutor(config, Worker(config)), tokenizer=tokenizer)
     core = engine.engine_core.engine_core
     return engine, core, core.model_executor.driver_worker.model_runner
 

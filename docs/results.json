@@ -3796,19 +3796,19 @@
    "commands": [
     {
      "cmd": "python -m pytest tests/step73 -q",
-     "result": "50 passed（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 8）"
+     "result": "51 passed（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9）"
     },
     {
      "cmd": "python -m pytest tests/step58 .. tests/step73 -q",
-     "result": "659 passed（609 + 50，无回归）"
+     "result": "660 passed（609 + 51，无回归）"
     },
     {
      "cmd": "python benchmarks/check_step73_v2_runner.py",
-     "result": "23 项全部通过（A 3 / B 6 / C 4 / D 3 / E 3 / F 2 / G 2）"
+     "result": "24 项全部通过（A 3 / B 6 / C 4 / D 3 / E 3 / F 3 / G 2）"
     },
     {
      "cmd": "check_step58…check_step72 18 个脚本 + check_step57_* 15 个脚本",
-     "result": "全部通过（含 check_step73 的 23 项）"
+     "result": "全部通过（含 check_step73 的 24 项）"
     }
    ],
    "execution_trace": {
@@ -3888,6 +3888,15 @@
      "result": "IDENTICAL: True（逐 token 相同；drafted/accepted/轮次三项全等）",
      "acc_len": 1.6,
      "acc_len_note": "短事实性 prompt，与 63 关 128-token 续写 workload 的 1.2162 不可直接比"
+    },
+    "structured_output_grammar": {
+     "setup": "tiny_structured_dir('tiny_mqa') + tiny_eagle3_dir('tiny_mqa')，K=3，JSON schema（const 1）",
+     "result": "语法掩码在 V2 里拿到**真实 InputBatch**（cu_num_logits 含前导 0、长度=请求数+1、至少一轮 num_draft_tokens>0）；V1 与 V2 逐 token 相同，文本以 '{\"x\": 1' 开头",
+     "tests": [
+      "tests/step73/test_v2_spec_pipeline.py::test_v2_structured_output_uses_real_input_batch",
+      "benchmarks/check_step73_v2_runner.py（F3）"
+     ],
+     "note": "tiny_gqa（vocab=11、无 tokenizer）拼不出任何 JSON 语法：xgrammar 会放出一个词表里不存在的 token，调度器的严格校验当场报错（V1/V2、投机/非投机四种组合都复现）——属于测试取材问题，不是实现差异"
     }
    },
    "known_gaps": [

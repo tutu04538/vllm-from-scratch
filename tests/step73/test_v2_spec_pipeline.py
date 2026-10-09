@@ -22,7 +22,7 @@ import torch
 from spec73_helpers import (VOCAB, DraftRecorder, greedy, make_config, make_engine,  # noqa: E402
                             requires_cuda, run_to_end)
 
-from minivllm import SamplingParams  # noqa: E402
+from minivllm import SamplingParams, StructuredOutputsParams  # noqa: E402
 
 PROMPTS = [("A", [1, 2, 3, 4, 5, 6]), ("B", [7, 8, 9]), ("C", [10, 9, 8, 7, 6, 5, 4, 3])]
 
@@ -192,3 +192,65 @@ def test_v2_take_draft_token_ids_protocol():
         assert draft_ids.draft_token_ids == [[-1, -1, -1]]
     finally:
         engine.shutdown()
+
+
+@requires_cuda
+def test_v2_structured_output_uses_real_input_batch():
+    """E6：语法掩码走 V2 的**真实 `InputBatch`**，且 V1/V2 结果一致。
+
+    为什么要单独钉这条：`StructuredOutputsWorker.apply_grammar_bitmask` 要用 `cu_num_logits`
+    （含前导 0）把"第 i 条请求的第 j 行"翻成 logits 行号——这是 68 关"掩码行索引必须显式重建"
+    在 V2 坐标系里的等价物。行号打错**不报错**，只是让掩码落到别人的行上，所以必须从真实接线处取证
+    （替身 input batch 测不出这一点）。
+    顺带覆盖 `DraftTokensHandler` 的真 D2H 分支：`has_structured_output_reqs=True` 时草稿会被拷回
+    CPU 交给调度器做语法校验（V2 里唯一需要草稿回 CPU 的情形）。
+
+    用的是 68 关那份**带 JSON tokenizer 的 tiny 对**（`tiny_mqa`）：`tiny_gqa` 词表只有 11 个 id、
+    没有 tokenizer，任何 JSON 语法都拼不出来（实测 xgrammar 会放出一个词表里不存在的 token，
+    调度器的严格校验当场报错——这属于测试取材问题，不是实现差异）。
+    """
+    schema = ('{"type": "object", "properties": {"x": {"const": 1}}, '
+              '"required": ["x"], "additionalProperties": false}')
+    outputs, seen = {}, []
+    for v2 in (False, True):
+        engine, _core, runner = make_engine(v2=v2, spec_k=3, max_num_seqs=1, structured=True)
+        if v2:
+            # 只有 V2 有 `structured_outputs_worker`（V1 走 `Runner._apply_grammar_bitmask`），
+            # 这里要取证的是"V2 的真实 InputBatch 接到了掩码内核"。
+            worker = runner.structured_outputs_worker
+            original = worker.apply_grammar_bitmask
+
+            def spy(logits, input_batch, req_ids, bitmask, _o=original, _seen=seen):
+                _seen.append({
+                    "req_ids": list(req_ids),
+                    "num_reqs": int(input_batch.num_reqs),
+                    "cu_num_logits_np": list(input_batch.cu_num_logits_np),
+                    "has_drafts": int(getattr(input_batch, "num_draft_tokens", 0)),
+                })
+                return _o(logits, input_batch, req_ids, bitmask)
+
+            worker.apply_grammar_bitmask = spy
+        try:
+            engine.add_request(
+                "A", [2, 5],   # {"x" 的 token（见 tiny_models.STRUCTURED_TOKENS）
+                SamplingParams(max_tokens=12, temperature=0.0, eos_token_id=1,
+                               structured_outputs=StructuredOutputsParams(json=schema)))
+            outs = []
+            for _ in range(200):
+                if not engine.has_unfinished_requests():
+                    break
+                outs += list(engine.step())
+            outputs[v2] = outs[-1]
+        finally:
+            engine.shutdown()
+
+    # 掩码真的被调用过，而且拿到的是**真实** InputBatch：cu_num_logits 含前导 0、长度 = 请求数+1
+    assert seen, "语法掩码从未被调用（结构化输出没走到执行侧）"
+    for call in seen:
+        assert call["cu_num_logits_np"][0] == 0
+        assert len(call["cu_num_logits_np"]) == call["num_reqs"] + 1
+    # 投机 + 语法：至少有一轮是带草稿行算掩码的（每请求 1+K 行）
+    assert any(call["has_drafts"] > 0 for call in seen)
+    # 两条路径的 greedy 输出与文本相同（掩码的施加方式不改变结果）
+    assert outputs[False].token_ids == outputs[True].token_ids
+    assert outputs[True].text.startswith('{"x": 1')

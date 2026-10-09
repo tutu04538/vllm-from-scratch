@@ -507,8 +507,8 @@ V1 把「请求的身份」和「本轮的 batch 行号」绑在一起：谁走�
   EAGLE/EAGLE3 + standard 验证，其余组合在**配置期**明确报错（不静默退回 V1）。
 
 ```bash
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 50 项（含与上游内核逐值差分）
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step73_v2_runner.py   # 23 项
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 51 项（含与上游内核逐值差分）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step73_v2_runner.py   # 24 项
 # 用 V2 跑一段生成（V2 本关只做 eager，所以配 --enforce-eager；非投机/投机都支持）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
     python minivllm/demo.py --device cuda --model models/Qwen3-1.7B --enforce-eager "问题"
@@ -562,7 +562,7 @@ python benchmarks/check_step66_medusa.py             # 28 项：Medusa 配置/�
 python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映射/上游逐位差分/配置边界/异构词表集成
 python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 / 配置改写（图+DP）/ 两轮时序 / K=0 端到端 / q 宽度
 python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / 上游内核逐值差分 / 一次 forward / 端到端
-python benchmarks/check_step73_v2_runner.py          # 23 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 边界
+python benchmarks/check_step73_v2_runner.py          # 24 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 语法掩码 / 边界
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -576,7 +576,7 @@ python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
-python -m pytest tests/step73 -q                     # 50 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致）
+python -m pytest tests/step73 -q                     # 51 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）
