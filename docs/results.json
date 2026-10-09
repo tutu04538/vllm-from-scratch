@@ -3781,7 +3781,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 128,
-    "sha256": "379908cc5d5090336fd5334eda1a6585ddbbfe1a0424ad796c035e07aa9fb671",
+    "sha256": "03d08e49f6d76c30cc3b0f11609ef5d390ac40c109bd6a7aafe3c1e72552c065",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {

@@ -136,6 +136,7 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 | **D12** | `use_fp64_gumbel` 恒 False；`use_local_argmax_reduction` 不支持（配置里没有这两项） | 本仓库配置无对应字段 | fp32 gumbel 与上游默认一致（上游 fp64 只在特定机型开）；`get_top_tokens` 未实现，开了也没有模型支持 |
 | **D13** | Scheduler 侧 V2 只分叉两处（恢复请求按 `NewRequestData` 发 + 带 `prefill_token_ids`；续跑不再随包带 `all_token_ids`），**仍维护 `prev_step_scheduled_req_ids`** | 上游 V2 靠 worker 侧草稿 + `next_decode_eligible_step`，不再需要这份集合；本仓库的 Scheduler 仍持有 `spec_token_ids` 并据此判"草稿是否断代" | 多维护一份集合没有行为副作用（V1 语义不变）；等 74 关把草稿所有权也搬过去时可以删 |
 | **D14** | `DraftTokensHandler.get_draft_tokens()` 在同步调度下交回 **-1 占位** | ——（上游行为） | 语义：V2 的草稿常驻执行侧，调度器只需要**宽度**；真 id 由 `combine_sampled_and_draft_tokens` 按 slot 读。这条是 V2 能异步的前提，探针 E3 钉住 |
+| **D16** | `sample/output.py` 的 `SamplingMaskTensors` / `SamplingMaskLists` 是**逐行移植但本关没有生产者**（上游只在 `return_sampling_mask=True` 时造它们，而那是 75 关的 synthetic/块验证路径）；`LogprobTokenIdsState` 已按上游接进 `Sampler`（`add_request` / `apply_staged_writes` / `compute_topk_scores` 的慢路径参数），只是本仓库该字段在请求期被拒 → 表恒空 | 75 关要用采样掩码做 synthetic 验证；这两块是它的直接前置，且已与上游逐值差分（`tests/step73/test_v2_logprob_diff.py`） | 与 AGENTS §8"生产包不留没有调用方的代码"的边界：**在此明示**它们尚未接线，75 关要么接上 `SamplerOutput → AsyncOutput → ModelRunnerOutput.sampling_masks` 这条链、要么删掉；其余裁掉的采样子系统见 D5 |
 | **D15** | `minivllm/outputs.py::LogprobsTensors` 补上 `to_cpu_nonblocking()` / `cat()`；`SamplerOutput` 的 V2 版放在 `worker/gpu/sample/output.py` | 68 关时这两个方法"没有调用方"被裁掉，V2 的 chunked 验证与侧流交付现在需要它们 | 与上游同名同语义；`filter()` 的断言（不能与 `cu_num_generated_tokens` 同用）保持 |
 
 ## 6. 实测（本机，RTX 5090 Laptop / WSL2）

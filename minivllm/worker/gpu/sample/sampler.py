@@ -28,7 +28,7 @@ from ....sampling_params import SamplingParams
 from ..input_batch import InputBatch, get_num_sampled_and_rejected
 from ..states import RequestState
 from .gumbel import gumbel_sample
-from .logprob import compute_topk_scores
+from .logprob import LogprobTokenIdsState, compute_topk_scores
 from .output import SamplerOutput
 from .penalties import PenaltiesState
 from .states import NO_LOGPROBS, SamplingStates
@@ -53,6 +53,10 @@ class Sampler:
         self.req_states = req_states
         self.sampling_states = SamplingStates(max_num_reqs, vocab_size)
         self.penalties_state = PenaltiesState(req_states)
+        # 上游同一条调用链：`logprob_token_ids` 允许请求指定"只交付这几个 token 的 logprobs"。
+        # 本仓库该字段在**请求期**就明确拒绝（68 关白名单），所以这个状态类实际上恒为空——
+        # 但路径照上游接好（`compute_topk_scores` 的慢路径因此有真实生产者，而不是死代码）。
+        self.logprob_token_ids_state = LogprobTokenIdsState(max_num_reqs, device)
         self.needs_logits_processing = np.zeros(max_num_reqs, dtype=bool)
         self.num_speculative_tokens = num_speculative_tokens
         self.device = device
@@ -62,6 +66,7 @@ class Sampler:
     ) -> None:
         self.sampling_states.add_request(req_idx, sampling_params)
         self.penalties_state.add_request(req_idx, sampling_params)
+        self.logprob_token_ids_state.add_request(req_idx, sampling_params)
 
         states = self.sampling_states
         temperature = states.temperature.np[req_idx]
@@ -76,6 +81,7 @@ class Sampler:
     def apply_staged_writes(self) -> None:
         self.sampling_states.apply_staged_writes()
         self.penalties_state.apply_staged_writes()
+        self.logprob_token_ids_state.apply_staged_writes()
 
     def __call__(
         self,
@@ -91,7 +97,10 @@ class Sampler:
         input_ids = input_batch.input_ids[input_batch.logits_indices]
 
         max_num_logprobs = self.sampling_states.max_num_logprobs(idx_mapping_np)
-        return_logprobs = max_num_logprobs != NO_LOGPROBS
+        max_per_req_token_ids = self.logprob_token_ids_state.max_num_token_ids(
+            idx_mapping_np
+        )
+        return_logprobs = max_num_logprobs != NO_LOGPROBS or max_per_req_token_ids > 0
 
         sampled, processed_logits = self.sample(
             logits,
@@ -115,6 +124,9 @@ class Sampler:
                 num_logprobs,
                 sampled,
                 cu_num_logits,
+                logprob_token_ids_state=self.logprob_token_ids_state,
+                expanded_idx_mapping=input_batch.expanded_idx_mapping,
+                max_per_req_token_ids=max_per_req_token_ids,
                 logits_mode=self.logprobs_mode in ("raw_logits", "processed_logits"),
             )
         else:
