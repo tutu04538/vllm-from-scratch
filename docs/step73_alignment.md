@@ -26,6 +26,7 @@
 | `minivllm/worker/gpu/structured_outputs.py` | `vllm/v1/worker/gpu/structured_outputs.py` | `StructuredOutputsWorker` + 掩码内核 |
 | `minivllm/worker/gpu/spec_decode/` | `vllm/v1/worker/gpu/spec_decode/` | `init_speculator` / `BaseSpeculator` / `DraftModelSpeculator` / `AutoRegressiveSpeculator` / `EagleSpeculator` / `RejectionSampler` / `DraftTokensHandler` |
 | `minivllm/worker/gpu/async_utils.py` | `vllm/v1/worker/gpu/async_utils.py` | `AsyncOutput`（侧流非阻塞 D2H）+ `async_copy_to_np` |
+| `minivllm/uva_ext.py` | `vllm/csrc/.../get_cuda_view_from_cpu_tensor`（`_C` 扩展）+ `vllm/utils/torch_utils.py` | UVA 视图入口：默认现编上游同构算子，`MINIVLLM_UVA_BACKEND=python` 走 ctypes/DLPack |
 | `minivllm/utils/platform_utils.py` | `vllm/utils/platform_utils.py` + `platforms/{interface,cuda}.py` | `in_wsl` / `is_pin_memory_available` / `is_uva_available` |
 | `minivllm/utils/torch_utils.py` | `vllm/utils/torch_utils.py` | `async_tensor_h2d` / `np_to_pinned_tensor` / `get_accelerator_view_from_cpu_tensor` / `STR_DTYPE_TO_TORCH_DTYPE` |
 | `minivllm/utils/math_utils.py` | `vllm/utils/math_utils.py` | `cdiv` |
@@ -123,7 +124,7 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 | 编号 | 差异 | 为什么 | 影响 / 归属 |
 |---|---|---|---|
 | **D1** | **默认仍是 V1**：`use_v2_model_runner` 只在 `VLLM_USE_V2_MODEL_RUNNER` 显式给值时返回 True；上游默认 V2（少数配置除外） | 本仓库 V2 目前只覆盖 EAGLE/EAGLE3 + 标准验证；58–72 关的既有能力（ngram/suffix/medusa/extract/自定义 proposer/异步/PIECEWISE 图）都只在 V1 路径上，改默认值等于让它们"因为默认值变化而消失" | 环境变量**同名同义**，切换方式与上游一致；`validate_v2_model_runner()` 在不支持时报错而不是退回 V1。放开默认属 84 关的总验收 |
-| **D2** | **UVA 视图自建**：上游用 C++ 算子 `torch.ops._C.get_cuda_view_from_cpu_tensor`；本仓库用 `cudaHostAllocMapped` + `cudaHostGetDevicePointer`（libcudart，ctypes）分配映射内存，再把设备指针包成 DLPack 张量 | 本仓库没有 C++ 扩展，也不想为这一个算子引入构建链 | 内存设计相同（host 常驻、GPU 可见、零拷贝、`all_token_ids` 不占显存）。实现细节两条：① DLPack 的 `deleter` 必须是 **NULL**——实测用 Python 回调时张量在解释器退出阶段析构会段错误（exit=139）；② 映射内存进程级不释放（`_MAPPED_KEEPALIVE`） |
+| **D2** | **UVA 视图**：默认用 `torch.utils.cpp_extension.load_inline` **现编一个与上游同构的算子**（`minivllm/uva_ext.py`：`is_pinned` → `cudaHostGetDevicePointer` → `torch::from_blob(..., kCUDA)`；上游 `_C.get_cuda_view_from_cpu_tensor` 从已安装 `.so` 的符号读出来就是这三步）；`MINIVLLM_UVA_BACKEND=python` 时退回 ctypes + DLPack 兜底 | 本仓库没有预编译扩展，但工具链在位（nvcc 13.0 + g++ + torch 2.13 头文件，实测冷编译 **35.1 s**，之后走 torch 扩展缓存）；两条后端都**复用 torch 的 pinned 分配器**（上游同款），ctypes 那条从「唯一实现」降级为兜底 | 语义两条一样（实测都是 `uva.data_ptr() == cpu.data_ptr()`、双向可见，见 `tests/step73/test_v2_uva_backend.py`）；**不自动回退**：构建失败直接报错并提示那个环境变量（静默换实现会让两条路径都没对齐）。DLPack 侧的老坑仍在（deleter 必须为 NULL，否则退出时段错误），但它现在只影响兜底后端 |
 | **D3** | **CPU 退化路径**：`UvaBuffer` 在纯 CPU 上让设备视图 = CPU 张量自身；`StagedWriteTensor.apply_write()` 在 CPU 上用 Torch 索引替代 Triton 内核 | CPU 上只有一份内存、也没有 Triton | 只影响无 CUDA 的机器；**V2 Runner 本身在无 CUDA 时直接 `NotImplementedError`**（输入组装/采样/验证全是内核） |
 | **D4** | 裁掉 `InputBatch` 的 DCP/PP/R-SWA 三个字段与 `make_dummy` / `set_dummy_context`；`BlockTables` 的 CP 分支保留但恒 `CP_SIZE=1` | 本仓库单卡、无并行策略、无 R-SWA；图（`make_dummy` 的用武之地）属 74 关 | 字段级裁剪，未引入替代算法；`_compute_slot_mappings_kernel` 的 CP 分支逐行保留（只是常量传 1） |
 | **D5** | `sample/sampler.py` 裁掉 `logit_bias` / `bad_words` / `thinking_budget` / `prompt_logprob` / flashinfer 后端 / `num_nans` 指标 | 本仓库这些字段在**请求期**就明确拒绝（68 关白名单）；无 flashinfer 依赖；无指标通路 | 不建"没有生产者"的状态类（AGENTS §8）。`num_nans` 恒 None；`use_flashinfer` 恒 False → 走上游的 Torch 分支 |
@@ -146,8 +147,8 @@ V2 与 V1（`spec_decode/eagle.py` + `draft_model.py`）**算法相同、坐标�
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest tests/step73 -q` | **51 passed**（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9） |
-| `python -m pytest tests/step58 … tests/step73 -q` | **660 passed**（609 + 51，无回归） |
+| `python -m pytest tests/step73 -q` | **55 passed**（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9 + UVA 两条后端 4） |
+| `python -m pytest tests/step58 … tests/step73 -q` | **664 passed**（609 + 55，无回归） |
 | `python benchmarks/check_step73_v2_runner.py` | **24 项全部通过**（A 常驻 slot 3 / B 输入组装 6 / C 状态所有权 4 / D V1-V2 差分 3 / E 投机管道 3 / F logprobs 2 + 语法掩码 1 / G 边界 2） |
 | `check_step58…check_step72` 18 个脚本 | 全部通过（58/59/60/61/62/63/64/65/66/67/68×2/69/70/71/72），`check_step73` 24 项 |
 | `check_step57_*.py` 15 个脚本 | 全部通过（350 项） |

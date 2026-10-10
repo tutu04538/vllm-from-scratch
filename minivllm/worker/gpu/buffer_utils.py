@@ -19,16 +19,14 @@
 
 ### 与上游的差异（记在 `docs/step73_alignment.md` 差异账本）
 
-- 上游的 UVA 视图来自 C++ 算子 `torch.ops._C.get_cuda_view_from_cpu_tensor`（vLLM 自带扩展）；
-  本仓库**没有 C++ 扩展**，所以自己用 `cudaHostAllocMapped` + `cudaHostGetDevicePointer`
-  （libcudart，经 ctypes）分配映射内存，再把设备指针包成 DLPack 张量。内存设计相同
-  （host 常驻、GPU 可见、零拷贝），实现手段不同。
+- UVA 视图统一经 `minivllm/uva_ext.py`：默认用 `load_inline` 现编一个与上游
+  `_C.get_cuda_view_from_cpu_tensor` 同构的算子（is_pinned → cudaHostGetDevicePointer →
+  from_blob），`MINIVLLM_UVA_BACKEND=python` 时退回 ctypes + DLPack。
+  两种后端都**复用 torch 的 pinned 分配器**（上游同款），本文件不再自己分配映射内存。
 - CPU 平台上 UVA 恒等退化为同一张张量（CPU 只有一份内存）；`staged write` 的落盘在 CPU 上用
   Torch 索引替代 Triton 内核（CPU 上跑不了 Triton）。这两条都只在没有 CUDA 时走到。
 """
 
-import ctypes
-import ctypes.util
 from collections.abc import Iterable, Sequence
 from functools import partial
 
@@ -36,7 +34,7 @@ import numpy as np
 import torch
 
 from ...utils.platform_utils import is_uva_available
-from ...utils.torch_utils import async_tensor_h2d, get_accelerator_view_from_cpu_tensor
+from ...utils.torch_utils import async_tensor_h2d
 from ...triton_utils import tl, tldevice, triton
 
 # Default round-robin depth for the UVA buffer pools. Must be >= the number of
@@ -68,145 +66,8 @@ def async_copy_to_gpu(
 
 
 # ---------------------------------------------------------------------------
-# UVA：分配映射内存 + 造设备视图
+# UVA 视图（实现见 `minivllm/uva_ext.py`）
 # ---------------------------------------------------------------------------
-
-# NOTE(本仓库)：DLPack 的 deleter 必须是**进程级长生命周期**的可调用对象。
-# 早期版本用 lambda 现造 `CFUNCTYPE`，张量析构时回调已被回收 → 退出时段错误（实测 exit=139）。
-class _DLDevice(ctypes.Structure):
-    _fields_ = [("device_type", ctypes.c_int32), ("device_id", ctypes.c_int32)]
-
-
-class _DLDataType(ctypes.Structure):
-    _fields_ = [("code", ctypes.c_uint8), ("bits", ctypes.c_uint8), ("lanes", ctypes.c_uint16)]
-
-
-class _DLTensor(ctypes.Structure):
-    _fields_ = [
-        ("data", ctypes.c_void_p),
-        ("device", _DLDevice),
-        ("ndim", ctypes.c_int32),
-        ("dtype", _DLDataType),
-        ("shape", ctypes.POINTER(ctypes.c_int64)),
-        ("strides", ctypes.POINTER(ctypes.c_int64)),
-        ("byte_offset", ctypes.c_uint64),
-    ]
-
-
-class _DLManagedTensor(ctypes.Structure):
-    pass
-
-
-_DELETER_T = ctypes.CFUNCTYPE(None, ctypes.POINTER(_DLManagedTensor))
-_DLManagedTensor._fields_ = [
-    ("dl_tensor", _DLTensor),
-    ("manager_ctx", ctypes.c_void_p),
-    ("deleter", _DELETER_T),
-]
-
-
-def _noop_deleter(ptr) -> None:  # pragma: no cover - 只由 DLPack 消费方调用
-    """内存由 `_MAPPED_KEEPALIVE` 持有、进程结束才释放，所以这里什么都不做。"""
-
-
-# NOTE(本仓库)：deleter 必须是 **NULL**，不能是 Python 回调。实测（`docs/step73_alignment.md`）：
-# 张量在解释器退出阶段析构时，torch 会回调 DLPack 的 deleter，而那时 ctypes 的
-# CFUNCTYPE 弹簧床已经被拆掉 → 段错误（exit=139）。DLPack 允许 `deleter == NULL`
-# （表示内存由生产者持有），而我们的映射内存本来就是进程级不释放的，正好用这一支。
-_DL_DELETER = ctypes.cast(None, _DELETER_T)
-
-_PyCapsule_New = ctypes.pythonapi.PyCapsule_New
-_PyCapsule_New.restype = ctypes.py_object
-_PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
-
-_DL_CODES = {torch.int32: (0, 32), torch.int64: (0, 64), torch.float32: (2, 32)}  # kDLInt / kDLFloat
-_kDLCUDA = 2
-_kDLCUDAHost = 3
-
-_cudart = None
-# 映射内存**永不释放**：它有 CUDA 侧视图，进程退出时先销毁哪一边都可能踩空。
-_MAPPED_KEEPALIVE: list = []
-
-
-def _get_cudart():
-    global _cudart
-    if _cudart is None:
-        lib = ctypes.util.find_library("cudart")
-        if lib is None:
-            raise RuntimeError(
-                "找不到 libcudart：V2 的 UVA 通路需要它来分配映射内存（不能用则设 "
-                "VLLM_USE_V2_MODEL_RUNNER=0 走 V1）"
-            )
-        _cudart = ctypes.CDLL(lib)
-        _cudart.cudaHostAlloc.argtypes = [
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.c_size_t,
-            ctypes.c_uint,
-        ]
-        _cudart.cudaHostAlloc.restype = ctypes.c_int
-        _cudart.cudaHostGetDevicePointer.argtypes = [
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.c_void_p,
-            ctypes.c_uint,
-        ]
-        _cudart.cudaHostGetDevicePointer.restype = ctypes.c_int
-    return _cudart
-
-
-def _wrap_device_ptr(ptr: int, size: Sequence[int], dtype: torch.dtype, device_index: int) -> torch.Tensor:
-    """把裸设备指针包成 torch 张量（DLPack）。只有 UVA 映射内存会走到这里。"""
-    code, bits = _DL_CODES[dtype]
-    shape = (ctypes.c_int64 * len(size))(*size)
-    mt = _DLManagedTensor()
-    mt.dl_tensor = _DLTensor(
-        ctypes.c_void_p(ptr),
-        _DLDevice(_kDLCUDA, device_index),
-        len(size),
-        _DLDataType(code, bits, 1),
-        shape,
-        None,
-        0,
-    )
-    mt.manager_ctx = None
-    mt.deleter = _DL_DELETER
-    capsule = _PyCapsule_New(ctypes.cast(ctypes.pointer(mt), ctypes.c_void_p), b"dltensor", None)
-
-    class _UvaView:
-        def __dlpack__(self, stream=None):
-            return capsule
-
-        def __dlpack_device__(self):
-            return (_kDLCUDA, device_index)
-
-    holder = _UvaView()
-    _MAPPED_KEEPALIVE.append((shape, mt, holder, capsule))
-    return torch.from_dlpack(holder)
-
-
-def _alloc_mapped_host_tensor(
-    size: Sequence[int], dtype: torch.dtype, device_index: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """分配**映射的 pinned host 内存**，返回 (CPU 张量, 设备视图) —— 同一块物理内存。"""
-    numel = 1
-    for s in size:
-        numel *= int(s)
-    nbytes = numel * torch.empty((), dtype=dtype).element_size()
-
-    cudart = _get_cudart()
-    ptr = ctypes.c_void_p()
-    err = cudart.cudaHostAlloc(ctypes.byref(ptr), ctypes.c_size_t(nbytes), 1)  # cudaHostAllocMapped
-    if err != 0:
-        raise RuntimeError(f"cudaHostAlloc(Mapped) 失败：cudaError={err}")
-    buf = (ctypes.c_char * nbytes).from_address(ptr.value)
-    cpu = torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(*size)
-
-    dev = ctypes.c_void_p()
-    err = cudart.cudaHostGetDevicePointer(ctypes.byref(dev), ptr, 0)
-    if err != 0:
-        raise RuntimeError(f"cudaHostGetDevicePointer 失败：cudaError={err}")
-    uva = _wrap_device_ptr(int(dev.value), size, dtype, device_index)
-    _MAPPED_KEEPALIVE.append((buf, cpu, uva))
-    return cpu, uva
 
 
 class UvaBuffer:
@@ -221,9 +82,14 @@ class UvaBuffer:
             self.np = self.cpu.numpy()
             self.uva = self.cpu
             return
-        self.cpu, self.uva = _alloc_mapped_host_tensor(size, dtype, torch.cuda.current_device())
-        self.cpu.zero_()
+        # 与上游同款：pinned CPU 张量 + 它的设备视图（同一块物理内存，零拷贝）。
+        # `pin_memory=True` 走 torch 的 pinned 分配器——本机实测这块内存本身就是 UVA 映射的
+        # （`cudaHostGetDevicePointer` 直接成功且返回同一个虚拟地址），所以不需要额外注册。
+        from ...uva_ext import get_cuda_view_from_cpu_tensor
+
+        self.cpu = torch.zeros(size, dtype=dtype, device="cpu", pin_memory=True)
         self.np = self.cpu.numpy()
+        self.uva = get_cuda_view_from_cpu_tensor(self.cpu)
 
 
 class UvaBufferPool:

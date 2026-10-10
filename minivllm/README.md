@@ -503,11 +503,15 @@ V1 把「请求的身份」和「本轮的 batch 行号」绑在一起：谁走�
   （锚点 = 最后一枚有效行 `query_start + query_len − 1`，`query_len` 已扣掉 GPU 上的
   `num_rejected`），自回归步每步 1 行/请求；验证走 V2 版拒绝采样内核（slot 寻址、每行 K 可不同）。
 - 交付侧 `AsyncOutput` 在**侧流**上非阻塞 D2H，句柄先交出去、`get_output()` 才等。
+- 常驻状态里的 `all_token_ids` 等大表放 **UVA**（宿主常驻、GPU 可见、零拷贝）：设备视图默认用
+  `torch.utils.cpp_extension.load_inline` **现编一个与上游 `_C.get_cuda_view_from_cpu_tensor` 同构的算子**
+  （冷编译约 35 s，之后走 torch 缓存）；没有 C++ 工具链的机器用 `MINIVLLM_UVA_BACKEND=python`
+  走 ctypes + DLPack 兜底（**不自动回退**：构建失败直接报错）。
 - 入口：`VLLM_USE_V2_MODEL_RUNNER=1`（与上游同名同义）；**默认仍是 V1**，因为本仓库 V2 目前只覆盖
   EAGLE/EAGLE3 + standard 验证，其余组合在**配置期**明确报错（不静默退回 V1）。
 
 ```bash
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 51 项（含与上游内核逐值差分）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 55 项（含与上游内核逐值差分）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step73_v2_runner.py   # 24 项
 # 用 V2 跑一段生成（V2 本关只做 eager，所以配 --enforce-eager；非投机/投机都支持）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
@@ -576,7 +580,7 @@ python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
-python -m pytest tests/step73 -q                     # 51 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致）
+python -m pytest tests/step73 -q                     # 55 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

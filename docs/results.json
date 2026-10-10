@@ -3780,8 +3780,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 128,
-    "sha256": "03d08e49f6d76c30cc3b0f11609ef5d390ac40c109bd6a7aafe3c1e72552c065",
+    "python_files": 129,
+    "sha256": "ed52e43a9363db1980f0bac1e061fdaea37158a8c547c43a23ef05d76c4824ab",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3796,11 +3796,11 @@
    "commands": [
     {
      "cmd": "python -m pytest tests/step73 -q",
-     "result": "51 passed（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9）"
+     "result": "55 passed（上游逐值差分 11 + logprob 差分 9 + 采样状态 17 + 常驻 slot/输入组装 5 + V1/V2 管道 9 + UVA 两条后端 4）"
     },
     {
      "cmd": "python -m pytest tests/step58 .. tests/step73 -q",
-     "result": "660 passed（609 + 51，无回归）"
+     "result": "664 passed（609 + 55，无回归）"
     },
     {
      "cmd": "python benchmarks/check_step73_v2_runner.py",
@@ -3897,6 +3897,17 @@
       "benchmarks/check_step73_v2_runner.py（F3）"
      ],
      "note": "tiny_gqa（vocab=11、无 tokenizer）拼不出任何 JSON 语法：xgrammar 会放出一个词表里不存在的 token，调度器的严格校验当场报错（V1/V2、投机/非投机四种组合都复现）——属于测试取材问题，不是实现差异"
+    },
+    "uva_backend": {
+     "default": "cpp：torch.utils.cpp_extension.load_inline 现编上游同构算子（is_pinned → cudaHostGetDevicePointer → from_blob）",
+     "fallback": "MINIVLLM_UVA_BACKEND=python：ctypes + DLPack（显式选择，不自动回退；写错值当场 ValueError）",
+     "measured": {
+      "cold_build_seconds": 35.1,
+      "alias": "uva.data_ptr() == cpu.data_ptr()",
+      "bidirectional": "GPU fill_(7) → 宿主读到 7；宿主改一格 → 设备读到新值",
+      "tests": "tests/step73/test_v2_uva_backend.py（4 项：默认后端/兜底后端/错误值/StagedWrite 落宿主）"
+     },
+     "why": "all_token_ids 这类 [max_num_reqs, max_model_len] 表可能几 GB：放显存会吃掉 KV 池，放普通主机内存又要显式拷贝；UVA 让它宿主常驻、GPU 内核直接读写"
     }
    },
    "known_gaps": [
