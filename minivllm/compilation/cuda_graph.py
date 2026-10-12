@@ -23,6 +23,7 @@
 `compilation_counter` 指标。
 """
 
+import gc
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -36,7 +37,7 @@ from .monitor import validate_cudagraph_capturing_enabled
 
 @contextmanager
 def graph_capture(device: str = "cuda"):
-    """捕获期的公共环境（对应上游 `graph_capture`）：同步 + 释放缓存 + 用一张**专用显存池**。
+    """捕获期的公共环境（对应上游 `graph_capture`）：同步 + 释放缓存 + 关掉 GC + 专用显存池。
 
     为什么要专用池：图会把捕获期间的显存分配**录下来**（重放时不再走分配器），所以这些块
     必须独占、生命周期与图一致。不隔离的话，别的张量复用同一段地址，重放就会写花别人的数据。
@@ -44,14 +45,28 @@ def graph_capture(device: str = "cuda"):
     **池是全进程共享的一个**（上游 `current_platform.get_global_graph_pool()` 同款）：
     PIECEWISE 下"每层两段 × 每个档位"会有几十上百张图，一张图一个池会让显存按图数增长；
     共享池是安全的——同一条流上任何时刻只有一张图在重放。
+
+    ⚠️ **为什么捕获期间要 `gc.disable()`**（74 关实测，是个"不报错就崩进程"的坑）：自动 GC 会在
+    **任意一次分配**时触发，一旦它回收掉**别的** `torch.cuda.CUDAGraph` 对象，那个对象的析构
+    （`CUDAGraph::reset()`）就会在当前流上执行一串捕获期不允许的 CUDA 调用 → **把我们正在录的
+    这张图作废**（CUDA 只报一句 warning：`operation not permitted when stream is capturing
+    (function reset)`），紧接着下一次分配命中分配器的内断言
+    `cudaStreamCaptureStatusInvalidated` 把整个进程带走。症状因此是"单独跑没事、长会话里
+    偶发/必现"（取决于 GC 何时被触发）。上游在同一窗口里 patch 掉 `gc.collect`（注释写的是
+    "让捕获别一次次跑 GC 变慢"，同一个窗口、同一类风险）；这里直接关掉 GC，退出时按原状态恢复。
     """
     pool = _get_global_graph_pool()
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    gc_was_enabled = gc.isenabled()
     if torch.cuda.is_available():
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
+    # 关掉自动 GC：见 docstring 里那条实测（CUDAGraph 析构会作废正在录的图）
+    gc.disable()
     try:
         yield pool
     finally:
+        if gc_was_enabled:
+            gc.enable()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 

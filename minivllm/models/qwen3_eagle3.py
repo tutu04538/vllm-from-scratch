@@ -365,10 +365,21 @@ class Eagle3ForCausalLM(nn.Module):
                 "同款报错）。这说明这份 draft 权重是**串行训练**的——不能用它做并行提议，"
                 "请换成按并行草稿训练的 checkpoint（需求 072 §4 最后一条）")
         if "d2t" in buffers:
-            self.d2t = buffers["d2t"].to(torch.int64)
+            self.d2t = buffers["d2t"].to(device=self._buffer_device(), dtype=torch.int64)
         if "t2d" in buffers:
-            self.t2d = buffers["t2d"].to(torch.bool)
+            self.t2d = buffers["t2d"].to(device=self._buffer_device(), dtype=torch.bool)
         return loaded | set(buffers)
+
+    def _buffer_device(self) -> torch.device:
+        """映射表 `d2t`/`t2d` 该放哪个设备：**参数所在的设备**。
+
+        为什么不能留在 CPU（74 关实测抓到）：`compute_logits()` 每次前向都要读 `d2t`，留在 CPU
+        上就是"每次前向一次 H2D 拷贝"（真实 checkpoint 是 32000 × int64）；更要命的是 **CUDA
+        Graph 捕获时不允许从非 pinned 的 CPU 张量拷贝**——真实 EAGLE3 开图时直接报
+        "Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU
+        tensor is pinned"。放到设备上两个问题一起消失（上游这类 buffer 也是跟着模块走的）。
+        """
+        return next(self.parameters()).device
 
     def share_embeddings(self, target_model) -> None:
         """与 target 共享词表嵌入（上游 `_maybe_share_embeddings`）：**只在检查点缺这一份时**做。

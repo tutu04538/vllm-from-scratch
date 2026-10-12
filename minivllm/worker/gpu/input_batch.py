@@ -35,6 +35,7 @@ import numpy as np
 import torch
 
 from ...triton_utils import tl, triton
+from ..utils import is_uniform_query_len
 
 
 class InputBuffers:
@@ -119,6 +120,126 @@ class InputBatch:
 
     # Longest query the batch may contain; None = 用本批实际的最大 query 长度。
     max_query_len: int | None = None
+
+    #: 统一 decode 批的每请求行数（74 关）：`1 + K`，或者 `None`（非统一批）。
+    #: 它是**图内注意力路径的形状**（`AttentionMetadata.uniform_query_len`），必须由 Runner
+    #: 显式算好：上游把同一个量藏在后端的 `max_query_len` 里从批次推，本仓库的 Torch 后端
+    #: 直接收这个字段——形状错了不会报错，只会录出一张"每请求行数不对"的图。
+    uniform_query_len: int | None = None
+
+    @classmethod
+    def make_dummy(
+        cls,
+        num_reqs: int,
+        num_tokens: int,
+        input_buffers: InputBuffers,
+        max_query_len: int | None = None,
+    ) -> "InputBatch":
+        """造一份"假"批并**把内容写进常驻缓冲**（对应上游同名类方法，逐行对齐）。
+
+        74 关：CUDA Graph 的捕获阶段必须有"形状对、内容安全"的输入。这个方法同时干两件事，
+        缺一不可：
+
+            **写缓冲**：`seq_lens` / `query_start_loc` 按 `num_tokens` 摊到 `num_reqs` 条请求
+                （余数分给最后几条），`input_ids` / `positions` 清零，`is_padding` 全 True。
+                图里记的是**指针**，所以捕获期与运行期必须是同一批缓冲——本方法只写
+                `input_buffers`，从不新建张量。
+            **返回视图**：返回值里的张量都是那些常驻缓冲的切片，给注意力元数据构造器用。
+
+        为什么 `input_ids` / `positions` 要**清零**而不是留着上一轮的残值：它们会被
+        embedding 与 RoPE 查表读到，超出词表/位置表长度就是 device 端越界；而"上一轮的残值
+        恰好合法"不是不变量（这正是 69 关补的那条：补齐行的内容要显式写死）。
+
+        `max_query_len`（上游同名参数）在本仓库只用于**断言**"摊出来的每请求行数不超过声明的
+        上界"——本仓库的注意力元数据由调用方显式给 `uniform_query_len`，不像上游那样从
+        InputBatch 推。断言留着：它拦的是"捕获的形状与声明的上界矛盾"这种图键错配。
+        """
+        assert 0 < num_reqs <= num_tokens
+        device = input_buffers.device
+
+        req_ids = [f"dummy_{i}" for i in range(num_reqs)]
+        idx_mapping_np = np.arange(num_reqs, dtype=np.intp)
+        idx_mapping = torch.arange(num_reqs, dtype=torch.int64, device=device)
+        expanded_idx_mapping = idx_mapping
+        expanded_local_pos = torch.zeros(num_reqs, dtype=torch.int32, device=device)
+
+        base_tokens = num_tokens // num_reqs
+        num_extra = num_tokens % num_reqs
+        assert max_query_len is None or base_tokens + (num_extra > 0) <= max_query_len
+        num_scheduled_tokens = np.full(num_reqs, base_tokens, dtype=np.int32)
+        if num_extra > 0:
+            num_scheduled_tokens[-num_extra:] += 1
+        assert int(num_scheduled_tokens.sum()) == num_tokens
+
+        # seq_len == query_len（假批没有历史；注意力只需要"形状能跑"）。
+        input_buffers.seq_lens[: num_reqs - num_extra] = base_tokens
+        input_buffers.seq_lens[num_reqs - num_extra : num_reqs] = base_tokens + 1
+        # Pad for full CUDA graph mode.
+        input_buffers.seq_lens[num_reqs:] = 0
+        seq_lens = input_buffers.seq_lens[:num_reqs]
+
+        input_buffers.query_start_loc[:1] = 0
+        torch.cumsum(seq_lens, dim=0, out=input_buffers.query_start_loc[1 : num_reqs + 1])
+        # Pad for full CUDA graph mode（与运行期同一条规则：超出真实请求数的行写成总行数，
+        # 于是补齐请求的 query 长度为 0）。
+        input_buffers.query_start_loc[num_reqs + 1 :] = num_tokens
+        query_start_loc = input_buffers.query_start_loc[: num_reqs + 1]
+
+        input_buffers.input_ids[:num_tokens].zero_()
+        input_buffers.positions[:num_tokens].zero_()
+
+        input_buffers.is_padding[:num_tokens].fill_(True)
+        is_padding = input_buffers.is_padding[:num_tokens]
+
+        logits_indices = query_start_loc[1:] - 1
+        cu_num_logits = torch.arange(num_reqs + 1, device=device, dtype=torch.int32)
+        cu_num_logits_np = np.arange(num_reqs + 1, dtype=np.int32)
+        # 拷一份：调用方可能原位改它（上游同款注释）。
+        seq_lens_cpu_upper_bound = torch.from_numpy(num_scheduled_tokens.copy())
+
+        query_start_loc_np = np.empty(num_reqs + 1, dtype=np.int32)
+        query_start_loc_np[0] = 0
+        np.cumsum(num_scheduled_tokens, out=query_start_loc_np[1:])
+
+        return cls(
+            req_ids=req_ids,
+            num_reqs=num_reqs,
+            num_reqs_after_padding=num_reqs,
+            idx_mapping=idx_mapping,
+            idx_mapping_np=idx_mapping_np,
+            expanded_idx_mapping=expanded_idx_mapping,
+            expanded_local_pos=expanded_local_pos,
+            num_scheduled_tokens=num_scheduled_tokens,
+            num_tokens=num_tokens,
+            num_tokens_after_padding=num_tokens,
+            num_draft_tokens=0,
+            num_draft_tokens_per_req=None,
+            query_start_loc=query_start_loc,
+            query_start_loc_np=query_start_loc_np,
+            seq_lens=seq_lens,
+            seq_lens_cpu_upper_bound=seq_lens_cpu_upper_bound,
+            num_computed_tokens_np=np.zeros(num_reqs, dtype=np.int64),
+            prefill_len_np=np.zeros(num_reqs, dtype=np.int64),
+            num_computed_prefill_tokens_np=np.zeros(num_reqs, dtype=np.int64),
+            is_prefilling_np=np.zeros(num_reqs, dtype=bool),
+            has_prefill=False,
+            input_ids=input_buffers.input_ids[:num_tokens],
+            positions=input_buffers.positions[:num_tokens],
+            is_padding=is_padding,
+            logits_indices=logits_indices,
+            cu_num_logits=cu_num_logits,
+            cu_num_logits_np=cu_num_logits_np,
+            has_structured_output_reqs=False,
+            max_query_len=base_tokens + (num_extra > 0),
+            # 假批也可能"每条请求行数相同"（捕获统一 decode 图时就是这样），这时它必须带上
+            # `uniform_query_len`——那是**图里的形状**，捕获的元数据少了它就只能走逐请求路径，
+            # 而那条路径在捕获窗口里会炸（`int(张量)` 同步）。
+            uniform_query_len=(
+                base_tokens
+                if is_uniform_query_len(num_reqs, num_tokens, base_tokens)
+                else None
+            ),
+        )
 
 
 @triton.jit

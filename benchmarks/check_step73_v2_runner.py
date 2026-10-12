@@ -323,7 +323,11 @@ check("F3. 语法掩码走 V2 的真实 InputBatch（cu_num_logits 前导 0、�
 boundary_ok, boundary_detail = True, []
 for kwargs, expect in (
         (dict(method="ngram", spec_k=2), "只支持"),
-        (dict(spec_k=2, mode="full_and_piecewise"), "CUDA Graph 属 74 关"),
+        # ⚠️ 74 关改了这条**期望值**（断言强度不变）：73 关的 V2 只支持 eager，所以
+        # `full_and_piecewise` 在配置期被拒；74 关给 V2 接上了草稿的 FULL 图（prefill +
+        # 融合多步 decode），于是这里改成"必须有 FULL 那一半"——纯 PIECEWISE 仍然拒绝
+        # （V2 的分段图未接，收下配置却什么都不做不如报错）。见 `docs/step74_alignment.md`。
+        (dict(spec_k=2, mode="piecewise"), "只做"),
 ):
     try:
         make_config(v2=True, **kwargs)
@@ -332,7 +336,10 @@ for kwargs, expect in (
     except NotImplementedError as exc:
         boundary_detail.append(f"{kwargs}→{str(exc)[:24]}…")
         boundary_ok &= expect in str(exc)
-check("G1. V2 的不支持组合在配置期明确拒绝（非 EAGLE 方法 / CUDA Graph）",
+# 74 关放开的那一侧也要钉住：FULL 那一半在配置期必须能建出来（不是"连它也拒了"）
+make_config(v2=True, spec_k=2, mode="full_decode_only")
+make_config(v2=True, spec_k=2, mode="full_and_piecewise")
+check("G1. V2 的不支持组合在配置期明确拒绝（非 EAGLE 方法 / 没有 FULL 那一半的图模式）",
       boundary_ok, " | ".join(boundary_detail))
 
 engine, _core, runner = make_engine(v2=True, spec_k=3, max_num_seqs=2)

@@ -1571,10 +1571,20 @@ class VllmConfig:
         compilation_config.max_cudagraph_capture_size = valid_max_size
         compilation_config.cudagraph_capture_sizes = sizes
         # 投机：decode 走 FULL 图时必须把档位取整到 1+K 的倍数（上游同款，
-        # 见 `adjust_cudagraph_sizes_for_spec_decode` 的说明）
+        # 见 `adjust_cudagraph_sizes_for_spec_decode` 的说明）。
+        #
+        # ⚠️ 74 关：这一步**只对 V1 做**（上游原话 "MRV1 adjusts cudagraph sizes ... Will be
+        # removed in the near future when we have separate cudagraph capture sizes for decode
+        # and mixed prefill-decode. MRV2 handles cudagraph capture sizing in cudagraph_utils.py"）。
+        # 为什么 V2 不能取整：V2 的两张草稿图要的档位口径**不同**——prefill 图是"每请求 1+K 行"
+        # （需要 1+K 的倍数），decode 图是"每请求 1 行"（需要 1..max_num_seqs 这些**小**档位）。
+        # 在配置期按 1+K 取整会把 1/2/3 这类小档位抹掉（例如 K=3、max_num_seqs=3 时档位表变成
+        # [4,8,16,24]，decode 图需要的 ≤3 档位一个都不剩 → 草稿 decode 图直接捕获不出来）。
+        # V2 的取整由 `worker/gpu/cudagraph_utils.py::_init_candidates()` 各自做，与上游一致。
         if (compilation_config.cudagraph_mode is not None
                 and compilation_config.cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
-                and self.num_speculative_tokens > 0):
+                and self.num_speculative_tokens > 0
+                and not self.use_v2_model_runner):
             compilation_config.adjust_cudagraph_sizes_for_spec_decode(
                 1 + self.num_speculative_tokens)
 
@@ -1612,18 +1622,23 @@ class VllmConfig:
         """V2 路径的**配置期**支持矩阵（对应上游 `VllmConfig._validate_v2_model_runner`）。
 
         上游在这里"不支持就报错，而不是悄悄退回 V1"（退回会让用户以为跑的是 V2）。
-        本仓库 73 关的 V2 能力边界：
+        本仓库 74 关的 V2 能力边界：
 
             投机方法    只支持 EAGLE / EAGLE3（`init_speculator()` 的其余分支明确报错）
-            CUDA Graph  本关不做（74 关补）→ 解析出来的图模式必须是 NONE
+            CUDA Graph  74 关起支持：草稿的 **FULL decode 图**（prefill 图 + 融合多步 decode 图）。
+                        `FULL_AND_PIECEWISE` 里的 PIECEWISE 那一半在 V2 未接（V2 不给模型装
+                        分段件），混合批走 eager——这条在 Runner 初始化时 warning + 记账，
+                        **不是**静默降级。纯 PIECEWISE（`decode_mode() != FULL`）则一张图都
+                        不会有，属于"请求了图却什么也不做"，所以在这里明确报错。
+            验证方式    只支持 standard（其余属 75 关）
             异步调度    引擎层本来就拒绝（70 关），这里再挡一道
         """
         if not self.use_v2_model_runner:
             return
         spec = self.speculative_config
-        if spec is not None and spec.method not in ("eagle", "eagle3"):
+        if spec is not None and spec.method not in ("eagle", "eagle3", "mtp"):
             raise NotImplementedError(
-                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3')，收到 "
+                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp')，收到 "
                 f"{spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
                 f"（其余方法各自的归属关卡见 spec_decode/__init__.py 的报错）"
             )
@@ -1633,11 +1648,13 @@ class VllmConfig:
                 f"本关只支持 standard"
             )
         mode = self.compilation_config.cudagraph_mode
-        if mode is not None and mode != CUDAGraphMode.NONE:
+        if mode is not None and mode != CUDAGraphMode.NONE \
+                and mode.decode_mode() != CUDAGraphMode.FULL:
             raise NotImplementedError(
-                f"V2 的 CUDA Graph 属 74 关；73 关的 V2 只支持 eager，"
-                f"收到 cudagraph_mode={mode}。请设 enforce_eager=True（或 "
-                f"cudagraph_mode='NONE'），或改用 V1 路径（VLLM_USE_V2_MODEL_RUNNER=0）"
+                f"V2 目前只做**统一 decode 的全图**（草稿 prefill + 融合多步 decode）："
+                f"cudagraph_mode={mode} 里没有 FULL 那一半，V2 一张图都不会捕获。"
+                f"请用 'full_decode_only' / 'full_and_piecewise'，或改用 V1 路径"
+                f"（VLLM_USE_V2_MODEL_RUNNER=0）"
             )
         if self.scheduler_config.async_scheduling:
             raise NotImplementedError(

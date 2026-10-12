@@ -3953,5 +3953,149 @@
    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1"
   },
   "v2_requires": "CUDA（Triton 内核 + UVA 常驻状态）；无 CUDA 时 V2 构造直接 NotImplementedError"
+ },
+ "step74": {
+  "results": {
+   "step": 74,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/074_V2自回归Speculator与多步融合Graph.md",
+   "status": "已实现并自检：V2 提议者的两张 CUDA Graph（prefill=草稿位置 0、每请求 1+K 行；decode=草稿位置 >0、每请求 1 行）+ 融合多步 decode（K−1 步录进**一张**图，一次重放走完）。新增 minivllm/worker/gpu/cudagraph_utils.py（候选表取整/捕获/分派/重放 + prepare_inputs_to_capture）、spec_decode/autoregressive/cudagraph_utils.py（SpeculatorCudaGraphManager）、InputBatch.make_dummy、BlockTables.get_dummy_block_tables/get_dummy_slot_mappings、worker/utils.py（AttentionGroup + 统一 decode 判据）、构造器能力位 supports_draft_decode_metadata_update（Torch 后端 True：步相关字段都是常驻缓冲的切片 → update 是空操作，与上游 Triton 同理由）、MTPSpeculator（skip_topk 四个 hook，prefill 开始无条件清除）与 V2+MTP 端到端、V2 Runner 的模式协商/capture_model/元数据键集合扩展到草稿层。⚠️ 只做**提议者侧**：V2 的 target 图与 PIECEWISE 未接 → 草稿 prefill 图要求**精确命中**批形状（上游靠 target 补齐）、混合批走 eager、纯 PIECEWISE 配置期拒绝；块验证/synthetic 属 75 关、DFlash/DSpark 76/77、多模块 MTP 80 关。差异账本 12 条见 docs/step74_alignment.md §3。",
+   "recorded_at": "2026-10-13T00:45:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "0230c2d",
+    "implementation_commit": "见本轮提交（step74：V2 自回归 Speculator 与多步融合 Graph）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 135,
+    "sha256": "4b818c5c0e174606c5490a5d12fa8401fd426850b1017bd6bf4a032106bb2708",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_USE_V2_MODEL_RUNNER=1（V2 入口，与上游同名同义）+ VLLM_WSL2_ENABLE_PIN_MEMORY=1（UVA/上游对照都需要）；PATH 需含 conda env 的 bin（torch 走 load_inline 现编 UVA 算子要 ninja）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74 -q",
+     "result": "42 passed（融合/逐步等价 20 + 图管理器单元 12 + 批边界 5 + MTP 5）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step74 -q",
+     "result": "706 passed（= 73 关的 664 + 本关 42，无回归）；同时改了 tests/step73 的两条期望值（见 execution_trace）"
+    },
+    {
+     "cmd": "python benchmarks/check_step74_fused_draft.py",
+     "result": "23 项全部通过（A 6 / B 3 / C 2 / D 1 / E 2 / F 5 / G 1 / P 3）；带一段 profiler"
+    },
+    {
+     "cmd": "python benchmarks/check_step57_*.py（15 个）+ check_step58…check_step73（19 个）",
+     "result": "全部通过（check_step73_v2_runner.py 的 G1 期望值按 74 关改写：CUDA Graph 从“拒绝”变成“接受 full 半边、仍拒纯 PIECEWISE”）"
+    },
+    {
+     "cmd": "python /tmp/real74.py（真实 Qwen3-1.7B + eagle3，K=3，48 token，bf16）",
+     "result": "V1 eager / V2 eager / V2 图 三条路 greedy **逐 token 相同**，drafted/accepted/rounds 也全等（120/7/40）；V2 图捕获 4 张（prefill 4、8 行；decode 1、2 行）/ 0.17 s / 池 76 MiB / fused=True"
+    }
+   ],
+   "execution_trace": {
+    "融合门（K × capability，各跑一遍）": "K=1 恒 fused=False；K=2/4 时 fused == 后端声明（True→fused、False→fallback）",
+    "一轮内 decode 图重放次数": "融合 1 次（K−1 步全在图里）/ 逐步 K−1 次；两者 Python 侧 model.forward 调用都是 0 次",
+    "两条路逐轮状态": "3 条请求 10 轮：draft_tokens / positions / seq_lens / slot_mapping / 草稿 KV 校验和全等（eager 与开图两种模式下都比过）",
+    "多步真的在图里": "融合路径一轮：replay=1、Python forward=0、Python 采样=0，而 current_draft_step 到 K−1、K 列草稿全写出",
+    "端到端": "EAGLE3 与原生 MTP：V2 图 == V2 eager == V1（greedy 逐 token）；含分块 prefill（budget 8）、抢占（6 块）、max_model_len=12 的长度边界",
+    "profiler（tiny、K=4、12 轮 decode）": {
+     "fused": {
+      "draft_ms_per_round": 3.03,
+      "cpu_ops": 12773,
+      "replays": 13
+     },
+     "serial": {
+      "draft_ms_per_round": 3.2,
+      "cpu_ops": 13158,
+      "replays": 39
+     }
+    },
+    "改掉的旧期望值（断言强度不变）": [
+     "tests/step73/test_v2_spec_pipeline.py::test_v2_config_boundaries：V2+CUDA Graph 从“配置期拒绝”改成“接受 FULL 半边、仍拒纯 PIECEWISE”",
+     "benchmarks/check_step73_v2_runner.py 的 G1 同一条",
+     "minivllm/config.py::_set_cudagraph_sizes：档位按 1+K 取整**只对 V1 做**（上游 MRV2 同样不取整；否则 K=3/max_num_seqs=3 时 decode 图一个档位都不剩）",
+     "tests/step63/test_eagle3_real_e2e.py：`d2t`/`t2d` 现在在设备上（详见“顺带修掉的真问题”），该用例比较的是 Python 侧 id 列表 → 显式拉回 CPU 再比（断言本身一字未改）",
+     "tests/step63/test_eagle3_real_e2e.py：`d2t`/`t2d` 现在在设备上（详见“顺带修掉的真问题”），该用例比较的是 Python 侧 id 列表 → 显式拉回 CPU 再比（断言本身一字未改）"
+    ],
+    "本关顺带修掉的真问题": [
+     "捕获期 `_attend` 的 `-inf` 掩码会出 NaN（全掩行）→ 与图内路径统一成 `finfo.min`（实测 NaN 会写进 KV 与特征缓冲并污染后续所有重放）",
+     "**捕获期间必须 `gc.disable()`**：自动 GC 回收别的 CUDAGraph 时其析构（CUDAGraph::reset()）会在当前流上做捕获期不允许的调用 → 作废正在录的图 → 分配器内断言杀进程（长会话必现；已在 compilation/cuda_graph.py::graph_capture 里关掉 GC）",
+     "`draft_logits_spec()` 的 dtype 没过映射表（配置里 dtype 是字符串）→ 概率草稿路径 `torch.full(dtype='float32')` 直接 TypeError（73 关遗留，本关第一次跑到）",
+     "真实 EAGLE3 的 `d2t`/`t2d` 留在 CPU → 开图时报“capture 里不能从非 pinned CPU 张量拷贝”→ 改成放到参数所在设备（顺带省掉每次前向一次 H2D）",
+     "捕获前热身改成**与图内同一条路径**（Torch 后端的注意力按运行模式分叉，两条路 cuBLAS 形状不同）"
+    ]
+   },
+   "known_gaps": [
+    "V2 的 target 图（含整批补齐）未接 → 草稿 prefill 图必须精确命中批形状，形状不命中时走 eager（decode 图会补齐自己那份缓冲，覆盖面大得多）",
+    "V2 的 PIECEWISE 分段图未接（混合批 eager；纯 PIECEWISE 配置期拒绝）",
+    "真实 EAGLE3 的接受长度差距仍是 63 关的已知项（本关不改草稿质量）；profiler 只给方向性数字，不给加速倍数",
+    "V2+mtp 需要显式派生好的 draft 配置（派生时机属 80 关）；多模块 MTP 属 80 关",
+    "logprobs=-1 的入口归一化（68 关记的本项目待修项）仍未修"
+   ]
+  }
+ },
+ "step74_models": {
+  "target": {
+   "path": "models/Qwen3-1.7B",
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "dtype": "bfloat16（真实对照）/ float32（tiny）",
+   "max_model_len": 512,
+   "note": "权重不提交（.gitignore）"
+  },
+  "draft": {
+   "path": "models/Qwen3-1.7B-eagle3",
+   "architectures": [
+    "Eagle3ForCausalLM"
+   ],
+   "dtype": "bfloat16",
+   "note": "串行训练权重；本关新增：d2t/t2d 现在放到参数所在设备（开图必需）"
+  },
+  "tiny": {
+   "target": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+   "draft": "tiny_eagle3_dir('tiny_gqa')（EAGLE3）/ tiny_mtp_dir('tiny_gqa')（MTP）",
+   "vocab_size": 11,
+   "note": "prompt token id 必须 < vocab，否则 embedding 直接 device-side assert"
+  },
+  "test_backend": {
+   "file": "minivllm/testing/fake_attn_backend.py",
+   "purpose": "“不支持 update_draft_decode_metadata”的后端替身（只给测试）：把 capability 声明改成 False，并把 update 退回基类那份（被调用就报错），用来跑融合门与回退路径"
+  },
+  "shared_config": {
+   "block_size": 4,
+   "num_gpu_blocks": "32~64",
+   "max_num_batched_tokens": "16~64",
+   "max_num_seqs": "1~3",
+   "cudagraph_mode": "full_decode_only（对照：none）",
+   "cudagraph_capture_sizes": "[1,2,3,4,8]（tiny；显式给，好让 1~3 条请求都能命中图）",
+   "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1"
+  },
+  "real_model_capture": {
+   "mode": "FULL_DECODE_ONLY",
+   "captured_graphs": 4,
+   "graphs": {
+    "prefill": [
+     4,
+     8
+    ],
+    "decode": [
+     1,
+     2
+    ]
+   },
+   "capture_seconds": 0.168,
+   "graph_pool_bytes": 77594624,
+   "fused_multi_step_decode": true
+  }
  }
 }

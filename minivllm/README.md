@@ -523,11 +523,52 @@ VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
 ⚠️ V2 的 CUDA Graph 与融合多步 decode 属 74 关、块验证/synthetic 属 75 关、
 DFlash/DSpark 属 76/77 关；差异账本（15 条）见 [`docs/step73_alignment.md`](../docs/step73_alignment.md) §5。
 
+## 第七十四关：V2 提议者的两张图与融合多步 decode
+
+73 关的 V2 提议者每轮都在 eager 里跑：K 个草稿步 = K 次 CPU 侧输入更新 + K 次 kernel 提交。
+74 关给它补上两张 CUDA Graph，并把「K−1 个草稿步」融进**一次重放**：
+
+```
+prefill 图   草稿位置 0（每请求 1+K 行），复用 **target 本轮**的注意力元数据与 slot_mapping
+decode 图    草稿位置 >0（每请求 1 行），用草稿自己的元数据（seq_lens + step）
+
+fallback（逐步）  每步重建 slot_mapping + 元数据，每步重放一次图
+fused（融合）     元数据只建一次（step=1），整个 K−1 步的循环录进**一张**图
+选哪条 = 后端声明的 supports_draft_decode_metadata_update（本仓库 Torch 后端为 True；不伪造）
+```
+
+- `worker/gpu/cudagraph_utils.py`（V2 的手工图管理器：候选表 / 捕获 / 分派 / 重放），
+  `worker/gpu/spec_decode/autoregressive/cudagraph_utils.py::SpeculatorCudaGraphManager`
+  （把「捕获一张图」翻译成「造一份假输入 → 调提议者」），`worker/gpu/{input_batch,block_table}.py`
+  新增 `InputBatch.make_dummy` / `get_dummy_block_tables` / `get_dummy_slot_mappings`。
+- `worker/utils.py::AttentionGroup` 把「能不能在草稿步之间原地更新元数据」问到构造器上；
+  Torch 后端的答案是 **能**（步相关字段都是常驻缓冲的切片），所以 `update_draft_decode_metadata()`
+  是空操作——与上游 Triton 后端同一条理由。
+- MTP：`worker/gpu/spec_decode/mtp/speculator.py::MTPSpeculator`（`skip_topk` 的四个 hook；
+  `on_prefill_begin()` **无条件**清除复用状态，异常中断不会残留）。V2 + `method="mtp"` 需要显式
+  传入 `derive_mtp_draft_config(target_config)` 派生好的 draft 配置（派生时机属 80 关）。
+
+```bash
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step74 -q              # 42 项
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step74_fused_draft.py # 23 项 + profiler 段
+# V2 + 图跑一段生成（73 关要的 --enforce-eager 现在可以去掉）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
+    python minivllm/demo.py --device cuda --model models/Qwen3-1.7B "问题"
+```
+
+实测：融合与逐步两条路**逐轮**草稿 token / positions / seq_lens / slot_mapping / 草稿 KV 全等；
+融合路径一轮 decode 图重放 1 次、Python 前向 0 次、采样 0 次，而 `current_draft_step` 到 K−1、
+K 列草稿全写出来（多步**真的在图里**）；EAGLE3 与原生 MTP 下 `V2 图 == V2 eager == V1`。
+⚠️ 本关只做**提议者侧**的图：V2 的 target 图（含整批补齐）与 PIECEWISE 分段图未接，
+所以草稿 prefill 图要求**精确命中**批形状、混合批走 eager；差异账本（12 条）见
+[`docs/step74_alignment.md`](../docs/step74_alignment.md) §3。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
-V2 入口（73 关）当前只覆盖 EAGLE/EAGLE3 + standard 验证，图与融合、块验证、DFlash/DSpark、
-多模块 MTP 都还没接（各自报错并写明归属关卡）。
+V2 入口（73/74 关）当前覆盖 EAGLE/EAGLE3/MTP（MTP 要显式给派生好的 draft 配置）+ standard 验证 +
+草稿侧的 FULL 图；块验证/synthetic、DFlash/DSpark、多模块 MTP、V2 的 target 图与 PIECEWISE
+都还没接（各自报错并写明归属关卡）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -567,6 +608,7 @@ python benchmarks/check_step67_vocab_mapping.py      # 21 项：TLI 构造/映�
 python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 / 配置改写（图+DP）/ 两轮时序 / K=0 端到端 / q 宽度
 python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / 上游内核逐值差分 / 一次 forward / 端到端
 python benchmarks/check_step73_v2_runner.py          # 24 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 语法掩码 / 边界
+python benchmarks/check_step74_fused_draft.py        # 23 项：图管理器 / capability / 融合门 / 两条路等价 / 端到端 / profiler
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -581,6 +623,7 @@ python -m pytest tests/step68 -q                     # 67 项：step68（logprob
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
 python -m pytest tests/step73 -q                     # 55 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
+python -m pytest tests/step74 -q                     # 42 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

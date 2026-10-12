@@ -25,7 +25,7 @@ from typing import Any, NamedTuple
 import numpy as np
 import torch
 
-from ...config import VllmConfig
+from ...config import CUDAGraphMode, VllmConfig
 from ...outputs import ModelRunnerOutput
 from ..gpu.async_utils import AsyncOutput
 from ..gpu.block_table import BlockTables
@@ -42,6 +42,7 @@ from ..gpu.sample.sampler import Sampler
 from ..gpu.spec_decode import init_speculator
 from ..gpu.spec_decode.rejection_sampler import RejectionSampler
 from ..gpu.spec_decode.speculator import DraftModelSpeculator
+from ..utils import get_uniform_decode_token_count
 from ..gpu.spec_decode.utils import DraftTokensHandler
 from ..gpu.states import RequestState
 from ..gpu.structured_outputs import StructuredOutputsWorker
@@ -161,6 +162,11 @@ class GPUModelRunner:
         # 70 关：执行侧要知道"草稿从哪来"；异步调度在本仓库一律在引擎层拒绝，
         # 所以这里恒 False（放开属 74/75 关，见 AGENTS §1）。
         self.async_scheduling = False
+        # 74 关：图模式与"元数据的键集合"都在 `initialize_kv_cache()` 里定；先给安全默认值，
+        # 免得"没初始化就查"读到属性不存在的假象（默认 NONE = 不捕获任何图）。
+        self.cudagraph_mode = CUDAGraphMode.NONE
+        self.cudagraph_capture_stats: dict | None = None
+        self._attn_metadata_layer_names: set[str] = set()
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -176,6 +182,11 @@ class GPUModelRunner:
         if self.speculative_config is not None:
             self.speculator = init_speculator(self.vllm_config, self.device)
             self.speculator.load_model(self.model)
+            # 草稿的注意力层名：`set_attn()` 要用它建"草稿自己的"注意力组，而 target 的
+            # 注意力元数据也要**覆盖这些层名**（上游 `init_attn_backend` 在 runner 侧不带
+            # `active_layer_names`，于是 target 的 metadata 字典天然包含草稿层；草稿 prefill
+            # 复用 target 那份 metadata 时，草稿层就是靠这个键找到自己的元数据）。
+            self.speculator.draft_attn_layer_names = self._draft_attention_layer_names()
             if self.speculative_config.method == "eagle3":
                 # Drafting may require auxiliary hidden states from target model outputs.
                 self.use_aux_hidden_state_outputs = True
@@ -237,7 +248,15 @@ class GPUModelRunner:
             kernel_block_sizes=[self.block_size],
         )
         if isinstance(self.speculator, DraftModelSpeculator):
-            self.speculator.set_attn(self.block_tables, self.input_buffers)
+            self.speculator.set_attn(
+                self.block_tables, self.input_buffers, self._build_capture_attn_metadata
+            )
+        # 74 关：图模式必须在 `init_cudagraph_manager()` **之前**定下来（上游同序：
+        # "After set_attn, so the speculator can size its cudagraph mode to its own attention
+        # support"）。
+        self.initialize_cudagraph_capture()
+        if self.speculator is not None:
+            self.speculator.init_cudagraph_manager(self.cudagraph_mode)
 
         dtype = next(self.model.parameters()).dtype
         self.kv_caches = {}
@@ -257,7 +276,59 @@ class GPUModelRunner:
             # 草稿层的物理缓存：与 target **同形同块数**（块号在两边代表同一段位置），
             # 但 K/V 各写各的（与 V1 提议者的 `_allocate_kv_caches()` 同一套做法）。
             self._allocate_draft_kv_caches(kv_cache_config)
+        # 注意力元数据的**键集合** = target 的层 ∪ 草稿的层。上游 runner 建注意力组时不带
+        # `active_layer_names`，所以它的 metadata 字典天然包含草稿层；草稿 prefill 复用 target
+        # 那份 metadata 时，草稿层就是靠这些键找到自己的元数据（键少了会在 forward 里 KeyError，
+        # 键多了没有害处）。
+        self._attn_metadata_layer_names = set(self.kv_caches)
+        if self.speculator is not None:
+            self._attn_metadata_layer_names |= set(self.speculator.draft_attn_layer_names)
         return self.kv_caches
+
+    def initialize_cudagraph_capture(self) -> None:
+        """定下 V2 的图模式（对应 V1 `GPUModelRunner.initialize_cudagraph_capture()` 的前两步）。
+
+        顺序与上游 V2 一致：**注意力后端先开口**（能力档位决定 FULL 能不能成立），再决定最终
+        模式，最后把这个模式交给草稿的两张图管理器。写回 `compilation_config.cudagraph_mode`，
+        所以"实际用了什么模式"在配置对象上可查，不是只在日志里。
+
+        与上游 V2 的差别只有一条、而且是本仓库的能力缺口：**PIECEWISE 那一半没接**（V2 不给
+        模型装分段件，`CompilationMode` 也只有 NONE）。所以这里 warning 一次，并让草稿的两张图
+        只认 FULL 那一半（`init_cudagraph_manager()` 里收敛）——混合批一律走 eager，
+        **不会**出现"选中 PIECEWISE 却什么都没捕获"的假命中。
+        """
+        from ...attention.backends.torch_sdpa import TorchAttentionBackend
+        from ...config import CUDAGraphMode
+
+        builder_cls = TorchAttentionBackend.get_builder_cls()
+        mode = self.vllm_config.compilation_config.cudagraph_mode
+        if mode != CUDAGraphMode.NONE and not torch.cuda.is_available():
+            # 环境事实：配置写着 cuda 不等于这台机器有 CUDA。真去捕获只会炸，不如在这里退 eager。
+            mode = CUDAGraphMode.NONE
+            self.vllm_config.compilation_config.cudagraph_mode = mode
+            self.vllm_config.compilation_config.cudagraph_capture_sizes = []
+            self.vllm_config.compilation_config.max_cudagraph_capture_size = 0
+        if mode != CUDAGraphMode.NONE:
+            min_support = builder_cls.get_cudagraph_support(self.vllm_config)
+            mode = self.vllm_config.resolve_cudagraph_mode_and_sizes(
+                min_support, builder_cls.__name__, self.decode_query_len)
+            if mode.has_piecewise_cudagraphs():
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "V2 的 PIECEWISE 分段图本关未接（V2 不给模型装分段件）：混合 prefill/decode "
+                    "批走 eager，图只在'每请求 %d 行'的统一 decode 批上生效（草稿 prefill 图 + "
+                    "融合多步 decode 图）", self.decode_query_len)
+        self.cudagraph_mode = mode
+
+    def _draft_attention_layer_names(self) -> set[str]:
+        """草稿模型里所有 `Attention` 层的模块路径（= metadata 的键）。"""
+        from ...attention.layer import Attention
+
+        return {
+            name for name, module in self.speculator.model.named_modules()
+            if isinstance(module, Attention)
+        }
 
     def _allocate_draft_kv_caches(self, kv_cache_config) -> None:
         from ...attention.layer import Attention
@@ -302,9 +373,54 @@ class GPUModelRunner:
             raise ValueError(f"{type(self.model).__name__} 里没有 Attention 层，无法绑定 KV 缓存")
         return layers
 
-    def capture_model(self) -> None:
-        """V2 的 CUDA Graph 属 74 关：本关明确不做（不是"悄悄不做"）。"""
-        return None
+    def capture_model(self) -> dict:
+        """捕获草稿的两张图（对应上游 V2 `GPUModelRunner.capture_model()` 的提议者那一半）。
+
+        上游的顺序是"先捕获 target 的图，再在草稿 workspace lane 里捕获提议者的图"。本仓库
+        V2 的 **target 图**不属 74 关（`CudaGraphManager` 只为提议者建），所以这里只有第二步。
+
+        捕获窗口由 `monitor.set_cudagraph_capturing_enabled()` 划定：窗口外任何"顺手捕获"
+        都会被 `validate_cudagraph_capturing_enabled()` 拦下（那会让服务中的某一步突然卡顿）。
+        没有请求时也要能跑——捕获用的输入全是 `InputBatch.make_dummy()` 造的假输入，
+        写的是**常驻缓冲**（图里记的是指针），所以捕获完这些缓冲会被真实的下一轮覆盖。
+        """
+        import time
+
+        from ...compilation import graph_capture, set_cudagraph_capturing_enabled
+        from ...config import CUDAGraphMode
+
+        mode = getattr(self, "cudagraph_mode", CUDAGraphMode.NONE)
+        stats = {"mode": str(mode), "captured": 0, "capture_seconds": 0.0,
+                 "graphs": {}}
+        if mode == CUDAGraphMode.NONE or self.speculator is None:
+            return stats
+        start = time.perf_counter()
+        torch.cuda.synchronize()
+        start_free = torch.cuda.mem_get_info()[0]
+        set_cudagraph_capturing_enabled(True)
+        try:
+            with graph_capture(self.device):
+                self.speculator.capture()
+        finally:
+            # 无论捕获成功与否都要关掉窗口（69 关的理由：开着的话后面每一次"没见过的形状"
+            # 都会顺手录一张图：延迟尖峰 + 显存悄悄涨）。
+            set_cudagraph_capturing_enabled(False)
+        torch.cuda.synchronize()
+        end_free = torch.cuda.mem_get_info()[0]
+        for name, manager in (("prefill", self.speculator.prefill_cudagraph_manager),
+                              ("decode", self.speculator.decode_cudagraph_manager)):
+            if manager is not None:
+                stats["graphs"][name] = {
+                    "captured": len(manager.graphs),
+                    "token_counts": manager.captured_token_counts(),
+                }
+                stats["captured"] += len(manager.graphs)
+        stats["capture_seconds"] = time.perf_counter() - start
+        stats["graph_pool_bytes"] = start_free - end_free
+        stats["fused_multi_step_decode"] = bool(
+            getattr(self.speculator, "use_fused_multi_step_decode", False))
+        self.cudagraph_capture_stats = stats
+        return stats
 
     # -------- 请求状态（按常驻 slot） --------
 
@@ -526,6 +642,16 @@ class GPUModelRunner:
         )
         seq_lens_cpu_upper_bound = torch.from_numpy(seq_lens_cpu_upper_bound_np)
 
+        # 74 关：这一批是不是"统一 decode"（每条请求都恰好 `1 + K` 行、且没有请求在 prefill）。
+        # 是的话它的形状是固定的、可以被图重放——草稿 prefill 图正是吃这个形状；不是就回退
+        # eager（`uniform_query_len=None` → 注意力走逐请求路径）。
+        uniform_query_len = get_uniform_decode_token_count(
+            num_reqs,
+            num_tokens,
+            int(num_scheduled_tokens_np.max()),
+            bool(batch_req_state.has_prefill),
+        )
+
         return InputBatch(
             req_ids=req_ids,
             num_reqs=num_reqs,
@@ -555,6 +681,7 @@ class GPUModelRunner:
             cu_num_logits=cu_num_logits,
             cu_num_logits_np=cu_num_logits_np,
             has_structured_output_reqs=scheduler_output.has_structured_output_requests,
+            uniform_query_len=uniform_query_len,
         )
 
     def prepare_attn(
@@ -584,7 +711,12 @@ class GPUModelRunner:
         """把 V2 的批次视图翻成注意力层要的元数据（本项目只有一个后端，一份 metadata）。
 
         上游这里是 `model_state.prepare_attn(...)`，按 `attn_groups` 分组构造**每组的后端
-        metadata**；本仓库只有一个 Torch 后端、一个 KV group，所以"一组"就是全部层。
+        metadata**；本仓库只有一个 Torch 后端、一个 KV group，所以"一组"就是全部层
+        （`_attn_metadata_layer_names` = target 层 ∪ 草稿层）。
+
+        `uniform_query_len` 来自 `InputBatch`（74 关）：统一 decode 批（每请求 `1 + K` 行）里
+        它是 `1 + K`，其它批是 None。**它决定图内注意力的形状**——草稿 prefill 图重放时正是
+        靠 target 这份元数据里的这个 Python int 走 `_forward_padded()`。
         """
         from ...attention.backends.torch_sdpa import TorchAttentionBackend
 
@@ -595,8 +727,40 @@ class GPUModelRunner:
             block_table=block_tables[0],
             slot_mapping=slot_mappings[0][: input_batch.num_tokens_after_padding],
             num_reqs=input_batch.num_reqs_after_padding,
+            uniform_query_len=input_batch.uniform_query_len,
         )
-        return {name: metadata for name in self.kv_caches}
+        return {name: metadata for name in self._attn_metadata_layer_names}
+
+    def _build_capture_attn_metadata(self, input_batch: InputBatch) -> dict[str, Any]:
+        """74 关：捕获草稿 prefill 图时造 target 那份"假"元数据（下游是
+        `SpeculatorCudaGraphManager.create_forward_fn`）。
+
+        `prepare_inputs_to_capture()` 已经把假输入写进了**常驻缓冲**（块表清零、slot_mapping
+        全哨兵、`query_start_loc`/`seq_lens` 按 `num_tokens` 摊开），所以这里只按假批的请求数
+        切块表（与运行期 `prepare_attn()` 同一条切片口径），再用**同一个**
+        `_build_attn_metadata()` 造元数据——不同口径重建一份会让图里记的指针与运行期不一致，
+        那是"重放读到旧数据、且不报错"的经典来源。
+
+        与 V1 的差别（`docs/step74_alignment.md` 差异账本 D-74-5）：这里**不调**
+        `build_for_cudagraph_capture()`（它把 `seq_lens` 全填 1）。理由是热身的 eager 那一遍
+        会被填 1 弄出"整行掩掉 → softmax NaN"，而 NaN 会写进 KV 与特征缓冲、污染后续所有重放；
+        且"填 1 更快"对本后端的图内路径不成立（它按块表宽度 gather 整段上下文）。
+        形状守门改成显式断言 `uniform_query_len` 已定死。
+        """
+        block_tables = tuple(
+            bt[: input_batch.num_reqs_after_padding]
+            for bt in self.block_tables.input_block_tables
+        )
+        metadata = self._build_attn_metadata(
+            input_batch, block_tables, self.block_tables.slot_mappings
+        )
+        for layer_metadata in metadata.values():
+            if layer_metadata.uniform_query_len is None:
+                raise ValueError(
+                    "捕获草稿 prefill 图必须是统一 decode 形状（每请求 1+K 行）："
+                    f"收到 uniform_query_len=None，num_reqs={input_batch.num_reqs}、"
+                    f"num_tokens={input_batch.num_tokens}")
+        return metadata
 
     # -------- 一轮 --------
 

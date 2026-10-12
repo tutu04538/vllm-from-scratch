@@ -45,6 +45,12 @@ class AttentionMetadataBuilder:
     #: 不要直接读这个字段，要用 `get_cudagraph_support()`（它给的是"对这份配置"的答案）。
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
 
+    #: 草稿 decode 的步相关元数据能不能**原地更新**（上游 `v1/attention/backend.py:679`
+    #: 同名类属性，默认 False）。True 的含义是"一次 build 出来的元数据可以被 K−1 个草稿步
+    #: 复用，中间只调 `update_draft_decode_metadata()`"——74 关的融合多步 decode 就靠它。
+    #: False 不是"错"，而是"必须逐步重建元数据"（CPU 侧循环、每步一张图）。
+    supports_draft_decode_metadata_update: bool = False
+
     def __init__(self, block_size: int) -> None:
         self.block_size = block_size
 
@@ -70,6 +76,22 @@ class AttentionMetadataBuilder:
             num_reqs=num_reqs,
             uniform_query_len=uniform_query_len,
         )
+
+    def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:
+        """刷新一个草稿 decode 步的步相关元数据（上游同名方法的基类版本）。
+
+        基类**明确报错**而不是留空实现：默认的 `supports_draft_decode_metadata_update=False`
+        已经保证调用方不会走到这里，真走到了说明有人把 capability 伪造成 True 却没写实现
+        ——那会让 K−1 个草稿步读到**第一步的** seq_lens/调度元数据（不报错、只是草稿质量
+        悄悄变差，正是最难查的一类错）。
+
+        ⚠️ 覆写时的硬约束（上游 `backend.py:804-812` 的原话，本仓库照抄）：图重放**不会**
+        执行这个 Python 方法，所以实现只能做**捕获安全**的操作，并把被更新的状态放在常驻
+        缓冲里（每轮原位改写）。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 声明不支持草稿 decode 元数据的原地更新"
+            f"（supports_draft_decode_metadata_update=False），不应该被调用")
 
     def build_for_cudagraph_capture(self, metadata: AttentionMetadata) -> AttentionMetadata:
         """捕获期专用（对应上游各后端的同名方法）。

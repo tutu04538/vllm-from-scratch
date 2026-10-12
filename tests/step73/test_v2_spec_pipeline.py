@@ -154,13 +154,24 @@ def test_v2_zero_request_step_and_cleanup():
 
 
 def test_v2_config_boundaries():
-    """B1：V2 不支持的方法 / 图 / 异步在**配置期**明确报错，不静默退回 V1。"""
+    """B1：V2 不支持的方法 / 图 / 异步在**配置期**明确报错，不静默退回 V1。
+
+    ⚠️ 74 关改了一条**期望值**（断言强度不变）：73 关的 V2 只支持 eager，所以
+    `cudagraph_mode="full_and_piecewise"` 在配置期被拒；74 关给 V2 接上了草稿的 FULL 图
+    （prefill + 融合多步 decode），于是这条从"报错"变成"允许"。新边界是"**必须有 FULL 那一半**"：
+    纯 PIECEWISE 请求在 V2 一张图都捕获不出来（V2 的分段图属后续关卡），所以配置期报错，
+    而不是收下配置却什么都不做。用例仍然覆盖"旧边界已放开 + 新边界仍拒绝"两侧。
+    """
     import os
 
     with pytest.raises(NotImplementedError, match="V2 Model Runner 本关只支持"):
         make_config(v2=True, method="ngram", spec_k=2)
-    with pytest.raises(NotImplementedError, match="V2 的 CUDA Graph 属 74 关"):
-        make_config(v2=True, spec_k=2, mode="full_and_piecewise")
+    # 74 关：FULL 那半接上了 → 允许（不再报错）
+    make_config(v2=True, spec_k=2, mode="full_decode_only")
+    make_config(v2=True, spec_k=2, mode="full_and_piecewise")
+    # 74 关的新边界：没有 FULL 那一半 → 配置期明确拒绝（不静默变成"没有图"）
+    with pytest.raises(NotImplementedError, match="只做\\*\\*统一 decode 的全图\\*\\*"):
+        make_config(v2=True, spec_k=2, mode="piecewise")
     with pytest.raises(NotImplementedError, match="异步调度"):
         cfg = make_config(v2=True, spec_k=2)
         object.__setattr__(cfg.scheduler_config, "async_scheduling", True)
@@ -169,6 +180,7 @@ def test_v2_config_boundaries():
     # 关掉 V2 之后同样的配置能建出来（说明拒绝来自 V2 分派，不是把这些能力一起砍了）
     make_config(v2=False, method="ngram", spec_k=2)
     make_config(v2=False, spec_k=2, mode="full_and_piecewise")
+    make_config(v2=False, spec_k=2, mode="piecewise")
 
 
 @requires_cuda

@@ -144,24 +144,39 @@ class DraftModelSpeculator(BaseSpeculator):
         """Dtype and fill for the cached proposal distribution.
 
         Speculators that write only a subset of columns each step override this.
+
+        ⚠️ 本仓库的 `ModelConfig.dtype` 是**字符串**（上游是 torch.dtype，且这里读的是
+        `head_dtype`），所以必须过一遍映射表：直接把 `"float32"` 交给 `torch.full(dtype=...)`
+        会 TypeError（74 关第一次真的跑概率草稿时踩到——73 关那条路只有配置项、没有人调用）。
         """
-        return vllm_config.model_config.dtype, 0.0
+        return STR_DTYPE_TO_TORCH_DTYPE.get(
+            str(vllm_config.model_config.dtype), torch.float32
+        ), 0.0
 
     @property
     def attn_vllm_config(self) -> VllmConfig:
         """Config for the draft's attention metadata builders."""
         return self.vllm_config
 
-    def set_attn(self, block_tables, target_input_buffers: InputBuffers) -> None:
+    def set_attn(self, block_tables, target_input_buffers: InputBuffers,
+                 target_build_attn_metadata) -> None:
         """把 draft 的注意力上下文接到 target 的块表与输入缓冲上。
 
         上游还有 `model_state` / `kv_cache_config` / `attn_groups`（多后端 + 图捕获用）；
-        本仓库 V2 只有一个注意力后端且本关不做图，所以只留**真正被用到**的两样：
-        target 的块表（草稿与 target 用同一套物理块号）与 target 的输入缓冲
-        （draft prefill 直接复用 target 的 attention metadata）。
+        本仓库 V2 只有一个注意力后端，所以只留**真正被用到**的三样：
+
+            target 的块表（草稿与 target 用同一套物理块号，草稿 KV 也按同一套槽位号写）
+            target 的输入缓冲（draft prefill 直接复用 target 的 attention metadata，而那份
+                元数据的张量就是 target 输入缓冲的切片）
+            "造 target 那份元数据"的回调（74 关捕获草稿 prefill 图时要在图外造一份假的）
+
+        草稿**自己**的注意力组由子类在这里建（上游同一个位置：`init_attn_backend(...,
+        active_layer_names=self.draft_attn_layer_names)`），见
+        `autoregressive/speculator.py::set_attn`。
         """
         self.block_tables = block_tables
         self.target_input_buffers = target_input_buffers
+        self.target_build_attn_metadata = target_build_attn_metadata
 
     def _copy_request_inputs(
         self,

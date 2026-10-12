@@ -168,6 +168,31 @@ class BlockTables:
         )
         return tuple(bt[:num_reqs_padded] for bt in out)
 
+    def get_dummy_block_tables(self, num_reqs: int) -> tuple[torch.Tensor, ...]:
+        """把前 `num_reqs` 行块表**清零**，返回常驻视图（对应上游同名方法）。
+
+        74 关的捕获期入口。两条约束（上游注释同款）：
+
+            **必须是常驻张量的视图**（不能新建）：CUDA Graph 里记的是指针，捕获期与运行期
+                必须是同一批地址。
+            **必须清零**：0 号块是垃圾桶（`BlockPool(reserve_null_block=...)` 留白的那个），
+                不清零的话假批会按上一轮留下的块号去写/读——那些块可能已经被释放并重新分配给
+                别人的请求了（读到别人的 KV，且不报错）。
+        """
+        return tuple(
+            block_table[:num_reqs].zero_() for block_table in self.input_block_tables
+        )
+
+    def get_dummy_slot_mappings(self, num_tokens: int) -> torch.Tensor:
+        """把整个 slot_mapping 缓冲填成哨兵，返回前 `num_tokens` 行的视图（上游同名方法）。
+
+        为什么要填**整个**缓冲而不是只填 `num_tokens` 行：内核可能访问到请求范围之外
+        （padding 逻辑复杂，上游注释原话 "kernels may access beyond the requested range"），
+        而那些位置是真槽位号时就会写坏别人的 KV。
+        """
+        self.slot_mappings.fill_(PAD_SLOT_ID)
+        return self.slot_mappings[:, :num_tokens]
+
     def compute_slot_mappings(
         self,
         idx_mapping: torch.Tensor,

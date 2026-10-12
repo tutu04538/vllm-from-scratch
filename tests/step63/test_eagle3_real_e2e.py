@@ -144,7 +144,9 @@ def real_run():
     try:
         spec, totals = run(spec_engine, core, prompt_ids)
         model = runner.proposer.model
-        d2t, t2d = model.d2t.clone(), model.t2d.clone()
+        # ⚠️ 74 关起 `d2t`/`t2d` 放在**参数所在的设备**上（开图必需：捕获时不允许从非 pinned
+        # 的 CPU 张量拷贝）。这条用例比较的是 Python 侧的 id 列表，所以显式拉回 CPU 再比。
+        d2t, t2d = model.d2t.detach().cpu().clone(), model.t2d.detach().cpu().clone()
         draft_vocab_size, target_vocab_size = model.draft_vocab_size, model.target_vocab_size
     finally:
         spec_engine.shutdown()

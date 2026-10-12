@@ -60,6 +60,30 @@ class TorchAttentionMetadataBuilder(AttentionMetadataBuilder):
     #: 只有"每请求 query 长度相同"的批能把注意力录进图（见模块开头的能力边界）。
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
 
+    #: 草稿 decode 的步相关元数据可以原地更新（74 关）。**理由与上游 Triton 后端逐字相同**
+    #: （`triton_attn.py:104` 的注释："Step-dependent fields reference persistent input
+    #: buffers directly"）：本后端的 `AttentionMetadata` 里所有会随草稿步变化的字段都是
+    #: **常驻输入缓冲的切片**——
+    #:
+    #:     seq_lens          ← `InputBuffers.seq_lens`（`_update_draft_inputs_kernel` 每步 +1）
+    #:     slot_mapping      ← `BlockTables.slot_mappings`（融合路径每步 `compute_slot_mappings`）
+    #:     query_start_loc   ← `InputBuffers.query_start_loc`（草稿 decode 步恒为 1 行/请求，不变）
+    #:     block_table       ← `BlockTables.input_block_tables`（块表本轮不变）
+    #:
+    #: 所以"更新"这件事**由写这些缓冲的内核天然完成**，`update_draft_decode_metadata()`
+    #: 就地是空操作——与上游 Triton 后端一样。反过来，上游 FA3 需要重建自己的
+    #: `scheduler_metadata`，那是因为它把调度元数据**拷了一份**出来（不是常驻缓冲的视图）。
+    supports_draft_decode_metadata_update = True
+
+    def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:
+        """空操作：步相关字段都是常驻缓冲的切片，写缓冲的内核已经把新值写进去了。
+
+        见类属性 `supports_draft_decode_metadata_update` 的长注释。**不要**在这里"顺手"
+        重建 metadata 对象：那会换掉张量对象（图重放记的是指针），而且这一步在捕获时会
+        被录进图里，任何 Python 侧的重建都不会在重放时发生。
+        """
+        return None
+
 
 class TorchAttentionImpl:
     """后端实现。签名与 198 §7 一致：`forward(layer, query, key, value, kv_cache, attn_metadata)`。"""
@@ -260,6 +284,12 @@ class TorchAttentionImpl:
 
         query [q_len, heads, head_size]、keys/values [seq_len, kv_heads, head_size]。
         GQA 时把 KV 头复制到与 query 头数一致。
+
+        **掩码值用 `finfo.min` 而不是 `-inf`**（74 关统一，与 `_forward_padded` 同一条规则）：
+        `past_len` 为负时（只有捕获期的假批会出现：`seq_lens` 比 query 行数短）会有**整行
+        被掩掉**，`softmax(-inf, ...)` 是 **NaN**，而 NaN 会写进 KV 缓存与 hidden states、
+        在后面每一次重放里扩散。用有限大负数时全掩行得到"均匀分布"——**是垃圾但有限**，
+        而且这些行的输出本来就没人在读（padding/假批）。
         """
         heads, head_size = self.num_heads, self.head_size
         q = query.view(query_len, heads, head_size).transpose(0, 1).float()      # [H, q, d]
@@ -274,7 +304,7 @@ class TorchAttentionImpl:
         query_pos = torch.arange(past_len, past_len + query_len, device=q.device)
         key_pos = torch.arange(scores.shape[-1], device=q.device)
         mask = key_pos[None, :] > query_pos[:, None]
-        scores = scores.masked_fill(mask, float("-inf"))
+        scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                            # [H, q, d]
         return out.transpose(0, 1).reshape(query_len, heads * head_size).to(query.dtype)
@@ -285,8 +315,13 @@ class TorchAttentionBackend:
 
     上游的后端还要回答名字、支持的 head size、是否用级联注意力、KV cache 形状等；本仓库
     只有一个后端、一种分页 KV，所以这里只保留真的被调用的三件事——其中前两件是 71 关新增的
-    "能力协商"入口：
+    "能力协商"入口，`get_name()` 是 74 关新增的（融合多步 decode 被拒时要能报出**是哪个
+    后端**不支持，日志里只写"有后端不支持"是查不下去的）。
     """
+
+    @staticmethod
+    def get_name() -> str:
+        return "TORCH_SDPA"
 
     @staticmethod
     def get_builder_cls():

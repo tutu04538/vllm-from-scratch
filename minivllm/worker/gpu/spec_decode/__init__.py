@@ -30,11 +30,22 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
             "V2 的多模块 MTP speculator 属 80 关"
         )
     elif speculative_config.method == "mtp":
-        raise NotImplementedError(
-            "V2 的原生 MTP speculator（MTPSpeculator，权重在 target checkpoint 里）"
-            "本关未接：本机没有带 MTP 层的 checkpoint 可验收，属 80 关"
-            "（65 关的 MTP 走 V1 路径，仍然可用）"
-        )
+        if speculative_config.draft_model_config is None:
+            raise NotImplementedError(
+                "V2 的 mtp 需要**显式**给出派生好的 draft 配置：MTP 的权重在 target 的 "
+                "checkpoint 里，draft 配置要用 "
+                "`SpeculativeConfig.derive_mtp_draft_config(target_model_config)` 从 target 派生"
+                "（上游在配置期做，本仓库的 SpeculativeConfig 拿不到 target —— V1 由 Runner "
+                "派生，V2 侧的接线属 80 关）。用法：\n"
+                "    draft_hf = {**target_hf, \"n_predict\": n, "
+                "\"architectures\": [\"Qwen3MTPModel\"]}\n"
+                "    spec = SpeculativeConfig(method=\"mtp\", num_speculative_tokens=K, "
+                "draft_model_config=ModelConfig(model=<target 目录>, hf_config=draft_hf))\n"
+                "（或用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1）"
+            )
+        from .mtp.speculator import MTPSpeculator
+
+        return MTPSpeculator(vllm_config, device)
     elif speculative_config.use_eagle():
         from .eagle.speculator import EagleSpeculator
 
