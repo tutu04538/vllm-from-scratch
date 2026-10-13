@@ -11,8 +11,23 @@
 - 结果 `sampled [num_logits]` + `num_sampled [num_reqs]` 都是 GPU 张量，
   `num_rejected = num_logits - num_sampled` 由内核算出（`get_num_sampled_and_rejected`）。
 
-**本关只接 standard**：`synthetic`（合成接受率）与 `block`（块验证）是 75 关的独立验收项，
-配置期已拒绝（`SpeculativeConfig` 的校验），这里再断言一次，避免有人绕过配置直接建。
+**三种验证方式**（75 关补齐后，与上游 V2 一致；分派点只有 `__init__` 一处）：
+
+    standard    Leviathan et al. 2023：逐位置概率比检验，第一次拒绝就停。
+    block       Sun et al. 2024（arXiv:2403.10444）：整块联合验证，阈值 h 由"前缀联合比
+                `p_i`"与"下一位置的残差质量"给出，接受长度取**最后**通过测试的位置；
+                拒绝位的恢复分布是 `max(p_tau * target - draft, 0)` 的归一化形式（不是 standard
+                的 `max(target - draft, 0)`）。递推在
+                `rejection_sampler_utils._compute_cumulative_log_p_kernel` 里，**不能**换成
+                "每步 min(1, p/q) 再累乘"（075 §3.2）。
+    synthetic   不按 p/q 判定，按配置给的**条件**接受率 `u < c_i` 接受草稿——用于把"接受长度"
+                当实验输入（调度/显存/图的行为与模型质量解耦）。接受率表在配置期从
+                `synthetic_acceptance_rates`（无条件）换算成条件率。
+                ⚠️ synthetic **不证明模型分布无损**（它绕过了概率比检验），交付物必须写明这一点
+                （075 §4）。
+
+`block` 与 `synthetic` 互斥：块验证的阈值与残差质量都建立在真实 p/q 上，塞一张合成率表进去
+就没有意义了——`rejection_sampler_utils.rejection_sample` 里有一条 assert 挡着（上游同款）。
 """
 
 from collections.abc import Iterable, Iterator
@@ -22,6 +37,7 @@ import torch
 
 from ....config import SpeculativeConfig
 from ....outputs import LogprobsTensors
+from ....spec_decode.utils import unconditional_to_conditional_rates
 from ....triton_utils import tl, triton
 from ..input_batch import InputBatch, get_num_sampled_and_rejected
 from ..sample.logprob import compute_topk_scores
@@ -106,12 +122,24 @@ class RejectionSampler:
     ):
         self.sampler = sampler
         self.num_speculative_steps = spec_config.num_speculative_tokens
-        assert spec_config.rejection_sample_method == "standard", (
-            "V2 的 synthetic / block 验证属 75 关；"
-            f"收到 rejection_sample_method={spec_config.rejection_sample_method!r}"
-        )
-        self.use_block_verification = False
+        # 75 关：验证方式的**唯一分派点**（上游 `rejection_sampler.py:84-96` 逐行同义）。
+        # 两个开关互斥：`synthetic` 只放一张条件率表、`block` 只置一个布尔；`standard` 两者都不设。
+        rejection_sample_method = spec_config.rejection_sample_method
+        self.use_block_verification: bool = False
         self.synthetic_conditional_rates: torch.Tensor | None = None
+        if rejection_sample_method == "synthetic":
+            # 配置期已经把 rates/length 归一成 `synthetic_acceptance_rates`（长度 == K）；这里的
+            # assert 只是"有人绕过配置直接建"时的兜底，与上游同款。
+            assert spec_config.synthetic_acceptance_rates is not None
+            self.synthetic_conditional_rates = torch.tensor(
+                unconditional_to_conditional_rates(
+                    spec_config.synthetic_acceptance_rates
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
+        elif rejection_sample_method == "block":
+            self.use_block_verification = True
 
     def _get_logprobs_tensors(
         self,
@@ -195,6 +223,11 @@ class RejectionSampler:
         num_reqs = input_batch.num_reqs
 
         if logits.shape[0] <= max_chunk_logits:
+            # 单块：整批一次验完。**这条分支同时是 79 关的保护**——adaptive verification 会
+            # 把 logits 压紧（只留通过置信度筛选的行）却**不更新** `cu_num_logits_np`（它保留
+            # 压紧前的布局），于是那些"陈旧的 CPU 前缀和"不能再用来挑块边界；79 关给压紧后的
+            # 批做了预算上限，保证它一定落在"行数 ≤ max_chunk_logits"这一档里，所以这里直接
+            # 一整块（上游同款注释与理由）。
             request_chunks: Iterable[tuple[int, int]] = ((0, num_reqs),)
         else:
             request_chunks = _iter_request_chunks(cu_num_logits_np, max_chunk_logits)

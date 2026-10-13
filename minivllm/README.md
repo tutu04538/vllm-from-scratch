@@ -563,12 +563,56 @@ K 列草稿全写出来（多步**真的在图里**）；EAGLE3 与原生 MTP �
 所以草稿 prefill 图要求**精确命中**批形状、混合批走 eager；差异账本（12 条）见
 [`docs/step74_alignment.md`](../docs/step74_alignment.md) §3。
 
+## 第七十五关：块验证 / synthetic 接受率 / 分块 logits
+
+三种验证方式（分派点只有 `RejectionSampler.__init__` 一处，V2 与 V1 各一份）：
+
+```
+standard   逐位置概率比检验，第一次拒绝就停（59 关）
+block      Sun et al. 2024（arXiv:2403.10444）：整块联合验证，阈值 h_i = M_i / (M_i + 1 - p_i)
+           M_i = Σ_x max(p_i·M_b(x) - M_s(x), 0)（取自**下一行**），接受长度取最后通过的位置；
+           恢复分布 = max(p_tau·target - draft, 0) 归一化（不是 standard 的 max(target-draft,0)）
+synthetic  不按 p/q 判定，按配置给的**条件**接受率 u < c_i 接受草稿（c_i 由无条件概率换算）
+```
+
+- `config.py`：`synthetic_acceptance_rates`（逐位置**无条件**概率，长度==K、单调不增、∈[0,1]）与
+  `synthetic_acceptance_length`（目标平均接受长度，配置期换算成 rates 后清空），校验与上游逐字同。
+  `rejection_sample_method` 取值扩到 `{standard, synthetic, block}`。
+- `spec_decode/utils.py::unconditional_to_conditional_rates`：`[0.8,0.4,0.2] → [0.8,0.5,0.5]`
+  （需求点名的算例）。内核逐位置早期终止，所以必须用条件率；直接拿原数组抽签会让
+  `P(τ≥2)` 从 0.4 掉到 0.32。
+- V1（`sample/rejection_sampler.py`）也实现了 synthetic（两条内核各加一个分支）；
+  ⚠️ **V1 的 `block` 明确报错**：上游 V1 没有 block 分支、会静默按 standard 跑，本仓库按
+  需求 075 §4 不静默降级（`NotImplementedError` 并指路 V2）。
+- 分块 logits 仍是"按整条请求切"（`MAX_CHUNK_BYTES = 1 GiB` 的 fp32 行预算，151936 词表 →
+  1766 行/块）；chunk 内 `cu_num_logits` 重置为**块局部**偏移，`draft_logits` 保持**全局** slot
+  寻址；`logits.shape[0] <= max_chunk_logits` 的单块分支就是 79 关"压紧后不能用陈旧 CPU
+  offsets 挑边界"的保护。
+- ⚠️ **synthetic 不证明模型分布无损**（075 §4）：实测 rates 全 1 时会照收一枚 target 概率仅
+  3.343e-4 的草稿 token（把它的 logit 设成 `-inf` 也照收）。它只用来做"接受长度 → 吞吐/调度/
+  显存"的可复现实验。
+
+```bash
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step75 -q               # 51 项
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step75_verify_modes.py # 20 项
+# synthetic 端到端（接受长度跟着配置走，与草稿质量无关）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
+    python minivllm/demo.py --device cuda --model models/Qwen3-1.7B --enforce-eager \
+    --spec-method eagle3 --spec-model models/Qwen3-1.7B-eagle3 --spec-k 3 "问题"
+```
+
+实测：块验证的五个内核 × 11 个中间缓冲与冻结实现**逐值相等**；τ 分布 vs 数学参考 TV=0.0019、
+τ=1 的交付分布 vs 块残差 TV=0.0074（vs standard 残差 0.1901，所以匹配是有判别力的）；
+synthetic 配置 `[0.8,0.4,0.2]`（N=8000）实测 `[0.8011,0.4057,0.2046]`、端到端 1.360 枚/轮
+（V1 1.185；`standard` 对照在夹具里是 2.933，跟着模型走）。差异账本 7 条见
+[`docs/step75_alignment.md`](../docs/step75_alignment.md) §5。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
-V2 入口（73/74 关）当前覆盖 EAGLE/EAGLE3/MTP（MTP 要显式给派生好的 draft 配置）+ standard 验证 +
-草稿侧的 FULL 图；块验证/synthetic、DFlash/DSpark、多模块 MTP、V2 的 target 图与 PIECEWISE
-都还没接（各自报错并写明归属关卡）。
+V2 入口（73–75 关）当前覆盖 EAGLE/EAGLE3/MTP（MTP 要显式给派生好的 draft 配置）+
+standard/synthetic/block 三种验证 + 草稿侧的 FULL 图；DFlash/DSpark、多模块 MTP、
+V2 的 target 图与 PIECEWISE、adaptive verification（79 关）都还没接（各自报错并写明归属关卡）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -609,6 +653,7 @@ python benchmarks/check_step71_dynamic_sd.py         # 24 项：查找表差分 
 python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / 上游内核逐值差分 / 一次 forward / 端到端
 python benchmarks/check_step73_v2_runner.py          # 24 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 语法掩码 / 边界
 python benchmarks/check_step74_fused_draft.py        # 23 项：图管理器 / capability / 融合门 / 两条路等价 / 端到端 / profiler
+python benchmarks/check_step75_verify_modes.py       # 20 项：配置与换算 / 逐 kernel 差分 / 分布对照 / E[τ] / synthetic 经验率 / 分块 / V1 回归
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -624,6 +669,7 @@ python -m pytest tests/step71 -q                     # 21 项：step71（表差�
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
 python -m pytest tests/step73 -q                     # 66 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
 python -m pytest tests/step74 -q                     # 42 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约）
+python -m pytest tests/step75 -q                     # 51 项：step75（块验证三方对照/分布统计；synthetic 配置与经验率；分块与陈旧 offsets 保护）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

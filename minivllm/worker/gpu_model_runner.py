@@ -273,9 +273,12 @@ class GPUModelRunner:
         self.logprobs_mode = vllm_config.model_config.logprobs_mode
         self.sampler = None                       # load_model() 之后才有（采样要用模型精度）
         # 投机的两个部件（57E）：拒绝采样器复用普通采样器（对应上游 sample/rejection_sampler.py，
-        # 59 关搬到 `sample/` 下并换成 Triton 批量内核）；提议器由 load_model() 按配置建
+        # 59 关搬到 `sample/` 下并换成 Triton 批量内核）；提议器由 load_model() 按配置建。
+        # 75 关：device 是给 synthetic 的条件接受率表用的（内核要在 GPU 上读它；上游
+        # `v1/worker/gpu_model_runner.py` 同样把 device 传进 `RejectionSampler`）。
         self.rejection_sampler = RejectionSampler(
-            Sampler(self.logprobs_mode), vllm_config.speculative_config)
+            Sampler(self.logprobs_mode), vllm_config.speculative_config, self.device)
+
         # 投机元数据的索引算术要在 CPU 侧反复做，`arange` 预分配到最大批（上游 `arange_np` 同款）
         arange_size = max(vllm_config.scheduler_config.max_num_batched_tokens,
                           vllm_config.scheduler_config.max_num_seqs + 1)

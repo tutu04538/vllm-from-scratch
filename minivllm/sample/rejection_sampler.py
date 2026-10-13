@@ -36,8 +36,17 @@ Torch 逐候选 29.2 ms/步（837 次 D2H），上游同层 Triton 内核 0.079 
     parse_output()             `[B, K+1]` → `list[list[int]]`（丢掉 -1 与越界 id）
 
 `bonus` 走**普通采样器**（所以 top-k/top-p 生效，草稿验证不走）；验证行的温度/top-k/top-p 由
-`apply_sampling_constraints()` 按请求展开后施加。**只有 `standard`**：`synthetic` / V2 `block`
-在 75 关独立验收（059 §5），本关遇到就明确报错，不静默降级。
+`apply_sampling_constraints()` 按请求展开后施加。
+
+### 三种验证方式（75 关补齐）
+
+    standard    概率比检验（本文档上半部分）：`p[d]/q[d] >= u` 才接受，第一次拒绝就停。
+    synthetic   不看 p/q，按配置给的**条件**接受率 `u < c_i` 接受草稿。`c_i` 由配置里的
+                **无条件**概率换算而来（`unconditional_to_conditional_rates`，075 §3.4）；
+                贪心行同样走这条判定（所以 `uniform_probs` 的生成条件要带上它）。
+                ⚠️ synthetic 不证明模型分布无损（绕过了概率比检验），交付物必须写明。
+    block       **本仓库的 V1 不支持**：上游 V1 的构造里没有 block 分支，会静默按 standard 跑；
+                本仓库按需求 075 §4 在构造时明确报错（块验证只有 V2 实现）。
 
 ### 设备
 
@@ -94,7 +103,8 @@ class RejectionSampler:
         output tokens = accepted tokens + recovered tokens + bonus tokens
     """
 
-    def __init__(self, sampler: Sampler, spec_config=None) -> None:
+    def __init__(self, sampler: Sampler, spec_config=None,
+                 device: torch.device | None = None) -> None:
         # 复用普通采样器做 bonus 与"修正分布"抽样：bonus 就是一次普通采样
         self.sampler = sampler
         # 68 关：logprobs 的四种模式决定"要交付的那一份"是原始的还是处理过的。
@@ -103,13 +113,36 @@ class RejectionSampler:
         self.is_processed_logprobs_mode = self.logprobs_mode in PROCESSED_LOGPROBS_MODES
         self.is_logits_logprobs_mode = self.logprobs_mode in ("raw_logits",
                                                              "processed_logits")
-        # 本关只接 standard（059 §5）。上游同一处按 `rejection_sample_method` 分
-        # synthetic / block；那两条在 75 关验收，这里遇到就报错而不是悄悄按 standard 跑。
+        # 75 关：验证方式的分派点（上游 `v1/sample/rejection_sampler.py:70-90` 同结构）。
+        # synthetic：接受率表从**无条件**换算成**条件**率（`c_i = p_i / p_{i-1}`），内核逐位置
+        # 用 `u < c_i` 判定——配置里写的是"前 i+1 枚全被接受"的无条件概率（075 §3.4）。
         method = getattr(spec_config, "rejection_sample_method", "standard")
-        if method != "standard":
-            raise ValueError(
-                f"拒绝采样方法 {method!r} 本关不支持（只接 'standard'）：synthetic 与 V2 block "
-                f"验证按需求顺序在 75 关实现；不要用 standard 的结果冒充它们")
+        self.synthetic_conditional_rates: torch.Tensor | None = None
+        if spec_config is not None and method == "synthetic":
+            # 延迟 import：`spec_decode/__init__.py` 会 import 提议者，而提议者要 import 本包
+            # （同一个环在文件顶部 TYPE_CHECKING 那段注释里写过），所以模块级 import 成环。
+            # 函数住在 `spec_decode/utils.py` 是照上游的位置（`v1/spec_decode/utils.py:598`）。
+            from ..spec_decode.utils import unconditional_to_conditional_rates
+
+            assert spec_config.synthetic_acceptance_rates is not None
+            self.synthetic_conditional_rates = torch.tensor(
+                unconditional_to_conditional_rates(
+                    spec_config.synthetic_acceptance_rates
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
+        self.synthetic_mode = self.synthetic_conditional_rates is not None
+        if method == "block":
+            # **与上游不同的一处**（需求 075 §4 点名要求）：上游 V1 的 `__init__` 里根本没有
+            # block 分支，`rejection_sample_method="block"` 会**静默按 standard 跑**——用户以为
+            # 拿到的是块验证的接受长度，其实是 standard 的。本仓库不静默降级：block 只有 V2
+            # (`worker/gpu/spec_decode/rejection_sampler.py`) 实现，走 V1 就在这里明确报错。
+            raise NotImplementedError(
+                "rejection_sample_method='block'（块验证）只在 V2 Model Runner 上实现："
+                "上游 V1 会**静默按 standard 跑**（它没有 block 分支），本仓库按需求 075 §4 "
+                "明确报错而不是给你一份标准验证的结果。请设 VLLM_USE_V2_MODEL_RUNNER=1 走 V2"
+                "（V2 需要 EAGLE/EAGLE3/MTP 方法），或改回 'standard'")
 
     def __call__(self, metadata: SpecDecodeMetadata, draft_probs: torch.Tensor | None,
                  logits: torch.Tensor, sampling_metadata: SamplingMetadata) -> SamplerOutput:
@@ -172,6 +205,8 @@ class RejectionSampler:
             target_logits,
             bonus_token_ids,
             sampling_metadata,
+            synthetic_mode=self.synthetic_mode,
+            synthetic_conditional_rates=self.synthetic_conditional_rates,
         )
 
         # ---- 4) logprobs（68 关）----
@@ -391,12 +426,17 @@ def rejection_sample(
     # [batch_size, 1]
     bonus_token_ids: torch.Tensor,
     sampling_metadata: SamplingMetadata,
+    synthetic_mode: bool = False,
+    # [num_speculative_tokens]
+    synthetic_conditional_rates: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """上游同名函数（去掉 synthetic 模式与 fp64 gumbel 两个实验分支）。
+    """上游同名函数（去掉 `use_fp64_gumbel` 这个实验分支；synthetic 已按 75 关接上）。
 
-    上游签名里还有 `synthetic_mode` / `synthetic_conditional_rates` / `use_fp64_gumbel`：
-    前两个是 75 关的 V2 块验证，第三个是实验性的 fp64 指数竞赛（本机采样器没有这个开关），
-    都不在本关范围（059 §5），所以这里不保留"传了也不生效"的参数。
+    上游签名里的第三个实验分支是 fp64 指数竞赛（本机采样器没有这个开关），不在本关范围。
+
+    synthetic（75 关）：接受判定**不看 p/q**，只看 `u < c_i`（`c_i` 是配置里那张无条件接受率表
+    换算出的条件率）。**贪心行也要掷这一次硬币**，所以 `uniform_probs` 不能只在"有非贪心请求"
+    时生成——判据是 `synthetic_mode or not all_greedy`（上游同款注释）。
     """
     assert draft_token_ids.ndim == 1
     assert draft_probs is None or draft_probs.ndim == 2
@@ -432,14 +472,16 @@ def rejection_sample(
         # 按请求的"是不是贪心"分流：两条内核各自早退不属于自己的请求
         is_greedy = sampling_metadata.temperature == GREEDY_TEMPERATURE
 
-    # 均匀随机数只给非贪心批生成（贪心内核不需要它）
+    # 均匀随机数：判据是 `synthetic_mode or not all_greedy`（上游同款）。synthetic 下**贪心行
+    # 也要用**它（接受与否只由 `u < c_i` 决定），所以不能只按"批里有非贪心请求"生成。
     uniform_probs: torch.Tensor | None = None
-    if not sampling_metadata.all_greedy:
+    if synthetic_mode or not sampling_metadata.all_greedy:
         uniform_probs = generate_uniform_probs(
             num_tokens, num_draft_tokens, sampling_metadata.generators, device)
 
     if not sampling_metadata.all_random:
         # 贪心验证：草稿 == target argmax 才接受，否则用 argmax 顶替并截断
+        # （synthetic 下改成"u < c_i 才接受"，顶替 token 仍是 target argmax）
         target_argmax = target_logits.argmax(dim=-1)
         rejection_greedy_sample_kernel[(batch_size,)](
             output_token_ids,
@@ -449,6 +491,9 @@ def rejection_sample(
             bonus_token_ids,
             is_greedy,
             max_spec_len,
+            uniform_probs,
+            synthetic_conditional_rates,
+            SYNTHETIC_MODE=synthetic_mode,
         )
         if sampling_metadata.all_greedy:
             return output_token_ids
@@ -482,7 +527,9 @@ def rejection_sample(
         is_greedy,
         max_spec_len,
         vocab_size,
+        synthetic_conditional_rates,
         NO_DRAFT_PROBS=draft_probs is None,
+        SYNTHETIC_MODE=synthetic_mode,
     )
     return output_token_ids
 
@@ -624,7 +671,7 @@ def sample_recovered_tokens(
 
 
 # ---------------------------------------------------------------------------
-# Triton 内核（与上游同名内核逐行对应；去掉 synthetic 分支）
+# Triton 内核（与上游同名内核逐行对应，含 75 关的 synthetic 分支）
 # ---------------------------------------------------------------------------
 
 
@@ -637,11 +684,18 @@ def rejection_greedy_sample_kernel(
     bonus_token_ids_ptr,         # [batch_size]
     is_greedy_ptr,               # [batch_size] or None
     max_spec_len,
+    uniform_probs_ptr,           # [num_tokens] or None（synthetic 下贪心行也要用）
+    synthetic_conditional_rates_ptr,  # [num_speculative_tokens] or None
+    SYNTHETIC_MODE: tl.constexpr,
 ):
     """贪心验证：一个 program 处理一条请求，逐位置比对草稿与 target argmax。
 
     第一个不匹配的位置写入 target 的 argmax 并**停止**（后面的候选不再提交，输出缓冲里
     保持 -1）；全部匹配则追加 bonus token。
+
+    synthetic（75 关）：接受判定换成 `u < c_i`（`c_i` 是条件接受率），**且 -1 占位永远拒绝**
+    （`draft_token_id >= 0` 那一项）。被拒时顶替的 token 仍是 target argmax —— 于是 synthetic
+    只改"接受哪些草稿"，不改"拒绝后交付什么"。
     """
     req_idx = tl.program_id(0)
     is_greedy = True if is_greedy_ptr is None else tl.load(is_greedy_ptr + req_idx)
@@ -662,8 +716,16 @@ def rejection_greedy_sample_kernel(
         if not rejected:
             draft_token_id = tl.load(draft_token_ids_ptr + start_idx + pos)
             target_argmax_id = tl.load(target_argmax_ptr + start_idx + pos).to(tl.int32)
-            token_id = target_argmax_id
-            rejected = draft_token_id != target_argmax_id
+            if SYNTHETIC_MODE:
+                uniform_prob = tl.load(uniform_probs_ptr + start_idx + pos)
+                rate = tl.load(synthetic_conditional_rates_ptr + pos)
+                # -1 是 padding 出来的草稿位，必须拒绝
+                accepted = (uniform_prob < rate) and draft_token_id >= 0
+                token_id = draft_token_id if accepted else target_argmax_id
+                rejected = not accepted
+            else:
+                token_id = target_argmax_id
+                rejected = draft_token_id != target_argmax_id
             tl.store(
                 output_token_ids_ptr + req_idx * (max_spec_len + 1) + pos,
                 token_id,
@@ -692,9 +754,16 @@ def rejection_random_sample_kernel(
     is_greedy_ptr,               # [batch_size]
     max_spec_len,
     vocab_size,
+    synthetic_conditional_rates_ptr,  # [num_speculative_tokens] or None
     NO_DRAFT_PROBS: tl.constexpr,
+    SYNTHETIC_MODE: tl.constexpr,
 ):
-    """随机验证：`min(1, p[d]/q[d]) >= u` 接受，拒绝处写 recovered token 并停止。"""
+    """随机验证：`min(1, p[d]/q[d]) >= u` 接受，拒绝处写 recovered token 并停止。
+
+    synthetic（75 关）：接受判定换成 `u < c_i`（**不看 p/q**，顺序与上游一致：先判 -1 占位，
+    再判 synthetic）。拒绝时仍然写 recovered token —— 恢复分布与 standard 相同，所以 synthetic
+    改的只有"接受长度"，不改"拒绝后交付什么"。
+    """
     req_idx = tl.program_id(0)
     is_greedy = tl.load(is_greedy_ptr + req_idx)
     if is_greedy:
@@ -717,6 +786,9 @@ def rejection_random_sample_kernel(
             if draft_token_id < 0:
                 # -1 = 被 padding 的草稿位，必须直接判拒（不能拿它去索引概率）
                 accepted = False
+            elif SYNTHETIC_MODE:
+                rate = tl.load(synthetic_conditional_rates_ptr + pos)
+                accepted = uniform_prob < rate
             else:
                 if NO_DRAFT_PROBS:
                     # 点质量提议（ngram）：q[d] = 1

@@ -46,29 +46,57 @@ def test_stats_rejects_more_accepted_than_allowed():
     raise AssertionError("接受数 > num_spec_tokens 时必须断言失败")
 
 
-def test_rejection_sample_method_only_standard():
-    """本关只接 standard：synthetic / block 在 75 关，遇到就明确报错。"""
-    for method in ("synthetic", "block"):
-        try:
-            SpeculativeConfig(method="ngram", num_speculative_tokens=1,
-                              rejection_sample_method=method)
-        except ValueError as error:
-            assert "75" in str(error)
-            continue
-        raise AssertionError(f"rejection_sample_method={method!r} 应该被拒绝")
+def test_rejection_sample_method_is_validated():
+    """验证方式的取值校验（**75 关改了期望**，见 docs/step75_alignment.md §5）。
+
+    59 关时这里断言"synthetic / block 一律报错（75 关才做）"；75 关实现了两者之后：
+    synthetic 需要一张接受率表（缺了报上游原话的错），block 在配置期合法，
+    但 **V1 侧只接 standard/synthetic**——block 只有 V2 实现，V1 构造采样器时明确报错
+    （上游 V1 会静默按 standard 跑，本仓库按需求 075 §4 不静默降级）。
+    """
+    # 未知名当场报错
+    try:
+        SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                          rejection_sample_method="synthetic_v2")
+    except ValueError as error:
+        assert "rejection_sample_method 只能是" in str(error)
+    else:
+        raise AssertionError("未知名应该被拒绝")
+    # synthetic 缺 rates/length → 上游原话的错
+    try:
+        SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                          rejection_sample_method="synthetic")
+    except ValueError as error:
+        assert "requires exactly one of" in str(error)
+    else:
+        raise AssertionError("synthetic 缺接受率表应该被拒绝")
+    # 合法的 synthetic / block 在配置期都能建出来
+    SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                      rejection_sample_method="synthetic",
+                      synthetic_acceptance_rates=[0.5])
+    SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                      rejection_sample_method="block")
 
 
-def test_rejection_sampler_rejects_non_standard_config():
+def test_rejection_sampler_accepts_synthetic_but_rejects_block():
+    """V1 采样器：synthetic 接（建条件率表），block 明确报错而不是静默按 standard 跑。"""
     sampler = Sampler()
-    for method in ("synthetic", "block"):
-        spec = SpeculativeConfig(method="ngram", num_speculative_tokens=1)
-        object.__setattr__(spec, "rejection_sample_method", method)
-        try:
-            mine.RejectionSampler(sampler, spec)
-        except ValueError as error:
-            assert "standard" in str(error)
-            continue
-        raise AssertionError(f"{method!r} 不该被 RejectionSampler 接受")
+    synthetic = mine.RejectionSampler(
+        sampler, SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                                   rejection_sample_method="synthetic",
+                                   synthetic_acceptance_rates=[0.5]))
+    assert synthetic.synthetic_mode is True
+    assert synthetic.synthetic_conditional_rates.tolist() == [0.5]
+
+    block = SpeculativeConfig(method="ngram", num_speculative_tokens=1)
+    object.__setattr__(block, "rejection_sample_method", "block")
+    try:
+        mine.RejectionSampler(sampler, block)
+    except NotImplementedError as error:
+        assert "block" in str(error) and "V2" in str(error)
+    else:
+        raise AssertionError("V1 不该接受 block（上游会静默按 standard 跑，本仓库明确报错）")
+
     # standard（以及没有 spec_config）必须能建出来
     mine.RejectionSampler(sampler, SpeculativeConfig(method="ngram", num_speculative_tokens=1))
     mine.RejectionSampler(sampler)

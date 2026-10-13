@@ -65,9 +65,31 @@ def _make_spec_config(args, model_dir: str):
         draft_model_config = ModelConfig(
             model=model_dir, dtype=args.dtype, max_model_len=args.max_model_len,
             hf_config={"eagle_aux_hidden_state_layer_ids": layers})
+    if args.spec_method in ("eagle", "eagle3") and args.spec_model:
+        # EAGLE/EAGLE3 的 draft 是**独立权重**：`draft_model_config` 必须显式给（配置期就校验，
+        # 见 `SpeculativeConfig._resolve_eagle`）。hf 配置直接读那个目录的 config.json
+        # （与 tests/step63 的真实 EAGLE3 端到端同一套做法）。
+        import json
+        import pathlib as _pathlib
+
+        draft_dir = _pathlib.Path(args.spec_model)
+        draft_hf = None
+        if (draft_dir / "config.json").is_file():
+            draft_hf = json.loads((draft_dir / "config.json").read_text())
+        draft_model_config = ModelConfig(
+            model=args.spec_model, dtype=args.dtype, max_model_len=args.max_model_len,
+            hf_config=draft_hf)
+    # 75 关：验证方式。`synthetic` 要配一张**无条件**接受率表（长度必须 == K、单调不增、
+    # ∈[0,1]）；`block` 只有 V2 路径实现（V1 会明确报错，上游 V1 会静默按 standard 跑）。
+    extra = {}
+    if args.rejection_sample_method:
+        extra["rejection_sample_method"] = args.rejection_sample_method
+    if args.synthetic_acceptance_rates:
+        extra["synthetic_acceptance_rates"] = [
+            float(part) for part in args.synthetic_acceptance_rates.split(",") if part.strip()]
     return SpeculativeConfig(method=args.spec_method, model=args.spec_model,
                              num_speculative_tokens=args.spec_k,
-                             draft_model_config=draft_model_config)
+                             draft_model_config=draft_model_config, **extra)
 
 
 def main(argv=None):
@@ -118,6 +140,14 @@ def main(argv=None):
                              " examples.custom_proposer.RepeatLastTokenProposer")
     parser.add_argument("--spec-k", type=int, default=4,
                         help="每轮最多猜几枚草稿（extract_hidden_states 必须为 1：那个方法不猜 token）")
+    parser.add_argument("--rejection-sample-method", default=None,
+                        choices=("standard", "synthetic", "block"),
+                        help="验证方式（75 关）：standard（默认，概率比检验）/ synthetic"
+                             "（合成接受率，要配 --synthetic-acceptance-rates）/ block（块验证，"
+                             "Sun et al. 2024；只在 V2 路径上实现，V1 会明确报错）")
+    parser.add_argument("--synthetic-acceptance-rates", default=None,
+                        help='synthetic 的逐位置**无条件**接受率（逗号分隔，长度必须 == K），'
+                             '例 "0.8,0.4,0.2"（K=3）；内核用换算后的条件率 [0.8,0.5,0.5]')
     parser.add_argument("--spec-aux-layers", default=None,
                         help="extract_hidden_states（64 关）要缓存哪几层特征，逗号分隔，"
                              "例如 2,14,25；也可以写进 draft 目录的 config.json")
@@ -188,6 +218,11 @@ def main(argv=None):
               f"（{type(runner.proposer).__module__}）"
               + (f"，辅助层={list(runner.eagle_aux_hidden_state_layers)}"
                  if runner.capture_aux_hidden_states else ""))
+        if spec.rejection_sample_method != "standard":
+            print(f"  验证方式：{spec.rejection_sample_method!r}"
+                  + (f"，无条件接受率={spec.synthetic_acceptance_rates}（内核用条件率）"
+                     if spec.synthetic_acceptance_rates is not None else "")
+                  + "（75 关；synthetic 的接受长度由配置决定，与草稿质量无关）")
         if spec.uses_extract_hidden_states():
             cache = next(iter(runner.proposer.kv_caches.values()))
             print(f"  特征缓存（cache-only 层）：{tuple(cache.shape)} "

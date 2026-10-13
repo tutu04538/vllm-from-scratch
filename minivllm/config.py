@@ -300,8 +300,23 @@ class SpeculativeConfig:
     model: str | None = None
     num_speculative_tokens: int = 0
     draft_model_config: ModelConfig | None = None
-    # 验证方式（上游 `SpeculativeConfig.rejection_sample_method`，59 关只接 standard）
+    # 验证方式（上游 `SpeculativeConfig.rejection_sample_method`）：
+    # `"standard"`（默认，Leviathan et al. 逐位置概率比检验）/
+    # `"synthetic"`（合成接受率：不按 p/q 判定，按配置给的衰减概率接受草稿）/
+    # `"block"`（块验证，Sun et al. 2024：把整块草稿联合验证一次，取最后通过的位置）。
+    # synthetic 在本仓库 **V1 与 V2 都实现**；block **只有 V2 实现**（上游 V1 会静默按 standard
+    # 跑，本仓库按需求 075 §4 在 V1 侧明确报错，不静默降级）。
     rejection_sample_method: str = "standard"
+    # 75 关（上游 `synthetic_acceptance_rates`）：**逐位置的无条件**接受概率——第 i 项的语义是
+    # "前 i+1 枚草稿全被接受的概率"。要求长度 == `num_speculative_tokens`、每项 ∈ [0,1]、
+    # 单调不增。内核用的是条件率，构造采样器时经
+    # `spec_decode.utils.unconditional_to_conditional_rates()` 换算（075 §3.4）。
+    # 只在 `rejection_sample_method="synthetic"` 时合法；与 `synthetic_acceptance_length` 互斥。
+    synthetic_acceptance_rates: list[float] | None = None
+    # 75 关（上游 `synthetic_acceptance_length`）：**目标平均接受长度** ∈ [1, K+1]，配置期用
+    # "最小方差档位表"换算成上面那张 rates（`_acceptance_length_to_rates`），换算后本字段被清空
+    # ——于是下游（两个采样器）只认 rates 一种口径。
+    synthetic_acceptance_length: float | None = None
     # ngram 的匹配窗口（上游 `prompt_lookup_min/max`）：长度落在 [min, max] 的后缀 ngram
     # 才会被拿去匹配。**默认 5/5**（上游注释："arbitrarily chosen"），只在给了一个时对齐另一个。
     prompt_lookup_max: int | None = None
@@ -406,11 +421,10 @@ class SpeculativeConfig:
                 f"收到 draft_sample_method={self.draft_sample_method!r}：概率草稿的 q 是 draft 空间的"
                 f"分布，要无损验证必须先把它搬到 target 空间（上游留了 TODO，尚未实现），"
                 f"本仓库照抄这条边界，不自行放开（需求 067 §3.5）")
-        if self.rejection_sample_method != "standard":
+        if self.rejection_sample_method not in ("standard", "synthetic", "block"):
             raise ValueError(
-                f"本关只支持 rejection_sample_method='standard'，收到 "
-                f"{self.rejection_sample_method!r}：synthetic（合成接受率）与 block"
-                f"（V2 块验证）按需求顺序在 75 关实现，不要用 standard 的结果冒充它们")
+                f"rejection_sample_method 只能是 'standard' / 'synthetic' / 'block'，收到 "
+                f"{self.rejection_sample_method!r}（上游 `RejectionSampleMethod` 同款）")
         if self.method in ("ngram", "ngram_gpu"):
             self._resolve_prompt_lookup()
         elif self.method == "suffix":
@@ -440,6 +454,13 @@ class SpeculativeConfig:
         # 72 关：并行提议的取值校验（上游只在 docstring 里写"只与 EAGLE 和 draft model 兼容"，
         # 本仓库按"不静默降级"的约定在配置期明确拒绝其它方法）。
         self._resolve_parallel_drafting()
+        # 75 关：synthetic 的接受率表（上游 `config/speculative.py:1365-1382`）。**必须放在最后**：
+        # rates 的长度要与最终的 K 相等，而 K 可能被上面的分支改写（`suffix` 从树深取缺省值、
+        # `mtp` 别名归一、`extract_hidden_states` 固定 1…）。上游是在
+        # `model_validator(mode="after")` 里做的，位置同样在所有 K 的来源之后。
+        # （注：`method="ngram"` 在本仓库**不会**给 K 补缺省值，K 仍是 0；上游在更早的地方就要求
+        # 显式给 K。K=0 时 synthetic 退化成空表，语义自洽，见 `_resolve_synthetic_acceptance_rates_field`。）
+        self._resolve_synthetic_acceptance_rates_field()
 
     @staticmethod
     def _draft_model_type(draft_model_config) -> str | None:
@@ -763,8 +784,97 @@ class SpeculativeConfig:
                 object.__setattr__(self, "draft_model_config",
                                    replace(self.draft_model_config, hf_config=draft_hf))
 
+    # ---------------- 75 关：synthetic 接受率（上游 config/speculative.py:243-290, 1365-1382）----
+
+    @staticmethod
+    def _acceptance_length_to_rates(length: float, n: int) -> list[float]:
+        """目标平均接受长度 → 逐位置**无条件**接受率（上游同名的"最小方差档位表"）。
+
+        上游 `config/speculative.py:243-250` 逐行同义。它想表达的是：把"平均接受 `length-1` 枚
+        草稿"摊成一张单调不增的无条件概率表，且方差最小 —— 也就是**先给满 1.0，再给一个余数，
+        剩下的给 0**。
+
+        例（n=K=4、length=2.5，即平均接受 1.5 枚）：
+            num_drafts = 1.5 → num_full = 1 → rates = [1.0] + [0.5] + [0.0, 0.0] = [1.0, 0.5, 0, 0]
+        校验：Σ(前 i+1 项全中) 的期望接受枚数 = 1.0 + 0.5 + 0 + 0 = 1.5 ✓。
+        取值上界 `length ≤ n + 1`：全接受（n 枚草稿 + 1 个 bonus）时接受长度正好是 n+1。
+        """
+        num_drafts = length - 1  # expected number of accepted draft tokens
+        num_full = int(num_drafts)
+        return (
+            [1.0] * num_full + [num_drafts - num_full] + [0.0] * (n - num_full - 1)
+        )[:n]
+
+    @staticmethod
+    def _resolve_synthetic_acceptance_rates(
+        n: int,
+        rates: list[float] | None,
+        length: float | None,
+    ) -> list[float]:
+        """从 `rates` / `length` **恰好一个**来源得到逐位置无条件接受率（上游同名函数）。
+
+        四条校验逐条照抄上游 `config/speculative.py:256-290`：二选一、长度 == K、
+        每项 ∈ [0,1]、单调不增。**不做静默修正**（比如把长度不对的数组截断/补 1）：
+        接受率是实验的输入参数，被悄悄改掉会让"配置说 0.4、实测 0.8"这种最难查的偏差出现。
+        """
+        if (rates is None) == (length is None):
+            raise ValueError(
+                "rejection_sample_method='synthetic' requires exactly one of "
+                "synthetic_acceptance_rates or synthetic_acceptance_length."
+            )
+        if rates is not None:
+            if len(rates) != n:
+                raise ValueError(
+                    f"synthetic_acceptance_rates must have length {n}, got {rates}."
+                )
+            if not all(0.0 <= r <= 1.0 for r in rates):
+                raise ValueError(
+                    f"synthetic_acceptance_rates entries must be in [0, 1], "
+                    f"got {rates}."
+                )
+            if any(rates[i] > rates[i - 1] for i in range(1, n)):
+                raise ValueError(
+                    f"synthetic_acceptance_rates must be non-increasing, got {rates}."
+                )
+            return list(rates)
+        assert length is not None
+        if not 1.0 <= length <= float(n + 1):
+            raise ValueError(
+                f"synthetic_acceptance_length must be in [1, {n + 1}], got {length}."
+            )
+        return SpeculativeConfig._acceptance_length_to_rates(length, n)
+
+    def _resolve_synthetic_acceptance_rates_field(self) -> None:
+        """`synthetic` 的配置归一（上游 `__post_init__` 尾部那两段）。
+
+        归一后**下游只认 `synthetic_acceptance_rates` 一种口径**（`rejection_sample_method` 之外
+        不再有第二处判"用的是 rates 还是 length"）：两个采样器都只读这一个字段，`length` 被清空。
+        `synthetic` 之外还写了这两个字段 → 按上游原话明确报错（它们只对 synthetic 有意义）。
+
+        ⚠️ 本仓库的 `num_speculative_tokens` 允许是 0（`method="ngram"` 不给 K 时就是这个值，
+        见 `_resolve_prompt_lookup` 与 60 关的说明），上游则在更早的地方就报"必须给 K"。
+        于是 K=0 时这里要求 `length == 1.0`（rates 为空表）——语义上等于"一枚草稿都不猜"，
+        与 K=0 的行为一致，不是特例。
+        """
+        if self.rejection_sample_method == "synthetic":
+            # Consolidate to per-position rates
+            resolved = self._resolve_synthetic_acceptance_rates(
+                self.num_speculative_tokens,
+                self.synthetic_acceptance_rates,
+                self.synthetic_acceptance_length,
+            )
+            object.__setattr__(self, "synthetic_acceptance_rates", resolved)
+            object.__setattr__(self, "synthetic_acceptance_length", None)
+        elif (
+            self.synthetic_acceptance_rates is not None
+            or self.synthetic_acceptance_length is not None
+        ):
+            raise ValueError(
+                "synthetic_acceptance_rates / synthetic_acceptance_length "
+                "are only valid with rejection_sample_method='synthetic'."
+            )
+
     #: 71 关：**能真正按轮改 K** 的方法。判据不是"名字看起来行"，而是上游代码里提议者
-    #: 确实把 `num_spec_tokens_to_schedule` 当参数用、且支持变宽/零宽返回：
     #:   * `llm_base_proposer.propose(num_speculative_tokens, ...)`：可变宽，且 K=0 时
     #:     **先跑完第一遍**（同步 draft KV）再返回 `[B, 0]`——draft_model / eagle / eagle3 / mtp
     #:   * `ngram_proposer.propose(num_speculative_tokens, ...)`：`assert K <= self.k`，可变宽
@@ -1630,7 +1740,10 @@ class VllmConfig:
                         分段件），混合批走 eager——这条在 Runner 初始化时 warning + 记账，
                         **不是**静默降级。纯 PIECEWISE（`decode_mode() != FULL`）则一张图都
                         不会有，属于"请求了图却什么也不做"，所以在这里明确报错。
-            验证方式    只支持 standard（其余属 75 关）
+            验证方式    standard / synthetic / block **三条都支持**（75 关）：
+                        synthetic 的接受率在构造采样器时换算成条件率，block 走块验证分支。
+                        ⚠️ block **只有 V2 实现**（上游 V1 会静默按 standard 跑，本仓库 V1 侧
+                        构造 `sample/rejection_sampler.py::RejectionSampler` 时明确报错）。
             异步调度    引擎层本来就拒绝（70 关），这里再挡一道
         """
         if not self.use_v2_model_runner:
@@ -1641,11 +1754,6 @@ class VllmConfig:
                 f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp')，收到 "
                 f"{spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
                 f"（其余方法各自的归属关卡见 spec_decode/__init__.py 的报错）"
-            )
-        if spec is not None and spec.rejection_sample_method != "standard":
-            raise NotImplementedError(
-                f"V2 的 {spec.rejection_sample_method!r} 验证方式属 75 关；"
-                f"本关只支持 standard"
             )
         mode = self.compilation_config.cudagraph_mode
         if mode is not None and mode != CUDAGraphMode.NONE \

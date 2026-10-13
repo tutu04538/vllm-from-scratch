@@ -400,3 +400,26 @@ def eagle_step_update_slot_mapping_and_metadata(
         torch.minimum(new_seq_len,
                       torch.tensor(max_model_len, device=new_seq_len.device)
                       ).to(seq_lens.dtype))
+
+
+# ---------------- 75 关：synthetic 接受率的无条件 → 条件换算（上游同名函数）----------------
+
+
+def unconditional_to_conditional_rates(rates: list[float]) -> list[float]:
+    """把"前 i+1 枚草稿全部被接受"的**无条件**概率换成**条件**接受率 `c_i = p_i / p_{i-1}`。
+
+    上游 `v1/spec_decode/utils.py:598-601` 逐行同义。为什么要换：验证内核是**逐位置早期终止**的
+    循环——只有走到第 i 个位置（前 i 枚都接受了）才会掷第 i 次硬币，所以内核里每次比较用的必须是
+    "在已接受前 i 枚的条件下，第 i+1 枚被接受"的条件概率。用户配置里写的是更直观的无条件概率
+    （"前 2 枚都接受的概率是 0.4"），两者差一个前缀。
+
+    例（K=3、rates=[0.8, 0.4, 0.2]，需求 075 §3.4 的原例）：
+        c_0 = 0.8 / 1.0 = 0.8
+        c_1 = 0.4 / 0.8 = 0.5
+        c_2 = 0.2 / 0.4 = 0.5
+    直接拿原数组逐位置抽签会把无条件概率当条件概率用，接受长度必然对不上配置。
+
+    `q == 0` 的退化情形返回 0.0（上游同款）：前一枚都从未被接受过，后面那些位置根本走不到，
+    条件概率无定义；返回 0 表示"这些位置永远不会被接受"，与"无条件概率已归零"一致。
+    """
+    return [p / q if q > 0.0 else 0.0 for p, q in zip(rates, [1.0, *rates[:-1]])]

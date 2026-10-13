@@ -1,5 +1,5 @@
 {
- "_说明": "各关自检证据的合并文件（原 docs/stepNN_{results,models,dependencies}.json 已删除）。按关分键：stepNN.results = 命令/环境/包摘要 hash/passed-failed/真实执行轨迹；stepNN.models = 用到的模型与权重 manifest；stepNN.dependencies = 外部依赖锁定记录（61 关要求）。**交付物位置与格式偏离需求总纲 §4**（总纲点名 docs/stepNN_results.json 与 docs/stepNN_models.json，这里合并成一份，目的是让 docs/ 根目录只留一个 json）；字段口径不变，逐字沿用各关原文。每个 stepNN.results 里的 commands/execution_trace/not_run 都是**当时的实测回显**，不是需求里的预期值。",
+ "_说明": "各关自检证据的合并文件（原 docs/stepNN_{results,models,dependencies}.json 已删除）。按关分键：stepNN.results = 命令/环境/包摘要 hash/passed-failed/真实执行轨迹；stepNN.models = 用到的模型与权重 manifest；stepNN.dependencies = 外部依赖锁定记录（61 关要求）。**交付物位置与格式偏离需求总纲 §4**（总纲点名 docs/stepNN_results.json 与 docs/stepNN_models.json，这里合并成一份，目的是让 docs/ 根目录只留一个 json）；字段口径不变，逐字沿用各关原文。每个 stepNN.results 里的 commands/execution_trace/not_run 都是**当时的实测回显**，不是需求里的预期值。 ｜ 73/74/75 关的模型信息同时以平铺键 `stepNN_models` 与嵌套键 `stepNN.models` 两种写法给出（内容相同，历史写法见 `_结构` 与逐关记录）。",
  "_结构": {
   "stepNN.results": "命令、依赖版本、设备、源码 hash（包摘要）、passed/failed/skipped、真实执行轨迹、未跑项、当关修掉的问题",
   "stepNN.models": "target/draft 路径或仓库、revision、architectures、tokenizer、dtype、辅助层/词表/共享配置、权重来源",
@@ -19,7 +19,9 @@
   "step68": "已实现并自检（67 项 pytest + 53 项 benchmark）：logprobs 四种模式 + 投机逐行索引、xgrammar 语法掩码（试走/回滚/只有提交才推进）、min_p 与逐行约束、三态矩阵与显式拒绝；⚠️ 2026-10-06 独立复核推翻了两条「上游疑似 bug」记录（假阳性），并确认 logprobs=-1 的入口归一化是本项目待对齐项",
   "step69": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）",
   "step70": "partial + self-verified（状态机/批队列/异步交付自检通过；端到端明确拒绝并记录实测证据）",
-  "step73": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）：V2 独立入口（常驻 slot 请求状态 + 输入组装内核 + 块表按 slot + V2 采样/验证/提议者 + 侧流交付）；实测 V1 与 V2 在 tiny（K=1/3、含 4 次抢占）与真实 Qwen3-1.7B+eagle3（3×48 token）上逐 token 相同、drafted/accepted 计数全等；⚠️ V2 只覆盖 EAGLE/EAGLE3 + standard 验证，图属 74 关、synthetic/block 属 75 关、DFlash/DSpark 属 76/77、多模块 MTP 属 80；默认仍走 V1（环境变量同名同义切换）"
+  "step73": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）：V2 独立入口（常驻 slot 请求状态 + 输入组装内核 + 块表按 slot + V2 采样/验证/提议者 + 侧流交付）；实测 V1 与 V2 在 tiny（K=1/3、含 4 次抢占）与真实 Qwen3-1.7B+eagle3（3×48 token）上逐 token 相同、drafted/accepted 计数全等；⚠️ V2 只覆盖 EAGLE/EAGLE3 + standard 验证，图属 74 关、synthetic/block 属 75 关、DFlash/DSpark 属 76/77、多模块 MTP 属 80；默认仍走 V1（环境变量同名同义切换）",
+  "step74": "implemented + self-verified（V2 提议者的两张图：草稿 prefill 图（草稿位置 0、每请求 1+K 行、复用 target 本轮元数据）+ 融合多步 decode 图（K−1 步录进一张图、一次重放）；走融合还是逐步由后端 capability 决定，两条路逐轮状态全等；只做提议者侧，V2 的 target 图与 PIECEWISE 未接）",
+  "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）"
  },
  "step58": {
   "results": {
@@ -4102,5 +4104,180 @@
    "graph_pool_bytes": 77594624,
    "fused_multi_step_decode": true
   }
+ },
+ "step75": {
+  "results": {
+   "step": 75,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/075_V2块验证Synthetic模式与分块Logits.md",
+   "status": "已实现并自检：V2 的三种验证方式补齐（standard 保留为对照）。block（Sun et al. 2024）按**源码递推**实现整块联合验证——`_compute_cumulative_log_p_kernel` 的累计对数比（上限加在累计值上：`log_p = min(log_p + (log p − log q), 0)`）+ `_compute_local_residual_mass_kernel` 的下一行残差质量 → 阈值 `h_i = M_i/(M_i + 1 − p_i)`（最后一位/下一位是 -1 占位时 `h_i = p_i`，`denom ≤ 0` 兜底 1.0），接受长度取**最后**通过测试的位置（不早停），恢复分布 = `max(p_tau·target − draft, 0)` 归一化（τ=0 时 p_tau=1 → 退化成 standard 形状；τ=K → bonus 行）；synthetic 把配置里的**无条件**接受率经`spec_decode/utils.py::unconditional_to_conditional_rates` 换算成**条件**率后逐位置抽签（需求原例 [0.8,0.4,0.2]→[0.8,0.5,0.5]），V1（`sample/rejection_sampler.py` 两条内核各加一个分支）与 V2 同语义；配置新增 `synthetic_acceptance_rates` / `synthetic_acceptance_length`（长度/单调/范围/二选一校验与上游逐字同，length 在配置期换算成 rates 并清空）；分块 logits 保持「按整条请求切 + chunk 内 cu_num_logits 局部偏移 + draft_logits 全局 slot 寻址」，`logits.shape[0] <= max_chunk_logits → 单块` 就是 79 关「压紧后不能用陈旧 CPU offsets 挑块边界」的保护。⚠️ 与上游有意不同的一处：**V1 的 block 明确报错**（上游 V1 没有 block 分支、会静默按 standard 跑，需求 075 §4 点名要求不得静默降级）；⚠️ synthetic **不证明模型分布无损**（实测照收 target 概率 3.343e-4 的草稿 token，logit=-inf 也照收）；⚠️ 块验证「每轮期望产出永不差于标准」只在草稿接近 target 的区间成立（对抗性合成分布下实测更差，见对齐文档 §6.3）。差异账本 7 条见 docs/step75_alignment.md §5。",
+   "recorded_at": "2026-10-14T00:30:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "2b2338d",
+    "implementation_commit": "见本轮提交（step75：V2 块验证 / synthetic 接受率 / 分块 logits）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 136,
+    "sha256": "c7c23747796364fa66df0de0bc7506afef1f57a72eeeb851f76faabbb88e21e7",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐/差分；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 的 UVA 与上游对照都需要）；V2 侧再设 VLLM_USE_V2_MODEL_RUNNER=1（与上游同名同义）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step75 -q",
+     "result": "52 passed（block 18 + synthetic 19 + logit chunks 15），连跑 3 次稳定"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step75 -q",
+     "result": "772 passed（= 74 关的 720 + 本关 52，无回归）"
+    },
+    {
+     "cmd": "python benchmarks/check_step75_verify_modes.py",
+     "result": "20 项全部通过（A 配置与换算 5 / B 逐 kernel 差分 2 / C 分布对照 2 / D E[τ] 随草稿质量 1 / E synthetic 经验率 3 / F 无损性反证 1 / G 分块 4 / H V1 回归 2）"
+    },
+    {
+     "cmd": "python benchmarks/check_step59_rejection.py",
+     "result": "21 项全部通过（E5 的期望按 75 关改写：synthetic 已接、block 在 V1 明确报错）"
+    },
+    {
+     "cmd": "python -m pytest tests/step59/test_metrics.py -q",
+     "result": "11 passed（两条旧用例的期望按 75 关改写：`test_rejection_sample_method_only_standard` → `test_rejection_sample_method_is_validated`、`test_rejection_sampler_rejects_non_standard_config` → `test_rejection_sampler_accepts_synthetic_but_rejects_block`；断言强度不变）"
+    },
+    {
+     "cmd": "/tmp/real75/measure.py（真实 Qwen3-1.7B + Qwen3-1.7B-eagle3，bf16，K=3，2 条 prompt × 48 token）",
+     "result": "V1 standard 0.146 接受/轮 vs V1 synthetic 1.256/1.436；V2 standard 0.093 vs V2 synthetic 1.500；V2 block 0.093 —— synthetic 的接受长度跟着**配置**（Σrates=1.4）走，standard/block 跟着**草稿质量**走"
+    }
+   ],
+   "execution_trace": {
+    "块验证逐 kernel 差分（本项目 vs 冻结实现，同输入同随机源）": "5 个内核（stats / cumulative_log_p / local_residual_mass / rejection / resample+insert）× 11 个中间缓冲，点质量草稿与概率草稿两种输入下 torch.equal 全等（逐 kernel 用 zeros 分配，未写的格子也可比）",
+    "块验证 τ 分布（残差例 K=2、N=8000）": "经验 [0.6633, 0.3055, 0.0312] vs 参考闭式 [0.6651, 0.3036, 0.0313] → TV=0.0019；平均接受枚数 0.368 vs 参考 0.3662（standard 参考 0.6365）",
+    "块验证的恢复分布（τ=1、n=2444）": "经验 vs 块残差 max(p_tau·M_b − M_s,0)：TV=0.0074、卡方=1.90（7 自由度）；vs standard 残差 max(M_b − M_s,0)：TV=0.1901；两条参考之间 TV=0.1917（判别力）",
+    "块验证边界": "p==q（草稿分布逐位等于 target）→ h 走 denom≤0 兜底 1.0 → 全接受；p_0=0（target logit=-inf）→ h_0=0 → 必拒且 τ=0 的残差退化成 standard 形状；K=1 的最后候选 h_0=p_0；贪心请求走 argmax 分支（块阈值不参与）；block+synthetic 同时给 → AssertionError（上游同款）",
+    "E[τ] 随草稿质量（K=3、V=8、200 组设计取平均）": {
+     "mix=0.00": {
+      "block": 0.303,
+      "standard": 0.333
+     },
+     "mix=0.25": {
+      "block": 0.531,
+      "standard": 0.557
+     },
+     "mix=0.50": {
+      "block": 1.294,
+      "standard": 1.212
+     },
+     "mix=0.75": {
+      "block": 2.54,
+      "standard": 2.381
+     },
+     "mix=0.90": {
+      "block": 2.906,
+      "standard": 2.84
+     },
+     "mix=1.00": {
+      "block": 3.0,
+      "standard": 3.0
+     },
+     "结论": "论文的「永不差于标准」在草稿接近 target 的区间成立；对抗性合成分布下更差（不改实现，只记录）"
+    },
+    "synthetic 经验前缀接受率（V2 内核、N=8000）": "配置 [0.8,0.4,0.2] → 实测 [0.8011,0.4057,0.2046]（容差 0.025 ≈ 4.5σ）；平均接受枚数 1.4115 vs Σrates=1.4；错误口径（原数组当条件率）会给 [0.8,0.32,0.064]，差 [0,0.08,0.136]",
+    "synthetic 边界与无损性反证": "rates 全 1 → τ=K；全 0 → τ=0（u>0）；target 概率 3.343e-4 的草稿 token 在 rates=1 时照被接受，把它的 logit 设成 -inf（概率恰好 0）也照收 → synthetic 不证明分布无损（075 §4 要求写明）",
+    "分块 logits": "上限 151936→1766 / 32000→8388 / 128256→2092 行；三条请求各 4 行时上限 4→3 块、8→2 块、11→2 块、12→1 块；单块 vs 多块的 sampled/num_sampled/logprobs（含 cu_num_generated_tokens 全局偏移）逐值一致；陈旧 CPU offsets（前缀和比 GPU 那份大）+ 行数≤上限 → 单块且切块器 0 次调用，而陈旧 offsets 若被用来切块会给出与新鲜不同的边界 [(0,1),(1,2),(2,3)] vs [(0,2),(2,3)]",
+    "V1 回归": "synthetic 与上游逐值差分（钉死均匀数 + recovered token 两个随机源）；V1/V2 的 τ 分布互差 < 0.02 且都贴合配置 [0.2,0.4,0.2,0.2]；V1 的 block 明确 NotImplementedError（上游 V1 会静默按 standard 跑）",
+    "端到端（tiny eagle3、synthetic [0.8,0.4,0.2]）": "V2 25 轮接受 34 枚 → 1.360 枚/轮；V1 27 轮 32 枚 → 1.185 枚/轮；V1 standard 对照（夹具里 draft == target）15 轮 44 枚 → 2.933 枚/轮",
+    "改掉的旧期望值（断言强度不变）": [
+     "tests/step59/test_metrics.py::test_rejection_sample_method_only_standard → test_rejection_sample_method_is_validated（synthetic 缺表报上游原话的错；block 配置期合法）",
+     "tests/step59/test_metrics.py::test_rejection_sampler_rejects_non_standard_config → test_rejection_sampler_accepts_synthetic_but_rejects_block",
+     "benchmarks/check_step59_rejection.py 的 E5 同一条（项数仍是 21）",
+     "tests/step75 新增的混合 K_i 夹具在写第一版时 `expanded_idx_mapping` 按 k+1 展开（而不是按每请求行数）→ 单块/多块结果不一致；已改成按 rows_per_req 展开并加断言（这是夹具 bug，不是实现 bug）"
+    ]
+   }
+  },
+  "models": {
+   "target": {
+    "path": "models/Qwen3-1.7B",
+    "source": "本机已有（HF Qwen/Qwen3-1.7B，2026-10-03 快照）",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "bfloat16（真实权重对照）/ float32（tiny 测试）",
+    "max_model_len": 512,
+    "note": "权重不提交（.gitignore）"
+   },
+   "draft": {
+    "path": "models/Qwen3-1.7B-eagle3",
+    "source": "HF AngelSlim/Qwen3-1.7B_eagle3（3 个辅助层、draft 词表 32000 + d2t）",
+    "architectures": [
+     "Eagle3ForCausalLM"
+    ],
+    "dtype": "bfloat16",
+    "note": "真实权重上 standard 的接受长度受 63 关已知差距影响（这几条 prompt 只有 0.09~0.15 枚/轮）；本关不测草稿质量"
+   },
+   "tiny": {
+    "target": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+    "draft": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa')",
+    "vocab_size": 11,
+    "note": "端到端夹具的 max_model_len 只能 64：tiny 模型的位置表按 64 建，写 128 会在 RoPE 的 gather 上 device-side assert（踩过）"
+   },
+   "math_reference": {
+    "path": "minivllm/testing/torch_block_verification.py",
+    "note": "块验证的 Torch 数学参考（按源码递推：p_i / h_i / 残差分布 / τ 分布闭式），只给测试用；生产路径不 import"
+   },
+   "shared_config": {
+    "block_size": 4,
+    "num_gpu_blocks": 64,
+    "max_num_batched_tokens": 32,
+    "cudagraph_mode": "full_decode_only（V2 端到端）/ 不涉及（内核级用例）",
+    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 需要 UVA）；V1 用例不需要"
+   },
+   "v2_requires": "CUDA（Triton 内核 + UVA 常驻状态）；block 只有 V2 路径实现（V1 构造即 NotImplementedError）"
+  }
+ },
+ "step75_models": {
+  "target": {
+   "path": "models/Qwen3-1.7B",
+   "source": "本机已有（HF Qwen/Qwen3-1.7B，2026-10-03 快照）",
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "dtype": "bfloat16（真实权重对照）/ float32（tiny 测试）",
+   "max_model_len": 512,
+   "note": "权重不提交（.gitignore）"
+  },
+  "draft": {
+   "path": "models/Qwen3-1.7B-eagle3",
+   "source": "HF AngelSlim/Qwen3-1.7B_eagle3（3 个辅助层、draft 词表 32000 + d2t）",
+   "architectures": [
+    "Eagle3ForCausalLM"
+   ],
+   "dtype": "bfloat16",
+   "note": "真实权重上 standard 的接受长度受 63 关已知差距影响（这几条 prompt 只有 0.09~0.15 枚/轮）；本关不测草稿质量"
+  },
+  "tiny": {
+   "target": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+   "draft": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa')",
+   "vocab_size": 11,
+   "note": "端到端夹具的 max_model_len 只能 64：tiny 模型的位置表按 64 建，写 128 会在 RoPE 的 gather 上 device-side assert（踩过）"
+  },
+  "math_reference": {
+   "path": "minivllm/testing/torch_block_verification.py",
+   "note": "块验证的 Torch 数学参考（按源码递推：p_i / h_i / 残差分布 / τ 分布闭式），只给测试用；生产路径不 import"
+  },
+  "shared_config": {
+   "block_size": 4,
+   "num_gpu_blocks": 64,
+   "max_num_batched_tokens": 32,
+   "cudagraph_mode": "full_decode_only（V2 端到端）/ 不涉及（内核级用例）",
+   "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 需要 UVA）；V1 用例不需要"
+  },
+  "v2_requires": "CUDA（Triton 内核 + UVA 常驻状态）；block 只有 V2 路径实现（V1 构造即 NotImplementedError）"
  }
 }

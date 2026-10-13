@@ -337,14 +337,30 @@ check("E4. ngram 提议（点质量 q）greedy 投机 == 非投机，且统计�
       ngram_spec == ngram_plain and bool(ngram_stats),
       f"{ngram_spec} / {ngram_plain}")
 
+# 75 关改了这条期望（见 docs/step75_alignment.md §5）：synthetic 已实现，缺接受率表时
+# 报的是上游原话的错；block 在配置期合法但 V1 侧明确报错（上游 V1 会静默按 standard 跑）。
 try:
     SpeculativeConfig(method="ngram", num_speculative_tokens=1,
                       rejection_sample_method="synthetic")
-    error = None
+    synthetic_error = None
 except ValueError as exc:
-    error = str(exc)
-check("E5. 只接 standard：`rejection_sample_method='synthetic'` 明确报错（75 关才做）",
-      error is not None and "75" in error, (error or "").splitlines()[0])
+    synthetic_error = str(exc)
+from minivllm.sample import Sampler as _Sampler                       # noqa: E402
+from minivllm.sample.rejection_sampler import RejectionSampler as _V1RS  # noqa: E402
+try:
+    _V1RS(_Sampler(), SpeculativeConfig(method="ngram", num_speculative_tokens=1,
+                                        rejection_sample_method="block"))
+    block_error = None
+except NotImplementedError as exc:
+    block_error = str(exc)
+_ok_synthetic = _V1RS(_Sampler(), SpeculativeConfig(
+    method="ngram", num_speculative_tokens=1, rejection_sample_method="synthetic",
+    synthetic_acceptance_rates=[0.5])).synthetic_mode is True
+check("E5. synthetic 已接（缺表报配置错）；block 在 V1 明确报错（不静默按 standard）",
+      synthetic_error is not None and "requires exactly one of" in synthetic_error
+      and block_error is not None and "V2" in block_error and _ok_synthetic,
+      f"synthetic缺表={'ok' if synthetic_error else 'NO'} / "
+      f"blockV1={'ok' if block_error else 'NO'} / synthetic可建={_ok_synthetic}")
 
 # ================================================ F. profiler
 
