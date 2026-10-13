@@ -511,7 +511,7 @@ V1 把「请求的身份」和「本轮的 batch 行号」绑在一起：谁走�
   EAGLE/EAGLE3 + standard 验证，其余组合在**配置期**明确报错（不静默退回 V1）。
 
 ```bash
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 56 项（含与上游内核逐值差分）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step73 -q        # 64 项（含与上游内核逐值差分）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step73_v2_runner.py   # 24 项
 # 用 V2 跑一段生成（V2 本关只做 eager，所以配 --enforce-eager；非投机/投机都支持）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
@@ -622,7 +622,7 @@ python -m pytest tests/step67 -q                     # 23 项：step67（TLI 构
 python -m pytest tests/step68 -q                     # 67 项：step68（logprobs 四种模式/投机行索引/约束/语法掩码/端到端）
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
-python -m pytest tests/step73 -q                     # 56 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
+python -m pytest tests/step73 -q                     # 64 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
 python -m pytest tests/step74 -q                     # 42 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约）
 ```
 
