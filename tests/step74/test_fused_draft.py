@@ -323,3 +323,72 @@ def test_advance_draft_positions_false_forces_fused(monkeypatch):
     one.attn_groups = speculator.attn_groups
     one._configure_fused_multi_step_decode()
     assert one.use_fused_multi_step_decode is False
+
+
+class DraftLogitsRowCounter:
+    """记录草稿模型每次 `compute_logits` **收到几行**（= lm_head 实际投影了几行）。
+
+    这是"只对要采样的行算 logits"这条原则在草稿侧的判据：第一遍的批有 `1+K` 行/请求，
+    但只有**锚点行**要出第 0 列草稿；AR 步每步 1 行/请求。谁把整块 `1+K` 行都投一遍，
+    这里就会看到 `num_reqs * (1 + K)`。
+    """
+
+    def __init__(self, speculator) -> None:
+        self.rows: list[int] = []
+        original = speculator.model.compute_logits
+
+        def patched(hidden_states, *args, **kwargs):
+            self.rows.append(int(hidden_states.shape[0]))
+            return original(hidden_states, *args, **kwargs)
+
+        speculator.model.compute_logits = patched
+
+
+@requires_cuda
+@pytest.mark.parametrize("spec_k", [2, 3, 4])
+def test_draft_projects_only_the_rows_it_samples(monkeypatch, spec_k):
+    """G6：草稿采样只投影"要采样的行"——`K × num_reqs` 行/轮，而不是 `(1+K) × num_reqs`。
+
+    eager 路径（mode="none"）下 Python 侧调用次数才数得清：一轮 = 第一遍（1 次）+ K−1 个 AR 步
+    （K−1 次），每次恰好 `num_reqs` 行。装图之后 AR 步在核内跑（`DraftForwardCounter` 已经
+    钉住"Python 侧 0 次"），这里要钉的是**每次调用收到几行**——它决定了 lm_head 的 GEMM 规模。
+    """
+    num_reqs = 2
+    engine, _core, runner = _engine_with(monkeypatch, spec_k=spec_k,
+                                         supports_update=True, mode="none",
+                                         capture_sizes=[], max_num_seqs=num_reqs)
+    counter = DraftLogitsRowCounter(runner.speculator)
+    rounds = 0
+    seen = 0
+
+    def after(engine, runner):                 # noqa: ARG001
+        # 只数**真的起草稿**的轮：引擎收尾那一步没有任何请求，提议者根本不会被调到
+        # （实测那一步投影 0 次），把它算进来会让"K 次/轮"这条断言假失败。
+        nonlocal rounds, seen
+        if len(counter.rows) > seen:
+            seen = len(counter.rows)
+            rounds += 1
+
+    try:
+        # 两条请求用**同一个** prompt + 贪心 + 不早停：轨迹逐轮相同 → 同一轮结束，
+        # 于是"本轮活跃请求数"恒等于 num_reqs（否则先结束的那条会让行数掉到 1，
+        # 那是正常现象、不是这条不变量要查的东西）。
+        same_prompt = list(PROMPTS[0][1])
+        for req_id in ("A", "B"):
+            engine.add_request(req_id, list(same_prompt),
+                               SamplingParams(max_tokens=4, temperature=0.0, eos_token_id=999,
+                                              ignore_eos=True))
+        run_steps(engine, runner, max_tokens=4, after=after)
+    finally:
+        engine.shutdown()
+
+    assert counter.rows, "一次 `compute_logits` 都没记到：埋点没生效"
+    # 每次都恰好 1 行/请求（绝不是 1+K 行/请求）
+    assert set(counter.rows) == {num_reqs}, (
+        f"K={spec_k} 时草稿投影的行数出现了 {sorted(set(counter.rows))}，"
+        f"期望每次都只有 {num_reqs} 行（1 行/请求）")
+    # 而且每次都是"要采样的那几行"：每轮 K 次（第一遍 1 + AR 步 K−1）
+    assert len(counter.rows) % spec_k == 0, (
+        f"K={spec_k} 时投影次数 {len(counter.rows)} 不是 K 的整数倍")
+    assert len(counter.rows) == spec_k * rounds, (
+        f"K={spec_k}、{rounds} 轮：期望 {spec_k * rounds} 次投影，实测 {len(counter.rows)}")

@@ -140,8 +140,8 @@ cudagraph capture sizing in `cudagraph_utils.py`"）。原因很具体：V2 两�
 
 命令与数字见 `docs/results.json` → `step74.results` / `step74.models`。摘要：
 
-* `python -m pytest tests/step74 -q` → **42 passed**（融合/等价 20 + 管理器单元 12 + 边界 5 + MTP 5）；
-  全量 `tests/step58…74` → **717 passed**（664 + 42 + 本关顺手补进 `tests/step73` 的 11 项用例：输入组装 1 + 验证分块 8 + prefill lookahead 2）。
+* `python -m pytest tests/step74 -q` → **45 passed**（融合/等价 20 + 管理器单元 12 + 边界 5 + MTP 5 + 「草稿只投影要采样的行」3）；
+  全量 `tests/step58…74` → **720 passed**（664 + 45；多出来的 11 项是顺手补进 `tests/step73` 的用例：输入组装 1 + 验证分块 8 + prefill lookahead 2）。
 * **真实权重**（`Qwen3-1.7B` + `Qwen3-1.7B-eagle3`，K=3、bf16、48 token）：V1 eager / V2 eager / V2 图
   三条路 greedy **逐 token 相同**，`drafted/accepted/rounds` 也全等（120/7/40）；V2 图捕获 **4 张**
   （prefill 4、8 行；decode 1、2 行）/ 0.168 s / 池 76 MiB / `fused=True`。

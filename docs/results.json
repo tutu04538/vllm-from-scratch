@@ -3982,11 +3982,11 @@
    "commands": [
     {
      "cmd": "python -m pytest tests/step74 -q",
-     "result": "42 passed（融合/逐步等价 20 + 图管理器单元 12 + 批边界 5 + MTP 5）"
+     "result": "45 passed（融合/逐步等价 20 + 图管理器单元 12 + 批边界 5 + MTP 5 + 「草稿只投影要采样的行」3）"
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step74 -q",
-     "result": "717 passed（= 73 关的 675 + 本关 42，无回归；多出来的 11 项是本关顺手补进 tests/step73 的用例：输入组装 1 + 验证分块 8 + prefill lookahead 2，见“新增用例”）"
+     "result": "720 passed（= 73 关的 675 + 本关 45，无回归）"
     },
     {
      "cmd": "python benchmarks/check_step74_fused_draft.py",
