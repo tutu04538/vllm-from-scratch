@@ -1,7 +1,21 @@
 """V2 的自回归提议者（对应 vLLM `v1/worker/gpu/spec_decode/autoregressive/speculator.py`）。
 
-EAGLE/EAGLE3/MTP（以及 DFlash/DSpark 的串行部分）在 V2 里共用这套流程，只有"模型从哪来"
-与"位置要不要步进"不同。**关键差别在输入组装**：V1 用 `copy_and_expand_eagle_inputs_kernel`
+EAGLE/EAGLE3/MTP/Gemma4-MTP 在 V2 里共用这套流程（上游类层次：
+`DraftModelSpeculator` → `AutoRegressiveSpeculator` → `EagleSpeculator` / `MTPSpeculator` /
+`Gemma4Speculator`），只有"模型从哪来"与"位置要不要步进"不同。
+
+**"整块左移"是这一支（吃 target hidden 的 AR/EAGLE 系）的布局，不是 V2 的普遍规则**，
+所以这个内核里没有 `if method` 分支——分叉在"选哪个 speculator 类"（上游
+`spec_decode/__init__.py::init_speculator`）里：`DFlashSpeculator`（→ DFlash2/DSpark）有**自己的**
+输入组装内核（`_prepare_dflash_inputs_kernel`：上下文原样 + 追加 `num_query_per_req` 行，
+query 0 = bonus token、其余是 mask token，**不左移**），`MultiModuleMTPSpeculator` 也有自己的
+内核（同一套 `num_sampled ? last_sampled : next_prefill_tokens` 规则，但读 K 枚 lookahead 给后续
+模块做 override）。V1 里"要不要左移"反而是**运行期参数**：上游同一个
+`copy_and_expand_eagle_inputs_kernel` 靠 `shift_input_ids` 分叉（True = EAGLE 系跳过本请求第 0 枚
+token；False = PARD/普通 draft 整块原样 + 追加槽位），本仓库 V1 的等价实现见
+`spec_decode/utils.py::expand_parallel_draft_inputs(..., shift_input_ids=...)`。
+
+**关键差别在输入组装**：V1 用 `copy_and_expand_eagle_inputs_kernel`
 把 target 的行扩容/左移；V2 直接在 draft 的输入缓冲上做同一件事（`_prepare_prefill_inputs_kernel`）：
 
     draft_input_ids[i-1] = target_input_ids[i]        （整块左移一行）
