@@ -4198,7 +4198,8 @@
      "tests/step59/test_metrics.py::test_rejection_sampler_rejects_non_standard_config → test_rejection_sampler_accepts_synthetic_but_rejects_block",
      "benchmarks/check_step59_rejection.py 的 E5 同一条（项数仍是 21）",
      "tests/step75 新增的混合 K_i 夹具在写第一版时 `expanded_idx_mapping` 按 k+1 展开（而不是按每请求行数）→ 单块/多块结果不一致；已改成按 rows_per_req 展开并加断言（这是夹具 bug，不是实现 bug）"
-    ]
+    ],
+    "附录 A 的手算例（K=3、V=3，真内核 2000 次）": "老师表 [0.6,0.2,0.2]×3、学生表 第 1 位 [0.15,0.6,0.25] / 第 2、3 位 [1/3,1/3,1/3]、学生写 [狗,猫,猫]：每步原始比值 (1/3,1.8,1.8) → 累计前缀比 (0.333,0.6,1.0) → 合格线 (0,0.0625,1.0)；实测标准验证 τ 分布 [0.653,0,0,0.347]（解析 [2/3,0,0,1/3]，平均 1.041）vs 块验证 [0,0,0,1]（平均 3.000）。反面对照：按“每步 min(1,p/q) 再累乘”的错误口径，块验证的平均接受长度会退化成 1.0（与标准验证相同），与内核不符 → 钉住“上限加在累计值上”。（零基础讲解见 docs/step75_alignment.md 附录 A）"
    }
   },
   "models": {
