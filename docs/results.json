@@ -3986,7 +3986,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step74 -q",
-     "result": "707 passed（= 73 关的 665 + 本关 42，无回归；多出来的那 1 项是本关顺手补进 tests/step73 的输入组装用例，见“新增用例”）"
+     "result": "715 passed（= 73 关的 673 + 本关 42，无回归；多出来的 9 项是本关顺手补进 tests/step73 的输入组装 / 验证分块用例，见“新增用例”）"
     },
     {
      "cmd": "python benchmarks/check_step74_fused_draft.py",
@@ -4034,7 +4034,8 @@
      "捕获前热身改成**与图内同一条路径**（Torch 后端的注意力按运行模式分叉，两条路 cuBLAS 形状不同）"
     ],
     "新增用例（本关顺手补，钉住上游 kernel 的一条细微护栏）": [
-     "tests/step73/test_v2_request_state.py::test_prompt_tail_row_is_never_overwritten_by_the_combined_inputs：`combine_sampled_and_draft_tokens` 的两个前置条件——`seq_len <= prefill_len`（整轮都在历史里）与 `first_logit_seq_pos >= prefill_len`（**要写的那一行**在历史边界之后）——用同一组输入并排钉住三种情形（跨界：行 0 保持历史 token；历史已算完：行 0 写成本轮输入；整轮在历史里：一个都不写）。经实测（7 个场景、100 个“请求·轮”，含分块 prefill / 抢占恢复 / 混批 / K=1..4）第二条今天不可达，是防御性护栏：调度侧“prefill 块不收草稿”保证带草稿的请求已产出过 token；放开那条规则时必须留着它。"
+     "tests/step73/test_v2_request_state.py::test_prompt_tail_row_is_never_overwritten_by_the_combined_inputs：`combine_sampled_and_draft_tokens` 的两个前置条件——`seq_len <= prefill_len`（整轮都在历史里）与 `first_logit_seq_pos >= prefill_len`（**要写的那一行**在历史边界之后）——用同一组输入并排钉住三种情形（跨界：行 0 保持历史 token；历史已算完：行 0 写成本轮输入；整轮在历史里：一个都不写）。经实测（7 个场景、100 个“请求·轮”，含分块 prefill / 抢占恢复 / 混批 / K=1..4）第二条今天不可达，是防御性护栏：调度侧“prefill 块不收草稿”保证带草稿的请求已产出过 token；放开那条规则时必须留着它。",
+     "tests/step73/test_v2_verify_chunking.py（8 项，纯 numpy 不需要 CUDA）：`get_max_chunk_logits` 的预算是「1 GiB 的 fp32 行」而不是固定行数（15 万词表 1766 行 / 32k 词表 8388 行），`_iter_request_chunks` 的四条不变量——每块 ≤ 上限（单条请求自己超上限时单独成块）、块边界落在请求边界上、覆盖 0..num_reqs 无缝无重叠、必须前进（不死循环）。"
     ]
    },
    "known_gaps": [

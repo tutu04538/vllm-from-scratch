@@ -103,8 +103,13 @@ sample_tokens(grammar_output)
 | `_gather_block_tables_kernel` / `_compute_slot_mappings_kernel` | `block_table.py` | 块表 gather、`slot = block * block_size + pos % block_size`、padding 行 `PAD_SLOT_ID(-1)` |
 | `_prepare_prefill_inputs_kernel` / `_prepare_decode_inputs_kernel` / `_update_draft_inputs_kernel` | `spec_decode/autoregressive/speculator.py` | draft 第一遍的**左移 + 打补丁**、AR 步的输入推进 |
 | `_flatten_sampled_kernel`、`rejection_sample` 全链路 | `spec_decode/{rejection_sampler,rejection_sampler_utils}.py` | 标准验证（V2 版内核，slot 寻址 + 每行可不同 K） |
+| `get_max_chunk_logits` / `_iter_request_chunks` | `spec_decode/rejection_sampler.py` | **验证的显存上限**：`apply_sampling_params` 会把 logits 升 fp32 再原地处理，一行就是 `vocab × 4` 字节（15 万词表 0.58 MiB）；上限取 `MAX_CHUNK_BYTES(1 GiB) // (vocab × 4)`，超了就按**整条请求**切块、逐块验证并释放，最后把 `sampled`/`num_sampled`/logprobs 拼回去（上游同一份代码；用例 `tests/step73/test_v2_verify_chunking.py`） |
 | `_apply_grammar_bitmask_kernel` | `structured_outputs.py` | 语法掩码打到 logits（按 `cu_num_logits` 解析每行位置） |
 | `_temperature_kernel` / `gumbel_sample` / `_min_p_kernel` / `_penalties_kernel` / `_bincount_kernel` / logprob 内核 | `sample/` | 采样处理链（惩罚 → 温度 → min_p → top-k/p → gumbel） |
+
+> `max_chunk_logits` 的另一半用途在上游是 **79 关的自适应验证**（`ModelRunner` 把它当
+> `max_total_logits` 传给 `AdaptiveVerificationManager`，用来限制"自适应验证一次最多排多少行"）；
+> 本仓库没有自适应验证，所以这里只有拒绝采样这一处调用方。
 
 ### 4.4 自回归提议者（`AutoRegressiveSpeculator`）
 
