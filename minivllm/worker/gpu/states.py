@@ -97,6 +97,16 @@ class RequestState:
             device=device,
         )
 
+        # 分块 prefill 请求的"下一枚 prompt token"（`[lookahead, slot]`，默认只有 1 行）。
+        # 为什么需要它：一条请求本轮只算了 prompt 的一段时**不产出 token**（采样侧
+        # `num_sampled = 0`），而草稿第一遍仍要一个输入 token —— 只能是这段之后紧跟着的那枚
+        # prompt token，而 target 的输入缓冲里只有本轮 chunk 的行。
+        # 谁写：`input_batch.py::_prepare_prefill_inputs_kernel`（抄完本轮 chunk 后按
+        # `num_computed + query_len` 往后取 `num_lookahead` 枚，越界填 **0**）。
+        # 谁读：`autoregressive/speculator.py` 的输入组装——`num_sampled > 0` 用
+        # `last_sampled_tokens`，否则用这里。越界那个 0 永远不会被读（能越界的那一轮必然有
+        # 采样 token），所以填合法 id 0 而不是哨兵 -1。
+        # 宽度 >1 只有上游的多模块 MTP 需要（每个模块吃一枚；80 关）。
         self.next_prefill_tokens = torch.zeros(
             num_prefill_lookahead,
             self.max_num_reqs,
