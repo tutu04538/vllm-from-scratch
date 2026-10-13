@@ -9,6 +9,8 @@
     I5  `last_sampled_tokens` / `draft_tokens` / `all_token_ids` / `total_len` 都按 **slot** 存
     I6  `prompt_len`（用户给的）与 `prefill_len`（喂进 runner 的）分开，恢复时后者更大
     I7  物理块表按 slot 登录、按 `idx_mapping` gather 成 batch 顺序
+    I8  `combine_sampled_and_draft_tokens` 的两个前置条件各挡各的：整轮都在历史里 / **要写的
+        那一行**还在历史里（跨 prefill 边界的批）——后者今天是防御性护栏，见该用例的说明
 """
 
 import numpy as np
@@ -280,3 +282,72 @@ def test_prefill_reads_history_from_slot_and_lookahead():
     torch.cuda.synchronize()
     assert input_buffers.input_ids[:2].tolist() == [5, 6]
     assert states.next_prefill_tokens[:, slot].item() == 0
+
+
+@requires_cuda
+def test_prompt_tail_row_is_never_overwritten_by_the_combined_inputs():
+    """I8：跨 prefill 边界的投机批——**首行仍是历史行时不许被 `last_sampled` 覆盖**。
+
+    `combine_sampled_and_draft_tokens` 干两件事：把上一轮采出的 token 写进"本轮第一个要算
+    logits 的行"（作为本轮的输入），再把本轮要验证的草稿写进后面的行。第二件事无条件做，
+    第一件事有**两个**前置条件：
+
+        seq_len <= prefill_len              整轮都在历史（prefill/重算）里 → 一个都不写
+        first_logit_seq_pos >= prefill_len  要写的那一行**在历史边界之后**才写
+
+    第二个条件容易被误读成"第一个条件的重复"——它不是。`first_logit_seq_pos = seq_len -
+    num_logits` 是"第一个要算 logits 的行的**绝对位置**"，而一轮的排布可以是
+    `[若干历史行][采样行][K 个草稿行]`：这时 `seq_len > prefill_len`（跨过了边界）但
+    `first_logit_seq_pos = num_computed < prefill_len`（采样行还在历史里，说明这条请求的历史
+    这一轮才算完）。那一行已经被 `prepare_prefill_inputs()` 从 slot 的 `all_token_ids` 写成了
+    **真实历史 token**，再拿 `last_sampled_tokens` 去覆盖就是"把 prompt/重算段喂错一个 token"
+    ——不报错、只是那个位置的 KV 悄悄算错。
+
+    本例用同一组输入只改 `prefill_len`，把两种情形并排钉住（行内容 = 行号，便于看出谁被写了）：
+
+        A 跨界（prefill_len=10、seq_len=12、4 个 logits 行）：行 0 保持历史 token 5，
+          草稿写进行 1..3
+        B 历史已算完（prefill_len=8）：行 0 被写成 last_sampled=42，草稿写进行 1..3
+        C 整轮都在历史里（prefill_len=12、seq_len=9）：一个都不写
+    """
+    def run_case(*, seq_len: int, prefill_len: int):
+        input_ids = torch.arange(16, dtype=torch.int32, device=DEVICE)
+        input_ids[0] = 5                       # 行 0 的"真实历史 token"（模拟 prompt 尾行）
+        idx_mapping = async_copy_to_gpu(np.array([0], dtype=np.intp), device=DEVICE)
+        last_sampled = torch.tensor([42], dtype=torch.int64, device=DEVICE)
+        query_start_loc = async_copy_to_gpu(np.array([0, 4], dtype=np.int32), device=DEVICE)
+        seq_lens = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+        prefill_lens = torch.tensor([prefill_len], dtype=torch.int32, device=DEVICE)
+        draft_tokens = torch.tensor([[7, 8, 9]], dtype=torch.int64, device=DEVICE)
+        cu_num_logits = async_copy_to_gpu(np.array([0, 4], dtype=np.int32), device=DEVICE)
+        logits_indices = combine_sampled_and_draft_tokens(
+            input_ids, idx_mapping, last_sampled, query_start_loc, seq_lens,
+            prefill_lens, draft_tokens, cu_num_logits, num_logits=4)
+        torch.cuda.synchronize()
+        return input_ids[:4].tolist(), logits_indices.tolist()
+
+    # A 跨界：num_computed = 12 − 4 = 8 < prefill_len=10 → 行 0 是历史行（保持 5）
+    rows, logits_indices = run_case(seq_len=12, prefill_len=10)
+    assert rows == [5, 7, 8, 9], rows
+    assert logits_indices == [0, 1, 2, 3], logits_indices
+
+    # B 历史已算完：first_logit_seq_pos = 8 >= 8 → 行 0 写成本轮输入（42）
+    rows, _ = run_case(seq_len=12, prefill_len=8)
+    assert rows == [42, 7, 8, 9], rows
+
+    # C 整轮都在历史里（seq_len=9 <= prefill_len=12）→ 连草稿都不写
+    input_ids = torch.arange(16, dtype=torch.int32, device=DEVICE)
+    input_ids[0] = 5
+    logits_indices = combine_sampled_and_draft_tokens(
+        input_ids,
+        async_copy_to_gpu(np.array([0], dtype=np.intp), device=DEVICE),
+        torch.tensor([42], dtype=torch.int64, device=DEVICE),
+        async_copy_to_gpu(np.array([0, 4], dtype=np.int32), device=DEVICE),
+        torch.tensor([9], dtype=torch.int32, device=DEVICE),
+        torch.tensor([12], dtype=torch.int32, device=DEVICE),
+        torch.tensor([[7, 8, 9]], dtype=torch.int64, device=DEVICE),
+        async_copy_to_gpu(np.array([0, 4], dtype=np.int32), device=DEVICE),
+        num_logits=4)
+    torch.cuda.synchronize()
+    assert input_ids[:4].tolist() == [5, 1, 2, 3], input_ids[:4].tolist()
+    assert logits_indices.tolist() == [0, 1, 2, 3]

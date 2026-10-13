@@ -140,7 +140,8 @@ cudagraph capture sizing in `cudagraph_utils.py`"）。原因很具体：V2 两�
 
 命令与数字见 `docs/results.json` → `step74.results` / `step74.models`。摘要：
 
-* `python -m pytest tests/step74 -q` → **42 passed**（融合/等价 20 + 管理器单元 12 + 边界 5 + MTP 5）。
+* `python -m pytest tests/step74 -q` → **42 passed**（融合/等价 20 + 管理器单元 12 + 边界 5 + MTP 5）；
+  全量 `tests/step58…74` → **707 passed**（664 + 42 + 本关顺手补进 `tests/step73` 的 1 项输入组装用例）。
 * **真实权重**（`Qwen3-1.7B` + `Qwen3-1.7B-eagle3`，K=3、bf16、48 token）：V1 eager / V2 eager / V2 图
   三条路 greedy **逐 token 相同**，`drafted/accepted/rounds` 也全等（120/7/40）；V2 图捕获 **4 张**
   （prefill 4、8 行；decode 1、2 行）/ 0.168 s / 池 76 MiB / `fused=True`。
@@ -167,6 +168,7 @@ cudagraph capture sizing in `cudagraph_utils.py`"）。原因很具体：V2 两�
 | 概率草稿的 dtype | `draft_sample_method="probabilistic"` 一跑就 `TypeError: full(): argument 'dtype' must be torch.dtype, not str`（73 关留下的：那条路当时没有任何调用方） | `draft_logits_spec()` 过 `STR_DTYPE_TO_TORCH_DTYPE`（见 D-74-10） |
 | 真实 `d2t`/`t2d` 在 CPU | 真实 EAGLE3 开图报 "Cannot copy between CPU and CUDA tensors during CUDA graph capture…" | 放到参数所在设备（见 D-74-13） |
 | 热身的路径 | 捕获前用 `NONE` 热身时，图里那条（固定形状）路径是在**捕获窗口里第一次执行**——第一次要做的懒初始化落在捕获里就是"不允许的操作" | 热身也走 `desc.cg_mode` |
+| 上游 kernel 一条细微护栏的可达性 | `_combine_sampled_and_draft_tokens_kernel` 的 `first_logit_seq_pos >= prefill_len` 容易被读成前一条早退的重复；实测（7 个场景、100 个"请求·轮"）今天走不到，但它是"**要写的那一行**还在历史里"的护栏（跨 prefill 边界的批） | 补 `tests/step73/test_v2_request_state.py` 的用例把三种情形并排钉住 + kernel 注释写明可达性与放开条件 |
 
 ## 5. 边界与遗留
 

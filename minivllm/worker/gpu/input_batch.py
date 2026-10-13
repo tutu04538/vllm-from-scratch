@@ -418,6 +418,22 @@ def _combine_sampled_and_draft_tokens_kernel(
         return
 
     # Keep prompt-tail slots intact; only rewrite generated-token slots.
+    #
+    # `first_logit_seq_pos` = 本轮**第一个要算 logits 的行的绝对位置**，也就是下面那次写入的
+    # 目标行。它与上面那个早退**不是重复**：一轮的排布可以是
+    # `[若干历史行][采样行][K 个草稿行]`——这一轮跨过了 prefill 边界（`seq_len > prefill_len`，
+    # 早退不触发），但"第一个 logits 行"本身还在历史里（`num_computed < prefill_len`，
+    # 说明这条请求的历史这一轮才算完）。那一行是 `prepare_prefill_inputs()` 从 slot 的历史里
+    # 写出来的**真实 token**；拿 `last_sampled_tokens` 去覆盖它，就是把 prompt/重算段喂错一个
+    # token（不报错，只是那个位置的 KV 悄悄算错）。
+    #
+    # 今天可达吗：**不可达，是防御性护栏**。`num_logits == 1 + len(scheduled_spec_decode_tokens)`
+    # 加上 Scheduler 只把草稿留给"该轮结束时不是 prefill 块"的请求（`scheduler.py` 的
+    # `is_prefill_chunk` 那一条），一起保证"带草稿的请求必然已经产出过 token" →
+    # `first_logit_seq_pos ≥ num_tokens − 1 ≥ prefill_len`。实测 7 个场景（分块 prefill / 抢占
+    # 恢复 / 混批 / K=1..4，共 100 个"请求·轮"）一次都没走到。放开"prefill 块也能排草稿"时
+    # 必须留着它：用例见
+    # `tests/step73/test_v2_request_state.py::test_prompt_tail_row_is_never_overwritten_by_the_combined_inputs`。
     first_logit_seq_pos = seq_len - num_logits
     if NUM_NEW_SAMPLED_TOKENS > 0 and first_logit_seq_pos >= prefill_len:
         # Write the last sampled token ID to input_ids.

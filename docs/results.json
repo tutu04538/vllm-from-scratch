@@ -3967,7 +3967,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 135,
-    "sha256": "4b818c5c0e174606c5490a5d12fa8401fd426850b1017bd6bf4a032106bb2708",
+    "sha256": "f886615894ec08a663a5704ee577849f8280626fcaccb0d97cd4e0148ef34bef",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3986,7 +3986,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step74 -q",
-     "result": "706 passed（= 73 关的 664 + 本关 42，无回归）；同时改了 tests/step73 的两条期望值（见 execution_trace）"
+     "result": "707 passed（= 73 关的 665 + 本关 42，无回归；多出来的那 1 项是本关顺手补进 tests/step73 的输入组装用例，见“新增用例”）"
     },
     {
      "cmd": "python benchmarks/check_step74_fused_draft.py",
@@ -4032,6 +4032,9 @@
      "`draft_logits_spec()` 的 dtype 没过映射表（配置里 dtype 是字符串）→ 概率草稿路径 `torch.full(dtype='float32')` 直接 TypeError（73 关遗留，本关第一次跑到）",
      "真实 EAGLE3 的 `d2t`/`t2d` 留在 CPU → 开图时报“capture 里不能从非 pinned CPU 张量拷贝”→ 改成放到参数所在设备（顺带省掉每次前向一次 H2D）",
      "捕获前热身改成**与图内同一条路径**（Torch 后端的注意力按运行模式分叉，两条路 cuBLAS 形状不同）"
+    ],
+    "新增用例（本关顺手补，钉住上游 kernel 的一条细微护栏）": [
+     "tests/step73/test_v2_request_state.py::test_prompt_tail_row_is_never_overwritten_by_the_combined_inputs：`combine_sampled_and_draft_tokens` 的两个前置条件——`seq_len <= prefill_len`（整轮都在历史里）与 `first_logit_seq_pos >= prefill_len`（**要写的那一行**在历史边界之后）——用同一组输入并排钉住三种情形（跨界：行 0 保持历史 token；历史已算完：行 0 写成本轮输入；整轮在历史里：一个都不写）。经实测（7 个场景、100 个“请求·轮”，含分块 prefill / 抢占恢复 / 混批 / K=1..4）第二条今天不可达，是防御性护栏：调度侧“prefill 块不收草稿”保证带草稿的请求已产出过 token；放开那条规则时必须留着它。"
     ]
    },
    "known_gaps": [
