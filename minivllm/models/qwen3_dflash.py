@@ -74,13 +74,24 @@ def _aux_layer_ids(config: dict) -> list[int] | None:
 
 
 def _rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
-    """按最后一维做 RMSNorm（与 vLLM 的 fused kernel 同一条式子）。
+    """按最后一维做 RMSNorm，**数值路径与 `layers/layernorm.py::RMSNorm.forward` 逐字相同**。
 
-    单独写在这里、不用 `RMSNorm` 模块，是因为**分组 K-norm** 要给 `[L, num_ctx, nkv, hd]`
-    的每一层选不同的 weight——那需要广播一层，模块封装反而多绕一步。
+    为什么要一个独立函数（而不是直接用 `RMSNorm` 模块）：
+    **分组 K-norm** 是"一次调用、按层用不同权重"——输入 `[L, num_ctx, nkv, hd]`、权重
+    `[L, 1, 1, hd]` 广播到每层；而 `RMSNorm` 是"一个模块 = 一个权重"，表达不了"按层选权重"。
+    换成一个函数、把权重当参数传，公式不变、调用只多一个参数。
+
+    为什么不用 for 循环逐层调各层的 `k_norm` 模块：那会把"一次跨层归一化"拆成 L 次调用
+    （L 次 kernel 启动），而这段预计算的设计目标就是少 ops（它不在 CUDA Graph 里，每步都跑）。
+
+    **方差必须升 fp32 算**（与 `RMSNorm.forward` 一致、也与 vLLM 的 fused kernel 一致）：
+    在 bf16 里先 `pow(2).mean()` 会把方差舍到 bf16，实测与 fp32 方差相比输出相对误差
+    ~1.2%——对草稿的上下文 KV 来说这不是噪声级差异。
     """
-    variance = x.pow(2).mean(dim=-1, keepdim=True)
-    return x * torch.rsqrt(variance + eps) * weight
+    input_dtype = x.dtype
+    x32 = x.to(torch.float32)
+    variance = x32.pow(2).mean(dim=-1, keepdim=True)
+    return (x32 * torch.rsqrt(variance + eps)).to(input_dtype) * weight
 
 
 class DFlashAttention(nn.Module):

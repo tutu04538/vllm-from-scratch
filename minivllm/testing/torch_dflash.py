@@ -50,9 +50,11 @@ def reference_context_kv(model, context_states: torch.Tensor,
     """
     inner = model.model
     with torch.no_grad():
-        normed = (context_states * torch.rsqrt(
-            context_states.pow(2).mean(-1, keepdim=True) + inner.rms_norm_eps)
-            * inner.hidden_norm.weight)
+        # 与 `RMSNorm.forward` 同一条数值路径（方差升 fp32，再转回输入 dtype 乘权重）
+        states32 = context_states.to(torch.float32)
+        normed = ((states32 * torch.rsqrt(
+            states32.pow(2).mean(-1, keepdim=True) + inner.rms_norm_eps))
+            .to(context_states.dtype) * inner.hidden_norm.weight)
         return [_layer_kv(layer, normed, context_positions) for layer in inner.layers]
 
 
