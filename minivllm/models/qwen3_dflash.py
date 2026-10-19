@@ -191,6 +191,10 @@ class DFlashDecoderLayer(nn.Module):
 class DFlashModel(nn.Module):
     """`DFlashQwen3Model`：上下文 KV 预计算 + query-only 的 forward。"""
 
+    # 内层解码器类：DFlash 用 DFlashDecoderLayer，DFlash2（78 关）换成带分组卷积的子类
+    # （上游同一个位置叫 `decoder_layer_cls`，由 `DFlash2Qwen3Model` 覆盖）。
+    decoder_layer_cls = DFlashDecoderLayer
+
     # 名字映射照抄上游（`midlayer.*` 是历史 checkpoint 的层名；`encoder.*` 是
     # MiMo 系 checkpoint 的 aux 编码器命名）。
     hf_to_vllm_mapper = WeightsMapper(
@@ -226,8 +230,9 @@ class DFlashModel(nn.Module):
             self.vocab_size, self.hidden_size,
             prefix=maybe_prefix(prefix, "embed_tokens"))
         self.layers = nn.ModuleList([
-            DFlashDecoderLayer(config, prefix=maybe_prefix(prefix, f"layers.{index}"),
-                               causal=_dflash_layer_causal(config, index))
+            self.decoder_layer_cls(
+                config, prefix=maybe_prefix(prefix, f"layers.{index}"),
+                causal=_dflash_layer_causal(config, index))
             for index in range(config["num_hidden_layers"])
         ])
         # 是否吃 target 的**多个辅助层**特征（上游 `use_aux_hidden_state`，默认 True）。

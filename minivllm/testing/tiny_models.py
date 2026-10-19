@@ -402,6 +402,82 @@ def tiny_dspark_dir(target_name: str = "tiny_gqa", *, num_layers: int = 2,
     return str(out)
 
 
+def tiny_dflash2_dir(target_name: str = "tiny_gqa", *, num_layers: int = 2,
+                     causal: bool = False, mask_token_id: int | None = None,
+                     aux_layers=(0, 1), selector_top_k: int = 3,
+                     selector_rank: int = 3, conv_kernel_size: int = 3,
+                     conv_group_size: int = 8, input_embedding_scale: float = 1.0,
+                     final_logit_softcapping: float | None = None,
+                     output_multiplier: float = 1.0,
+                     num_speculative_tokens: int = 3, seed: int = 0) -> str:
+    """生成一份**与 tiny target 规格匹配**的 DFlash2 草稿（随机但确定；只给测试）。
+
+    在 `tiny_dflash_dir()` 的 DFlash 主干权重上补 DFlash2 的三块结构（需求 078）：
+
+        每层  `attention_conv` / `mlp_conv`
+              `base_kernel` `[2, taps, hidden]`（静态卷积核，2 = 注意力侧 / MLP 侧）
+              `kernel_projection.weight` `[2·taps·num_groups, hidden]`（现算增量系数）
+        `candidate_selector`
+              `predecessor_codebook` / `successor_codebook` `[vocab, rank]`
+              `hidden_projection.weight` `[rank, hidden]`
+
+    配置按上游真实形态写：`architectures=["DFlash2DraftModel"]`（**不是**类名；这也是
+    `init_speculator()` 分派 DFlash2 的唯一依据），`dflash_config` 里放 `selector_top_k /
+    selector_rank / conv_kernel_size / conv_group_size / input_embedding_scale /
+    output_multiplier / final_logit_softcapping`，顶层放 `num_speculative_tokens`（分组卷积的
+    `block_size = 1 + K` 要用；配置期 `_resolve_dflash2()` 会把它改成真正跑的 K）。
+
+    **码本与 hidden 投影刻意放大到 0.5 尺度**：unary logits 大约 0.1 量级，若双线性项只有
+    1e-4，选择路径就退化成"按 unary 取 top-1"，"前一步的选择影响后一步"这类断言会恒真。
+    """
+    out = Path(tiny_dflash_dir(
+        target_name, num_layers=num_layers, causal=causal,
+        mask_token_id=mask_token_id, aux_layers=aux_layers, seed=seed))
+    config = json.loads((out / "config.json").read_text())
+    hidden = int(config["hidden_size"])
+    vocab = int(config["vocab_size"])
+    draft_config = config["dflash_config"]
+    config["architectures"] = ["DFlash2DraftModel"]
+    config["num_speculative_tokens"] = int(num_speculative_tokens)
+    draft_config.update({
+        "selector_top_k": int(selector_top_k),
+        "selector_rank": int(selector_rank),
+        "conv_kernel_size": int(conv_kernel_size),
+        "conv_group_size": int(conv_group_size),
+        "input_embedding_scale": float(input_embedding_scale),
+        "output_multiplier": float(output_multiplier),
+    })
+    if final_logit_softcapping is not None:
+        draft_config["final_logit_softcapping"] = float(final_logit_softcapping)
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+
+    generator = torch.Generator().manual_seed(seed + 7800)
+
+    def normal(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, 0.02, generator=generator)
+
+    def wide(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, 0.5, generator=generator)
+
+    weights = load_file(str(out / "model.safetensors"))
+    num_groups = hidden // int(conv_group_size)
+    for layer in range(num_layers):
+        prefix = f"layers.{layer}."
+        for side in ("attention_conv", "mlp_conv"):
+            weights[prefix + side + ".base_kernel"] = normal(
+                2, int(conv_kernel_size), hidden)
+            weights[prefix + side + ".kernel_projection.weight"] = normal(
+                2 * int(conv_kernel_size) * num_groups, hidden)
+    weights["candidate_selector.predecessor_codebook"] = wide(vocab, int(selector_rank))
+    weights["candidate_selector.successor_codebook"] = wide(vocab, int(selector_rank))
+    weights["candidate_selector.hidden_projection.weight"] = wide(
+        int(selector_rank), hidden)
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
 def tiny_pard_dir(target_name: str = "tiny_gqa", *, pard_token: int = 0, seed: int = 0) -> str:
     """生成一份**PARD 格式**的 tiny draft（72 关；只给测试）。
 

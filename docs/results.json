@@ -23,7 +23,8 @@
   "step74": "implemented + self-verified（V2 提议者的两张图：草稿 prefill 图（草稿位置 0、每请求 1+K 行、复用 target 本轮元数据）+ 融合多步 decode 图（K−1 步录进一张图、一次重放）；走融合还是逐步由后端 capability 决定，两条路逐轮状态全等；只做提议者侧，V2 的 target 图与 PIECEWISE 未接）",
   "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）",
   "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）",
-  "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））"
+  "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））",
+  "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)"
  },
  "step58": {
   "results": {
@@ -4494,6 +4495,92 @@
   "real_weights": {
    "status": "缺",
    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DSpark checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
+  }
+ },
+ "step78": {
+  "results": {
+   "step": 78,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/078_DFlash2候选关联选择与LiLiCorr版本边界.md",
+   "status": "implemented + self-verified（**只有 V2 一条执行路径**，上游 `use_v2_model_runner` 为 DFlash2 强制 V2；本仓库不设环境变量时配置期明确拒绝，避免 V1 静默退化成 DFlash1）。DFlash2 = DFlash 的并行主干 + **候选关联 walk**：一次 query 前向（每层挂 `attention_conv` / `mlp_conv` 两个沿序列的分组卷积）给出每个草稿位置的 hidden，`compute_candidates()` 取词表 top-k（checkpoint 的 `selector_top_k`，再过 `output_multiplier` / `final_logit_softcapping`），`candidate_selector()` 用两张码本 [V,rank] + hidden 投影给 [B,K,k,k] 的边打分（`unary + pred·hidden·succ`，第 0 步前驱是 anchor），`_selector_walk_kernel` 从左到右在“上一步选中的候选”那片 [k] 里做条件 Gumbel-max（噪声按 candidate token id 取），`_cache_draft_logits_kernel` 把实际路径分数写进 fp32、初值 -inf 的 `draft_logits`，并**先清上一轮的候选列**（依据 `_cached_candidate_ids`）。分派依据是 checkpoint 的 `architectures=[\"DFlash2DraftModel\"]`（方法仍是 `dflash`），`init_speculator()` 据此选 `DFlash2Speculator`；`num_speculative_tokens` 在配置期写回 draft hf_config 供分组卷积的 `block_size=1+K`；缩减词表（d2t）明确拒绝（候选 id 与 q 的词表宽度会不一致）；主干 + 候选 + walk + 落 q 整个进 FULL 图。⚠️ 本机**没有真实 DFlash2 权重**：端到端只用 tiny，草稿质量/接受长度/加速比“集成待验”；只实现 Qwen3 基座；LiLiCorr 在本机快照里没有对应模块，见 `docs/step78_alignment.md` §8（不声称相同）。差异账本 10 条见 §5。",
+   "recorded_at": "2026-10-19T23:47:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "13ce091",
+    "implementation_commit": "见本轮提交（step78：DFlash2 候选关联选择与实际 proposal 分布）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 150,
+    "sha256": "86c8d9f646ef8f162243ca7e59594357ac2d0d26f404b4ee6cf6d7a545d26c54",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐/差分；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 的 UVA 与上游对照都需要）；VLLM_USE_V2_MODEL_RUNNER=1（DFlash2 只有 V2；配置期不设会明确报错）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step78 -q",
+     "result": "65 passed（walk 29 + realized q 8 + 模型 9 + 边界 15 + 端到端 4）"
+    },
+    {
+     "cmd": "python benchmarks/check_step78_dflash2.py",
+     "result": "31 项全部通过（A 配置边界 8 / B 公式与内核 9 / C realized q 7 / D 模型与端到端 7）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step78 -q",
+     "result": "901 passed（= 77 关的 836 + 本关 65；无回归）"
+    },
+    {
+     "cmd": "python benchmarks/check_step76_dflash.py + check_step77_dspark.py",
+     "result": "27/27 + 28/28（DFlashModel 只加了 decoder_layer_cls 钩子，行为不变）"
+    }
+   ],
+   "execution_trace": {
+    "分组卷积（block_size=4/5、taps=3、组宽 8）": "与逐 token 显式循环参考 torch.equal；块边界：块首行只累加自身、块内第 3 行只回看块内 3 行（4/5/6 号 token 得 18，不是跨块的 2+3+4+5）",
+    "分组卷积 vs 上游 DFlashGroupedConv（同一份权重）": "prepare 的卷积输出与增量系数 max|Δ|=0.00e+00；finish 同样相等",
+    "_score_edges vs 逐元素参考（B=3,K=4,k=3,r=5）": "max|Δ|=1.19e-07（fp32 einsum 舍入）；l=0 的 k 个 p 行完全相同；hidden=0 时退化成 unary；换 hidden → 同一 (prev,cand) 分数改变",
+    "CandidateSelector vs 上游模块（同一份码本/投影）": "max|Δ|=0.00e+00（测试内实例化上游类；生产路径不 import）",
+    "walk 内核 vs 上游（greedy/probabilistic、K=1/2/3/5、top-k=1/3、temp=0/0.7）": "16 组参数下 token 与 realized scores 全部 torch.equal；B=3、slot 重排 [2,0,1]、`sample_idx_mapping=-1` 的补齐行不写任何东西",
+    "walk 的“第一步影响第二步”": "手写边分：第一步列 0/1/2 → 第二步 token 4/5/6；与 Torch 参考与上游内核三方一致",
+    "噪声 key": "同一组 token 换列排布（[1,2,3]→[3,1,2]），20 个种子下选出的 token 序列全部相同；单独构造 (prev=2 → cur=5) 的边，倾斜分数后确定选 5",
+    "cache 内核 vs 上游（同 slot 两轮，候选集换掉）": "draft_logits 与 _cached_candidate_ids 逐位相等；第一轮 [0,1,2] → 第二轮 [3,4,5] 时旧列全 -inf；交集 [2,4,6] 时 2/4 更新为新分数、0/1 清空",
+    "q 的形状/取值": "fp32、初值全 -inf；每行恰 k 个有限列；列集合 == 候选；列值 == 实际路径的 realized scores；softmax 每行和为 1",
+    "2000 个种子的经验分布 vs softmax(q/temp)（temp=2.0）": "TV=0.0177（阈值 0.1）；q 里存的是温度之前的原始分数（1.0/0.2/-0.7 逐值核对）",
+    "解码器层（残差/两侧卷积/norm/MLP）vs 显式公式": "max|Δ|=0.00e+00（两层，query 行跨两个请求块 2×(1+K)）；input_embedding_scale=1.7 只乘输入嵌入",
+    "compute_candidates vs 参考 top-k": "id 完全相等；value allclose；先乘 output_multiplier=1.7 再 tanh(x/5)*5（逐值复算）",
+    "K=1..4 的实际模型行为": "block_size 恒为 1+K；参数名集合与 K 无关（没有按 K 扩展的 embedding）；1+K 行前向可跑",
+    "tiny 端到端（greedy，2 条请求 × 6 token）": "投机输出 == 不投机的 greedy 输出：{'a': [4,4,6,0,6,0], 'b': [10,4,4,4,4,0]}",
+    "图 vs eager（probabilistic，温度 0.7，同 seed）": "6 轮逐轮草稿 token 全部相同；captured=1，图管理器分派记录 5 条；最终输出相同",
+    "slot 复用（3 条请求、max_num_seqs=1、K=2）": "投机输出 == 不投机 greedy：r0 [4,6,7,1,1]、r1 [4,4,4,4,6]、r2 [10,4,4,4,4]"
+   }
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "max_model_len": 64,
+    "note": "权重不提交；tiny 位置表按 64 建"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dflash2_dir('tiny_gqa')（本关新增）",
+    "architectures": [
+     "DFlash2DraftModel"
+    ],
+    "dtype": "float32",
+    "note": "复用 tiny_dflash_dir 的主干权重 + 每层 attention_conv/mlp_conv（base_kernel [2,taps,hidden] + kernel_projection） + candidate_selector（两张码本 [vocab,rank] + hidden_projection）；支持 selector_top_k/selector_rank/conv_kernel_size/conv_group_size/input_embedding_scale/final_logit_softcapping/output_multiplier/num_speculative_tokens"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DFlash2 checkpoint；草稿质量、接受长度与加速比「集成待验」，不下载、不伪造"
+   }
   }
  }
 }

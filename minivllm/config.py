@@ -1030,6 +1030,99 @@ class SpeculativeConfig:
                 "这个 id 是模型训练时约定的占位符，换一个不会报错、只会让 K 枚草稿全部基于"
                 "模型没见过的输入")
 
+        # 78 关：同一 `method="dflash"` 下，靠 architecture 再分出一支 DFlash2。
+        if self.uses_dflash2():
+            self._resolve_dflash2(hf_config)
+
+    # ---------------- 78 关：DFlash2（候选关联选择） ----------------
+
+    #: DFlash2 的注册名（上游 `registry.py:628`；`init_speculator()` 也用它分派）。
+    _DFLASH2_ARCHITECTURE = "DFlash2DraftModel"
+
+    def uses_dflash2(self) -> bool:
+        """这个 dflash 草稿是不是 DFlash2（上游 `VllmConfig._is_dflash2_draft`）。
+
+        **只看 checkpoint 的 `architectures`**，不看目录名、也不看有没有 `selector_*` 字段：
+        上游 `init_speculator()` 与 `use_v2_model_runner` 用的是同一条判据，两处必须一致
+        （否则配置期放行 V1、运行期却选不到 speculator）。
+        """
+        if self.method != "dflash" or self.draft_model_config is None:
+            return False
+        hf_config = self.draft_model_config.hf_config or {}
+        return self._DFLASH2_ARCHITECTURE in (hf_config.get("architectures") or [])
+
+    def _resolve_dflash2(self, hf_config: dict) -> None:
+        """DFlash2 的取值校验（需求 078；上游没有这段——它的字段在模型构造时才读）。
+
+        上游在 `DFlash2Qwen3Model` / `DFlash2Qwen3DecoderLayer` 构造时直接
+        `dflash_config["selector_top_k"]` 之类的取值；缺字段的报错发生在**加载模型**时。
+        本仓库把同一批检查提前到配置期（早报、且能把"这份 checkpoint 不是 DFlash2"与
+        "字段写错了"分开），检查项逐条对应模型真正会读的字段：
+
+            selector_top_k     候选图每层的节点数；必须 1..词表宽度
+            selector_rank      两张码本与 hidden 投影的秩；必须 > 0
+            conv_kernel_size   分组卷积的 taps；必须 > 0
+            conv_group_size    分组宽度；必须整除 hidden_size（否则 unflatten 失败）
+            output_multiplier  候选 logits 的缩放；上游 `get_top_k_tokens()` 对非正 scale
+                               直接 raise（除了 1.0），所以在配置期就拒绝
+            draft_vocab_size   必须等于 vocab_size：`compute_candidates()` 用 lm_head 的
+                               draft 宽度 id，而 q 要按 target 词表宽度索引；上游这条路径
+                               没有 d2t 散射，本仓库不自行补一个"看起来能用"的映射
+        """
+        vocab_size = int(hf_config.get("vocab_size", 0) or 0)
+        if vocab_size <= 0:
+            raise ValueError("DFlash2 的 draft 配置里没有 `vocab_size`")
+        draft_vocab_size = hf_config.get("draft_vocab_size")
+        if draft_vocab_size is not None and int(draft_vocab_size) != vocab_size:
+            raise NotImplementedError(
+                f"DFlash2 不支持缩减词表（draft_vocab_size={draft_vocab_size} != "
+                f"vocab_size={vocab_size}）：候选 id 来自 draft 宽度的 lm_head，而验证器按 "
+                f"target 词表宽度索引 q；上游这条路径没有 d2t 散射。请用全词表的 DFlash2 "
+                f"checkpoint（或改走 77 关的 DSpark，它实现了缩减词表 + d2t）")
+
+        dflash_config = hf_config.get("dflash_config") or {}
+        required = ("selector_top_k", "selector_rank", "conv_kernel_size",
+                    "conv_group_size")
+        missing = [key for key in required if dflash_config.get(key) is None]
+        if missing:
+            raise ValueError(
+                f"DFlash2 的 `dflash_config` 缺少 {missing}：这几项是 checkpoint 训练时定死的"
+                f"结构参数（候选数 / 码本秩 / 卷积 taps 与分组），缺了不能猜。"
+                f"这份 checkpoint 的 architectures 写着 {self._DFLASH2_ARCHITECTURE}，"
+                f"但字段不完整——不是可用的 DFlash2 权重")
+
+        top_k = int(dflash_config["selector_top_k"])
+        rank = int(dflash_config["selector_rank"])
+        taps = int(dflash_config["conv_kernel_size"])
+        group_size = int(dflash_config["conv_group_size"])
+        if not 1 <= top_k <= vocab_size:
+            raise ValueError(
+                f"selector_top_k={top_k} 必须在 [1, vocab_size={vocab_size}] 内"
+                f"（它是候选图每层的节点数，也是 `torch.topk` 的 k）")
+        if rank <= 0:
+            raise ValueError(f"selector_rank 必须 > 0，收到 {rank}")
+        if taps <= 0:
+            raise ValueError(f"conv_kernel_size 必须 > 0，收到 {taps}")
+        if group_size <= 0:
+            raise ValueError(f"conv_group_size 必须 > 0，收到 {group_size}")
+        hidden_size = int(hf_config.get("hidden_size", 0) or 0)
+        if hidden_size <= 0:
+            raise ValueError("DFlash2 的 draft 配置里没有 `hidden_size`")
+        if hidden_size % group_size:
+            raise ValueError(
+                f"conv_group_size={group_size} 必须整除 hidden_size={hidden_size}")
+        output_multiplier = float(dflash_config.get("output_multiplier", 1.0))
+        if output_multiplier <= 0.0 and output_multiplier != 1.0:
+            raise ValueError(
+                f"output_multiplier={output_multiplier} 必须为正："
+                f"`get_top_k_tokens()` 的 top-k 归约不支持非正缩放（上游同一句检查）")
+
+        # 模型构造只拿得到 hf_config（本仓库的 `get_model()` 没有 vllm_config 这一轴），
+        # 而分组卷积的 `block_size` 必须是每请求的 query 行数 `1 + K`。上游从
+        # `vllm_config.speculative_config` 读同一个值；这里在配置期**写回** draft hf_config，
+        # 保证"配置里写的 K"与"真正跑的 K"是同一个数（两处各推一次会错位而不报错）。
+        hf_config["num_speculative_tokens"] = int(self.num_speculative_tokens)
+
     @staticmethod
     def _dflash_mask_token_id(hf_config: dict) -> int | None:
         """DFlash 并行槽位的 mask token（上游同一条取值链，见 `_resolve_dflash`）。"""
@@ -1966,6 +2059,16 @@ class VllmConfig:
             raise NotImplementedError(
                 "DSpark 只有 V2 Model Runner 实现（上游 `use_v2_model_runner` 会为 dspark 强制"
                 "切 V2）。本仓库默认走 V1，请设 `VLLM_USE_V2_MODEL_RUNNER=1`"
+            )
+        # 78 关：DFlash2 的候选选择器只存在于 V2 的 `DFlash2Speculator` 里。上游的 V1
+        # `DFlashProposer` 从不调用 `compute_candidates()`/`candidate_selector()`，同一个
+        # checkpoint 会**静默退化成 DFlash1**（能跑、草稿分布却是另一套）。上游因此为
+        # DFlash2 强制 V2；本仓库 V2 默认关闭，所以这里配置期就拒绝。
+        if spec is not None and spec.uses_dflash2() and not self.use_v2_model_runner:
+            raise NotImplementedError(
+                "DFlash2 只有 V2 Model Runner 实现（上游 `use_v2_model_runner` 会为 DFlash2 "
+                "强制切 V2；V1 的 DFlashProposer 不走候选选择器，会静默退化成 DFlash1）。"
+                "本仓库默认走 V1，请设 `VLLM_USE_V2_MODEL_RUNNER=1`"
             )
         if not self.use_v2_model_runner:
             return

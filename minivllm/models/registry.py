@@ -25,6 +25,7 @@ def get_model_class(architecture: str):
 from .medusa import Medusa  # noqa: E402  （注册发生在 import 时）
 from .qwen3 import Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dflash import DFlashForCausalLM  # noqa: E402
+from .qwen3_dflash2 import DFlash2Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dspark import Qwen3DSparkForCausalLM  # noqa: E402
 
 register_model("Qwen3ForCausalLM")(Qwen3ForCausalLM)
@@ -41,3 +42,8 @@ register_model("DFlashQwen3ForCausalLM")(DFlashForCausalLM)
 # 上游另有 `K3DSparkModel` / `Gemma4DSparkModel` / `DSparkDraftModel` 三族，本仓库没有权重也
 # 没验证过 → 不注册（加载到它们是"没有注册的模型结构"；配置期另有更早的明确报错）
 register_model("Qwen3DSparkModel")(Qwen3DSparkForCausalLM)
+# 78 关：DFlash2 草稿。注册名逐字照上游 `registry.py:628`
+# `"DFlash2DraftModel": ("qwen3_dflash2", "DFlash2Qwen3ForCausalLM")`；**不是**类名。
+# 这个字符串同时是 `init_speculator()` 选 `DFlash2Speculator` 的唯一依据（上游同一条判据）：
+# 方法仍是 `dflash`，没有 `method="dflash2"`。
+register_model("DFlash2DraftModel")(DFlash2Qwen3ForCausalLM)

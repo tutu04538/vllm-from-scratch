@@ -17,6 +17,13 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
     speculative_config = vllm_config.speculative_config
     assert speculative_config is not None
     if speculative_config.method == "dflash":
+        # 78 关：方法仍是 dflash，靠 **checkpoint 的 architectures** 分出 DFlash2
+        # （上游同一条判据：`"DFlash2DraftModel" in draft_model_config.architectures`）。
+        # 没有 `method="dflash2"`——目录名/方法名都不是分派依据。
+        if speculative_config.uses_dflash2():
+            from .dflash2.speculator import DFlash2Speculator
+
+            return DFlash2Speculator(vllm_config, device)
         # 76 关：上下文 KV + 并行 query 的独立提议者（不继承自回归那条路）
         from .dflash.speculator import DFlashSpeculator
 

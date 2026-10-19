@@ -693,11 +693,54 @@ tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿 token 相�
 ⚠️ 本机**没有真实 DSpark 权重** → 草稿质量/加速比"集成待验"；只实现 Qwen3 基座（Gemma4/K3/DSV4
 配置期拒绝）、自适应验证属 79 关。差异账本 9 条见 [`docs/step77_alignment.md`](../docs/step77_alignment.md) §5。
 
+## 第七十八关：DFlash2（候选关联选择）
+
+方法仍是 `dflash`，靠 checkpoint 的 `architectures=["DFlash2DraftModel"]` 分派
+`DFlash2Speculator`（**只有 V2**；V1 不调用候选选择器、会静默退化成 DFlash1，所以配置期拒绝）：
+
+```
+一次 query 前向（每层多两个沿序列的分组卷积 attention_conv / mlp_conv）
+        ↓ 每个草稿位置
+compute_candidates()：lm_head top-k（checkpoint 的 selector_top_k）→ output_multiplier / softcap
+        ↓ [B, K, k] 的候选与 unary
+candidate_selector()：unary[c] + pred[p]·hidden·succ[c]   （[B,K,k,k] 边分；l=0 前驱=anchor）
+        ↓
+_selector_walk_kernel：从左到右在“上一步选中的候选”那片 [k] 里做条件 Gumbel-max
+        ↓
+_cache_draft_logits_kernel：清旧候选列 → 写实际路径分数（fp32、其余列 -inf）
+```
+
+- **为什么 q 不能是 unary logits**：真正决定草稿的是"沿哪条路径走过候选图"，路径分数含前驱项；
+  拿 unary 当 q 会让拒绝采样按一个**根本没用来采样**的分布算接受概率（不报错）。
+- **为什么必须先清旧候选列**：`draft_logits` 按**持久 slot** 复用；slot 换请求/候选集换掉后只写
+  新列，旧列还留着有限值 → q 多出"幽灵候选"。清理依据是 `_cached_candidate_ids`（上一轮写过哪些列）。
+- **噪声 key**：Gumbel 噪声按 **candidate token id** 取（不是列号），换列排布不影响选出的 token。
+- **分组卷积**：`block_size = 1+K`（每请求 query 行数），位置取模 + `position>=tap` 保证不跨请求块；
+  系数 = 静态 `base_kernel` + hidden 现算的 `kernel_projection` 增量。
+- **边界**：缩减词表（d2t）配置期拒绝（候选 id 与 q 宽度会不一致）、只实现 Qwen3 基座；
+  LiLiCorr 在本机快照里没有对应模块，对应表只列本机核对项（**不声称相同**）。
+
+```bash
+python benchmarks/check_step78_dflash2.py         # 31 项
+python -m pytest tests/step78 -q                  # 65 项
+VLLM_USE_V2_MODEL_RUNNER=1 python minivllm/demo.py --device cuda --model <target> \
+    --spec-method dflash --spec-model <dflash2 目录> --spec-k 3 "问题"
+```
+
+实测：分组卷积与上游模块 `max|Δ|=0.00e+00`、`CandidateSelector` `0.00e+00`、边分 vs 逐元素参考
+`1.19e-07`；walk 在 K=1/2/3/5 × top-k=1/3 × 温度 0/0.7 共 16 组与上游内核 **token 与 realized
+scores 逐位相等**（B=3、slot 重排、补齐行 −1）；cache 同 slot 两轮与上游逐位相等（disjoint 旧列
+恢复 `-inf`、交集列更新）；2000 种子经验分布 vs `softmax(q/temp)` **TV=0.0177**；解码器层 vs
+显式公式 `max|Δ|=0.0`；tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）、slot 复用后仍无损。
+⚠️ 本机**没有真实 DFlash2 权重** → 草稿质量/加速比"集成待验"；adaptive 属 79 关。差异账本 10 条见
+[`docs/step78_alignment.md`](../docs/step78_alignment.md) §5，LiLiCorr 对应表见 §8。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
-V2 入口（73–77 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark（MTP 要显式给派生好的 draft 配置，
-DFlash/DSpark 是独立的 `DFlashSpeculator` / `DSparkSpeculator`）+ standard/synthetic/block 三种验证
+V2 入口（73–78 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
+DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
++ standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图；多模块 MTP（80 关）、V2 的 target 图与 PIECEWISE、adaptive verification
 （79 关）都还没接（各自报错并写明归属关卡）。
 另外两条容易误以为已经具备的能力：
@@ -743,6 +786,7 @@ python benchmarks/check_step74_fused_draft.py        # 23 项：图管理器 / c
 python benchmarks/check_step75_verify_modes.py       # 20 项：配置与换算 / 逐 kernel 差分 / 分布对照 / E[τ] / synthetic 经验率 / 分块 / V1 回归
 python benchmarks/check_step76_dflash.py             # 27 项：配置边界 / 布局逐值差分（V1+V2 内核）/ 模型与 KV / 端到端与图
 python benchmarks/check_step77_dspark.py             # 28 项：配置边界 / 两种布局逐值差分 / 条件采样与 q / 缩减词表与 top-k / 端到端与图
+python benchmarks/check_step78_dflash2.py            # 31 项：配置边界 / 卷积与边分逐值 / walk 与 cache 内核逐位 / realized q / 模型与端到端
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -761,6 +805,7 @@ python -m pytest tests/step74 -q                     # 42 项：step74（融合/
 python -m pytest tests/step75 -q                     # 51 项：step75（块验证三方对照/分布统计；synthetic 配置与经验率；分块与陈旧 offsets 保护）
 python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 布局/上下文 KV/冻结参考/端到端与图）
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
+python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）
