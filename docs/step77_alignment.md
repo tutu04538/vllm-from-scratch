@@ -170,7 +170,7 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 
 | 对象 | 结果 |
 |---|---|
-| 缓存的 q vs 沿**实际采样路径**复算的条件分布（probabilistic，温度 0 与 0.7，两种布局） | `max|Δ| = 0.0`（探针 C1 实测 `0.00e+00`） |
+| 缓存的 q vs 沿**实际采样路径**复算的条件分布（probabilistic，温度 0 与 0.7，两种布局） | `max abs(Δ) = 0.0`（探针 C1 实测 `0.00e+00`） |
 | q 是否真的含 Markov 偏置 | 是：`q != base_logits`（单测断言） |
 | 同一份 base logits、换前一个 token | 第 1 步 q 从 `[2,1,0,…]` 变 `[2,4,0,…]`，选择从 0 变 1（探针 C2） |
 | 缩减词表（`draft=7`、`d2t` 偏移 2） | 非 d2t 列恒 `-inf`；`softmax(q)` 在 target 宽度上和为 1；采样 id ⊆ `{2..8}`；与参考逐值相等 |
