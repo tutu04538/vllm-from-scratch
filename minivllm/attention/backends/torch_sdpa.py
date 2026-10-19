@@ -171,6 +171,31 @@ class TorchAttentionImpl:
             return self._forward_padded(query, kv_cache, attn_metadata)
         return self._forward_generic(query, kv_cache, attn_metadata)
 
+    def do_kv_cache_update(self, layer, key: torch.Tensor, value: torch.Tensor,
+                           kv_cache, slot_mapping: torch.Tensor) -> None:
+        """把**已经算好**的一组 K/V 按显式槽位写进缓存（对应上游 `do_kv_cache_update`）。
+
+        与 `write_kv` 的区别只有一个：槽位从参数来，而不是从 `attn_metadata` 来。
+        DFlash 的**上下文行不过模型**（它们的 K/V 是从 target hidden 翻译出来的），所以没有
+        哪一层的 `forward()` 会替它们写缓存——模型自己调这个方法（76 关）。
+
+        `slot_mapping` 里的哨兵（`PADDING_SLOT_ID = -1`）必须**跳过**：被拒的尾部行与
+        "块表里是 0 号留白块"的位置都不能写。这一步一定在 eager 路径（图外）执行，
+        所以可以用 `slots >= 0` 的数据相关掩码，不需要 `clamp_min(0)` 那条图内妥协。
+        """
+        num_blocks, block_size = kv_cache.shape[1], kv_cache.shape[2]
+        flat = kv_cache.view(2, num_blocks * block_size, self.num_kv_heads, self.head_size)
+        keys = key.view(-1, self.num_kv_heads, self.head_size)
+        values = value.view(-1, self.num_kv_heads, self.head_size)
+        valid = slot_mapping >= 0
+        if not bool(valid.all()):
+            slot_mapping = slot_mapping[valid]
+            keys = keys[valid]
+            values = values[valid]
+        if slot_mapping.numel():
+            flat[0].index_copy_(0, slot_mapping, keys)
+            flat[1].index_copy_(0, slot_mapping, values)
+
     def _forward_generic(self, query: torch.Tensor, kv_cache,
                          attn_metadata: AttentionMetadata) -> torch.Tensor:
         """逐请求循环（eager 参考实现）。"""
@@ -186,7 +211,8 @@ class TorchAttentionImpl:
             query_rows = query[start:start + query_len]
             keys, values = self._gather_kv(kv_cache, attn_metadata, req_index, seq_len)
             out[start:start + query_len] = self._attend(query_rows, keys, values,
-                                                        past_len, query_len)
+                                                        past_len, query_len,
+                                                        attn_metadata.causal)
             start += query_len
         return out
 
@@ -253,7 +279,11 @@ class TorchAttentionImpl:
         query_pos = (seq_lens - q_len) + torch.arange(
             q_len, device=device, dtype=torch.float32).view(1, 1, q_len)
         positions = key_pos.to(torch.float32).view(1, 1, 1, num_positions)
-        mask = (positions > query_pos.unsqueeze(-1)) | (positions >= seq_lens.unsqueeze(-1))
+        # 越界 key 永远不看；因果项只在 `causal=True` 时加（DFlash 的 mask query 是
+        # "槽位"，训练时允许同块的其它槽位互相可见 —— 见 `_attend` 的说明）。
+        mask = positions >= seq_lens.unsqueeze(-1)
+        if attn_metadata.causal:
+            mask = mask | (positions > query_pos.unsqueeze(-1))
         scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                  # [B, H, q, D]
@@ -279,11 +309,16 @@ class TorchAttentionImpl:
         return keys, values
 
     def _attend(self, query: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
-                past_len: int, query_len: int) -> torch.Tensor:
-        """单请求的 causal attention：**按绝对位置**加 mask。
+                past_len: int, query_len: int, causal: bool = True) -> torch.Tensor:
+        """单请求的 attention：**按绝对位置**加 mask。
 
         query [q_len, heads, head_size]、keys/values [seq_len, kv_heads, head_size]。
         GQA 时把 KV 头复制到与 query 头数一致。
+
+        `causal=False`（76 关 DFlash）：去掉"未来的 key 不该看"这一项，其余不变——query
+        仍然只能看 `[0, seq_len)` 这个**有效范围**。为什么非因果是安全的：DFlash 的
+        query 行是"槽位"（位置就是它们自己的），训练时就是这么联合填的；这不是把标准
+        LM 的因果性关掉。
 
         **掩码值用 `finfo.min` 而不是 `-inf`**（74 关统一，与 `_forward_padded` 同一条规则）：
         `past_len` 为负时（只有捕获期的假批会出现：`seq_lens` 比 query 行数短）会有**整行
@@ -300,11 +335,12 @@ class TorchAttentionImpl:
             v = v.repeat_interleave(self.num_queries_per_kv, dim=0)
 
         scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale               # [H, q, s]
-        # 绝对位置 mask：第 i 个 query 的绝对位置是 past_len + i，只能看 key 0..past_len+i
-        query_pos = torch.arange(past_len, past_len + query_len, device=q.device)
-        key_pos = torch.arange(scores.shape[-1], device=q.device)
-        mask = key_pos[None, :] > query_pos[:, None]
-        scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
+        if causal:
+            # 绝对位置 mask：第 i 个 query 的绝对位置是 past_len + i，只能看 key 0..past_len+i
+            query_pos = torch.arange(past_len, past_len + query_len, device=q.device)
+            key_pos = torch.arange(scores.shape[-1], device=q.device)
+            mask = key_pos[None, :] > query_pos[:, None]
+            scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                            # [H, q, d]
         return out.transpose(0, 1).reshape(query_len, heads * head_size).to(query.dtype)

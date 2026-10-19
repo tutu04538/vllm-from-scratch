@@ -521,7 +521,7 @@ VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
 实测：tiny 与**真实 Qwen3-1.7B + eagle3**（K=2、bf16）上 **V1 与 V2 greedy 逐 token 相同**
 （真实权重下 `drafted/accepted/轮次` 三项也全等），含 4 次抢占恢复的场景。
 ⚠️ V2 的 CUDA Graph 与融合多步 decode 属 74 关、块验证/synthetic 属 75 关、
-DFlash/DSpark 属 76/77 关；差异账本（15 条）见 [`docs/step73_alignment.md`](../docs/step73_alignment.md) §5。
+DFlash/DSpark 属 76/77 关（DFlash 已在 76 关实现）；差异账本（15 条）见 [`docs/step73_alignment.md`](../docs/step73_alignment.md) §5。
 
 ## 第七十四关：V2 提议者的两张图与融合多步 decode
 
@@ -607,12 +607,50 @@ synthetic 配置 `[0.8,0.4,0.2]`（N=8000）实测 `[0.8011,0.4057,0.2046]`、�
 （V1 1.185；`standard` 对照在夹具里是 2.933，跟着模型走）。差异账本 7 条见
 [`docs/step75_alignment.md`](../docs/step75_alignment.md) §5。
 
+## 第七十六关：DFlash（上下文 KV + 并行 query）
+
+DFlash 的草稿**不读 token 序列**：target 每步把辅助层的 hidden 交出来，`combine_hidden_states()`
+用 `fc` 投到草稿宽度，`precompute_and_store_context_kv()` 再**一次跨层融合 GEMM** 把它们翻译成
+**所有层**的 K/V（`hidden_norm` → 融合 KV 投影 → 分组 K-norm → 跨层 RoPE → 按显式槽位散射），
+直接写进草稿自己的缓存。于是真正过草稿模型的只有每请求 `1 + K` 行 query：
+
+```
+context 行   target 本轮的行（含被拒尾部）：不进模型，只贡献 K/V
+query 行     [bonus anchor, mask × K]：位置 = last_valid_pos + 1 + off
+采样行       只有 mask 行；mask 预测**它自己那个位置**（不是下一个位置）
+因果性       默认**非因果**（mask 是"槽位"，同块互相可见）；`dflash_config.causal` 可切全因果
+```
+
+- V1：`spec_decode/dflash.py::DFlashProposer`（`expand_dflash_inputs` 是上游
+  `copy_and_expand_dflash_inputs_kernel` 的逐行等价；上下文预计算在 `_forward()` 之前、图外）。
+- V2：`worker/gpu/spec_decode/dflash/speculator.py::DFlashSpeculator`（原样移植
+  `_prepare_dflash_inputs_kernel`；补齐采样行映射 −1、被拒尾部 position 0 / slot −1；
+  query 前向走 `FULL_DECODE_ONLY` 图，上下文预计算在图外——形状每步变，上游同款）。
+- 模型：`models/qwen3_dflash.py`（Qwen3 基座子集；支持缩小词表 `d2t`、`midlayer.*` 历史命名、
+  `use_aux_hidden_state=False`；没有 SWA/attention sink/独立 mask embedding）。
+- 注意力：`AttentionMetadata.causal` 新字段（默认 True），因果/非因果两条掩码路径都保留
+  "只能看 `[0, seq_len)`"；`do_kv_cache_update()` 是上下文 K/V 的写入入口（跳过哨兵槽位）。
+
+```bash
+python -m pytest tests/step76 -q                  # 24 项
+python benchmarks/check_step76_dflash.py          # 27 项
+```
+
+实测：V1 展开 vs 上游内核 **6/6 输出逐值相等**、V2 内核 vs 上游 **12/12 逐值相等**（含补齐行）；
+融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff **0.0**（因果/非因果），
+两种模式输出互差 1.375（证明因果开关真的生效）；tiny 端到端 V1 == V2 == V2-eager，
+图确实捕获并重放（含补齐档位）；被拒尾部不写草稿缓存（哨兵位置 = 每请求最后 `num_rejected` 行）。
+⚠️ 本机**没有真实 DFlash 权重** → 草稿质量/加速比"集成待验"（需求 076 §5 明确不做加速比结论）；
+`sample_from_anchor`（DSpark，77 关）、混合滑窗（多 KV group，81 关）、`is_neox_style` 拷贝
+都是明确边界。差异账本 8 条见 [`docs/step76_alignment.md`](../docs/step76_alignment.md) §5。
+
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
-V2 入口（73–75 关）当前覆盖 EAGLE/EAGLE3/MTP（MTP 要显式给派生好的 draft 配置）+
-standard/synthetic/block 三种验证 + 草稿侧的 FULL 图；DFlash/DSpark、多模块 MTP、
-V2 的 target 图与 PIECEWISE、adaptive verification（79 关）都还没接（各自报错并写明归属关卡）。
+V2 入口（73–76 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash（MTP 要显式给派生好的 draft 配置，
+DFlash 是独立的 `DFlashSpeculator`）+ standard/synthetic/block 三种验证 + 草稿侧的 FULL 图；
+DSpark（77 关）、多模块 MTP（80 关）、V2 的 target 图与 PIECEWISE、adaptive verification
+（79 关）都还没接（各自报错并写明归属关卡）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -654,6 +692,7 @@ python benchmarks/check_step72_parallel_draft.py     # 18 项：槽位口径 / �
 python benchmarks/check_step73_v2_runner.py          # 24 项：常驻 slot / 输入组装 / 状态所有权 / V1-V2 差分 / 投机管道 / 语法掩码 / 边界
 python benchmarks/check_step74_fused_draft.py        # 23 项：图管理器 / capability / 融合门 / 两条路等价 / 端到端 / profiler
 python benchmarks/check_step75_verify_modes.py       # 20 项：配置与换算 / 逐 kernel 差分 / 分布对照 / E[τ] / synthetic 经验率 / 分块 / V1 回归
+python benchmarks/check_step76_dflash.py             # 27 项：配置边界 / 布局逐值差分（V1+V2 内核）/ 模型与 KV / 端到端与图
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -670,6 +709,7 @@ python -m pytest tests/step72 -q                     # 30 项：step72（并行�
 python -m pytest tests/step73 -q                     # 66 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
 python -m pytest tests/step74 -q                     # 42 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约）
 python -m pytest tests/step75 -q                     # 51 项：step75（块验证三方对照/分布统计；synthetic 配置与经验率；分块与陈旧 offsets 保护）
+python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 布局/上下文 KV/冻结参考/端到端与图）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

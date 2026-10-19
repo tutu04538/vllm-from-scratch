@@ -92,6 +92,10 @@ class SpecDecodeBaseProposer:
 
     # 普通 draft 只吃 token；EAGLE 子类改成 True（上游 `EagleProposer.__init__` 传的就是它）
     pass_hidden_states_to_model = False
+    # 76 关：第一遍的注意力用不用 causal mask。只有 DFlash 可能是 False（`dflash_config.causal`），
+    # 其余所有路径必须保持 True。`DFlashProposer.load_model()` 按模型配置改写这个实例属性，
+    # `_forward()` 把它传给元数据构造器（见那里的说明）。
+    attention_causal = True
     # 69 关：这个提议者收不收"padded 批"的两个逐请求索引
     # （`token_indices_to_sample` / `num_rejected_tokens_gpu`，上游 `prepare_inputs_padded()`
     # 的产物）。所有 LLM 系提议者（draft_model / EAGLE / MTP）都收；ngram / suffix /
@@ -949,7 +953,9 @@ class SpecDecodeBaseProposer:
             seq_lens=self.seq_lens[:num_reqs],
             block_table=self.block_table[:num_reqs],
             slot_mapping=self.slot_mapping[:num_tokens],
-            num_reqs=num_reqs)
+            num_reqs=num_reqs,
+            # 76 关：DFlash 的 mask query 是"槽位"，可以互相看（由配置决定）；其余路径恒因果。
+            causal=self.attention_causal)
         attn_metadata = {name: metadata for name in self.kv_caches}
         with set_forward_context(attn_metadata, num_tokens=num_tokens):
             if self.pass_hidden_states_to_model:
@@ -963,6 +969,28 @@ class SpecDecodeBaseProposer:
                     return for_logits, for_next
                 return out
             return self.model(self.input_ids[:num_tokens], self.positions[:num_tokens])
+
+    def _allocate_kv_caches(self) -> None:
+        """给 draft 的每个 Attention 层分配**自己的**物理缓存（上游 `_maybe_allocate_kv_cache`）。
+
+        与 target 同形、同块数：块号在两边代表同一段位置。但**不是同一份 K/V**——
+        target 写它自己的 tensor，draft 写自己的。DFlash（76 关）的 context KV 也写这份缓存，
+        只是写入方式不同（`precompute_and_store_context_kv()` 直接散射，不经过 forward）。
+
+        76 关把这段从 `DraftModelProposer` 挪到基类：DFlash 不继承 `DraftModelProposer`
+        （上游 `DFlashProposer` 同样直接继承 `SpecDecodeBaseProposer`），但同样需要这份缓存。
+        """
+        cache_config = self.vllm_config.cache_config
+        dtype = next(self.model.parameters()).dtype
+        self.kv_caches = {}
+        for name, module in self.model.named_modules():
+            if not isinstance(module, Attention):
+                continue
+            cache = torch.zeros(2, cache_config.num_gpu_blocks, self.block_size,
+                                module.num_kv_heads, module.head_size, dtype=dtype,
+                                device=self.device)
+            module.kv_cache = cache
+            self.kv_caches[name] = cache
 
     def _reset_requests(self, reset_req_ids: set[str]) -> None:
         """丢掉不再成立的 draft 侧**进度**：请求刚被抢占恢复（块表整表换过）。
@@ -1131,22 +1159,4 @@ class DraftModelProposer(SpecDecodeBaseProposer):
                     f"draft 与 target 的 {key} 不一致"
                     f"（{draft_config.get(key)} vs {target_config.get(key)}）："
                     f"本关只支持 KV 规格相同的 draft/target 共用一个 KV group")
-
-    def _allocate_kv_caches(self) -> None:
-        """给 draft 的每个 Attention 层分配**自己的**物理缓存。
-
-        与 target 同形、同块数：块号在两边代表同一段位置。但**不是同一份 K/V**——
-        target 写它自己的 tensor，draft 写自己的。
-        """
-        cache_config = self.vllm_config.cache_config
-        dtype = next(self.model.parameters()).dtype
-        self.kv_caches = {}
-        for name, module in self.model.named_modules():
-            if not isinstance(module, Attention):
-                continue
-            cache = torch.zeros(2, cache_config.num_gpu_blocks, self.block_size,
-                                module.num_kv_heads, module.head_size, dtype=dtype,
-                                device=self.device)
-            module.kv_cache = cache
-            self.kv_caches[name] = cache
 

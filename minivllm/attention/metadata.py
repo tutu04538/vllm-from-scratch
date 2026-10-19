@@ -36,6 +36,11 @@ class AttentionMetadata:
     num_reqs: int
     #: 统一 decode（图内）路径的每请求 query 行数 `1 + K`；None = 通用（eager）路径。
     uniform_query_len: int | None = None
+    #: 这一份元数据的注意力是不是**因果**的（76 关 DFlash 的 query 层可以是非因果）。
+    #: 两种掩码都会保留"只能看 `[0, seq_len)`"这条边界，区别只在"能不能看自己之后的行"。
+    #: 默认 True：除 DFlash 外的所有路径（target 的 prefill/decode 与草稿的自回归步）
+    #: 都必须是因果的，默认值就是它们的正确行为，不需要每个调用点都显式传。
+    causal: bool = True
 
 
 class AttentionMetadataBuilder:
@@ -66,7 +71,8 @@ class AttentionMetadataBuilder:
 
     def build(self, query_start_loc: torch.Tensor, seq_lens: torch.Tensor,
               block_table: torch.Tensor, slot_mapping: torch.Tensor,
-              num_reqs: int, uniform_query_len: int | None = None) -> AttentionMetadata:
+              num_reqs: int, uniform_query_len: int | None = None,
+              causal: bool = True) -> AttentionMetadata:
         return AttentionMetadata(
             query_start_loc=query_start_loc,
             seq_lens=seq_lens,
@@ -75,6 +81,7 @@ class AttentionMetadataBuilder:
             block_size=self.block_size,
             num_reqs=num_reqs,
             uniform_query_len=uniform_query_len,
+            causal=causal,
         )
 
     def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:

@@ -410,6 +410,16 @@ class GPUModelRunner:
             from ..spec_decode.custom_class_proposer import create_custom_proposer
 
             return create_custom_proposer(self.vllm_config)
+        if config.uses_dflash():
+            # 76 关：DFlash 有自己的提议者（上下文 KV + 并行 query）。**必须排在 `use_eagle()`
+            # 之前**：上游的 `use_eagle()` 把 dflash 也算进"吃 target hidden"那一类（只看
+            # hidden 采集与 KV 预留），但它的提议流程与 EAGLE 完全不同。上游 V1 runner 同样
+            # 是 `use_dflash()` 先于 `use_eagle()`。
+            from ..spec_decode.dflash import DFlashProposer
+
+            proposer = DFlashProposer(config, self.vllm_config, self.device)
+            proposer.load_model()
+            return proposer
         if config.use_eagle():
             # 63/65 关：EAGLE3 与 MTP 都走 `EagleProposer`（上游 `use_eagle()` 就把 mtp 算进来，
             # Runner 同样建 EagleProposer）——它们都是"吃 target hidden 的迭代提议"，

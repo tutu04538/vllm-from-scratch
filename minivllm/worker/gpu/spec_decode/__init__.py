@@ -17,10 +17,10 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
     speculative_config = vllm_config.speculative_config
     assert speculative_config is not None
     if speculative_config.method == "dflash":
-        raise NotImplementedError(
-            "V2 的 DFlash speculator（上下文 KV + 并行 query）属 76 关；"
-            "本关 V2 只支持 EAGLE/EAGLE3（可用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1）"
-        )
+        # 76 关：上下文 KV + 并行 query 的独立提议者（不继承自回归那条路）
+        from .dflash.speculator import DFlashSpeculator
+
+        return DFlashSpeculator(vllm_config, device)
     elif speculative_config.method == "dspark":
         raise NotImplementedError(
             "V2 的 DSpark speculator（条件采样 + 实际 proposal 分布）属 77 关"

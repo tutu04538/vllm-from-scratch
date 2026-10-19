@@ -21,7 +21,8 @@
   "step70": "partial + self-verified（状态机/批队列/异步交付自检通过；端到端明确拒绝并记录实测证据）",
   "step73": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）：V2 独立入口（常驻 slot 请求状态 + 输入组装内核 + 块表按 slot + V2 采样/验证/提议者 + 侧流交付）；实测 V1 与 V2 在 tiny（K=1/3、含 4 次抢占）与真实 Qwen3-1.7B+eagle3（3×48 token）上逐 token 相同、drafted/accepted 计数全等；⚠️ V2 只覆盖 EAGLE/EAGLE3 + standard 验证，图属 74 关、synthetic/block 属 75 关、DFlash/DSpark 属 76/77、多模块 MTP 属 80；默认仍走 V1（环境变量同名同义切换）",
   "step74": "implemented + self-verified（V2 提议者的两张图：草稿 prefill 图（草稿位置 0、每请求 1+K 行、复用 target 本轮元数据）+ 融合多步 decode 图（K−1 步录进一张图、一次重放）；走融合还是逐步由后端 capability 决定，两条路逐轮状态全等；只做提议者侧，V2 的 target 图与 PIECEWISE 未接）",
-  "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）"
+  "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）",
+  "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）"
  },
  "step58": {
   "results": {
@@ -4280,5 +4281,111 @@
    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 需要 UVA）；V1 用例不需要"
   },
   "v2_requires": "CUDA（Triton 内核 + UVA 常驻状态）；block 只有 V2 路径实现（V1 构造即 NotImplementedError）"
+ },
+ "step76": {
+  "results": {
+   "step": 76,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/076_DFlash上下文KV与并行Query执行.md",
+   "status": "已实现并自检：V1（`DFlashProposer`）与 V2（`DFlashSpeculator`）两条路径。上下文 K/V 由 target 的辅助层 hidden 经 `fc` → `hidden_norm` → **跨层融合 GEMM** → 分组 K-norm → 跨层 RoPE 后直接散射进草稿缓存（`precompute_and_store_context_kv`，图外执行）；只有每请求 `1 + K` 行 query 过草稿模型（第 0 行 bonus anchor 不采样、后 K 行 mask 只采它们，mask 预测自己这个位置）；注意力默认非因果（`AttentionMetadata.causal` 新字段，两条掩码路径都只在因果时加未来不可见项）；V1 的输入展开是上游 `copy_and_expand_dflash_inputs_kernel` 的逐行等价，V2 原样移植 `_prepare_dflash_inputs_kernel`（被拒尾部 position 0/slot −1、补齐采样行映射 −1、query_start_loc/seq_lens 补齐）。⚠️ 本机**没有真实 DFlash 权重**：端到端只用 tiny（随机但确定），草稿质量与加速比未验；需求 076 §5 明确不许把「减少 target 调用」写成「更快」，本关只做 context/query 的 trace 验证。裁剪：`sample_from_anchor`（DSpark，77 关）、混合滑窗/全注意力（多 KV group，81 关）、独立 `mask_embedding.pt`、`is_neox_style` 拷贝、Laguna 基座。差异账本 8 条见 docs/step76_alignment.md §5。",
+   "recorded_at": "2026-10-19T09:55:00+00:00",
+   "git": {
+    "baseline_commit_at_record_time": "1f62833",
+    "implementation_commit": "见本轮提交（step76：DFlash 上下文 KV 与并行 query）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 141,
+    "sha256": "3773929acbdf73d2ea258096288ccd94854ae2c1bec8f17cb229cb2e76a463f6",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐/差分；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 的 UVA 与上游对照都需要）；V2 侧再设 VLLM_USE_V2_MODEL_RUNNER=1（与上游同名同义）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step76 -q",
+     "result": "24 passed（布局 13 + KV/模型/端到端 11）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step76 -q",
+     "result": "796 passed（= 75 关的 772 + 本关 24；无回归）。⚠️ 顺带修了一个**既有的**收集顺序问题：UVA 判定被 functools.cache 缓存，若在 step73 用例运行前被别的模块以「无环境变量」调用，会有 3 项上游差分失败（在 1f62833 上可稳定复现、与 76 关无关）；新增 tests/conftest.py 在任何测试模块 import 之前 setdefault VLLM_WSL2_ENABLE_PIN_MEMORY=1 之后，不 export 环境变量也 796 passed"
+    },
+    {
+     "cmd": "python benchmarks/check_step76_dflash.py",
+     "result": "27 项全部通过（A 配置边界 7 / B 布局逐值 7 / C 模型与 KV 6 / D 端到端 7）"
+    },
+    {
+     "cmd": "python benchmarks/check_step59_rejection.py / check_step71_dynamic_sd.py / check_step72_parallel_draft.py / check_step73_v2_runner.py / check_step74_fused_draft.py / check_step75_verify_modes.py",
+     "result": "21 / 24 / 18 / 24 / 23 / 20 项全部通过（attention/metadata/config/提案者基类重构后的回归）"
+    },
+    {
+     "cmd": "15 个 check_step57_* + check_step58_* + step60~70 的探针",
+     "result": "全部通过（含 check_step57_draft_model 对提议者基类的覆盖检查）"
+    }
+   ],
+   "execution_trace": {
+    "V1 布局 vs 上游 copy_and_expand_dflash_inputs_kernel（B=2、K=3、请求 0 的 4 行里被拒 2 行）": "6/6 输出逐值相等：input_ids [11,m,m,m,22,m,m,m]、context positions [7,8,9,10,20,21]、query positions [9,10,11,12,22,23,24,25]、context slots [7,8,9,10,84,85]、query slots [9,10,11,12,86,87,88,89]、sample rows [1,2,3,5,6,7]",
+    "V2 内核 vs 上游 _prepare_dflash_inputs_kernel": "12/12 输出 torch.equal：input_ids / query_positions / query_start_loc / seq_lens / query_slot_mapping / context_positions / context_slot_mapping / sample_indices / sample_pos / sample_idx_mapping / temperature / seeds。被拒尾部 position 0、slot −1；补齐行 sample_idx_mapping −1、slot −1、seq_lens 0",
+    "模型：融合上下文 KV vs 逐层参考（minivllm/testing/torch_dflash.py）": "2 层 tiny 模型、5 个上下文位置：写进缓存的 K/V 与逐层参考逐值相等（atol=1e-6；CPU fp32 max diff 0.0）",
+    "模型：query 前向 vs 冻结参考（因果 / 非因果）": "max diff 0.0 / 0.0；两种模式输出互差 1.375（证明 causal 开关真的改变计算，不是两边都没跑对）",
+    "缩小词表（d2t）": "draft_vocab=6、target_vocab=11：compute_logits 输出宽度 11，交集外 5 列 -inf，交集内有限；d2t 是**偏移**（target = draft + offset），与上游 `base + draft_id_to_target_id` 同义",
+    "端到端（tiny、2 条请求 × 8 token、贪心）": "V1 == V2 == V2-eager 逐 token 相同（{'a': [4,4,6,0,6,0,6,0], 'b': [10,4,4,4,4,0,6,0]}）",
+    "V2 图": "capture_sizes=[8,16]、单请求 4 行 query：捕获 1 张 FULL_DECODE_ONLY 图，8 次分派里既有精确命中也有补齐重放（desc_num_tokens=8 > num_tokens=4）；图与 eager、与 V1 逐 token 相同",
+    "被拒尾部": "10 轮里每轮 (context_slot_mapping == -1) 的个数 == Σnum_rejected，且每请求的哨兵都落在**最后** num_rejected 行上（V1 与上游 V1 内核一致：整段写位置；V2 与上游 V2 内核一致：写 0/−1）",
+    "probabilistic 草稿模式": "V1（`_sample_draft_tokens` 走概率路径）与 V2（`draft_logits` 缓存 + gumbel_sample）都能跑完 4 个 token"
+   }
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "max_model_len": 64,
+    "note": "权重不提交；tiny 位置表按 64 建，端到端不能把 max_model_len 设成 128"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dflash_dir('tiny_gqa')（本关新增）",
+    "architectures": [
+     "DFlashQwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "note": "2 层、hidden 32、aux 层 (0,1)、非因果、mask_token_id=10；与 target 同词表；支持 causal=True / naming='midlayer' / draft_vocab_size / use_aux_hidden_state=False 四种变体"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DFlash checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
+   }
+  }
+ },
+ "step76_models": {
+  "target": {
+   "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "dtype": "float32",
+   "max_model_len": 64,
+   "note": "权重不提交；tiny 位置表按 64 建，端到端不能把 max_model_len 设成 128"
+  },
+  "draft": {
+   "path": "minivllm/testing/tiny_models.py::tiny_dflash_dir('tiny_gqa')（本关新增）",
+   "architectures": [
+    "DFlashQwen3ForCausalLM"
+   ],
+   "dtype": "float32",
+   "note": "2 层、hidden 32、aux 层 (0,1)、非因果、mask_token_id=10；与 target 同词表；支持 causal=True / naming='midlayer' / draft_vocab_size / use_aux_hidden_state=False 四种变体"
+  },
+  "real_weights": {
+   "status": "缺",
+   "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DFlash checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
+  }
  }
 }

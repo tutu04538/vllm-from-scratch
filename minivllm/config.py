@@ -397,13 +397,14 @@ class SpeculativeConfig:
                 "它**的上游提交，单独增补需求；不得悄悄换参考版本。"
                 "（需求 066 §3；证据与最小启动测试见 tests/step66/test_mlp_support_boundary.py）")
         if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
-                               "eagle", "eagle3", "extract_hidden_states", "mtp", "medusa"):
+                               "eagle", "eagle3", "extract_hidden_states", "mtp", "medusa",
+                               "dflash"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
                 f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / 'mtp' / "
-                f"'medusa'，收到 "
+                f"'medusa' / 'dflash'，收到 "
                 f"{self.method!r}"
-                "（PARD/DFlash/DSpark 等按需求顺序在后续关卡实现）")
+                "（DSpark 按需求顺序在 77 关实现）")
         if self.draft_sample_method not in ("greedy", "probabilistic"):
             raise ValueError(
                 f"draft_sample_method 只能是 'greedy' 或 'probabilistic'，收到 "
@@ -442,6 +443,11 @@ class SpeculativeConfig:
             # architectures / K→head 数），"与 target 对齐词表"那一步需要 target 配置，
             # 由 derive_medusa_draft_config() 在提议者构造时补（见该方法的说明）。
             self._resolve_medusa()
+        elif self.method == "dflash":
+            # **必须排在 use_eagle() 之前**（上游 `use_eagle()` 把 dflash 也算进"吃 target
+            # hidden"那一类）：DFlash 的校验与 EAGLE 不同——它天然是并行提议（一个 bonus
+            # query + K 个 mask query 一次 forward），且有几个形状上游明确不支持。
+            self._resolve_dflash()
         elif self.use_eagle():
             self._resolve_eagle()
         elif self.uses_extract_hidden_states():
@@ -582,17 +588,19 @@ class SpeculativeConfig:
                 f"{self.suffix_decoding_min_token_prob} must be in [0, 1]")
 
     def use_eagle(self) -> bool:
-        """是否走 EAGLE 系提议者（EAGLE-1/2、EAGLE3 与 **MTP** 共用一套提议流程）。
+        """是否"吃 target hidden 的投机"（上游 `config/speculative.py:1477-1481`）。
 
-        上游 `config/speculative.py:1477-1481` 逐字如此（那里的注释也写明："这个方法是
-        '用 target hidden 做投机'的统称"）：`("eagle", "eagle3", "mtp", "dflash", "dspark")`。
-        本仓库实现了前三者。
+        上游逐字如此（那里的注释也写明："这个方法是'用 target hidden 做投机'的统称"）：
+        `("eagle", "eagle3", "mtp", "dflash", "dspark")`。本仓库实现了前四者（DSpark 属 77 关）。
 
-        **后果**（调度侧依赖它）：`num_lookahead_tokens` = K（它们都要往 target query 之外写
-        K 个位置的 KV）、Runner 建 `EagleProposer`、`capture_aux_hidden_states` 之外还要给
-        MTP 留 target 的最后一层 hidden。
+        **注意它不等于"Runner 建 `EagleProposer`"**：DFlash 有自己的提议者
+        （`DFlashProposer`，上下文 KV + 并行 query），Runner 的分派在 `use_eagle()` 之前先认
+        `method == "dflash"`。上游 V1 runner 同样是 `use_dflash()` 先于 `use_eagle()`。
+
+        **后果**（调度侧依赖它）：`num_lookahead_tokens` = K——它们都要往 target query 之外
+        写 K 个位置的 KV（DFlash 写的是 query 行自己的 KV，位置由 anchor + 1..K 决定）。
         """
-        return self.method in ("eagle", "eagle3", "mtp")
+        return self.method in ("eagle", "eagle3", "mtp", "dflash")
 
     def uses_mtp(self) -> bool:
         """是否为原生 MTP（权重在 target checkpoint 里）。"""
@@ -745,7 +753,10 @@ class SpeculativeConfig:
     #: 72 关：支持并行提议的方法（上游 docstring："Only compatible with EAGLE and draft model
     #: methods"）。EAGLE 系与 MTP 都吃 target hidden（`pass_hidden_states_to_model=True`，左移布局），
     #: draft_model 走不左移布局 —— 这正是 P-EAGLE 与 PARD 两条输入协议。
-    _PARALLEL_DRAFTING_METHODS = ("eagle", "eagle3", "mtp", "draft_model")
+    #: 76 关：DFlash 是**第三条**协议（自己的一套 query 排布），不是 PARD 那套；上游把
+    #: `parallel_drafting` 强制打开，是为了走 `propose()` 里"一次 forward、不跑自回归"的早退
+    #: 分支，而不是复用 `copy_and_expand_eagle_inputs_kernel` 的 mask 布局。
+    _PARALLEL_DRAFTING_METHODS = ("eagle", "eagle3", "mtp", "draft_model", "dflash")
 
     def _resolve_parallel_drafting(self) -> None:
         """并行提议的取值校验（72 关）。
@@ -766,8 +777,8 @@ class SpeculativeConfig:
                 f"parallel_drafting=True（并行提议）只支持 "
                 f"{self._PARALLEL_DRAFTING_METHODS}，收到 method={self.method!r}："
                 f"这条输入协议要『一次 forward 出 K 个位置』的权重，其余方法的提议者不消费它的"
-                f"mask/槽位（上游没有这条校验，写了会被静默忽略）。DFlash / DSpark 的并行协议不同，"
-                f"按需求顺序在 76/77 关实现（需求 072 §5 明确要求不能拿同一套 mask 代替）")
+                f"mask/槽位（上游没有这条校验，写了会被静默忽略）。DSpark 的并行协议不同，"
+                f"按需求顺序在 77 关实现（需求 072 §5 明确要求不能拿同一套 mask 代替）")
         if self.num_speculative_tokens <= 0:
             raise ValueError(
                 f"parallel_drafting=True 需要 num_speculative_tokens > 0，收到 "
@@ -776,8 +787,10 @@ class SpeculativeConfig:
         # 约定），而上游模型是从 live `vllm_config.speculative_config` 读这个开关来决定要不要
         # 注册 `mask_hidden` buffer。不注入的话，一份**合法的 P-EAGLE 权重**会因为模型没建
         # buffer 而加载失败（权重里的 `mask_hidden` 无处可去）。
-        # 只有吃 target hidden 的 EAGLE 系需要它（PARD 是普通 LM，没有 mask hidden）。
-        if self.use_eagle() and self.draft_model_config is not None:
+        # 只有吃 target hidden 的 EAGLE 系需要它（PARD 是普通 LM，没有 mask hidden；
+        # DFlash 用 `mask_token_id` 的 embedding，权重里**不能**有 `mask_hidden`——上游
+        # `DFlashQwen3ForCausalLM.load_weights` 对它是 assert 拒绝的）。
+        if self.use_eagle() and self.method != "dflash" and self.draft_model_config is not None:
             draft_hf = dict(self.draft_model_config.hf_config or {})
             if not draft_hf.get("parallel_drafting"):
                 draft_hf["parallel_drafting"] = True
@@ -948,13 +961,78 @@ class SpeculativeConfig:
                 f"num_speculative_tokens={self.num_speculative_tokens} 太大："
                 f"EAGLE 的自回归步数与它成正比，先支持到 32")
 
+    def _resolve_dflash(self) -> None:
+        """DFlash 的取值校验与环境准备（需求 076；上游 `config/speculative.py:1047`）。
+
+        上游在这一支只做一件事：`self.parallel_drafting = True`——DFlash 天然是并行提议
+        （一个 bonus query + K 个 mask query 一次前向）。本仓库照抄，并额外在配置期拒绝三个
+        "上游不报错、但本仓库不实现"的形状（不静默降级；逐条记进
+        `docs/step76_alignment.md` §5 的差异账本）：
+
+            `sample_from_anchor=True`  DSpark 的形状（77 关）：anchor 也采样、位置语义变成
+                                       "预测下一个位置"。上游 V2 才 raise，V1 会静默按
+                                       anchor=bonus 跑——本仓库两侧都在这里拒绝。
+            混合滑窗/全注意力（`use_swa` / `layer_types`）  需要多个 draft KV group；上游
+                                       要求 V2 runner，本仓库 V2 只有单 group。宁可报错，
+                                       也不把滑窗层当全注意力跑（不报错、只是草稿变差）。
+            `mask_token_id` 一处都找不到  并行槽位要填训练时约定的占位符（上游
+                                       `_init_parallel_drafting_params()` 的同一条取值链）。
+        """
+        if self.draft_model_config is None:
+            raise ValueError("method='dflash' 必须在 SpeculativeConfig 里给 "
+                             "draft_model_config（DFlash 的 draft 是独立权重）")
+        if self.num_speculative_tokens <= 0:
+            raise ValueError("DFlash 的 num_speculative_tokens 必须 > 0（它决定 K 个 mask query）")
+        # 上游同位置：`if self.method in ("dflash", "dspark"): self.parallel_drafting = True`
+        object.__setattr__(self, "parallel_drafting", True)
+
+        hf_config = self.draft_model_config.hf_config or {}
+        dflash_config = hf_config.get("dflash_config") or {}
+        if dflash_config.get("sample_from_anchor", False):
+            raise NotImplementedError(
+                "DFlash 不支持 sample_from_anchor=True（那是 DSpark 的形状，77 关）："
+                "DFlash 的 anchor 就是 target 刚采出的 bonus token、不参与采样，"
+                "只有 K 个 mask query 预测。强行打开会让 anchor 也产出一枚草稿，"
+                "而它的位置语义是'预测自己这个位置'，两者不能混用")
+        if dflash_config.get("use_swa", False) or hf_config.get("layer_types"):
+            raise NotImplementedError(
+                "本仓库只实现**单 KV group** 的 DFlash（每层同一套因果性）：收到 "
+                "`dflash_config.use_swa` / `layer_types`（混合滑窗/全注意力）。"
+                "上游要求这种 checkpoint 必须走 V2 的多 KV group（V1 直接报错），"
+                "而本仓库 V2 也只有单 group——先按明确报错处理，不把滑窗层当全注意力跑")
+        if self._dflash_mask_token_id(hf_config) is None:
+            raise ValueError(
+                "DFlash 的 draft 配置里没有 mask token：按上游 `_init_parallel_drafting_params()` "
+                "的顺序找 `dflash_config.mask_token_id` → `mask_token_id` → "
+                "`dspark_noise_token_id` → `pard_token` → `ptd_token_id`，一处都没有。"
+                "这个 id 是模型训练时约定的占位符，换一个不会报错、只会让 K 枚草稿全部基于"
+                "模型没见过的输入")
+
+    @staticmethod
+    def _dflash_mask_token_id(hf_config: dict) -> int | None:
+        """DFlash 并行槽位的 mask token（上游同一条取值链，见 `_resolve_dflash`）。"""
+        dflash_config = hf_config.get("dflash_config") or {}
+        for value in (dflash_config.get("mask_token_id"),
+                      hf_config.get("mask_token_id"),
+                      hf_config.get("dspark_noise_token_id"),
+                      hf_config.get("pard_token"),
+                      hf_config.get("ptd_token_id")):
+            if value is not None:
+                return int(value)
+        return None
+
     def eagle3_use_aux_hidden_state(self) -> bool:
-        """EAGLE3 是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。
+        """是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。
 
         64 关：`extract_hidden_states` 也走同一条"target 顺带输出辅助层"的采集路径，但它
-        **不是** EAGLE——没有 draft 模型、不吃这些特征去猜 token。所以这个判定仍然只认
-        `eagle3`，采集开关由 `uses_extract_hidden_states()` 单独打开（Runner 里两个条件是或）。
+        **不是** EAGLE——没有 draft 模型、不吃这些特征去猜 token。所以这个判定只认
+        `eagle3` 与 `dflash`（上游 `DFlashProposer._get_eagle3_use_aux_hidden_state_from_config`
+        读的是 `dflash_config.use_aux_hidden_state`，默认 True；`False` = 直接用最后一层，
+        与 EAGLE-1 同款）。
         """
+        if self.method == "dflash":
+            hf_config = (self.draft_model_config.hf_config or {}) if self.draft_model_config else {}
+            return bool((hf_config.get("dflash_config") or {}).get("use_aux_hidden_state", True))
         return self.method == "eagle3"
 
     def uses_extract_hidden_states(self) -> bool:
@@ -1014,12 +1092,21 @@ class SpeculativeConfig:
 
         上游 `_get_eagle3_aux_layers_from_config`：`eagle_aux_hidden_state_layer_ids` →
         `eagle_config.eagle_aux_hidden_state_layer_ids` → `dflash_config.target_layer_ids + 1`。
+
+        ⚠️ 最后那条 `+1` 不是笔误：DFlash 的 `target_layer_ids` 是**从 0 数**的目标层号
+        （上游 speculators 的 `update_dflash()` 在写配置时就做了 `[i - 1 for i in aux]`），
+        而 runner 采集辅助层用的是"第几层之后"的 1-base 口径（EAGLE3 的
+        `eagle_aux_hidden_state_layer_ids`）——两者差一个 1，上游就在这里补上。
         """
         hf_config = (self.draft_model_config.hf_config or {}) if self.draft_model_config else {}
         layers = hf_config.get("eagle_aux_hidden_state_layer_ids")
         if not layers:
             eagle_config = hf_config.get("eagle_config") or {}
             layers = eagle_config.get("eagle_aux_hidden_state_layer_ids")
+        if not layers:
+            dflash_config = hf_config.get("dflash_config") or {}
+            target_layer_ids = dflash_config.get("target_layer_ids")
+            layers = [int(index) + 1 for index in target_layer_ids] if target_layer_ids else None
         return tuple(layers) if layers else None
 
     def use_ngram_gpu(self) -> bool:
@@ -1072,9 +1159,13 @@ class SpeculativeConfig:
         return 0
 
     def uses_dflash(self) -> bool:
-        """DFlash（76 关）。本仓库的配置期校验**不允许** `method="dflash"`，所以这里恒为 False；
-        留着它是为了让 `max_num_new_slots_for_drafting()` 与上游的分支表逐条对应
-        （76 关接进来时只需放开配置校验，槽位口径已经写对）。"""
+        """是否走 DFlash（上下文 KV + 并行 query，76 关；上游同名方法）。
+
+        两个直接后果：`max_num_new_slots_for_drafting()` 恒为 K（一个 bonus query + K 个 mask
+        query 全在 target query 之外），以及 `parallel_drafting` 在 `_resolve_dflash()` 里被强制
+        打开（上游 `config/speculative.py:1047` 同款）——但那条开关在这里只用来走
+        `propose()` 的"一次 forward、不跑自回归"早退分支，**不是** PARD 那套 mask 布局。
+        """
         return self.method == "dflash"
 
 
@@ -1749,9 +1840,9 @@ class VllmConfig:
         if not self.use_v2_model_runner:
             return
         spec = self.speculative_config
-        if spec is not None and spec.method not in ("eagle", "eagle3", "mtp"):
+        if spec is not None and spec.method not in ("eagle", "eagle3", "mtp", "dflash"):
             raise NotImplementedError(
-                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp')，收到 "
+                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp', 'dflash')，收到 "
                 f"{spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
                 f"（其余方法各自的归属关卡见 spec_decode/__init__.py 的报错）"
             )

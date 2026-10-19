@@ -175,12 +175,12 @@ def test_custom_class_requires_model_path():
 def test_unknown_method_rejected_at_config_time():
     """未支持的方法在**配置期**拒绝，不静默回退成 ngram。
 
-    （这条用例的"仍未实现的方法"换过两次：63 关的 `eagle`/`eagle3` → `medusa`；
-    66 关实现了 `medusa`，现在改用仍未实现的 `dflash`（76–78 关）。断言强度不变——
-    仍然是"配置期 ValueError + 不回退"。）
+    （这条用例的"仍未实现的方法"换过三次：63 关的 `eagle`/`eagle3` → `medusa`；
+    66 关实现了 `medusa` → `dflash`；76 关实现了 `dflash`，现在改用仍未实现的
+    `dspark`（77 关）。断言强度不变——仍然是"配置期 ValueError + 不回退"。）
     """
     with pytest.raises(ValueError, match="只支持 method="):
-        SpeculativeConfig(method="dflash", num_speculative_tokens=4)
+        SpeculativeConfig(method="dspark", num_speculative_tokens=4)
 
 
 def test_config_derived_quantities_for_custom_class():

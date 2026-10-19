@@ -48,6 +48,20 @@ class RotaryEmbedding(nn.Module):
         return (_apply_rotary(q, cos, sin, self.rotary_dim).view(num_tokens, -1),
                 _apply_rotary(k, cos, sin, self.rotary_dim).view(num_tokens, -1))
 
+    def apply_to_key(self, positions: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+        """只旋转一组 K（76 关 DFlash 的上下文 KV 预计算用）。
+
+        为什么需要单独一个入口：DFlash 的上下文行**不过模型**，它们的 K 是在
+        `precompute_and_store_context_kv()` 里一次性算好、直接写进缓存的；没有 query 可传，
+        所以不能走 `forward()`（它要求 q 也非空）。数学与 `forward()` 里的 K 那一路完全相同。
+        """
+        num_tokens = key.shape[0]
+        k = key.view(num_tokens, -1, self.head_size)
+        cos, sin = self.cos_sin_cache.split(self.rotary_dim, dim=-1)
+        cos = cos[positions].unsqueeze(1)
+        sin = sin[positions].unsqueeze(1)
+        return _apply_rotary(k, cos, sin, self.rotary_dim).view(num_tokens, -1)
+
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1, x2 = x.chunk(2, dim=-1)

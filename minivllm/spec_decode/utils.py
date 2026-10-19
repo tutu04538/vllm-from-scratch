@@ -236,6 +236,126 @@ def expand_parallel_draft_inputs(target_token_ids, target_positions, rows, *,
     return out
 
 
+@dataclass
+class DFlashFirstPass:
+    """DFlash 第一遍的展开结果（上游 `copy_and_expand_dflash_inputs_kernel` 的全部输出）。
+
+    与 PARD/P-EAGLE 的 `ParallelFirstPass` **不是同一种布局**（需求 076 §3）：
+
+        context 行   target 本轮的行（可能含被拒尾部），**不进模型**，只用来查位置/槽位，
+                     再由 `precompute_and_store_context_kv()` 从 target hidden 翻译成 K/V
+        query 行     每请求固定 `1 + K` 行：第 0 行 = target 刚采出的 bonus token，
+                     后 K 行 = mask token（**只有它们被采样**）
+        seq_lens     `last_valid_pos + 1 + (1 + K)`：上下文 + query 全部位置
+        sample 行    每请求的 mask 行（全局 query 行号），按"请求序 × 行内序"排列
+
+    字段逐个对应上游内核的输出：
+
+        input_ids / positions / slot_mapping     query 行（长度 = B × (1+K)）
+        context_positions / context_slot_mapping context 行（长度 = Σ target 行数）
+        query_start_loc / seq_lens               注意力元数据
+        token_indices_to_sample                  要采样的 query 行号
+    """
+
+    input_ids: list[int] = field(default_factory=list)
+    positions: list[int] = field(default_factory=list)
+    context_positions: list[int] = field(default_factory=list)
+    query_start_loc: list[int] = field(default_factory=list)
+    seq_lens: list[int] = field(default_factory=list)
+    token_indices_to_sample: list[int] = field(default_factory=list)
+    num_query_per_req: int = 0
+    num_context: int = 0
+
+
+def expand_dflash_inputs(target_positions, rows, *,
+                         num_query_per_req: int, mask_token_id: int) -> DFlashFirstPass:
+    """上游 `copy_and_expand_dflash_inputs_kernel`（`v1/spec_decode/utils.py:458-562`）的逐行等价。
+
+    逐请求做三件事（**位置全部是绝对位置**，行号是 query 行号）：
+
+        1. context 行：位置 = `target_positions[块内第 j 行]`（**原样**，包括被拒尾部——
+           与上游 V1 内核一致：它按 `is_ctx` 写位置/槽位，被拒行不参与上下文只是因为
+           `seq_lens` 被减掉了，不是因为不写）
+        2. query 行：位置 = `last_valid_pos + 1 + off`（off = 0..K）；off=0 是 bonus token、
+           其余是 mask token
+        3. 采样行 = 每请求的 mask 行（off = 1..K），位置就是它们自己的 query 位置
+
+    `last_valid_pos` 取 **`target_positions[块起点 + 有效行数 − 1]`**（有效行数 = target 行数 −
+    被拒数）。这里最容易错的一步：不加 `− 被拒数`，query 的位置就会整体后移 1 行（草稿写在
+    从未存在的位置上）——不报错，只是草稿质量崩掉。
+
+    槽位不在这里算（上游内核里顺手算，本仓库把"物理槽位"单独留给
+    `compute_slot_mapping_for_rows()`：它要块表，而块表是提议者的工作区状态）。
+    """
+    out = DFlashFirstPass(num_query_per_req=num_query_per_req)
+    cursor = 0
+    if num_query_per_req < 1:
+        raise ValueError(
+            f"DFlash 的 num_query_per_req 必须是 1 + K（至少 1，收到 {num_query_per_req}）："
+            f"第 0 行是 bonus token；K=0 时只有它（71 关的动态投机长度会走到这一档）")
+    for request_index, row in enumerate(rows):
+        target_rows = int(row.target_rows)
+        rejected = int(row.num_rejected)
+        num_valid = target_rows - rejected
+        if num_valid <= 0:
+            raise ValueError(
+                f"{row.req_id!r} 的被拒行数 {rejected} 吃掉了整个 target 块"
+                f"（{target_rows} 行）：DFlash 至少需要 1 行有效上下文来定 anchor 位置")
+        last_valid_pos = int(target_positions[cursor + num_valid - 1])
+
+        # context 行：位置原样（上游 `is_ctx` 分支）
+        out.context_positions.extend(
+            int(target_positions[cursor + j]) for j in range(target_rows))
+        out.num_context += target_rows
+
+        # query 行：[bonus, mask, mask, ...]，位置接在最后一个有效位置之后
+        out.input_ids.append(int(row.next_token_id))
+        out.positions.append(last_valid_pos + 1)
+        for off in range(1, num_query_per_req):
+            out.input_ids.append(int(mask_token_id))
+            out.positions.append(last_valid_pos + 1 + off)
+
+        query_base = request_index * num_query_per_req
+        out.token_indices_to_sample.extend(
+            query_base + off for off in range(1, num_query_per_req))
+
+        out.seq_lens.append(last_valid_pos + 1 + num_query_per_req)
+        cursor += target_rows
+    out.query_start_loc = [index * num_query_per_req
+                           for index in range(len(rows) + 1)]
+    if out.num_context != cursor:
+        raise RuntimeError(
+            f"DFlash 上下文行数 {out.num_context} 与 target 行数之和 {cursor} 不一致")
+    if len(out.input_ids) != len(rows) * num_query_per_req:
+        raise RuntimeError(
+            f"DFlash query 行数 {len(out.input_ids)} 与公式 "
+            f"{len(rows)} × {num_query_per_req} 不一致")
+    return out
+
+
+def compute_slot_mapping_for_rows(positions: torch.Tensor, req_indices: torch.Tensor,
+                                  block_table: torch.Tensor, block_size: int,
+                                  max_model_len: int) -> torch.Tensor:
+    """按块表把一批（请求, 绝对位置）翻成物理槽位（上游内核里那段 `slot = block*bs + pos%bs`）。
+
+    越界位置（`pos >= max_model_len`）打哨兵：它们不写缓存。与
+    `compute_new_slot_mapping()` 的区别只有一个：**没有"被拒行掩码"**——DFlash 的
+    context/query 行位置都是真实位置，无效性由"调度侧有没有预留这个位置"保证。
+    """
+    if positions.numel() == 0:
+        return torch.empty(0, dtype=torch.int64, device=positions.device)
+    n_blocks_per_req = block_table.shape[1]
+    # 位置/请求号可能是 CPU 张量（V1 的 staging 在 CPU 上算），块表镜像也在 CPU；
+    # 用块表的设备作为唯一口径，避免两套设备混算（`index` 要求同一设备）。
+    positions = positions.to(block_table.device)
+    req_indices = req_indices.to(block_table.device)
+    clamped = positions.clamp(max=max_model_len - 1)
+    block_nums = block_table.reshape(-1)[
+        req_indices * n_blocks_per_req + clamped // block_size]
+    slot_mapping = block_nums * block_size + clamped % block_size
+    return slot_mapping.masked_fill(positions >= max_model_len, PADDING_SLOT_ID)
+
+
 def compute_new_slot_mapping(block_table: torch.Tensor,
                              query_lens: list[int],
                              new_positions: torch.Tensor,

@@ -187,8 +187,9 @@ class GPUModelRunner:
             # `active_layer_names`，于是 target 的 metadata 字典天然包含草稿层；草稿 prefill
             # 复用 target 那份 metadata 时，草稿层就是靠这个键找到自己的元数据）。
             self.speculator.draft_attn_layer_names = self._draft_attention_layer_names()
-            if self.speculative_config.method == "eagle3":
+            if self.speculative_config.method in ("eagle3", "dflash"):
                 # Drafting may require auxiliary hidden states from target model outputs.
+                # 76 关：DFlash 的上下文 KV 就是这些特征翻译出来的，**必须**采集。
                 self.use_aux_hidden_state_outputs = True
                 # 与 V1 同一条取值链：draft 配置里的辅助层 id，缺省用模型的默认值。
                 layers = self.speculative_config.eagle_aux_hidden_state_layers() \
@@ -407,8 +408,11 @@ class GPUModelRunner:
             set_cudagraph_capturing_enabled(False)
         torch.cuda.synchronize()
         end_free = torch.cuda.mem_get_info()[0]
-        for name, manager in (("prefill", self.speculator.prefill_cudagraph_manager),
-                              ("decode", self.speculator.decode_cudagraph_manager)):
+        managers = getattr(self.speculator, "cudagraph_managers", None)
+        if managers is None:
+            managers = {"prefill": getattr(self.speculator, "prefill_cudagraph_manager", None),
+                        "decode": getattr(self.speculator, "decode_cudagraph_manager", None)}
+        for name, manager in managers.items():
             if manager is not None:
                 stats["graphs"][name] = {
                     "captured": len(manager.graphs),

@@ -206,6 +206,122 @@ def tiny_eagle3_dir(target_name: str = "tiny_gqa", *, num_aux_layers: int = 2,
     return str(out)
 
 
+def tiny_dflash_dir(target_name: str = "tiny_gqa", *, num_layers: int = 2,
+                    causal: bool = False, mask_token_id: int | None = None,
+                    aux_layers=(0, 1), use_aux_hidden_state: bool = True,
+                    draft_vocab_size: int | None = None,
+                    naming: str = "layers", seed: int = 0) -> str:
+    """生成一份**与 tiny target 规格匹配**的 DFlash 草稿（随机但确定；只给测试）。
+
+    它就是 76 关要跑的形态（权重结构与上游 `DFlashQwen3ForCausalLM` 一致）：
+
+        config  `dflash_config.mask_token_id / target_layer_ids / causal /
+                use_aux_hidden_state` + `eagle_aux_hidden_state_layer_ids`
+        权重    `embed_tokens.*`、`layers.N.*`（q/k/v/o + mlp + 两个 norm + q/k norm）、
+                `norm.*`、`fc.*`（aux 特征投影）、`hidden_norm.*`、`lm_head.*`
+                （`draft_vocab_size` 给了还会带 `d2t` 偏移映射）
+
+    两个"上游真实形态"的开关，测试要分别钉住：
+
+        `naming="midlayer"`   历史 checkpoint 把草稿层叫 `midlayer.*`（模型侧映射到 `layers.0.`）
+        `causal=True`         全因果的 DFlash 变体（默认非因果；两种都要能跑）
+
+    `aux_layers` 是**采集口径**（和 `eagle_aux_hidden_state_layer_ids` 同一套 0-based 层号），
+    `dflash_config.target_layer_ids` 写的是上游那份"减 1"的镜像（`fc` 宽度由前者决定，
+    两者长度必须一致）。
+    """
+    if naming not in ("layers", "midlayer"):
+        raise ValueError(f"naming 只能是 'layers' / 'midlayer'，收到 {naming!r}")
+    if naming == "midlayer" and num_layers != 1:
+        raise ValueError("midlayer 命名只出现在单层的历史 checkpoint 里")
+    target_config = tiny_qwen3_config(target_name)
+    hidden = target_config["hidden_size"]
+    head_dim = target_config["head_dim"]
+    num_heads = target_config["num_attention_heads"]
+    num_kv_heads = target_config["num_key_value_heads"]
+    vocab = target_config["vocab_size"]
+    aux_layers = list(aux_layers)
+    if not aux_layers:
+        raise ValueError("DFlash 的 fc 需要至少一个辅助层（aux_layers 不能为空）")
+    mask_token_id = int(vocab - 1 if mask_token_id is None else mask_token_id)
+    draft_vocab = int(draft_vocab_size or vocab)
+
+    config = {
+        "architectures": ["DFlashQwen3ForCausalLM"],
+        "model_type": "qwen3",
+        "hidden_size": hidden,
+        "num_hidden_layers": num_layers,
+        "num_attention_heads": num_heads,
+        "num_key_value_heads": num_kv_heads,
+        "head_dim": head_dim,
+        "intermediate_size": target_config["intermediate_size"],
+        "vocab_size": vocab,
+        "draft_vocab_size": draft_vocab,
+        "max_position_embeddings": target_config["max_position_embeddings"],
+        "rms_norm_eps": target_config["rms_norm_eps"],
+        "rope_parameters": target_config.get("rope_parameters"),
+        "target_hidden_size": hidden,
+        "tie_word_embeddings": False,
+        "torch_dtype": "float32",
+        "eagle_aux_hidden_state_layer_ids": aux_layers,
+        "dflash_config": {
+            "mask_token_id": mask_token_id,
+            # 上游 speculators 的换算：`target_layer_ids = [i - 1 for i in aux]`
+            "target_layer_ids": [index - 1 for index in aux_layers],
+            "sample_from_anchor": False,
+            "use_aux_hidden_state": use_aux_hidden_state,
+            "causal": bool(causal),
+        },
+    }
+
+    generator = torch.Generator().manual_seed(seed + 7600)
+    scale = target_config["initializer_range"]
+
+    def normal(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(0.0, scale,
+                                                                generator=generator)
+
+    def norm_weight(size):
+        return (torch.ones(size, dtype=torch.float32)
+                + normal(size) * 0.1)
+
+    q_size = num_heads * head_dim
+    kv_size = num_kv_heads * head_dim
+    weights: dict[str, torch.Tensor] = {
+        "embed_tokens.weight": normal(vocab, hidden),
+        "norm.weight": norm_weight(hidden),
+        "lm_head.weight": normal(draft_vocab, hidden),
+    }
+    # `hidden_norm` 恒存在（它作用在"上下文特征"上，与吃不吃 aux 无关；上游同样无条件建它）
+    weights["hidden_norm.weight"] = norm_weight(hidden)
+    if use_aux_hidden_state:
+        weights["fc.weight"] = normal(hidden, hidden * len(aux_layers))
+    for layer in range(num_layers):
+        prefix = "midlayer." if naming == "midlayer" else f"layers.{layer}."
+        weights[prefix + "input_layernorm.weight"] = norm_weight(hidden)
+        weights[prefix + "post_attention_layernorm.weight"] = norm_weight(hidden)
+        weights[prefix + "self_attn.q_proj.weight"] = normal(q_size, hidden)
+        weights[prefix + "self_attn.k_proj.weight"] = normal(kv_size, hidden)
+        weights[prefix + "self_attn.v_proj.weight"] = normal(kv_size, hidden)
+        weights[prefix + "self_attn.o_proj.weight"] = normal(hidden, q_size)
+        weights[prefix + "self_attn.q_norm.weight"] = norm_weight(head_dim)
+        weights[prefix + "self_attn.k_norm.weight"] = norm_weight(head_dim)
+        weights[prefix + "mlp.gate_proj.weight"] = normal(
+            config["intermediate_size"], hidden)
+        weights[prefix + "mlp.up_proj.weight"] = normal(config["intermediate_size"], hidden)
+        weights[prefix + "mlp.down_proj.weight"] = normal(
+            hidden, config["intermediate_size"])
+    if draft_vocab != vocab:
+        # 缩小词表：`d2t` 存的是**偏移**（target id = draft id + offset），与上游
+        # `compute_logits()` 的 `base + draft_id_to_target_id` 一致；这里取 0 偏移
+        # （草稿 id 0..draft_vocab-1 直接对应 target 的前 draft_vocab 个 id）。
+        weights["d2t"] = torch.zeros(draft_vocab, dtype=torch.int64)
+    out = Path(tempfile.mkdtemp(prefix=f"minivllm_dflash_{target_name}_"))
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
 def tiny_pard_dir(target_name: str = "tiny_gqa", *, pard_token: int = 0, seed: int = 0) -> str:
     """生成一份**PARD 格式**的 tiny draft（72 关；只给测试）。
 
