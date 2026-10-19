@@ -213,12 +213,15 @@ def main(argv=None):
           f"（块 hash 链 + 引用计数 + LRU 逐出；两条相同 prompt 的请求会命中同一批块）")
     if config.speculative_config is not None:
         spec = config.speculative_config
+        # V1 的提议者叫 `proposer`、V2 叫 `speculator`（同一个职责的两个入口）；
+        # 辅助层采集的标志也分两套（V2 用 `use_aux_hidden_state_outputs`）。
+        proposer = getattr(runner, "proposer", None) or getattr(runner, "speculator", None)
+        aux_layers = tuple(getattr(runner, "eagle_aux_hidden_state_layers", ()) or ())
         print(f"  投机：method={spec.method!r}"
               + (f" model={spec.model!r}" if spec.model else "")
-              + f" K={spec.num_speculative_tokens}，提议者={type(runner.proposer).__name__}"
-              f"（{type(runner.proposer).__module__}）"
-              + (f"，辅助层={list(runner.eagle_aux_hidden_state_layers)}"
-                 if runner.capture_aux_hidden_states else ""))
+              + f" K={spec.num_speculative_tokens}，提议者={type(proposer).__name__}"
+              f"（{type(proposer).__module__}）"
+              + (f"，辅助层={list(aux_layers)}" if aux_layers else ""))
         if spec.rejection_sample_method != "standard":
             print(f"  验证方式：{spec.rejection_sample_method!r}"
                   + (f"，无条件接受率={spec.synthetic_acceptance_rates}（内核用条件率）"
