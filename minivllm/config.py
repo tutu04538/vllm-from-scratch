@@ -354,9 +354,11 @@ class SpeculativeConfig:
     # 与 `spec_decode/utils.py::expand_parallel_draft_inputs`）。
     parallel_drafting: bool = False
     # 77 关（上游 `SpeculativeConfig.dspark_draft_topk`，`config/speculative.py:298`）：
-    # **只给 Qwen3 DSpark 用**——Markov 投影只对 base logits 的 top-k 候选求值，每步的
-    # `[B, V]` 偏置+softmax 变成 `[B, k]`。取值 1..draft 词表大小；不写时读 draft 配置里的
-    # 同名字段（上游同一条取值链）。截断会改变 q，所以缓存的 q 必须是**截断后**的那一份。
+    # **只给 Qwen3 DSpark 用**——Markov 投影只对 base logits 的 top-k 候选求值：每步那次
+    # `[B, V]` 的偏置退化成 `[B, k]`（`baddbmm`），其余列置 `-inf` 后仍交给普通**稠密**采样器
+    # ——所以省的是偏置那一半，采样/softmax 依旧扫全词表（上游字段注释也只承诺"只对候选求值"）。
+    # 取值 1..draft 词表大小；不写时读 draft 配置里的同名字段（上游同一条取值链）。
+    # 截断会改变 q，所以缓存的 q 必须是**截断后**的那一份。
     dspark_draft_topk: int | None = None
     # 79 关（上游 `SpeculativeConfig.enable_adaptive_verification`，`config/speculative.py:241`）：
     # 按每请求置信度自适应决定验证预算。**本关只算置信度、不做预算**，所以这里明确拒绝 True
