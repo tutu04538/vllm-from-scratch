@@ -126,6 +126,7 @@ K/V 的入口（与 `write_kv()` 同一套散射，但槽位由参数给、跳�
 | D-76-6 | V1 上下文行**整段写**位置/槽位（含被拒尾部），V2 把被拒尾部写 0/−1 | 两条都逐值对齐各自的上游内核；V1 的写入落在请求自己的 lookahead 槽位上，`seq_lens` 已把被拒行减掉 | 无行为差异（V2 的口径更严格） |
 | D-76-7 | V1 不实现 `sample_from_anchor`；V2 的 `SAMPLE_FROM_ANCHOR` 分支未移植 | 配置期已拒绝，生产路径不可能走到 | 77 关补 |
 | D-76-8 | 没有真实 DFlash 权重，端到端只用 tiny（随机但确定） | 本机只有 Qwen3-1.7B 与它的 EAGLE3 草稿；不伪造下载 | 草稿质量/加速比"集成待验" |
+| D-76-9 | `DFlashSpeculator.set_attn()` 不调基类、不保存 `target_input_buffers` / `target_build_attn_metadata` | 这两个是 AR 提议者捕获草稿 prefill 图用的；DFlash 的 query 前向用自己的输入缓冲和自造元数据，上游 DFlash 分支同样没读它们 | 无行为差异（少两处"存了没人用"的引用） |
 
 ---
 

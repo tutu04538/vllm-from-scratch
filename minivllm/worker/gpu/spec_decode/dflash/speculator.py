@@ -108,7 +108,22 @@ class DFlashSpeculator(DraftModelSpeculator):
 
     def set_attn(self, block_tables, target_input_buffers: InputBuffers,
                  target_build_attn_metadata) -> None:
-        super().set_attn(block_tables, target_input_buffers, target_build_attn_metadata)
+        """接上草稿的注意力设施（对应上游 `DFlashSpeculator.set_attn`，只留真正消费的部分）。
+
+        三个参数里 DFlash 只用 `block_tables`：
+
+            block_tables               内核查 query/context 槽位、把 query 槽位写回
+                                       `slot_mappings[0]`（图重放读的就是这块常驻缓冲）、
+                                       捕获图时造假块表/假槽位
+            target_input_buffers       AR 提议者（EAGLE/MTP）捕获草稿 prefill 图时复用 target 的
+            target_build_attn_metadata 输入缓冲与元数据；DFlash 的 query 前向用**自己的**
+                                       `input_buffers` 和自造的元数据，不消费这两个
+
+        上游基类把三样都存下来（DFlash 分支同样没读后两个）——这里不调 `super()` 是为了不留
+        "存了没人用"的引用（差异账本 D-76-9）。`metadata_builder` 需要 block_size，所以在
+        接线点建一次，`propose()` 每轮直接用它造元数据。
+        """
+        self.block_tables = block_tables
         from .....attention.backends.torch_sdpa import TorchAttentionBackend
 
         self.metadata_builder = TorchAttentionBackend.get_builder_cls()(
