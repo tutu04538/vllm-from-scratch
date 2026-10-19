@@ -634,6 +634,10 @@ query 行     [bonus anchor, mask × K]：位置 = last_valid_pos + 1 + off
 ```bash
 python -m pytest tests/step76 -q                  # 24 项
 python benchmarks/check_step76_dflash.py          # 27 项
+# 命令行入口（--spec-model 指向 DFlash 草稿目录；本机没有真实 DFlash 权重，
+# 构造路径用 tiny 目录验证过：proposer=DFlashProposer、辅助层从 dflash_config 解析）
+python minivllm/demo.py --device cuda --model <target> \
+    --spec-method dflash --spec-model <dflash 目录> --spec-k 3 "问题"
 ```
 
 实测：V1 展开 vs 上游内核 **6/6 输出逐值相等**、V2 内核 vs 上游 **12/12 逐值相等**（含补齐行）；
