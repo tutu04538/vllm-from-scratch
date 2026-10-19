@@ -22,7 +22,8 @@
   "step73": "implemented + self-verified（用户已声明不再逐关找验收方，本关自带测试并实跑）：V2 独立入口（常驻 slot 请求状态 + 输入组装内核 + 块表按 slot + V2 采样/验证/提议者 + 侧流交付）；实测 V1 与 V2 在 tiny（K=1/3、含 4 次抢占）与真实 Qwen3-1.7B+eagle3（3×48 token）上逐 token 相同、drafted/accepted 计数全等；⚠️ V2 只覆盖 EAGLE/EAGLE3 + standard 验证，图属 74 关、synthetic/block 属 75 关、DFlash/DSpark 属 76/77、多模块 MTP 属 80；默认仍走 V1（环境变量同名同义切换）",
   "step74": "implemented + self-verified（V2 提议者的两张图：草稿 prefill 图（草稿位置 0、每请求 1+K 行、复用 target 本轮元数据）+ 融合多步 decode 图（K−1 步录进一张图、一次重放）；走融合还是逐步由后端 capability 决定，两条路逐轮状态全等；只做提议者侧，V2 的 target 图与 PIECEWISE 未接）",
   "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）",
-  "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）"
+  "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）",
+  "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））"
  },
  "step58": {
   "results": {
@@ -4386,6 +4387,113 @@
   "real_weights": {
    "status": "缺",
    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DFlash checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
+  }
+ },
+ "step77": {
+  "results": {
+   "step": 77,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/077_DSpark条件采样与实际Proposal分布.md",
+   "status": "implemented + self-verified（**只有 V2 一条执行路径**，上游 `use_v2_model_runner` 也只为 dspark 强制 V2）。DSpark = DFlash 的并行主干 + 串行 Markov 纠正：一次非因果 query 前向给出每请求 K 个位置的 base logits，然后从左到右串行采 K 步，每步把「上一个实际选中的 token」经 `markov_w1`（target 词表 × r）→ `markov_w2`（draft 词表 × r）变成词表大小的偏置加到当前 logits 上；`_sample_logits()` 把采样与「写进 `draft_logits[req, i]` 的那一份 q」做成同一份（`gumbel_sample(..., logits_cache=...)`，缓存的是温度之前的值），所以拒绝采样用的就是实际提议分布。两种 query 布局由共享内核的 `SAMPLE_FROM_ANCHOR` 切换（anchor-as-first = K 行、每行预测下一个 token；fill-in = 1+K 行、mask 预测自己），草稿位置相同、只有「谁坐在哪个 query 位置」不同。缩减词表把 draft logits 在采样前 scatter 回 target 宽度（`-inf` 缓冲只在加载时填一次，不存在的列不继承旧值）；`dspark_draft_topk` 只对候选列用 `baddbmm` 求偏置（截断后的 q 与采样一致）；`confidence_head` 的逐位置接受概率写进 `draft_token_confidence_probs`（fp32，79 关的原料）；`load_dspark_model()` 共享 target 的 `embed_tokens`/`lm_head`、拒绝 PP；主干前向 + K 步串行采样整个录进 FULL 图（K 步之间是数据依赖，不能退化成各位置独立 argmax）。⚠️ 本机**没有真实 DSpark 权重**：端到端只用 tiny，草稿质量与加速比未验（需求 077 §5：预算/阈值属 79 关，本关不做加速比结论）；只实现 Qwen3 基座（Gemma4/K3/DSV4 配置期拒绝）；`enable_adaptive_verification=True` 配置期拒绝（79 关）；DFlash 的 V2 加载仍不共享词嵌入（76 关边界，省略会明确报错）。差异账本 9 条见 docs/step77_alignment.md §5。",
+   "recorded_at": "2026-10-19T20:40:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "97be37c",
+    "implementation_commit": "见本轮提交（step77：DSpark 条件采样与实际 proposal 分布）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 146,
+    "sha256": "013f85678aee5a8bccaf0f73f8b936b739dea779b545b896a839de3c7f2ac8b1",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐/差分；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1（V2 的 UVA 与上游对照都需要）；VLLM_USE_V2_MODEL_RUNNER=1（DSpark 只有 V2；配置期不设会明确报错）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step77 -q",
+     "result": "40 passed（布局 10 + 条件采样/q 15 + 边界与加载 15）"
+    },
+    {
+     "cmd": "python benchmarks/check_step77_dspark.py",
+     "result": "28 项全部通过（A 配置边界 9 / B 布局逐值 4 / C 条件采样与 q 10 / D 端到端 5）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step77 -q",
+     "result": "836 passed（= 76 关的 796 + 本关 40；无回归）"
+    },
+    {
+     "cmd": "python benchmarks/check_step76_dflash.py + step58~75 的探针",
+     "result": "全部通过（布局内核改成同一份带 SAMPLE_FROM_ANCHOR 的 constexpr，76 关的 13 项布局测试不受影响）"
+    }
+   ],
+   "execution_trace": {
+    "布局：anchor-as-first（K=3）vs 上游 _prepare_dflash_inputs_kernel(SAMPLE_FROM_ANCHOR=True)": "12/12 输出 torch.equal（input_ids / query_positions / query_start_loc / seq_lens / query_slot_mapping / context_positions / context_slot_mapping / sample_indices / sample_pos / sample_idx_mapping / temperature / seeds）。请求 0：query 位置 [9,10,11]、input_ids [11,mask,mask]、采样行 [0,1,2]（即三行全采）、sample_pos [10,11,12]、seq_lens 12、query_start_loc [0,3,6]",
+    "布局：fill-in（1+K=4）vs 上游同内核(SAMPLE_FROM_ANCHOR=False)": "12/12 输出 torch.equal。query 位置 [9,10,11,12]、采样行 [1,2,3]、sample_pos [10,11,12]、seq_lens 13、query_start_loc [0,4,8]；两布局的 sample_pos 完全相同（草稿位置一致）",
+    "布局：K=1 边界（两种布局）": "都与上游逐值相等；anchor 的 seq_lens [10,23]、采样行 [0,1]；fill-in 的 seq_lens [11,24]、采样行 [1,3]",
+    "配置派生": "method=dspark 被接受、parallel_drafting 强制 True、max_num_new_slots_for_drafting=K−1=2、use_eagle()=True、调度侧 draft_slots=2 / num_lookahead_tokens=3",
+    "q == 实际用的条件分布（probabilistic，温度 0 与 0.7、两种布局、logit_scale=1.7）": "与 minivllm/testing/torch_dspark.py 沿**实际采样路径**复算的条件分布 allclose(atol=1e-6)，实测 max|Δ| = 0.00e+00；且 q 与 base logits 不同（偏置确实进了 q）",
+    "同一份 base logits、换「前一个 token」": "手写权重（w1[1]→token1 偏置 3、w1[2]→token0 偏置 3）：第 0 步选 0 / 选 1，第 1 步 q 从 [2,1,0,…] 变 [2,4,0,…]、选择从 0 变 1；两条路径都与参考逐值一致",
+    "缩减词表（draft_vocab=7、target=11、d2t 偏移 2）": "q 宽 11；列 {0,1,9,10} 恒 -inf；softmax(q) 和为 1；采样 id ⊆ {2..8}；与参考（同一张 d2t 散射）逐值相等；同一 slot 换一批输入后 q 整份被覆盖（与参考一致，无残留）",
+    "top-k": "topk=3 时每步恰好 3 个有限列、采样 id 必在候选内、与参考（候选 + baddbmm 偏置）逐值相等；topk=11（全词表）与不开 top-k 的草稿 token 逐值相同、q 只差浮点末位（F.linear vs baddbmm）",
+    "采样确实从 q 抽": "单步、V=11、温度 1、2000 个种子：经验分布 vs softmax(q) 的 TV = 0.0249（阈值 0.1）",
+    "confidence": "draft_token_confidence_probs 与 sigmoid(proj([hidden, markov_embed])) 逐值一致（atol 1e-6），形状 [num_reqs, K]、dtype fp32、取值 ∈ (0,1)；开关关闭时不写（保持旧值）",
+    "greedy": "draft_logits is None（点质量 q）；token == 参考 argmax（含 Markov 偏置）",
+    "端到端（tiny、2 请求 × 6 token）": "两种布局贪心输出相同 {'a': [4,4,6,0,6,0], 'b': [10,4,4,4,4,0]}；greedy 与 probabilistic（温度 0）输出相同；缩减词表 + top-k + 概率草稿组合能跑通",
+    "V2 图": "probabilistic、温度 0.7、同 seed：图（full_decode_only，capture_sizes=[6,12]）与 eager **逐轮草稿 token 相同**（4 轮）、最终输出相同；捕获 1 张图、分派记录 3 条；采样映射缓冲 = max_num_reqs×K，每轮只点亮 num_reqs×K 行（补齐行 −1 惰性）",
+    "顺带修掉的既有问题": "① V2 草稿 KV 缓存 dtype 取「第一个浮点参数」（缩小词表的 d2t 是 int64 顶层参数，原写法让草稿 KV 变整型、写 K/V 时 index_copy_ dtype 崩）；② DFlashForCausalLM 补 `logits_processor`（logit_scale），DSpark 的 Markov 偏置与 base logits 共用同一个 scale"
+   }
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "max_model_len": 64,
+    "note": "权重不提交；tiny 位置表按 64 建"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir('tiny_gqa')（本关新增）",
+    "architectures": [
+     "Qwen3DSparkModel"
+    ],
+    "dtype": "float32",
+    "note": "复用 tiny_dflash_dir 的主干权重 + markov_head（w1 [vocab,r]、w2 [draft_vocab,r]）；支持两种 sample_from_anchor、draft_vocab_size（含非零 d2t 偏移）、dspark_draft_topk、confidence 头（with_markov 两种）、logit_scale、omit_embed_tokens/omit_lm_head（共享判据）、causal=True"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DSpark checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
+   }
+  }
+ },
+ "step77_models": {
+  "target": {
+   "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "dtype": "float32",
+   "max_model_len": 64,
+   "note": "权重不提交；tiny 位置表按 64 建"
+  },
+  "draft": {
+   "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir('tiny_gqa')（本关新增）",
+   "architectures": [
+    "Qwen3DSparkModel"
+   ],
+   "dtype": "float32",
+   "note": "复用 tiny_dflash_dir 的主干权重 + markov_head（w1 [vocab,r]、w2 [draft_vocab,r]）；支持两种 sample_from_anchor、draft_vocab_size（含非零 d2t 偏移）、dspark_draft_topk、confidence 头（with_markov 两种）、logit_scale、omit_embed_tokens/omit_lm_head（共享判据）、causal=True"
+  },
+  "real_weights": {
+   "status": "缺",
+   "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DSpark checkpoint；草稿接受长度与加速比「集成待验」，不下载、不伪造"
   }
  }
 }

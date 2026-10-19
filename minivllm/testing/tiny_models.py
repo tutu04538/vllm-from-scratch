@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 # 与旧 fixtures 的 config.json 逐字段一致（含 transformers 写下的默认字段）
 _TINY_GQA = {
@@ -318,6 +318,86 @@ def tiny_dflash_dir(target_name: str = "tiny_gqa", *, num_layers: int = 2,
         weights["d2t"] = torch.zeros(draft_vocab, dtype=torch.int64)
     out = Path(tempfile.mkdtemp(prefix=f"minivllm_dflash_{target_name}_"))
     (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    save_file(weights, str(out / "model.safetensors"))
+    return str(out)
+
+
+def tiny_dspark_dir(target_name: str = "tiny_gqa", *, num_layers: int = 2,
+                    causal: bool = False, mask_token_id: int | None = None,
+                    aux_layers=(0, 1), draft_vocab_size: int | None = None,
+                    markov_rank: int = 3, confidence_head: bool = False,
+                    confidence_with_markov: bool = True,
+                    sample_from_anchor: bool = True, draft_topk: int | None = None,
+                    logit_scale: float = 1.0, omit_embed_tokens: bool = False,
+                    omit_lm_head: bool = False, d2t_offset: int = 0,
+                    seed: int = 0) -> str:
+    """生成一份**与 tiny target 规格匹配**的 DSpark 草稿（随机但确定；只给测试）。
+
+    主干直接复用 `tiny_dflash_dir()` 的那份权重（DSpark 的并行主干就是 DFlash），再补两样：
+
+        markov_head.markov_w1.weight   `[vocab, r]`（**target** 词表；按"上一步的 target id"取行）
+        markov_head.markov_w2.weight   `[draft_vocab, r]`（draft 词表；偏置的输出宽度）
+        confidence_head.proj.{weight,bias}   `[1, hidden (+ r)]` / `[1]`（可选）
+
+    配置按**上游真实形态**写：`architectures=["Qwen3DSparkModel"]`、顶层
+    `sample_from_anchor`（上游 DSpark 读顶层，不是 `dflash_config`）、`markov_rank`、
+    `draft_vocab_size`、`dspark_draft_topk`（可选）、`enable_confidence_head` /
+    `confidence_head_with_markov`、`logit_scale`。
+
+    三个给边界测试用的开关：
+
+        sample_from_anchor=False  退回 DFlash 的 `1+K` fill-in 布局（K 枚草稿不变）
+        omit_embed_tokens / omit_lm_head  检查点里没有这一份 → 加载时与 target 共享
+        draft_vocab_size < vocab  缩减词表 + `d2t`。`d2t_offset != 0` 时映射是
+                                  `target = draft + offset`（偏移为 0 的映射会让"忘了加偏移"
+                                  的 bug 也测不出，所以边界用例要用非零偏移）
+
+    `markov_w2` 的尺度刻意比 `markov_w1` 大（0.5 vs 0.02）：否则低秩偏置小到改不动 argmax，
+    "前一个 token 变了、后一位置的选择也该变"这类断言就退化成恒真。
+    """
+    out = Path(tiny_dflash_dir(
+        target_name, num_layers=num_layers, causal=causal, mask_token_id=mask_token_id,
+        aux_layers=aux_layers, draft_vocab_size=draft_vocab_size, seed=seed))
+    config = json.loads((out / "config.json").read_text())
+    vocab = int(config["vocab_size"])
+    draft_vocab = int(config["draft_vocab_size"])
+    hidden = int(config["hidden_size"])
+
+    config["architectures"] = ["Qwen3DSparkModel"]
+    config["markov_rank"] = int(markov_rank)
+    config["logit_scale"] = float(logit_scale)
+    # 上游 DSpark 读的是**顶层** `sample_from_anchor`（默认 True = anchor-as-first）。
+    config["sample_from_anchor"] = bool(sample_from_anchor)
+    config["enable_confidence_head"] = bool(confidence_head)
+    config["confidence_head_with_markov"] = bool(confidence_with_markov)
+    if draft_topk is not None:
+        config["dspark_draft_topk"] = int(draft_topk)
+    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+
+    generator = torch.Generator().manual_seed(seed + 7700)
+
+    def normal(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, 0.02, generator=generator)
+
+    def wide(*shape):
+        return torch.empty(*shape, dtype=torch.float32).normal_(
+            0.0, 0.5, generator=generator)
+
+    weights = load_file(str(out / "model.safetensors"))
+    weights["markov_head.markov_w1.weight"] = normal(vocab, int(markov_rank))
+    weights["markov_head.markov_w2.weight"] = wide(draft_vocab, int(markov_rank))
+    if confidence_head:
+        input_dim = hidden + (int(markov_rank) if confidence_with_markov else 0)
+        weights["confidence_head.proj.weight"] = normal(1, input_dim)
+        weights["confidence_head.proj.bias"] = torch.zeros(1, dtype=torch.float32)
+    if draft_vocab < vocab and d2t_offset:
+        # 上游 `d2t` 存的是**偏移**（`target = draft + d2t[draft]`），不是绝对 id。
+        weights["d2t"] = torch.full((draft_vocab,), int(d2t_offset), dtype=torch.int64)
+    if omit_embed_tokens:
+        weights.pop("embed_tokens.weight")
+    if omit_lm_head:
+        weights.pop("lm_head.weight")
     save_file(weights, str(out / "model.safetensors"))
     return str(out)
 

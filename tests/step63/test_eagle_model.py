@@ -51,7 +51,19 @@ def tiny_model(**overrides) -> Eagle3ForCausalLM:
     config = dict(TINY_CONFIG)
     config.update(overrides)
     torch.manual_seed(0)
-    return Eagle3ForCausalLM(config)
+    model = Eagle3ForCausalLM(config)
+    # 参数是 `torch.empty`（生产路径一定会被 `load_weights()` 覆盖）。直接拿它做数值断言时，
+    # **未初始化内存里可能恰好是 NaN/inf**：`test_compute_logits_is_identity_without_d2t`
+    # 用 `torch.equal` 比两次相同的计算，遇到 NaN 就会判成"不相等"（2026-10-19 全量回归偶发，
+    # 单独跑该文件永远通过）。这里用固定 seed 填一遍，让 tiny 模型确定且有限；断言强度不变。
+    generator = torch.Generator().manual_seed(6300)
+    with torch.no_grad():
+        for param in model.parameters():
+            if param.is_floating_point():
+                param.normal_(0.0, 0.02, generator=generator)
+            else:
+                param.zero_()
+    return model
 
 
 # ---------------------------------------------------------------------------

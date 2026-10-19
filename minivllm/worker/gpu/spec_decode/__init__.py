@@ -3,9 +3,9 @@
 上游这里是一条**逐方法分派**的长链（dflash / dspark / gemma4 / multi-module MTP / mtp /
 EAGLE 系），最后 `else: raise NotImplementedError(f"{method} is not supported yet.")`。
 
-本仓库 73 关只实现 EAGLE 系（`use_eagle()`：eagle / eagle3 / mtp）里的 **EAGLE3 与 EAGLE-1**
-分支，其余分支保持"明确拒绝"——**不把普通 draft/ngram 等自动转接到别的算法上**
-（那会让配置说一套、跑的是另一套）。每个未实现分支都写明归属关卡。
+本仓库 73 关实现 EAGLE 系（`use_eagle()`：eagle / eagle3 / mtp）里的 **EAGLE3 与 EAGLE-1**、
+76 关加 **DFlash**、77 关加 **DSpark**；其余分支保持"明确拒绝"——**不把普通 draft/ngram 等
+自动转接到别的算法上**（那会让配置说一套、跑的是另一套）。每个未实现分支都写明归属关卡。
 """
 
 import torch
@@ -22,9 +22,10 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
 
         return DFlashSpeculator(vllm_config, device)
     elif speculative_config.method == "dspark":
-        raise NotImplementedError(
-            "V2 的 DSpark speculator（条件采样 + 实际 proposal 分布）属 77 关"
-        )
+        # 77 关：DSpark = DFlash 的并行主干 + 串行 Markov 采样（q 必须是"实际条件分布"）
+        from .dspark.speculator import DSparkSpeculator
+
+        return DSparkSpeculator(vllm_config, device)
     elif speculative_config.use_multi_module_mtp():
         raise NotImplementedError(
             "V2 的多模块 MTP speculator 属 80 关"

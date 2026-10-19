@@ -86,12 +86,15 @@ def test_missing_dependency_fails_loudly(monkeypatch):
 def test_unknown_method_still_rejected():
     """别的投机方法照旧明确报错（不静默降级）。
 
-    （这条用例的"仍未实现的方法"换过三次：63 关的 `eagle`/`eagle3` → `medusa`；
-    66 关实现了 `medusa` → `dflash`；76 关实现了 `dflash`，现在改用仍未实现的
-    `dspark`（77 关）。断言强度不变：配置期 ValueError + 不静默回退。）
+    （这条用例的"仍未实现的方法"换过四次：63 关的 `eagle`/`eagle3` → `medusa`；
+    66 关实现了 `medusa` → `dflash`；76 关实现了 `dflash` → `dspark`；77 关实现了
+    `dspark`。本机 vLLM 的方法表里已经没有"能认出、但本仓库没实现"的投机方法了
+    （`mlp_speculator` 是版本缺口，走 `NotImplementedError`，见 step66 的专项用例），
+    所以这里用一个**不存在的名字**钉同一个边界：方法白名单。断言强度不变——配置期
+    ValueError + 不静默回退。）
     """
     with pytest.raises(ValueError, match="本关只支持"):
-        SpeculativeConfig(method="dspark")
+        SpeculativeConfig(method="no_such_method")
 
 
 # ---------------------------------------------------------------------------

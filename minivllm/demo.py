@@ -65,8 +65,8 @@ def _make_spec_config(args, model_dir: str):
         draft_model_config = ModelConfig(
             model=model_dir, dtype=args.dtype, max_model_len=args.max_model_len,
             hf_config={"eagle_aux_hidden_state_layer_ids": layers})
-    if args.spec_method in ("eagle", "eagle3", "dflash") and args.spec_model:
-        # EAGLE/EAGLE3/DFlash 的 draft 都是**独立权重**：`draft_model_config` 必须显式给
+    if args.spec_method in ("eagle", "eagle3", "dflash", "dspark") and args.spec_model:
+        # EAGLE/EAGLE3/DFlash/DSpark 的 draft 都是**独立权重**：`draft_model_config` 必须显式给
         # （配置期就校验，见 `_resolve_eagle` / `_resolve_dflash`）。hf 配置直接读那个目录的
         # config.json（与 tests/step63 的真实 EAGLE3 端到端、tests/step76 的 tiny DFlash 同一套做法）。
         import json
@@ -133,9 +133,9 @@ def main(argv=None):
     parser.add_argument("--ignore-eos", action="store_true")
     parser.add_argument("--spec-method", default=None,
                         help="投机方法：ngram / ngram_gpu / suffix / custom_class /"
-                             " extract_hidden_states / eagle3 / dflash（不填 = 不开投机；只给"
+                             " extract_hidden_states / eagle3 / dflash / dspark（不填 = 不开投机；只给"
                              " --spec-model 的点号路径时会自动推断成 custom_class，62 关的方法"
-                             "推断边界；eagle3 与 dflash 的 --spec-model 是 draft 目录）")
+                             "推断边界；eagle3 / dflash / dspark 的 --spec-model 是 draft 目录）")
     parser.add_argument("--spec-model", default=None,
                         help="custom_class 的完整 module.Class 路径，例如"
                              " examples.custom_proposer.RepeatLastTokenProposer")

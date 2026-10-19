@@ -25,6 +25,7 @@ def get_model_class(architecture: str):
 from .medusa import Medusa  # noqa: E402  （注册发生在 import 时）
 from .qwen3 import Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dflash import DFlashForCausalLM  # noqa: E402
+from .qwen3_dspark import Qwen3DSparkForCausalLM  # noqa: E402
 
 register_model("Qwen3ForCausalLM")(Qwen3ForCausalLM)
 # 66 关：Medusa head 的注册名（上游 `model_executor/models/registry.py:678`
@@ -35,3 +36,8 @@ register_model("MedusaModel")(Medusa)
 # 76 关：DFlash 草稿（上游注册名 `DFlashQwen3ForCausalLM`；`DFlashLagunaForCausalLM`
 # 是另一种基座，本仓库没有权重也没验证过 → 不注册，加载到它就是"没有注册的模型结构"）
 register_model("DFlashQwen3ForCausalLM")(DFlashForCausalLM)
+# 77 关：DSpark 草稿。注册名用 checkpoint 的 `architectures` 字符串（上游
+# `registry.py:638` 就是 `"Qwen3DSparkModel": ("qwen3_dspark", "Qwen3DSparkForCausalLM")`）；
+# 上游另有 `K3DSparkModel` / `Gemma4DSparkModel` / `DSparkDraftModel` 三族，本仓库没有权重也
+# 没验证过 → 不注册（加载到它们是"没有注册的模型结构"；配置期另有更早的明确报错）
+register_model("Qwen3DSparkModel")(Qwen3DSparkForCausalLM)

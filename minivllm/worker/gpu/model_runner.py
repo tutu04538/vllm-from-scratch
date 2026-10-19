@@ -187,9 +187,9 @@ class GPUModelRunner:
             # `active_layer_names`，于是 target 的 metadata 字典天然包含草稿层；草稿 prefill
             # 复用 target 那份 metadata 时，草稿层就是靠这个键找到自己的元数据）。
             self.speculator.draft_attn_layer_names = self._draft_attention_layer_names()
-            if self.speculative_config.method in ("eagle3", "dflash"):
+            if self.speculative_config.method in ("eagle3", "dflash", "dspark"):
                 # Drafting may require auxiliary hidden states from target model outputs.
-                # 76 关：DFlash 的上下文 KV 就是这些特征翻译出来的，**必须**采集。
+                # 76/77 关：DFlash 与 DSpark 的上下文 KV 就是这些特征翻译出来的，**必须**采集。
                 self.use_aux_hidden_state_outputs = True
                 # 与 V1 同一条取值链：draft 配置里的辅助层 id，缺省用模型的默认值。
                 layers = self.speculative_config.eagle_aux_hidden_state_layers() \
@@ -335,7 +335,11 @@ class GPUModelRunner:
         from ...attention.layer import Attention
 
         draft_model = self.speculator.model
-        draft_dtype = next(draft_model.parameters()).dtype
+        # **必须取浮点参数**：缩小词表的草稿（EAGLE3 / DFlash / DSpark）把 `d2t` 注册成
+        # int64 的 `nn.Parameter`，而它（顶层参数）在 `named_parameters()` 里排在子模块**之前**
+        # ——`next(parameters()).dtype` 会拿到 int64，KV 缓存就变成整型，写 K/V 时当场
+        # `index_copy_` 的 dtype 不匹配（77 关做 DSpark 缩减词表时踩到；DFlash 同款）。
+        draft_dtype = next(p.dtype for p in draft_model.parameters() if p.is_floating_point())
         names: set[str] = set()
         for name, module in draft_model.named_modules():
             if not isinstance(module, Attention):

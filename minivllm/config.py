@@ -353,6 +353,15 @@ class SpeculativeConfig:
     # 输入布局随之变化：把"锚点 + K−1 个 mask token"排成一块（见 `max_num_new_slots_for_drafting`
     # 与 `spec_decode/utils.py::expand_parallel_draft_inputs`）。
     parallel_drafting: bool = False
+    # 77 关（上游 `SpeculativeConfig.dspark_draft_topk`，`config/speculative.py:298`）：
+    # **只给 Qwen3 DSpark 用**——Markov 投影只对 base logits 的 top-k 候选求值，每步的
+    # `[B, V]` 偏置+softmax 变成 `[B, k]`。取值 1..draft 词表大小；不写时读 draft 配置里的
+    # 同名字段（上游同一条取值链）。截断会改变 q，所以缓存的 q 必须是**截断后**的那一份。
+    dspark_draft_topk: int | None = None
+    # 79 关（上游 `SpeculativeConfig.enable_adaptive_verification`，`config/speculative.py:241`）：
+    # 按每请求置信度自适应决定验证预算。**本关只算置信度、不做预算**，所以这里明确拒绝 True
+    # （不静默降级：接受配置却不生效，用户会以为跑的是自适应验证）。
+    enable_adaptive_verification: bool = False
 
     @staticmethod
     def _is_custom_proposer_path(model: str | None) -> bool:
@@ -398,13 +407,12 @@ class SpeculativeConfig:
                 "（需求 066 §3；证据与最小启动测试见 tests/step66/test_mlp_support_boundary.py）")
         if self.method not in ("ngram", "ngram_gpu", "draft_model", "suffix", "custom_class",
                                "eagle", "eagle3", "extract_hidden_states", "mtp", "medusa",
-                               "dflash"):
+                               "dflash", "dspark"):
             raise ValueError(
                 f"本关只支持 method='ngram' / 'ngram_gpu' / 'draft_model' / 'suffix' / "
                 f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / 'mtp' / "
-                f"'medusa' / 'dflash'，收到 "
-                f"{self.method!r}"
-                "（DSpark 按需求顺序在 77 关实现）")
+                f"'medusa' / 'dflash' / 'dspark'，收到 "
+                f"{self.method!r}")
         if self.draft_sample_method not in ("greedy", "probabilistic"):
             raise ValueError(
                 f"draft_sample_method 只能是 'greedy' 或 'probabilistic'，收到 "
@@ -448,6 +456,10 @@ class SpeculativeConfig:
             # hidden"那一类）：DFlash 的校验与 EAGLE 不同——它天然是并行提议（一个 bonus
             # query + K 个 mask query 一次 forward），且有几个形状上游明确不支持。
             self._resolve_dflash()
+        elif self.method == "dspark":
+            # 77 关：DSpark 复用 DFlash 的主干（`use_eagle()` 也把它算进去），但布局/采样不同，
+            # 所以同样排在 `use_eagle()` 之前单独校验。
+            self._resolve_dspark()
         elif self.use_eagle():
             self._resolve_eagle()
         elif self.uses_extract_hidden_states():
@@ -467,6 +479,10 @@ class SpeculativeConfig:
         # （注：`method="ngram"` 在本仓库**不会**给 K 补缺省值，K 仍是 0；上游在更早的地方就要求
         # 显式给 K。K=0 时 synthetic 退化成空表，语义自洽，见 `_resolve_synthetic_acceptance_rates_field`。）
         self._resolve_synthetic_acceptance_rates_field()
+        # 79 关边界：`enable_adaptive_verification` 的**阈值与预算**决策属 79 关，本关只把
+        # 置信度算出来（`DSparkSpeculator._sample_sequential`）。这条校验放在最后，与上游
+        # `model_validator(mode="after")` 的收尾位置一致。
+        self._resolve_adaptive_verification_field()
 
     @staticmethod
     def _draft_model_type(draft_model_config) -> str | None:
@@ -591,16 +607,18 @@ class SpeculativeConfig:
         """是否"吃 target hidden 的投机"（上游 `config/speculative.py:1477-1481`）。
 
         上游逐字如此（那里的注释也写明："这个方法是'用 target hidden 做投机'的统称"）：
-        `("eagle", "eagle3", "mtp", "dflash", "dspark")`。本仓库实现了前四者（DSpark 属 77 关）。
+        `("eagle", "eagle3", "mtp", "dflash", "dspark")`。本仓库 77 关起全部实现。
 
-        **注意它不等于"Runner 建 `EagleProposer`"**：DFlash 有自己的提议者
-        （`DFlashProposer`，上下文 KV + 并行 query），Runner 的分派在 `use_eagle()` 之前先认
-        `method == "dflash"`。上游 V1 runner 同样是 `use_dflash()` 先于 `use_eagle()`。
+        **注意它不等于"Runner 建 `EagleProposer`"**：DFlash/DSpark 有自己的提议者
+        （上下文 KV + 并行 query），Runner 的分派在 `use_eagle()` 之前先认
+        `method == "dflash"` / `"dspark"`。上游 V1 runner 同样是 `use_dflash()` 先于
+        `use_eagle()`。
 
         **后果**（调度侧依赖它）：`num_lookahead_tokens` = K——它们都要往 target query 之外
-        写 K 个位置的 KV（DFlash 写的是 query 行自己的 KV，位置由 anchor + 1..K 决定）。
+        写 K 个位置的 KV（DFlash 写的是 query 行自己的 KV，位置由 anchor + 1..K 决定；
+        DSpark 的 query 行起于 anchor 那个位置，末尾一枚草稿预测的位置比它再多 1）。
         """
-        return self.method in ("eagle", "eagle3", "mtp", "dflash")
+        return self.method in ("eagle", "eagle3", "mtp", "dflash", "dspark")
 
     def uses_mtp(self) -> bool:
         """是否为原生 MTP（权重在 target checkpoint 里）。"""
@@ -756,7 +774,8 @@ class SpeculativeConfig:
     #: 76 关：DFlash 是**第三条**协议（自己的一套 query 排布），不是 PARD 那套；上游把
     #: `parallel_drafting` 强制打开，是为了走 `propose()` 里"一次 forward、不跑自回归"的早退
     #: 分支，而不是复用 `copy_and_expand_eagle_inputs_kernel` 的 mask 布局。
-    _PARALLEL_DRAFTING_METHODS = ("eagle", "eagle3", "mtp", "draft_model", "dflash")
+    #: 77 关：DSpark 复用 DFlash 的这条并行协议（q 的语义不同：串行 Markov 采样）。
+    _PARALLEL_DRAFTING_METHODS = ("eagle", "eagle3", "mtp", "draft_model", "dflash", "dspark")
 
     def _resolve_parallel_drafting(self) -> None:
         """并行提议的取值校验（72 关）。
@@ -790,7 +809,8 @@ class SpeculativeConfig:
         # 只有吃 target hidden 的 EAGLE 系需要它（PARD 是普通 LM，没有 mask hidden；
         # DFlash 用 `mask_token_id` 的 embedding，权重里**不能**有 `mask_hidden`——上游
         # `DFlashQwen3ForCausalLM.load_weights` 对它是 assert 拒绝的）。
-        if self.use_eagle() and self.method != "dflash" and self.draft_model_config is not None:
+        if self.use_eagle() and self.method not in ("dflash", "dspark") \
+                and self.draft_model_config is not None:
             draft_hf = dict(self.draft_model_config.hf_config or {})
             if not draft_hf.get("parallel_drafting"):
                 draft_hf["parallel_drafting"] = True
@@ -1021,16 +1041,115 @@ class SpeculativeConfig:
                 return int(value)
         return None
 
+    # ---------------- 77 关：DSpark（条件采样 + 实际 proposal 分布） ----------------
+
+    #: 本仓库支持的 DSpark 架构。上游还有 Gemma4 / K3-MLA / DeepSeek-V4 三族；本仓库没有权重、
+    #: 也没有验证过它们的头（K3 是 MLA、DSV4 用 target 的完整配置），所以只认 Qwen3 这一族。
+    _DSPARK_ARCHITECTURES = ("Qwen3DSparkModel",)
+
+    def _resolve_dspark(self) -> None:
+        """DSpark 的取值校验（需求 077；上游 `config/speculative.py:1013-1118`）。
+
+        上游在这一支做的事，逐条对应：
+
+            `method == "dspark"` 的架构归一（`Qwen3DSparkModel` / Gemma4 / K3 / DeepSeek-V4）
+                本仓库只支持 Qwen3 那一族；其余**明确拒绝**，不去猜一个"看起来能用"的基座。
+            `if self.method in ("dflash", "dspark"): self.parallel_drafting = True`
+                照抄——它让 V1 的 `propose()` 走"一次 forward、不跑自回归"的早退分支。
+            `n_predict` 的缺省与整除规则
+                `num_speculative_tokens` 没给（<=0）时取 draft 配置的 `n_predict`；给了且
+                `K > n_predict` 时必须能被 `n_predict` 整除（模块复用的约束，上游同款）。
+            `dspark_draft_topk` 的取值链与校验
+                配置字段 → draft 配置同名字段；范围 1..draft 词表大小；**只允许 Qwen3DSparkModel**。
+            `mask_token_id`
+                anchor-as-first 布局里 `K−1` 行填 noise token、fill-in 布局里 `K` 行填 mask token，
+                两处都是训练时约定的占位符；取值链与 DFlash 相同（上游
+                `_init_parallel_drafting_params()`）。
+        """
+        if self.draft_model_config is None:
+            raise ValueError("method='dspark' 必须在 SpeculativeConfig 里给 "
+                             "draft_model_config（DSpark 的 draft 是独立权重）")
+        hf_config = self.draft_model_config.hf_config or {}
+        architectures = list(hf_config.get("architectures") or [])
+        if architectures != list(self._DSPARK_ARCHITECTURES):
+            raise NotImplementedError(
+                f"本仓库只支持 architectures={list(self._DSPARK_ARCHITECTURES)} 的 DSpark 草稿，"
+                f"收到 {architectures!r}：上游另有 Gemma4DSparkModel / K3DSparkModel / "
+                f"DeepSeek-V4 的 `DSparkDraftModel` 三族（MLA、复用 target 配置、n_predict 归一），"
+                f"它们各自需要一套没实现也没权重验证过的模型类。这里明确拒绝，不猜基座")
+        # 上游同位置：`if self.method in ("dflash", "dspark"): self.parallel_drafting = True`
+        object.__setattr__(self, "parallel_drafting", True)
+
+        # K：没给就用 draft 配置的 `n_predict`（上游从 `hf_config.n_predict` 取；speculators
+        # 格式对 Gemma4 才把 `block_size` 归一成 `n_predict`，Qwen3 这一族没有那条归一）。
+        n_predict = hf_config.get("n_predict")
+        if self.num_speculative_tokens <= 0:
+            if n_predict is None:
+                raise ValueError(
+                    "DSpark 需要 `num_speculative_tokens` > 0（它决定 anchor 之后的草稿枚数）。"
+                    "上游只在 draft 配置带 `n_predict` 时才允许省略；这份 checkpoint 没有，"
+                    "请显式给 K")
+            object.__setattr__(self, "num_speculative_tokens", int(n_predict))
+        elif n_predict is not None and self.num_speculative_tokens > int(n_predict) \
+                and self.num_speculative_tokens % int(n_predict) != 0:
+            raise ValueError(
+                f"num_speculative_tokens={self.num_speculative_tokens} 必须能被 "
+                f"n_predict={int(n_predict)} 整除（上游同款：超过 n_predict 时按模块复用排布）")
+
+        # 分布形状与占位符（与 DFlash 同一条取值链；顶层 `mask_token_id` 是 speculators 格式）。
+        if self._dflash_mask_token_id(hf_config) is None:
+            raise ValueError(
+                "DSpark 的 draft 配置里没有 noise/mask token：按上游顺序找 "
+                "`dflash_config.mask_token_id` → `mask_token_id` → `dspark_noise_token_id` → "
+                "`pard_token` → `ptd_token_id`，一处都没有。这个 id 是训练时约定的占位符，"
+                "换一个不会报错、只会让草稿基于模型没见过的输入")
+
+        # `dspark_draft_topk`：配置字段优先，其次 checkpoint 里的同名字段；按上游校验。
+        # 上游还有一条"只允许 Qwen3DSparkModel"的检查——本仓库上面对 architectures 的判定
+        # 已经把所有非 Qwen3 的 DSpark 草稿整个拒掉了，所以这里不再重复一遍。
+        draft_topk = self.dspark_draft_topk
+        if draft_topk is None:
+            draft_topk = hf_config.get("dspark_draft_topk")
+        if draft_topk is not None:
+            draft_vocab_size = int(hf_config.get("draft_vocab_size")
+                                  or hf_config.get("vocab_size") or 0)
+            if not 1 <= int(draft_topk) <= draft_vocab_size:
+                raise ValueError(
+                    f"dspark_draft_topk 必须在 [1, draft 词表大小={draft_vocab_size}] 内，"
+                    f"收到 {draft_topk}")
+            # 写回 draft 配置：**唯一来源**是配置期解析出的这一份，提议者只读它（上游同款）。
+            draft_hf = dict(hf_config)
+            draft_hf["dspark_draft_topk"] = int(draft_topk)
+            object.__setattr__(self, "draft_model_config",
+                               replace(self.draft_model_config, hf_config=draft_hf))
+            object.__setattr__(self, "dspark_draft_topk", int(draft_topk))
+
+    def _resolve_adaptive_verification_field(self) -> None:
+        """`enable_adaptive_verification` 的边界（上游 `config/speculative.py:1141-1142`）。
+
+        上游两条：只有 DSpark 能开；开了才按置信度决定预算。本仓库 77 关**只算置信度**，
+        阈值/预算属 79 关，所以这里把 True 明确拒掉——接受配置却不生效就是静默降级。
+        """
+        if not self.enable_adaptive_verification:
+            return
+        if self.method != "dspark":
+            raise ValueError("Adaptive verification only supported with DSpark")
+        raise NotImplementedError(
+            "enable_adaptive_verification 的**阈值与预算决策**属 79 关（本关只实现置信度头的"
+            "计算与落盘：`DSparkSpeculator.draft_token_confidence_probs`）。"
+            "现在打开它没有任何东西会按置信度裁剪验证枚数——所以明确拒绝，而不是静默按固定"
+            "枚数跑（需求 077 §5：预算决策放到 79）")
+
     def eagle3_use_aux_hidden_state(self) -> bool:
         """是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。
 
         64 关：`extract_hidden_states` 也走同一条"target 顺带输出辅助层"的采集路径，但它
         **不是** EAGLE——没有 draft 模型、不吃这些特征去猜 token。所以这个判定只认
-        `eagle3` 与 `dflash`（上游 `DFlashProposer._get_eagle3_use_aux_hidden_state_from_config`
-        读的是 `dflash_config.use_aux_hidden_state`，默认 True；`False` = 直接用最后一层，
-        与 EAGLE-1 同款）。
+        `eagle3` 与 DFlash 系（`dflash` / `dspark`；上游
+        `DFlashProposer._get_eagle3_use_aux_hidden_state_from_config` 读的是
+        `dflash_config.use_aux_hidden_state`，默认 True；`False` = 直接用最后一层）
         """
-        if self.method == "dflash":
+        if self.method in ("dflash", "dspark"):
             hf_config = (self.draft_model_config.hf_config or {}) if self.draft_model_config else {}
             return bool((hf_config.get("dflash_config") or {}).get("use_aux_hidden_state", True))
         return self.method == "eagle3"
@@ -1145,13 +1264,14 @@ class SpeculativeConfig:
         这个是"draft 输入工作区每请求多占几行"。
         """
         if self.uses_dflash():
-            # DFlash 用 1 个 bonus query + K 个 mask query（72 关不实现 DFlash，属 76 关）
+            # DFlash 用 1 个 bonus query + K 个 mask query（76 关）
             return self.num_speculative_tokens
         if self.parallel_drafting:
             if self.uses_draft_model():
                 # PARD 不左移：K 个 query 位置全部要新槽位
                 return self.num_speculative_tokens
-            # 复用 target 已有的那一行，只有 mask query 要新槽位
+            # 复用 target 已有的那一行（DSpark 的 anchor 那一格就是调度器已经给的那一个
+            # query 槽位），只有其余 K−1 行要新槽位
             return self.num_speculative_tokens - 1
         if self.uses_draft_model():
             # 普通自回归 draft 保留一个未切片的 token（target 本轮刚采出的那个）
@@ -1837,13 +1957,21 @@ class VllmConfig:
                         构造 `sample/rejection_sampler.py::RejectionSampler` 时明确报错）。
             异步调度    引擎层本来就拒绝（70 关），这里再挡一道
         """
+        spec = self.speculative_config
+        # 77 关：DSpark 只有 V2 这一条执行路径（上游 `use_v2_model_runner` 甚至为它**强制**
+        # V2；本仓库的 V2 默认关闭，所以这里是"配置错了就早报"，而不是静默跑成 V1 的 EAGLE）。
+        if spec is not None and spec.method == "dspark" and not self.use_v2_model_runner:
+            raise NotImplementedError(
+                "DSpark 只有 V2 Model Runner 实现（上游 `use_v2_model_runner` 会为 dspark 强制"
+                "切 V2）。本仓库默认走 V1，请设 `VLLM_USE_V2_MODEL_RUNNER=1`"
+            )
         if not self.use_v2_model_runner:
             return
-        spec = self.speculative_config
-        if spec is not None and spec.method not in ("eagle", "eagle3", "mtp", "dflash"):
+        if spec is not None and spec.method not in ("eagle", "eagle3", "mtp", "dflash",
+                                                    "dspark"):
             raise NotImplementedError(
-                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp', 'dflash')，收到 "
-                f"{spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
+                f"V2 Model Runner 本关只支持 method in ('eagle', 'eagle3', 'mtp', 'dflash', "
+                f"'dspark')，收到 {spec.method!r}：请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1"
                 f"（其余方法各自的归属关卡见 spec_decode/__init__.py 的报错）"
             )
         mode = self.compilation_config.cudagraph_mode

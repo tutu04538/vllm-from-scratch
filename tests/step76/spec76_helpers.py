@@ -311,29 +311,38 @@ def run_our_v1_expansion(case: LayoutCase) -> dict[str, torch.Tensor]:
 
 
 def run_upstream_v2_kernel(case: LayoutCase, *, max_tokens: int = 64,
-                           max_num_reqs: int = 8) -> dict[str, torch.Tensor]:
-    """上游 V2 `_prepare_dflash_inputs_kernel` 的原始输出。"""
+                           max_num_reqs: int = 8,
+                           sample_from_anchor: bool = False) -> dict[str, torch.Tensor]:
+    """上游 V2 `_prepare_dflash_inputs_kernel` 的原始输出。
+
+    `sample_from_anchor=True` 时走 DSpark 的 anchor-as-first 布局（77 关）——上游同一个内核
+    用 `SAMPLE_FROM_ANCHOR` 这个 constexpr 切两种布局，所以差异测试仍然比同一份内核。
+    """
     from vllm.v1.worker.gpu.spec_decode.dflash.speculator import (
         _prepare_dflash_inputs_kernel)
 
     return _run_v2_kernel(_prepare_dflash_inputs_kernel, case, upstream=True,
-                          max_tokens=max_tokens, max_num_reqs=max_num_reqs)
+                          max_tokens=max_tokens, max_num_reqs=max_num_reqs,
+                          sample_from_anchor=sample_from_anchor)
 
 
 def run_our_v2_kernel(case: LayoutCase, *, max_tokens: int = 64,
-                      max_num_reqs: int = 8) -> dict[str, torch.Tensor]:
+                      max_num_reqs: int = 8,
+                      sample_from_anchor: bool = False) -> dict[str, torch.Tensor]:
     from minivllm.worker.gpu.spec_decode.dflash.speculator import (
         _prepare_dflash_inputs_kernel)
 
     return _run_v2_kernel(_prepare_dflash_inputs_kernel, case, upstream=False,
-                          max_tokens=max_tokens, max_num_reqs=max_num_reqs)
+                          max_tokens=max_tokens, max_num_reqs=max_num_reqs,
+                          sample_from_anchor=sample_from_anchor)
 
 
 MASK_TOKEN_ID = 7
 
 
 def _run_v2_kernel(kernel, case: LayoutCase, *, upstream: bool, max_tokens: int,
-                   max_num_reqs: int) -> dict[str, torch.Tensor]:
+                   max_num_reqs: int,
+                   sample_from_anchor: bool = False) -> dict[str, torch.Tensor]:
     device = case.target_positions.device
     batch = int(case.num_rejected.numel())
     num_query = case.num_query_per_req
@@ -374,7 +383,9 @@ def _run_v2_kernel(kernel, case: LayoutCase, *, upstream: bool, max_tokens: int,
         case.max_model_len,
     )
     if upstream:
-        kernel[grid](*args, SAMPLE_FROM_ANCHOR=False, PAD_SLOT_ID=-1, BLOCK_SIZE=block)
+        kernel[grid](*args, SAMPLE_FROM_ANCHOR=sample_from_anchor, PAD_SLOT_ID=-1,
+                     BLOCK_SIZE=block)
     else:
-        kernel[grid](*args, PAD_SLOT_ID=-1, BLOCK_SIZE=block)
+        kernel[grid](*args, SAMPLE_FROM_ANCHOR=sample_from_anchor, PAD_SLOT_ID=-1,
+                     BLOCK_SIZE=block)
     return outputs

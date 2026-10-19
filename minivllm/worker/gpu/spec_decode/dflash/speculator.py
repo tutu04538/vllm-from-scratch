@@ -14,8 +14,9 @@ target 处理了多少个 token），录不进"固定形状"的图。所以它�
 进图。
 
 **裁剪**（逐条记在 `docs/step76_alignment.md` §5）：多 KV group（混合滑窗/全注意力）、
-`sample_from_anchor`（DSpark，77 关）、DP/EPLB/多模态、`is_neox_style` 从 target 拷
-（本仓库的 RoPE 只有一种风格）。这些都是**明确拒绝或明确不用**，不是静默降级。
+DP/EPLB/多模态、`is_neox_style` 从 target 拷（本仓库的 RoPE 只有一种风格）。这些都是
+**明确拒绝或明确不用**，不是静默降级。内核的 `SAMPLE_FROM_ANCHOR` 两种布局在 77 关补齐
+（DFlash 恒 False；DSpark 由 `DSparkSpeculator` 传自己的值，见 `dspark/speculator.py`）。
 """
 
 from typing import Any
@@ -53,9 +54,16 @@ class DFlashSpeculator(DraftModelSpeculator):
         super().__init__(vllm_config, device)
         draft_hf = self.speculative_config.draft_model_config.hf_config or {}
         dflash_config = draft_hf.get("dflash_config") or {}
-        if dflash_config.get("sample_from_anchor", False):
+        # DFlash 的布局固定是 `1 + K`（anchor = bonus、只有 mask 行采样）。`sample_from_anchor`
+        # 是 **DSpark** 的开关（77 关），而且上游 DSpark 读的是**顶层**字段
+        # `hf_config.sample_from_anchor`——与这里读的 `dflash_config.sample_from_anchor` 不是同一个
+        # 键。所以 `method="dspark"` 放行（它在自己的 `__init__` 里按顶层字段重设布局）。
+        if self.method != "dspark" and dflash_config.get("sample_from_anchor", False):
             raise NotImplementedError(
-                "DFlash 不支持 sample_from_anchor=True（DSpark 的形状，77 关）")
+                "DFlash 不支持 `dflash_config.sample_from_anchor=True`（那是 DSpark 的形状，77 关）："
+                "DFlash 的 anchor 就是 target 刚采出的 bonus token、不参与采样")
+        # 本次草稿的 query 布局：DFlash 恒 `1 + K`（anchor 不采样）；DSpark 在自己 `__init__` 里改写。
+        self.sample_from_anchor = False
 
         self.hidden_states = torch.zeros(
             self.max_num_tokens, self.hidden_size, dtype=self.dtype, device=device)
@@ -239,6 +247,7 @@ class DFlashSpeculator(DraftModelSpeculator):
             self.max_num_reqs,
             self.max_num_tokens,
             self.max_model_len,
+            self.sample_from_anchor,
         )
 
         # 上下文 K/V 预计算：**图外** eager（形状每步都变）；写的是草稿自己的缓存。
@@ -379,24 +388,27 @@ def _prepare_dflash_inputs_kernel(
     max_num_reqs,
     max_num_tokens,
     max_model_len,
+    SAMPLE_FROM_ANCHOR: tl.constexpr,
     PAD_SLOT_ID: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """上游 `_prepare_dflash_inputs_kernel` 的逐行等价（去掉 `SAMPLE_FROM_ANCHOR`）。
+    """上游 `_prepare_dflash_inputs_kernel` 的逐行等价（含 `SAMPLE_FROM_ANCHOR` 两种布局）。
 
     每请求产出（与上游同序）：
 
         context 行    位置 = target 的位置；槽位按块表查；被拒尾部写 `PAD_SLOT_ID`
                       （它们不是有效上下文，**不能**写草稿的 KV）
-        query 行      1 + K 行，位置 = `last_valid_pos + 1 + off`；第 0 行是 bonus token，
-                      其余是 mask token；槽位按块表查
-        采样行        query 行里 off > 0 的那些（只有 mask 行被采样），位置 = 它自己的位置
-        seq_lens      `last_valid_pos + 1 + (1 + K)`（绝对长度）
+        query 行      位置 = `last_valid_pos + 1 + off`；第 0 行是 bonus token，其余是 mask token
+                      （`num_query_per_req` 行：DFlash 是 `1 + K`，DSpark 的 anchor-as-first 是 `K`）
+        采样行        `off >= sample_off` 的那些：DFlash 只采 mask 行（`off >= 1`，位置 = 自己），
+                      DSpark 的 anchor-as-first 连 anchor 一起采（`off >= 0`，位置 = 自己 + 1，
+                      因为 anchor 这个位置是真实 token、它预测的是**下一个**位置）
+        seq_lens      `last_valid_pos + 1 + num_query_per_req`（绝对长度）
         补齐          `query_start_loc`/`seq_lens`/采样映射按 `max_num_reqs` 铺满，
                       **补齐采样行的映射写 -1**（图重放时不许写真实槽位）
 
-    与上游的两处裁剪：没有 `SAMPLE_FROM_ANCHOR`（配置期拒绝）、没有块 0 判断
-    （上游那是对滑窗淘汰的防御；本仓库不支持混合滑窗，块表里不会出现 0 号块）。
+    与上游的一处裁剪：没有块 0 判断（上游那是对滑窗淘汰的防御；本仓库不支持混合滑窗，
+    块表里不会出现 0 号块）。
     """
     req_idx = tl.program_id(0)
     block_idx = tl.program_id(1)
@@ -460,11 +472,16 @@ def _prepare_dflash_inputs_kernel(
     tl.store(out_query_positions_ptr + query_idx, clamped_query_pos, mask=is_query)
     tl.store(out_query_slot_mapping_ptr + query_idx, q_slot, mask=is_query)
 
-    # ---- 采样行：只有 mask 行（off ≥ 1），位置 = 它自己的 query 位置 ----
-    is_sample = is_query & (query_off >= 1)
-    sample_idx = req_idx * num_speculative_steps + (query_off - 1)
+    # ---- 采样行 ----
+    # DFlash（`SAMPLE_FROM_ANCHOR=False`）：只采 mask 行（off ≥ 1），位置 = 它自己的 query 位置
+    # ——mask 就坐在"被预测的那个位置"上。DSpark（`True`）：每个 query 位置都预测**下一个**
+    # token（anchor 行是真实的 bonus token），所以 off ≥ 0 且采样位置 = query 位置 + 1。
+    sample_off = 0 if SAMPLE_FROM_ANCHOR else 1
+    is_sample = is_query & (query_off >= sample_off)
+    sample_idx = req_idx * num_speculative_steps + (query_off - sample_off)
+    sample_pos = query_pos + 1 if SAMPLE_FROM_ANCHOR else query_pos
     tl.store(out_sample_indices_ptr + sample_idx, query_idx, mask=is_sample)
-    tl.store(out_sample_pos_ptr + sample_idx, query_pos, mask=is_sample)
+    tl.store(out_sample_pos_ptr + sample_idx, sample_pos, mask=is_sample)
     tl.store(out_sample_idx_mapping_ptr + sample_idx, req_state_idx, mask=is_sample)
 
     if block_idx == 0:
@@ -529,8 +546,13 @@ def prepare_dflash_inputs(
     max_num_reqs: int,
     max_num_tokens: int,
     max_model_len: int,
+    sample_from_anchor: bool = False,
 ) -> None:
-    """启动 `_prepare_dflash_inputs_kernel`（上游同名包装，参数逐个对应）。"""
+    """启动 `_prepare_dflash_inputs_kernel`（上游同名包装，参数逐个对应）。
+
+    `sample_from_anchor` 只有 DSpark 会传 True（anchor-as-first：K 个 query 全采样）；
+    DFlash 用默认的 False（`1 + K` 布局，anchor 是 bonus）。
+    """
     num_reqs = input_batch.num_reqs
     assert num_reqs > 0
     max_target_query_len = int(input_batch.num_scheduled_tokens.max())
@@ -568,6 +590,7 @@ def prepare_dflash_inputs(
         max_num_reqs,
         max_num_tokens,
         max_model_len,
+        SAMPLE_FROM_ANCHOR=sample_from_anchor,
         PAD_SLOT_ID=PAD_SLOT_ID,
         BLOCK_SIZE=BLOCK_SIZE,
     )

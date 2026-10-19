@@ -34,6 +34,7 @@ from torch import nn
 from ..attention import Attention
 from ..layers import (ParallelLMHead, QKVParallelLinear, RMSNorm, RowParallelLinear,
                       VocabParallelEmbedding)
+from ..layers.logits_processor import LogitsProcessor
 from ..layers.rotary_embedding import RotaryEmbedding
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
 from .qwen3 import Qwen2MLP, maybe_prefix
@@ -71,6 +72,24 @@ def _aux_layer_ids(config: dict) -> list[int] | None:
         target_layer_ids = dflash_config.get("target_layer_ids")
         layers = [int(index) + 1 for index in target_layer_ids] if target_layer_ids else None
     return [int(index) for index in layers] if layers else None
+
+
+def dflash_mask_token_id(config: dict) -> int | None:
+    """并行槽位（mask / noise）占位符的 id：与 `SpeculativeConfig._dflash_mask_token_id()`
+    同一条取值链，**多认一个顶层 `mask_token_id`**。
+
+    为什么模型也要认顶层：speculators 格式的 DSpark checkpoint（`Qwen3DSparkModel`）把
+    `mask_token_id` 写在**顶层**、根本没有 `dflash_config`（`update_dspark()` 的输出）。
+    模型侧只把它当"配置自洽性检查"（独立的 mask embedding 权重本仓库不支持，遇到会拒绝），
+    但配置期校验与内核填行都要同一条取值链——两处不一致时，一个能过、另一个在启动后才炸。
+    """
+    dflash_config = config.get("dflash_config") or {}
+    for value in (dflash_config.get("mask_token_id"), config.get("mask_token_id"),
+                  config.get("dspark_noise_token_id"), config.get("pard_token"),
+                  config.get("ptd_token_id")):
+        if value is not None:
+            return int(value)
+    return None
 
 
 def _rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
@@ -196,11 +215,12 @@ class DFlashModel(nn.Module):
         self.hidden_size = config["hidden_size"]
         self.rms_norm_eps = config.get("rms_norm_eps", 1e-6)
         dflash_config = config.get("dflash_config") or {}
-        self.mask_token_id = dflash_config.get("mask_token_id")
+        self.mask_token_id = dflash_mask_token_id(config)
         if self.mask_token_id is None:
             raise ValueError(
-                "DFlash 的配置里没有 `dflash_config.mask_token_id`：mask query 行要填这个"
-                "训练时约定的占位符（换一个不会报错，只会让草稿全部基于模型没见过的输入）")
+                "DFlash 的配置里没有 mask token：mask/并行槽位要填这个训练时约定的占位符"
+                "（取值链见 `dflash_mask_token_id()`；换一个不会报错，只会让草稿全部基于"
+                "模型没见过的输入）")
 
         self.embed_tokens = VocabParallelEmbedding(
             self.vocab_size, self.hidden_size,
@@ -228,6 +248,10 @@ class DFlashModel(nn.Module):
         self.hidden_norm = RMSNorm(self.hidden_size, eps=self.rms_norm_eps)
         self.norm = RMSNorm(self.hidden_size, eps=self.rms_norm_eps)
 
+        # 检查点里**没有** `embed_tokens.*`（词嵌入与 target 共享）→ 本模型的加载器跳过它。
+        # 默认 False；DSpark 的 `load_weights()` 会在"没有这一份"时置 True，随后
+        # `load_dspark_model()` 把 target 的模块挂上来（上游 `_should_share` 那条路）。
+        self.tie_embeddings = False
         # 上下文 KV 预计算用的融合权重；`load_weights()` 之后才填（与上游同位置）。
         self._num_attn_layers = len(self.layers)
         self._attn_layers = [layer.self_attn.attn for layer in self.layers]
@@ -335,7 +359,8 @@ class DFlashModel(nn.Module):
         return hidden_states
 
     def load_weights(self, weights) -> set[str]:
-        loader = AutoWeightsLoader(self)
+        skip = ["embed_tokens."] if self.tie_embeddings else None
+        loader = AutoWeightsLoader(self, skip_prefixes=skip)
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
 
@@ -346,11 +371,13 @@ class DFlashForCausalLM(nn.Module):
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
         "gate_up_proj": ["gate_proj", "up_proj"],
     }
+    # 内层模型类（DSpark 换上带 Markov / confidence 头的子类，其余流程完全复用）。
+    _model_cls = DFlashModel
 
     def __init__(self, config: dict, prefix: str = "") -> None:
         super().__init__()
         self.config = config
-        self.model = DFlashModel(config, prefix=maybe_prefix(prefix, "model"))
+        self.model = self._model_cls(config, prefix=maybe_prefix(prefix, "model"))
         draft_vocab_size = config.get("draft_vocab_size") or config["vocab_size"]
         self.draft_vocab_size = int(draft_vocab_size)
         self.lm_head = ParallelLMHead(self.draft_vocab_size, config["hidden_size"],
@@ -363,6 +390,11 @@ class DFlashForCausalLM(nn.Module):
                 torch.zeros(self.draft_vocab_size, dtype=torch.long), requires_grad=False)
         else:
             self.register_parameter("draft_id_to_target_id", None)
+        # 词表 GEMM 的收尾（上游 `DFlashQwen3ForCausalLM` 同款）：`logit_scale` 是少数
+        # checkpoint 会带的缩放（真实 DFlash/DSpark 配置里叫 `logit_scale`，缺省 1.0）。
+        # 77 关把 DSpark 的 markov 偏置也按同一个 scale 加，所以两者必须共用这一份。
+        logit_scale = float(config.get("logit_scale", 1.0) or 1.0)
+        self.logits_processor = LogitsProcessor(self.draft_vocab_size, scale=logit_scale)
 
     # -------- 对外接口（提议者/引擎调用） --------
 
@@ -401,7 +433,7 @@ class DFlashForCausalLM(nn.Module):
         与 EAGLE3 的 `compute_logits()` 同一条规则：提议者拿到 logits 就 argmax，那个 id 会
         被当成**草稿 token** 交给 target 验证，所以它必须是 **target 空间**的 id。
         """
-        logits = self.lm_head(hidden_states)
+        logits = self.logits_processor(self.lm_head, hidden_states)
         if self.draft_id_to_target_id is None:
             return logits
         base = torch.arange(self.draft_vocab_size, device=logits.device)

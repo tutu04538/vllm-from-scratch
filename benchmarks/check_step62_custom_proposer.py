@@ -89,7 +89,8 @@ except ValueError as error:
     missing_model_ok = "requires 'model'" in str(error)
 check("A3. 显式 custom_class 但没给 model → 配置期 ValueError", missing_model_ok)
 try:
-    SpeculativeConfig(method="dspark")     # 76 关起 dflash 已支持，换仍未实现的 dspark
+    # 76/77 关起 dflash/dspark 都已支持 → 用一个不存在的名字钉"方法白名单"这条边界
+    SpeculativeConfig(method="no_such_method")
     unknown_ok = False
 except ValueError:
     unknown_ok = True
