@@ -1,0 +1,101 @@
+{
+  "recorded_at": "2026-10-20T21:00:00+08:00",
+  "command": "VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 python benchmarks/check_step79_adaptive.py",
+  "source": "benchmarks/results/step79_cost_curves.json（结果产物不跟踪；这里保留本次实测副本）",
+  "model": "tiny_gqa target + tiny_dspark (confidence head)",
+  "note": "本机没有真实 DSpark 权重；计时是真实 GPU event/wall，但模型是 tiny，不给出加速比结论。",
+  "device": "cuda",
+  "k": 3,
+  "profile_context_len": 8,
+  "cost_curves": {
+    "draft": [
+      [
+        1,
+        4.27564811706543
+      ],
+      [
+        2,
+        4.63369607925415
+      ]
+    ],
+    "verify": [
+      [
+        4,
+        2.1790719032287598
+      ],
+      [
+        8,
+        4.837855815887451
+      ],
+      [
+        12,
+        4.603392124176025
+      ],
+      [
+        16,
+        4.147168159484863
+      ],
+      [
+        32,
+        4.682496070861816
+      ],
+      [
+        64,
+        3.7251200675964355
+      ]
+    ]
+  },
+  "off": {
+    "decode_steps": 7,
+    "proposed": 42,
+    "verified": 42,
+    "mean_decode_ms": 9.7758
+  },
+  "on": {
+    "decode_steps": 7,
+    "proposed": 42,
+    "verified": 42,
+    "mean_decode_ms": 14.888,
+    "budget_counter": {
+      "6": 1
+    },
+    "cost_curves": [
+      [
+        [
+          1,
+          2.765887975692749
+        ],
+        [
+          2,
+          4.342559814453125
+        ]
+      ],
+      [
+        [
+          4,
+          2.2914879322052
+        ],
+        [
+          8,
+          2.6935040950775146
+        ],
+        [
+          12,
+          3.923680067062378
+        ],
+        [
+          16,
+          3.712224006652832
+        ],
+        [
+          32,
+          4.404128074645996
+        ],
+        [
+          64,
+          4.573279857635498
+        ]
+      ]
+    ]
+  }
+}

@@ -27,7 +27,7 @@ import torch
 
 from ...config import CUDAGraphMode, VllmConfig
 from ...outputs import ModelRunnerOutput
-from ..gpu.async_utils import AsyncOutput
+from ..gpu.async_utils import AsyncOutput, StepTimingCollector
 from ..gpu.block_table import BlockTables
 from ..gpu.input_batch import (
     InputBatch,
@@ -40,9 +40,9 @@ from ..gpu.input_batch import (
 )
 from ..gpu.sample.sampler import Sampler
 from ..gpu.spec_decode import init_speculator
-from ..gpu.spec_decode.rejection_sampler import RejectionSampler
+from ..gpu.spec_decode.rejection_sampler import RejectionSampler, get_max_chunk_logits
 from ..gpu.spec_decode.speculator import DraftModelSpeculator
-from ..utils import get_uniform_decode_token_count
+from ..utils import AttentionGroup, get_uniform_decode_token_count
 from ..gpu.spec_decode.utils import DraftTokensHandler
 from ..gpu.states import RequestState
 from ..gpu.structured_outputs import StructuredOutputsWorker
@@ -153,6 +153,10 @@ class GPUModelRunner:
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.model = None
         self.failure: str | None = None
+        # 79 关：自适应验证 manager 在 `initialize_kv_cache()` 里按实际注意力后端能力建；
+        # 成本曲线由 `capture_model()` 里的 eager dummy step 实测生成。
+        self.adaptive_verification = None
+        self.step_timing = StepTimingCollector()
         if not torch.cuda.is_available():
             # V2 的输入组装（prepare_inputs / 采样 / 验证）全是 Triton 内核，且常驻状态走 UVA。
             raise NotImplementedError(
@@ -284,7 +288,58 @@ class GPUModelRunner:
         self._attn_metadata_layer_names = set(self.kv_caches)
         if self.speculator is not None:
             self._attn_metadata_layer_names |= set(self.speculator.draft_attn_layer_names)
+        # 79 关：能力检查 + manager（必须在 KV 缓存与注意力层名都就绪之后；但要在
+        # `capture_model()` 之前，后者会用它来做成本 profiling）。
+        self.adaptive_verification = self._create_adaptive_verification_manager()
         return self.kv_caches
+
+    def _target_varlen_cudagraphs_enabled(self) -> bool:
+        """本仓库 V2 的 target 是否会捕获 varlen decode CUDA graph（79 关）。
+
+        **当前恒 False**：V2 的 target 图尚未实现（74 关只做了提议者侧的两张图，target
+        eager）。所以自适应验证裁剪后的变长批走 `TorchAttentionImpl._forward_generic()`，
+        不需要 `AttentionCGSupport.ALWAYS`；只需要后端不依赖 CPU query 长度做规划。
+
+        等 target varlen 图接上时，这个方法必须改成真实判定（并保留上游的 ALWAYS 检查），
+        否则图里会按捕获时的 query 长度切行——那是"不报错、结果错"的典型来源。
+        """
+        return False
+
+    def _create_adaptive_verification_manager(self):
+        """按实际注意力后端能力建 `AdaptiveVerificationManager`（79 关）。
+
+        上游在 `init_attn_backend()` 之后、图捕获之前建；本仓库只有一个 Torch 后端、
+        一个 KV group，所以这里显式造一个 `AttentionGroup`（后端 + 层名 + 元数据构造器）
+        喂给同一个 `maybe_create_adaptive_verification_manager()`。
+        """
+        from ...attention.backends.torch_sdpa import TorchAttentionBackend
+        from ..gpu.attn_utils import AttentionCGSupportInfo
+        from ..gpu.spec_decode.adaptive_verification import (
+            maybe_create_adaptive_verification_manager,
+        )
+
+        enable = bool(getattr(self.speculator, "enable_adaptive_verification", False))
+        builder_cls = TorchAttentionBackend.get_builder_cls()
+        group = AttentionGroup(
+            backend=TorchAttentionBackend,
+            layer_names=sorted(self._attn_metadata_layer_names),
+            metadata_builders=[builder_cls(self.block_size)],
+        )
+        attn_cg_support = AttentionCGSupportInfo(
+            builder_cls.get_cudagraph_support(self.vllm_config),
+            TorchAttentionBackend.get_name(),
+        )
+        return maybe_create_adaptive_verification_manager(
+            enable_adaptive_verification=enable,
+            attn_groups=[[group]],
+            attn_cg_support=attn_cg_support,
+            req_states=self.req_states,
+            query_start_loc=self.input_buffers.query_start_loc,
+            num_bonus_tokens=self.num_new_sampled_tokens_per_step,
+            max_total_logits=get_max_chunk_logits(self.vocab_size),
+            # 上游默认要求 target 捕获 varlen 图；本仓库 target 图未接，见上面的方法。
+            require_varlen_cudagraph=self._target_varlen_cudagraphs_enabled(),
+        )
 
     def initialize_cudagraph_capture(self) -> None:
         """定下 V2 的图模式（对应 V1 `GPUModelRunner.initialize_cudagraph_capture()` 的前两步）。
@@ -397,7 +452,12 @@ class GPUModelRunner:
         mode = getattr(self, "cudagraph_mode", CUDAGraphMode.NONE)
         stats = {"mode": str(mode), "captured": 0, "capture_seconds": 0.0,
                  "graphs": {}}
-        if mode == CUDAGraphMode.NONE or self.speculator is None:
+        if self.speculator is None:
+            return stats
+        if mode == CUDAGraphMode.NONE:
+            # 79 关：即使不捕获任何图，自适应验证也需要成本表；profiling 仍然要跑。
+            if self.adaptive_verification is not None:
+                stats["adaptive_verification"] = self.profile_adaptive_verification()
             return stats
         start = time.perf_counter()
         torch.cuda.synchronize()
@@ -427,8 +487,140 @@ class GPUModelRunner:
         stats["graph_pool_bytes"] = start_free - end_free
         stats["fused_multi_step_decode"] = bool(
             getattr(self.speculator, "use_fused_multi_step_decode", False))
+        if self.adaptive_verification is not None:
+            stats["adaptive_verification"] = self.profile_adaptive_verification()
         self.cudagraph_capture_stats = stats
         return stats
+
+    # -------- 79 关：自适应验证的成本 profiling --------
+
+    def _adaptive_profile_sizes(self) -> list[int]:
+        """成本 profiling 的 target token 数网格。
+
+        取 `decode_query_len × {1,2,4,…}`，保证 dummy 批是"每请求 1+K 行"的整齐形状；
+        末尾会由 `batches_to_profile()` 自动补捕获上限外的 1.5×/2×… 尾巴。
+        """
+        sizes: set[int] = set()
+        for reqs in (1, 2, 4, 8, 16, 32, 64, 128, 256):
+            if reqs > self.max_num_reqs:
+                break
+            sizes.add(min(self.max_num_tokens, reqs * self.decode_query_len))
+        sizes.add(min(self.max_num_tokens, self.max_num_reqs * self.decode_query_len))
+        return sorted(s for s in sizes if s > 0)
+
+    @torch.inference_mode()
+    def _dummy_run_adaptive(self, num_tokens: int, context_len: int = 0) -> None:
+        """跑一个 dummy 前向 + 草稿提议，供 `StepTimingCollector` 记两段 GPU 时间。
+
+        输入写的是**常驻缓冲**（`InputBatch.make_dummy`），与图捕获同一条路径；不碰真实
+        请求状态。dummy 的 KV 会写到块表 0 号行指向的块（通常是 0 号留白块或尚未分配的
+        块），profiling 发生在服务开始之前，真实请求的 prefill 会覆盖自己用到的槽位。
+        """
+        from ...forward_context import BatchDescriptor, set_forward_context
+
+        num_tokens = max(1, min(int(num_tokens), self.max_num_tokens))
+        # 按"每请求 1+K 行"反推请求数，这样 draft 成本曲线才有多个 num_reqs 点；
+        # 若按 min(max_num_reqs, num_tokens) 摊，所有尺寸都会落到 max_num_reqs 一个点。
+        num_reqs = max(1, num_tokens // self.decode_query_len)
+        num_reqs = min(self.max_num_reqs, num_tokens, num_reqs)
+        # context + 每请求 query 行不能超过 max_model_len；超了就裁 token 数，而不是造
+        # 一个位置越界的假批（位置表越界会在 embedding/RoPE 里直接炸）。
+        context_len = max(0, min(int(context_len), self.max_model_len - 1))
+        max_per_req = max(1, self.max_model_len - context_len)
+        num_tokens = min(num_tokens, num_reqs * max_per_req)
+        num_reqs = min(num_reqs, num_tokens)
+        input_batch = InputBatch.make_dummy(
+            num_reqs, num_tokens, self.input_buffers
+        )
+        if context_len:
+            input_batch.seq_lens.add_(context_len)
+            input_batch.seq_lens_cpu_upper_bound.add_(context_len)
+            qsl = torch.as_tensor(input_batch.query_start_loc_np, dtype=torch.int64)
+            lengths = qsl[1:] - qsl[:-1]
+            starts = torch.repeat_interleave(qsl[:-1], lengths)
+            self.input_buffers.positions[:num_tokens].copy_(
+                context_len + torch.arange(num_tokens, dtype=torch.int64) - starts
+            )
+        block_tables, slot_mappings = self.prepare_attn(input_batch)
+        slot_mappings_by_layer = {"slot_mapping": slot_mappings}
+        attn_metadata = self._build_attn_metadata(
+            input_batch, block_tables, slot_mappings
+        )
+
+        self.step_timing.record_batch(input_batch, False)
+        self.step_timing.forward_start()
+        with set_forward_context(
+            attn_metadata,
+            num_tokens=input_batch.num_tokens_after_padding,
+            cudagraph_runtime_mode=CUDAGraphMode.NONE,
+            batch_descriptor=BatchDescriptor(
+                num_tokens=input_batch.num_tokens_after_padding
+            ),
+            slot_mapping=slot_mappings_by_layer,
+        ):
+            model_output = self.model(
+                input_ids=input_batch.input_ids,
+                positions=input_batch.positions,
+            )
+        self.step_timing.forward_end()
+        if self.use_aux_hidden_state_outputs:
+            hidden_states, aux_hidden_states = model_output
+        else:
+            hidden_states, aux_hidden_states = model_output, None
+
+        assert self.sampler is not None and self.speculator is not None
+        num_sampled = torch.ones(
+            input_batch.num_reqs, dtype=torch.int32, device=self.device)
+        num_rejected = torch.zeros_like(num_sampled)
+        self.step_timing.drafter_start()
+        self.speculator.propose(
+            input_batch,
+            attn_metadata,
+            slot_mappings_by_layer,
+            hidden_states,
+            aux_hidden_states,
+            num_sampled,
+            num_rejected,
+            self.req_states.last_sampled_tokens,
+            self.req_states.next_prefill_tokens,
+            self.sampler.sampling_states.temperature.gpu,
+            self.sampler.sampling_states.seeds.gpu,
+            dummy_run=True,
+        )
+        self.step_timing.drafter_end()
+
+    def profile_adaptive_verification(self) -> dict:
+        """实测 draft/target 两段成本并安装成本表（79 关）。
+
+        这是**真实 GPU event 测量**，不是常数表：`batches_to_profile()` 给出尺寸与重复次数，
+        `_dummy_run_adaptive()` 跑真实模型前向与真实草稿提议，`set_initial_cost_curves()`
+        按中位数建表。dummy 输入与图捕获同源（常驻缓冲），所以量到的不是另一套代码路径。
+        """
+        manager = self.adaptive_verification
+        assert manager is not None
+        if manager.cost_tables is not None:
+            return {
+                "cost_curves": manager.cost_curves,
+                "num_samples": 0,
+                "cached": True,
+            }
+        sizes = self._adaptive_profile_sizes()
+        with self.step_timing.collect() as timings:
+            for batch in manager.batches_to_profile(sizes):
+                self._dummy_run_adaptive(**batch)
+        # 本仓库 V2 的 **target** 图尚未实现：target 前向是 eager，没有"补齐到捕获档位"
+        # 的阶梯成本。`batches_to_profile()` 暂用 profiling 网格的最后一个值当捕获上限；
+        # 这里显式改成 0，避免把不存在的 pad bucket 写进成本表。
+        # （target varlen 图接上后，应改回真实的 `captured_token_counts()`。）
+        manager._cudagraph_limit = 0
+        manager.set_initial_cost_curves(timings)
+        return {
+            "cost_curves": manager.cost_curves,
+            "num_samples": len(timings),
+            "cudagraph_limit": manager._cudagraph_limit,
+            "profile_sizes": sizes,
+            "cached": False,
+        }
 
     # -------- 请求状态（按常驻 slot） --------
 
@@ -474,6 +666,11 @@ class GPUModelRunner:
             self.block_tables.append_block_ids(
                 req_index, new_req_data.block_ids, overwrite=True
             )
+
+            if self.adaptive_verification is not None:
+                # 79 关：slot 复用 / 新请求必须把两代置信度重置成 1.0，否则第一步会拿
+                # 上一个请求的 stale 置信度选预算（不报错，只是预算偏大/偏小）。
+                self.adaptive_verification.add_request(req_index)
 
             if sampling_params is not None:
                 assert self.sampler is not None
@@ -521,6 +718,13 @@ class GPUModelRunner:
 
         numtoks_iter = map(num_tokens_per_req.__getitem__, req_ids)
         num_scheduled_tokens = np.fromiter(numtoks_iter, dtype=np.int32, count=num_reqs)
+        num_toks = scheduler_output.total_num_scheduled_tokens
+        if self.adaptive_verification is not None and draft_tokens:
+            # 79 关：CPU 先按 stale 置信度选总预算；`num_tokens` 是**裁剪后**的 target
+            # 行数（可能小于 scheduler 排的 1+K）。真实每请求长度在 GPU 上再定。
+            num_toks = self.adaptive_verification.get_num_tokens(
+                num_tokens_per_req, draft_tokens
+            )
 
         idx_mapping_iter = map(self.req_states.req_id_to_index.__getitem__, req_ids)
         idx_mapping_np = np.fromiter(idx_mapping_iter, dtype=np.intp, count=num_reqs)
@@ -586,6 +790,24 @@ class GPUModelRunner:
             np.cumsum(num_logits, out=cu_num_logits_np[1:])
             cu_num_logits = async_copy_to_gpu(cu_num_logits_np, device=self.device)
 
+        # 79 关：CPU 侧先把草稿预算压到选定值；GPU 侧稍后用**当前**置信度重新分配。
+        # `num_scheduled_tokens` 在这里分成两份：`num_scheduled_tokens_np` 是压紧后的布局
+        # （用于 query_start_loc），`num_scheduled_tokens_upper_bound` 是调度器原计划
+        # （用于 seq_lens 上界与 InputBatch 的对外口径）。
+        adaptive_verification = (
+            self.adaptive_verification if num_draft_tokens_per_req is not None else None
+        )
+        cu_num_logits_np_exact = True
+        num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
+        if adaptive_verification is not None:
+            num_scheduled_tokens_np, cu_num_logits_np = (
+                adaptive_verification.compact_batch(
+                    num_draft_tokens_per_req,
+                    num_scheduled_tokens_np,
+                    cu_num_logits_np,
+                )
+            )
+
         # Get query_start_loc.
         num_reqs_padded = num_reqs
         query_start_loc_np = np.empty(self.max_num_reqs + 1, dtype=np.int32)
@@ -596,6 +818,19 @@ class GPUModelRunner:
         query_start_loc_np[num_reqs + 1 :] = num_tokens
         query_start_loc = self.input_buffers.query_start_loc
         async_copy_to_gpu(query_start_loc_np, out=query_start_loc)
+        if adaptive_verification is not None:
+            # GPU 用当前置信度做全局 top-k，写回真实每请求前缀长度与 offsets。
+            # 返回的 `query_start_loc` 是常驻缓冲（长度 max_num_reqs+1）。
+            cu_num_logits, query_start_loc, total_num_draft_tokens = (
+                adaptive_verification.reallocate_drafts(req_ids, idx_mapping)
+            )
+            total_num_logits = num_reqs * num_bonus_tokens + total_num_draft_tokens
+        if adaptive_verification is not None:
+            # 中间预算的 CPU offsets 是"均分上界"；0 / 满预算才是精确值。
+            cu_num_logits_np_exact = (
+                total_num_draft_tokens == 0
+                or total_num_draft_tokens == int(num_draft_tokens_per_req.sum())
+            )
         if draft_tokens:
             expanded_idx_mapping, expanded_local_pos = expand_idx_mapping(
                 idx_mapping, total_num_logits, cu_num_logits, self.decode_query_len
@@ -645,7 +880,7 @@ class GPUModelRunner:
         seq_lens_cpu_upper_bound_np = np.zeros(num_reqs_padded, dtype=np.int32)
         np.add(
             num_computed_tokens_np,
-            num_scheduled_tokens_np,
+            num_scheduled_tokens_upper_bound,
             out=seq_lens_cpu_upper_bound_np[:num_reqs],
         )
         seq_lens_cpu_upper_bound = torch.from_numpy(seq_lens_cpu_upper_bound_np)
@@ -653,11 +888,17 @@ class GPUModelRunner:
         # 74 关：这一批是不是"统一 decode"（每条请求都恰好 `1 + K` 行、且没有请求在 prefill）。
         # 是的话它的形状是固定的、可以被图重放——草稿 prefill 图正是吃这个形状；不是就回退
         # eager（`uniform_query_len=None` → 注意力走逐请求路径）。
-        uniform_query_len = get_uniform_decode_token_count(
-            num_reqs,
-            num_tokens,
-            int(num_scheduled_tokens_np.max()),
-            bool(batch_req_state.has_prefill),
+        # 79 关：自适应验证裁剪后每请求行数可以不同，target 走 eager 变长路径，所以显式
+        # 不声明统一形状（本仓库 target 图未接；见 `_target_varlen_cudagraphs_enabled()`）。
+        uniform_query_len = (
+            None
+            if adaptive_verification is not None
+            else get_uniform_decode_token_count(
+                num_reqs,
+                num_tokens,
+                int(num_scheduled_tokens_np.max()),
+                bool(batch_req_state.has_prefill),
+            )
         )
 
         return InputBatch(
@@ -668,7 +909,7 @@ class GPUModelRunner:
             idx_mapping_np=idx_mapping_np,
             expanded_idx_mapping=expanded_idx_mapping,
             expanded_local_pos=expanded_local_pos,
-            num_scheduled_tokens=num_scheduled_tokens_np,
+            num_scheduled_tokens=num_scheduled_tokens_upper_bound,
             num_tokens=num_tokens,
             num_tokens_after_padding=num_tokens_after_padding,
             num_draft_tokens=total_num_draft_tokens,
@@ -689,6 +930,7 @@ class GPUModelRunner:
             cu_num_logits=cu_num_logits,
             cu_num_logits_np=cu_num_logits_np,
             has_structured_output_reqs=scheduler_output.has_structured_output_requests,
+            cu_num_logits_np_exact=cu_num_logits_np_exact,
             uniform_query_len=uniform_query_len,
         )
 
@@ -964,6 +1206,11 @@ class GPUModelRunner:
                     self.sampler.sampling_states.seeds.gpu,
                 )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+            if self.adaptive_verification is not None:
+                # 79 关：本轮**新提议**的置信度发布给下一步（CPU 用 stale、GPU 用当前）。
+                self.adaptive_verification.record_confidences(
+                    self.speculator.draft_token_confidence_probs, input_batch
+                )
 
         if self.num_speculative_steps > 0:
             # Spec-decode and diffusion LLMs both use draft tokens but the latter does

@@ -361,8 +361,8 @@ class SpeculativeConfig:
     # 截断会改变 q，所以缓存的 q 必须是**截断后**的那一份。
     dspark_draft_topk: int | None = None
     # 79 关（上游 `SpeculativeConfig.enable_adaptive_verification`，`config/speculative.py:241`）：
-    # 按每请求置信度自适应决定验证预算。**本关只算置信度、不做预算**，所以这里明确拒绝 True
-    # （不静默降级：接受配置却不生效，用户会以为跑的是自适应验证）。
+    # 按每请求置信度自适应决定验证预算。只有 DSpark 能开（配置期检查）；执行期还要由
+    # Runner 检查注意力后端是否支持 device/CPU query 长度不一致（以及 target varlen 图能力）。
     enable_adaptive_verification: bool = False
 
     @staticmethod
@@ -1222,18 +1222,15 @@ class SpeculativeConfig:
     def _resolve_adaptive_verification_field(self) -> None:
         """`enable_adaptive_verification` 的边界（上游 `config/speculative.py:1141-1142`）。
 
-        上游两条：只有 DSpark 能开；开了才按置信度决定预算。本仓库 77 关**只算置信度**，
-        阈值/预算属 79 关，所以这里把 True 明确拒掉——接受配置却不生效就是静默降级。
+        上游只有一条：只有 DSpark 能开（DSpark 是唯一带 confidence head 的方法）。执行期的
+        两条能力检查（query-lens mismatch、varlen CUDA graph）不在配置期做，因为它们要看
+        **实际绑定**的注意力后端；由 `worker/gpu/spec_decode/adaptive_verification.py::
+        maybe_create_adaptive_verification_manager()` 在 Runner 初始化时检查。
         """
         if not self.enable_adaptive_verification:
             return
         if self.method != "dspark":
             raise ValueError("Adaptive verification only supported with DSpark")
-        raise NotImplementedError(
-            "enable_adaptive_verification 的**阈值与预算决策**属 79 关（本关只实现置信度头的"
-            "计算与落盘：`DSparkSpeculator.draft_token_confidence_probs`）。"
-            "现在打开它没有任何东西会按置信度裁剪验证枚数——所以明确拒绝，而不是静默按固定"
-            "枚数跑（需求 077 §5：预算决策放到 79）")
 
     def eagle3_use_aux_hidden_state(self) -> bool:
         """是否吃**多个辅助层**的特征（EAGLE-1 吃最后一层，不吃 aux）。

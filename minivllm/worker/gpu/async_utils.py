@@ -23,6 +23,8 @@ import torch
 
 from ...outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from ..gpu.sample.output import SamplerOutput
+from dataclasses import dataclass, field
+from collections.abc import Iterator
 
 
 def async_copy_to_np(x: torch.Tensor) -> np.ndarray:
@@ -39,6 +41,93 @@ def stream(to_stream: torch.cuda.Stream, from_stream: torch.cuda.Stream):
         yield
     finally:
         torch.cuda.set_stream(from_stream)
+
+
+@dataclass(frozen=True)
+class StepTimingSample:
+    """一个 dummy/真实 step 的两段 GPU 时间（79 关的成本曲线原料）。"""
+
+    forward_ms: float
+    drafter_ms: float
+    num_target_tokens: int
+    num_reqs: int
+    full_cudagraph: bool
+
+
+def _timing_event() -> torch.cuda.Event:
+    return torch.cuda.Event(enable_timing=True)
+
+
+@dataclass
+class StepTimingEvents:
+    forward_start: torch.cuda.Event = field(default_factory=_timing_event)
+    forward_end: torch.cuda.Event = field(default_factory=_timing_event)
+    drafter_start: torch.cuda.Event = field(default_factory=_timing_event)
+    drafter_end: torch.cuda.Event = field(default_factory=_timing_event)
+
+
+class StepTimingCollector:
+    """Time every step run inside ``collect``; record calls no-op outside it.
+
+    79 关从上游 `v1/worker/gpu/async_utils.py` 搬来的最小实现：每个 step 用独立 event，
+    这样多个 step 可以背靠背排队，最后只在退出 `collect` 时同步一次。成本曲线按
+    `num_target_tokens`（target 前向）与 `num_reqs`（草稿前向）分组，不能把不同执行模式的
+    样本混进同一条曲线（上游注释同义）。
+    """
+
+    def __init__(self):
+        self._collecting = False
+        self._step: StepTimingEvents | None = None
+        self._batch = (False, 0, 0)
+        self._timed: list[tuple[StepTimingEvents, tuple[bool, int, int]]] = []
+
+    @contextlib.contextmanager
+    def collect(self) -> Iterator[list[StepTimingSample]]:
+        samples: list[StepTimingSample] = []
+        self._collecting = True
+        try:
+            yield samples
+        finally:
+            self._collecting = False
+            timed, self._timed, self._step = self._timed, [], None
+        if not timed:
+            return
+        # 同一 stream、发射顺序一致：最后一个 step 完成了，前面的也都完成了。
+        timed[-1][0].drafter_end.synchronize()
+        samples.extend(
+            StepTimingSample(
+                events.forward_start.elapsed_time(events.forward_end),
+                events.drafter_start.elapsed_time(events.drafter_end),
+                num_target_tokens,
+                num_reqs,
+                full_cudagraph,
+            )
+            for events, (full_cudagraph, num_target_tokens, num_reqs) in timed
+        )
+
+    def record_batch(self, input_batch, full_cudagraph: bool) -> None:
+        """记录这一 step 的 batch 形状；不同执行模式不能共用一条成本曲线。"""
+        self._batch = (full_cudagraph, input_batch.num_tokens, input_batch.num_reqs)
+
+    def forward_start(self) -> None:
+        if self._collecting:
+            self._step = StepTimingEvents()
+            self._step.forward_start.record()
+
+    def forward_end(self) -> None:
+        if self._step is not None:
+            self._step.forward_end.record()
+
+    def drafter_start(self) -> None:
+        if self._step is not None:
+            self._step.drafter_start.record()
+
+    def drafter_end(self) -> None:
+        """结束这一 step：只有走到这里的 step 才有草稿成本。"""
+        if self._step is not None:
+            self._step.drafter_end.record()
+            self._timed.append((self._step, self._batch))
+            self._step = None
 
 
 class AsyncOutput(AsyncModelRunnerOutput):

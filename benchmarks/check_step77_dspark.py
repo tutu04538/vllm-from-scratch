@@ -108,10 +108,13 @@ conf_draft = ModelConfig(model=conf_dir, dtype="float32", max_model_len=64,
 try:
     SpeculativeConfig(method="dspark", num_speculative_tokens=3,
                       draft_model_config=conf_draft, enable_adaptive_verification=True)
-    adaptive_ok = False
-except NotImplementedError:
     adaptive_ok = True
-check("A7. enable_adaptive_verification（预算属 79 关）配置期拒绝", adaptive_ok)
+except Exception:
+    adaptive_ok = False
+# 79 关已实现预算决策：77 关这里原来断言 NotImplementedError；现在配置期接受 DSpark，
+# 执行期由 Runner 检查注意力后端能力（见 docs/step79_alignment.md）。断言强度不变：
+# 非 DSpark 仍必须在配置期拒绝（tests/step77/test_dspark_boundaries.py 钉住）。
+check("A7. DSpark 接受 enable_adaptive_verification（预算属 79 关）", adaptive_ok)
 
 try:
     load_dspark_model(None, fake_pp_config(dspark, pp_size=2))

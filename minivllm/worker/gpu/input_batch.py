@@ -118,6 +118,11 @@ class InputBatch:
     # Whether any requests in batch use structured output.
     has_structured_output_reqs: bool
 
+    #: `cu_num_logits_np` 是不是**精确**的 CPU offsets（79 关）。
+    #: 自适应验证的中间预算只给"均分上界"；只有 budget=0 / 满预算才是精确值。
+    #: 需要真实行边界的消费者（logprobs 映射）必须看这个标志，不能拿上界切行。
+    cu_num_logits_np_exact: bool = True
+
     # Longest query the batch may contain; None = 用本批实际的最大 query 长度。
     max_query_len: int | None = None
 

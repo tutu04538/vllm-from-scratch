@@ -215,12 +215,20 @@ class RejectionSampler:
         max_chunk_logits: int,
         max_num_logprobs: int,
     ) -> tuple[torch.Tensor, torch.Tensor, LogprobsTensors | None]:
-        cu_num_logits_np = input_batch.cu_num_logits_np
         use_processed_logits = self.sampler.logprobs_mode in (
             "processed_logprobs",
             "processed_logits",
         )
         num_reqs = input_batch.num_reqs
+        cu_num_logits_np = input_batch.cu_num_logits_np
+        if (max_num_logprobs != NO_LOGPROBS
+                and not getattr(input_batch, "cu_num_logits_np_exact", True)):
+            # 79 关：自适应验证的中间预算只给 CPU 一个"均分上界"。logprobs 的
+            # `cu_num_generated_tokens` 必须按**真实**行边界切（否则会把后一条请求的
+            # logits 算到前一条头上，或越界读）。这里是一次显式 D2H，只发生在
+            # 用户真的要 logprobs 的中间预算轮次；普通验证/无 logprobs 不受影响。
+            cu_num_logits_np = input_batch.cu_num_logits[: num_reqs + 1].to(
+                "cpu").numpy()
 
         if logits.shape[0] <= max_chunk_logits:
             # 单块：整批一次验完。**这条分支同时是 79 关的保护**——adaptive verification 会

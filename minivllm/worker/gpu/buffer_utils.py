@@ -47,6 +47,44 @@ def set_default_max_concurrency(n: int) -> None:
     _DEFAULT_MAX_CONCURRENCY = max(2, n)
 
 
+class CpuGpuBuffer:
+    """一份 CPU 镜像 + 一份 GPU 张量（对应上游 `v1/utils.py::CpuGpuBuffer`）。
+
+    79 关的"两代陈旧置信度"就靠它：D2H 拷贝在侧流上异步进行，预算读的是**上一轮**
+    已经落地的 CPU 镜像，而不是当前 GPU 值。`copy_to_cpu()` 是非阻塞的，调用方必须用
+    CUDA event 显式同步（见 `adaptive_verification.py` 的双缓冲与事件）。
+    """
+
+    def __init__(
+        self,
+        *size: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        pin_memory: bool | None = None,
+    ) -> None:
+        if pin_memory is None:
+            pin_memory = torch.cuda.is_available()
+        # 这些缓冲是运行期可变状态，不是参数；不要被 inference_mode 的"只读"语义影响。
+        with torch.inference_mode(False):
+            self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)
+            self.gpu = torch.zeros_like(self.cpu, device=device)
+        if dtype == torch.bfloat16:
+            raise ValueError(
+                "bfloat16 不能直接转 numpy，请用 float32（79 关的置信度就是 fp32）")
+        self.np = self.cpu.numpy()
+
+    def copy_to_gpu(self, n: int | None = None) -> torch.Tensor:
+        if n is None:
+            return self.gpu.copy_(self.cpu, non_blocking=True)
+        return self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)
+
+    def copy_to_cpu(self, n: int | None = None) -> torch.Tensor:
+        """非阻塞 D2H；调用方负责事件同步（上游同款注释）。"""
+        if n is None:
+            return self.cpu.copy_(self.gpu, non_blocking=True)
+        return self.cpu[:n].copy_(self.gpu[:n], non_blocking=True)
+
+
 def async_copy_to_gpu(
     x: torch.Tensor | np.ndarray,
     out: torch.Tensor | None = None,

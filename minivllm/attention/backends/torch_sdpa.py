@@ -366,3 +366,18 @@ class TorchAttentionBackend:
     @staticmethod
     def get_impl_cls():
         return TorchAttentionImpl
+
+    @staticmethod
+    def supports_device_cpu_query_lens_mismatch() -> bool:
+        """是否能在"device query 长度与 CPU 上界不一致"的批上运行（79 关）。
+
+        自适应验证在 GPU 上裁剪草稿预算，CPU 侧只保留一个**均分上界**。本后端的
+        `_forward_generic()` 逐请求读 device 上的 `query_start_loc`/`seq_lens` 来切片，
+        没有任何按 CPU query 长度做的规划，所以这里返回 True。
+
+        ⚠️ 这与 `_cudagraph_support`（`UNIFORM_BATCH`）是两个问题：前者是**语义**能力，
+        后者是**图**能力。V2 的 target 图尚未实现，所以自适应验证走 eager 变长批；
+        一旦 target varlen 图接上，图能力仍必须满足 `AttentionCGSupport.ALWAYS`
+        （见 `worker/gpu/attn_utils.py` 与 `docs/step79_alignment.md` §5）。
+        """
+        return True

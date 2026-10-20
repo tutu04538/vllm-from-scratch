@@ -79,13 +79,17 @@ def test_k_can_default_from_n_predict():
     assert spec.num_speculative_tokens == 4
 
 
-def test_adaptive_verification_belongs_to_step_79():
-    """`enable_adaptive_verification=True` 在 77 关明确拒绝（预算决策属 79 关）。"""
+def test_adaptive_verification_is_accepted_for_dspark():
+    """DSpark 打开 `enable_adaptive_verification` 在配置期合法（执行期属 79 关）。
+
+    77 关这里原本断言 `NotImplementedError`；79 关实现预算决策后改成"配置接受、执行期由
+    Runner 检查注意力后端能力"。断言强度不变：非 DSpark 仍然拒绝（下一条用例）。
+    """
     _, draft_config = model_configs(confidence_head=True)
-    with pytest.raises(NotImplementedError, match="79"):
-        SpeculativeConfig(method="dspark", num_speculative_tokens=3,
-                          draft_model_config=draft_config,
-                          enable_adaptive_verification=True)
+    spec = SpeculativeConfig(method="dspark", num_speculative_tokens=3,
+                             draft_model_config=draft_config,
+                             enable_adaptive_verification=True)
+    assert spec.enable_adaptive_verification is True
 
 
 def test_adaptive_verification_requires_dspark():

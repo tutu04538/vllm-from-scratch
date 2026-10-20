@@ -24,7 +24,8 @@
   "step75": "implemented + self-verified（块验证按源码递推实现并三方向对照：五个内核 × 11 个中间缓冲与冻结实现逐值相等、τ 分布 vs Torch 数学参考 TV=0.0019、τ=1 的交付分布 vs 块残差 TV=0.0074；synthetic 的无条件→条件换算与配置校验与上游逐项同判、经验前缀接受率 [0.8011,0.4057,0.2046]（配置 [0.8,0.4,0.2]）；分块 logits 保留「按整条请求切 + chunk 局部 offset + draft_logits 全局 slot」与 79 关的陈旧 offsets 保护；⚠️ V1 的 block 明确报错（上游 V1 静默按 standard 跑）、synthetic 不证明分布无损）",
   "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）",
   "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））",
-  "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)"
+  "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)",
+  "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)"
  },
  "step58": {
   "results": {
@@ -4580,6 +4581,167 @@
    "real_weights": {
     "status": "缺",
     "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DFlash2 checkpoint；草稿质量、接受长度与加速比「集成待验」，不下载、不伪造"
+   }
+  }
+ },
+ "step79": {
+  "results": {
+   "step": 79,
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/079_基于置信度与成本曲线的自适应验证.md",
+   "status": "implemented + self-verified（**只有 V2 的 DSpark 路径**；草稿宽度 K 不变，target 实际验证长度按请求重分配）。CPU 用 stale 置信度枚举总预算：survival=逐位置 confidence 前缀连乘，estimated(b)=会采样请求数+前 b 个 survival，cost(b)=draft_cost_ms[num_reqs]+verify_cost_ms[非草稿行+b]，argmax estimated/cost；成本表由 capture_model() 里的**真实 GPU event** profiling 生成（graph 内阶梯、graph 外插值、尾部线性外推、单调/非负裁剪）。GPU 用**当前**置信度做全局 top-k（越界槽位 -inf），写回真实 cu_num_logits/query_start_loc；CPU compact_batch 只给均分上界（budget=0 才精确），_batch_budget 一次性消费，新请求/slot 复用重置两代置信度。实测：人工成本表下手算 full/0/中间/tie；预算 0 时 cu=[0,1,2]；中间预算真实capacities 之和=预算且每请求是连续前缀；强制 A/B 当前置信度得到 [3,0] 而非 CPU 均分 [2,1]；满预算 greedy 与 adaptive 关闭逐 token 相同；概率/block/synthetic 三条验证路径都能消费裁剪后布局；中间预算+logprobs 走真实 offsets 的 D2H；草稿侧 FULL 图 + target eager 变长批共存；取消/复用不残留旧置信度。⚠️ 本机没有真实 DSpark 权重 → 草稿质量/接受长度/真实加速比「集成待验」；V2 target varlen graph 未接，所以 runner 按实际执行路径只要求 query-lens mismatch 支持（默认 helper 仍要求 ALWAYS，target 图接上时必须改回）；tiny 真实曲线本次选了满预算，off/on 提议/验证数相同，不据此给加速比。",
+   "recorded_at": "2026-10-20T21:00:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "62dbb2e",
+    "implementation_commit": "见本轮提交（step79：DSpark 自适应验证）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 152,
+    "sha256": "0458410d42055d8e391c58a7e9ed8a87ad00538abe1573460c20bb102289b840",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（本关只读源码做逐行对齐；生产路径不 import）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_USE_V2_MODEL_RUNNER=1（DSpark 只有 V2）+ VLLM_WSL2_ENABLE_PIN_MEMORY=1；profiling 用 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step79 -q",
+     "result": "44 passed（budget/manage 31 + layout/e2e 13）"
+    },
+    {
+     "cmd": "python benchmarks/check_step79_adaptive.py",
+     "result": "23 项全部通过（A 成本表 3 / B 预算 6 / C 布局 4 / D 能力 2 / E 端到端 5 / F 真实 profiling+off/on 3）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "945 passed（= 78 关的 901 + 本关 44；无回归）"
+    },
+    {
+     "cmd": "python benchmarks/check_step76_dflash.py + check_step77_dspark.py + check_step78_dflash2.py",
+     "result": "27/27 + 28/28 + 31/31（76/78 行为不变；77 的 A7 期望值按 79 关从“配置期拒绝”改成“配置期接受、执行期检查后端能力”，断言强度不变）"
+    },
+    {
+     "cmd": "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 python benchmarks/check_step79_adaptive.py",
+     "result": "F1–F3 通过；成本曲线/off-on 数据写入 benchmark results 与 docs/step79_cost_curves.json"
+    }
+   ],
+   "execution_trace": {
+    "手算预算（与冻结 manager 逐值）": {
+     "满预算": "draft 1ms、verify 恒 1ms → budget=6（2 请求×K=3）",
+     "零预算": "verify=1000×行数 → budget=0",
+     "中间预算": "verify 前 5 行 1ms、之后 1000ms → budget=3；survival A[0.9,0.72,0.504] B[0.5,0.2,0.06]，b=0..3 的 estimated/cost=0.1818/0.2636/0.3291/0.3749",
+     "tie": "置信度全 0、成本恒定 → argmax 取第一个 b=0",
+     "chunk 上限": "max_total_logits=5、2 请求 → budget=5−2×1=3"
+    },
+    "布局": {
+     "预算 0": "num_draft_tokens=0；cu_num_logits=[0,1,2]；query_start_loc=[0,1,2]",
+     "中间预算 3（当前置信度 A 高 B 低）": "capacities=[3,0]；cu=[0,4,5]；qsl=[0,4,5]；CPU 均分上界 [0,4,8] 未被当真实值",
+     "中间预算 3（A/B 较均衡）": "capacities=[2,1]；cu=[0,3,5]；qsl=[0,3,5]",
+     "强制 A=1/B=0": "capacities=[3,0]（证明用 GPU 当前值，不是 CPU stale 均分 [2,1]）",
+     "重排 b,a": "cu=[0,1,5]（按 req_id 取预算，不按数组下标）"
+    },
+    "端到端": {
+     "满预算 vs adaptive off": "greedy 逐 token 相同 {'a':[4,4,6,0], 'b':[1,1,1,1]}",
+     "预算 0 第一步": "stale 初始值 1.0 → 仍可能选满；第二/三步起真实置信度 → budget 0",
+     "概率草稿": "中间预算仍走拒绝采样，输出正常",
+     "block / synthetic": "两条验证路径都消费真实 cu_num_logits，输出正常",
+     "草稿侧 FULL 图": "mode=full（实际降级 FULL_AND_PIECEWISE，草稿 query 图 captured=1） + target eager 变长批，布局仍正确",
+     "取消/复用": "abort a 后新请求 c 复用 slot，c 正常产出；每轮 capacities 合法",
+     "中间预算+logprobs": "cu_num_logits_np_exact=False → 真实 offsets D2H；每个输出 token 的 logprob 条数正确（2..3 条，采样 token 不在 top-2 时多一条）"
+    },
+    "真实 profiling（tiny，context=8）": {
+     "draft curve (num_reqs,ms)": [
+      [
+       1,
+       4.27564811706543
+      ],
+      [
+       2,
+       4.63369607925415
+      ]
+     ],
+     "verify curve (rows,ms)": [
+      [
+       4,
+       2.1790719032287598
+      ],
+      [
+       8,
+       4.837855815887451
+      ],
+      [
+       12,
+       4.603392124176025
+      ],
+      [
+       16,
+       4.147168159484863
+      ],
+      [
+       32,
+       4.682496070861816
+      ],
+      [
+       64,
+       3.7251200675964355
+      ]
+     ],
+     "off": {
+      "decode_steps": 7,
+      "proposed": 42,
+      "verified": 42,
+      "mean_decode_ms": 9.7758
+     },
+     "on": {
+      "decode_steps": 7,
+      "proposed": 42,
+      "verified": 42,
+      "mean_decode_ms": 14.888,
+      "note": "tiny 真实曲线下选了满预算；时间差是噪声，不给加速比"
+     }
+    },
+    "本关顺带修掉的真问题": [
+     "中间预算 + logprobs 时，CPU 均分上界会被当成真实 cu offsets 切行（不报错、数字错）：新增 InputBatch.cu_num_logits_np_exact，拒绝采样器在需要时做一次真实 offsets D2H",
+     "profiling 的 dummy 批按 min(max_reqs,num_tokens) 摊会永远只得到一个 num_reqs 点：改成按 num_tokens//(1+K) 反推请求数，draft 曲线才有多个点",
+     "step75 的 SimpleNamespace 假 InputBatch 没有新字段：用 getattr(...,True) 保持兼容"
+    ]
+   },
+   "known_gaps": [
+    "本机没有真实 DSpark 权重：草稿质量/接受长度/真实加速比「集成待验」，不下载、不伪造",
+    "V2 的 target varlen CUDA graph 未接（74 关边界）：runner 传 require_varlen_cudagraph=False；默认 helper 仍要求 AttentionCGSupport.ALWAYS，target 图接上时必须改回",
+    "profiling 的 _cudagraph_limit 固定 0（target eager，没有 pad bucket）；target 图接上后要改回真实 captured_token_counts()",
+    "TP/PP/DP：单卡单进程；多 rank 成本曲线广播、TP 局部 argmax 属 83 关；DSpark PP 配置期拒绝",
+    "SpecDecodingStats/Prometheus 指标属 84 关；本关只提供 last_* 诊断字段",
+    "synthetic 不证明分布无损（75 关边界）；本关只验证裁剪后的布局能被它消费"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')（现场按固定 seed 生成）",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "max_model_len": 64,
+    "note": "权重不提交；tiny 位置表按 64 建"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir('tiny_gqa', confidence_head=True)（77 关新增；本关直接用）",
+    "architectures": [
+     "Qwen3DSparkModel"
+    ],
+    "dtype": "float32",
+    "note": "DFlash 主干 + markov 头 + confidence_head.proj（fp32）；本关只读 draft_token_confidence_probs，不改模型结构"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DSpark checkpoint；真实草稿质量、接受长度与加速比「集成待验」"
    }
   }
  }

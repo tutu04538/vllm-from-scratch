@@ -138,7 +138,7 @@ DSpark 传 `self.sample_from_anchor`。
 | 编号 | 差异 | 为什么不改 | 影响 |
 |---|---|---|---|
 | D-77-1 | 只实现 **Qwen3** 一族的 DSpark；`Gemma4DSparkModel` / `K3DSparkModel` / `DSparkDraftModel`（DSV4）在配置期拒绝 | 上游这四族的头不同（K3 是 MLA、DSV4 复用 target 的完整配置与 `dspark_target_layer_ids`、Gemma4 要归一 `n_predict`），本机没有权重也无法验证 | 加载/配置期明确报错，不猜基座 |
-| D-77-2 | `enable_adaptive_verification=True` 在配置期**拒绝**（79 关） | 需求 077 §5：阈值/预算决策放到 79；接受配置却不裁剪验证枚数就是静默降级 | 置信度**照算并落盘**（`draft_token_confidence_probs`），只是没有消费者 |
+| D-77-2 | `enable_adaptive_verification=True` 在配置期**拒绝**（79 关） | 需求 077 §5：阈值/预算决策放到 79；接受配置却不裁剪验证枚数就是静默降级 | 置信度**照算并落盘**（`draft_token_confidence_probs`），只是没有消费者。**79 关已放开配置**（DSpark 接受，其余方法拒绝），执行期由 Runner 检查后端能力；本行保留 77 关当时的状态 |
 | D-77-3 | 没有 `attention_config.use_non_causal` / `kv_cache_dtype` / quant 覆盖 | 本仓库只有一个注意力后端（因果性由模型逐层决定）、无量化、无 KV dtype 轴 | 无行为差异（上游那两个 `replace(...)` 在本仓库没有对应字段） |
 | D-77-4 | PP 检查放在**建模之前**（上游在建模之后） | 本仓库没有分布式 PP 轴；早报错少一次白建模型 | 语义相同（同一句 `NotImplementedError`） |
 | D-77-5 | `confidence_head.proj` 用 `nn.Linear`，`load_weights()` 开始时把它升回 **fp32** | 本仓库没有 `ReplicatedLinear`（TP=1 下它就是 `nn.Linear`），而加载器会把整个模型 `.to(dtype)`；上游用 `params_dtype=torch.float32` | 数值等价（fp32 权重 + fp32 输入 + 上游同一条 `sigmoid`） |

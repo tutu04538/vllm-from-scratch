@@ -672,8 +672,8 @@ DSpark = **DFlash 的并行主干** + **串行 Markov 纠正**（**只有 V2 一
 - `dspark_draft_topk`：候选只选一次，串行步只对候选算偏置（`baddbmm`），其余列 `-inf`；采样器
   吃这份**截断分布**，缓存的 q 就是截断后的那一份。
 - 置信度：`confidence_head` 给每枚草稿一个接受概率估计，写进 `draft_token_confidence_probs`
-  （fp32，`[max_num_reqs, K]`）——**本关只算不裁**，阈值/预算属 79 关（`enable_adaptive_verification`
-  在配置期明确拒绝）。
+  （fp32，`[max_num_reqs, K]`）——**77 关只算不裁**，预算决策属 79 关。79 关起配置期接受
+  `enable_adaptive_verification`（只对 DSpark），执行期由 Runner 检查注意力后端能力。
 - 图：`_generate_draft()`（主干前向 + K 步串行采样）整个录进 FULL 图；K 步之间是数据依赖。
 
 ```bash
@@ -732,17 +732,70 @@ VLLM_USE_V2_MODEL_RUNNER=1 python minivllm/demo.py --device cuda --model <target
 scores 逐位相等**（B=3、slot 重排、补齐行 −1）；cache 同 slot 两轮与上游逐位相等（disjoint 旧列
 恢复 `-inf`、交集列更新）；2000 种子经验分布 vs `softmax(q/temp)` **TV=0.0177**；解码器层 vs
 显式公式 `max|Δ|=0.0`；tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）、slot 复用后仍无损。
-⚠️ 本机**没有真实 DFlash2 权重** → 草稿质量/加速比"集成待验"；adaptive 属 79 关。差异账本 10 条见
+⚠️ 本机**没有真实 DFlash2 权重** → 草稿质量/加速比"集成待验"；adaptive 已在 79 关接上（target varlen 图未接）。差异账本 10 条见
 [`docs/step78_alignment.md`](../docs/step78_alignment.md) §5，LiLiCorr 对应表见 §8。
+
+## 第七十九关：自适应验证（置信度 + 成本曲线）
+
+DSpark 仍提 K 枚草稿，但 target **不再固定验证全部 K 枚**（**只有 V2**；不是 71 关的
+batch-size→K，草稿宽度不变）：
+
+```
+CPU（上一轮 D2H 的 stale 置信度）
+  survival_i = c_0×…×c_i（前缀连乘，沿位置单调不增）
+  estimated(b) = 会采样请求数 + 前 b 个 survival
+  cost(b)      = draft_cost_ms[num_reqs] + verify_cost_ms[非草稿行 + b]
+  budget       = argmax estimated(b)/cost(b)          ← 真实 GPU event 成本表
+        ↓
+GPU（当前置信度）
+  global top-k survival（越界槽 -inf）→ 每请求连续前缀 capacities
+  cu_num_logits   = cumsum(capacities + bonus)
+  query_start_loc = cumsum(capacities + 非草稿行)
+        ↓
+target 只验证这些前缀；CPU compact_batch 只保留“均分上界”
+```
+
+- **为什么不能只按单点 confidence 排序**：验证是前缀式的；按 survival 的全局 top-k 天然给出
+  连续前缀（`[0.9,0.72,0.504]` 与 `[0.5,0.2,0.06]` 的 top-3 是 A 的三枚）。
+- **为什么必须实测成本**：CUDA Graph 会把行数补齐到捕获档位，成本是阶梯函数；线性模型会以为
+  "砍掉一半行省一半时间"，实际可能 0。`build_cost_tables_from_curves()` 在捕获上限内做阶梯、
+  上限外只用上限以上的点插值、尾部线性外推。
+- **CPU stale vs GPU 当前**：`get_num_tokens()` 读上一轮已经落地的 D2H 置信度；`reallocate_drafts()`
+  用本步 `_confidence_probs`。两份数据刻意不同，测试里强制成相反值验证。
+- **预算 0**：`compact_batch()` 返回精确 CPU offsets（每请求只剩 bonus 行）；其它中间预算的
+  `cu_num_logits_np` 只是均分上界，`InputBatch.cu_num_logits_np_exact=False`；需要真实行边界的
+  logprobs 会做一次 D2H。
+- **一次性预算**：`_batch_budget` 由 `get_num_tokens()` 写、`reallocate_drafts()` 取走并置 None；
+  新请求/slot 复用重置两代置信度，取消/异常不残留。
+- **能力边界**：上游要求 `AttentionCGSupport.ALWAYS`，因为它捕获 target varlen 图；本仓库 V2 的
+  target 图尚未实现，runner 传 `require_varlen_cudagraph=False`，实际只要求后端不依赖 CPU query
+  长度（Torch 后端返回 True）。默认 helper 仍按上游拒绝 `UNIFORM_BATCH`；target 图接上时必须改回。
+- **profiling**：`capture_model()` 里真实 GPU event 测 target forward 与整段 draft propose；
+  `_dummy_run_adaptive()` 按 `1+K` 反推请求数。没有 full-cudagraph 样本时回退用全部样本。
+- **边界**：本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；tiny 真实曲线本次选了满预算，
+  off/on 提议/验证数相同，不据此给加速比；TP/指标属 83/84 关。
+
+```bash
+python benchmarks/check_step79_adaptive.py        # 23 项
+python -m pytest tests/step79 -q                  # 44 项
+VLLM_USE_V2_MODEL_RUNNER=1 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 \
+    python benchmarks/check_step79_adaptive.py    # 真实 profiling + off/on
+```
+
+实测：人工成本表下手算满/0/中间/tie；预算 0 时 `cu=[0,1,2]`；中间预算真实 capacities 之和=预算
+且每请求是连续前缀（`[2,1]` / 强制当前置信度 `[3,0]`，不是 CPU 均分）；满预算 greedy 与 adaptive
+关闭逐 token 相同；概率/block/synthetic 三条验证路径都能消费裁剪布局；草稿 FULL 图 + target eager
+变长批共存；取消/复用不残留。差异账本 8 条见 [`docs/step79_alignment.md`](../docs/step79_alignment.md) §5，
+实测曲线见 [`docs/step79_cost_curves.json`](../docs/step79_cost_curves.json)。
 
 ## 明确不做
 
 EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
-V2 入口（73–78 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
+V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
-+ 草稿侧的 FULL 图；多模块 MTP（80 关）、V2 的 target 图与 PIECEWISE、adaptive verification
-（79 关）都还没接（各自报错并写明归属关卡）。
++ 草稿侧的 FULL 图；多模块 MTP（80 关）、V2 的 target 图与 PIECEWISE 还没接（各自报错并写明
+归属关卡）；adaptive verification 已在 79 关接上（target varlen 图未接，见该节边界）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -787,6 +840,7 @@ python benchmarks/check_step75_verify_modes.py       # 20 项：配置与换算 
 python benchmarks/check_step76_dflash.py             # 27 项：配置边界 / 布局逐值差分（V1+V2 内核）/ 模型与 KV / 端到端与图
 python benchmarks/check_step77_dspark.py             # 28 项：配置边界 / 两种布局逐值差分 / 条件采样与 q / 缩减词表与 top-k / 端到端与图
 python benchmarks/check_step78_dflash2.py            # 31 项：配置边界 / 卷积与边分逐值 / walk 与 cache 内核逐位 / realized q / 模型与端到端
+python benchmarks/check_step79_adaptive.py            # 23 项：成本表 / 手算预算 / 布局 / 能力检查 / 满-0-中间端到端 / 真实 profiling
 python -m pytest tests/step58 -q                     # 41 项：step58 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step59 -q                     # 52 项：step59 的单测 + 集成（总纲要求的入口）
 python -m pytest tests/step60 -q                     # 95 项：step60 的单测 + 集成（总纲要求的入口）
@@ -806,6 +860,7 @@ python -m pytest tests/step75 -q                     # 51 项：step75（块验�
 python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 布局/上下文 KV/冻结参考/端到端与图）
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
+python -m pytest tests/step79 -q                     # 44 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）
