@@ -10,11 +10,12 @@
 
 三层新增结构（缺一层就不是同一个模型，都能跑、只是草稿静默变差）：
 
-    DFlashGroupedConv    沿**序列维**的因果分组卷积，挂在注意力与 MLP 两侧
-                         （`attention_conv` / `mlp_conv`）。系数 = 静态 `base_kernel`
-                         + 由 hidden 现算的 `kernel_projection`（所以它不是普通卷积：
-                         每 token 的卷积核不同）。`block_size = 1 + K` 让卷积在**每请求的
-                         query 块内**回看，不跨请求。
+    DFlashGroupedConv    沿**序列维**的因果分组卷积；注意力和 MLP 各挂一个**独立实例**
+                         （`attention_conv` / `mlp_conv`），每个实例内部又分 prepare
+                         （子层输入侧）/ finish（子层输出侧）两侧。系数 = 静态
+                         `base_kernel` + 由 hidden 现算的 `kernel_projection`（所以它不是
+                         普通卷积：每 token 的卷积核不同）。`block_size = 1 + K` 让卷积在
+                         **每请求的 query 块内**回看，不跨请求。
     CandidateSelector    两张码本 `predecessor_codebook` / `successor_codebook`（`[V, r]`）
                          + `hidden_projection`（hidden → r）。它给 `[B, K, k, k]` 的打分：
                          `score[b,l,p,c] = unary[b,l,c]
@@ -76,9 +77,12 @@ def _grouped_conv(hidden_states: torch.Tensor, delta: torch.Tensor, base: torch.
 class DFlashGroupedConv(nn.Module):
     """DFlash2 的分组卷积（上游同名类）。
 
-    `base_kernel` 是**静态**的 `[2, taps, hidden]`（2 = 注意力侧 / MLP 侧各一份），
-    `kernel_projection` 由当前 hidden 现算 `[2, taps, num_groups]` 的**增量**系数。
-    于是卷积核同时依赖"层/位置"与"这一行是什么 token"。
+    `base_kernel` 是**静态**的 `[2, taps, hidden]`：这里的 2 是 **prepare（子层输入侧）/
+    finish（子层输出侧）** 两份静态核，不是"注意力侧 / MLP 侧"——注意力和 MLP 是两个
+    独立的 `DFlashGroupedConv` 实例（`attention_conv` / `mlp_conv`），各自都有这 2 侧。
+    `kernel_projection` 由当前 hidden 现算 `[2, taps, num_groups]` 的**增量**系数；它与
+    `base_kernel` 相加后得到这一行、这一 tap、这一组的卷积系数。于是卷积核同时依赖
+    "子层/输入输出侧"与"这一行是什么 token"。
 
     上游用 `ReplicatedLinear`；本仓库 TP=1、没有这个类，`ColumnParallelLinear`（`return_bias=False`）
     在 TP=1 下就是同一个算子（形状、权重名、加载路径都一样）。
@@ -109,7 +113,8 @@ class DFlashGroupedConv(nn.Module):
                              self.num_groups, self.group_size, self.taps)
 
     def prepare(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """注意力/MLP **之前**：用输入 hidden 算增量系数，并返回第一侧卷积结果。"""
+        """注意力/MLP **之前**：用输入 hidden 一次算出两侧系数，返回 side 0 的卷积结果
+        （side 1 的系数留给 `finish`）。"""
         coefficients = self.kernel_projection(hidden_states).reshape(
             hidden_states.shape[0], 2, self.taps, self.num_groups)
         return (self._convolve(hidden_states, coefficients[:, 0], 0),
@@ -117,7 +122,7 @@ class DFlashGroupedConv(nn.Module):
 
     def finish(self, hidden_states: torch.Tensor,
                coefficients: torch.Tensor) -> torch.Tensor:
-        """注意力/MLP **之后**：用同一份增量系数的第二侧再卷一次。"""
+        """注意力/MLP **之后**：用 `prepare` 交回的 side 1 系数再卷一次。"""
         return self._convolve(hidden_states, coefficients, 1)
 
 
