@@ -354,10 +354,12 @@ class GPUModelRunner:
         模式，最后把这个模式交给草稿的两张图管理器。写回 `compilation_config.cudagraph_mode`，
         所以"实际用了什么模式"在配置对象上可查，不是只在日志里。
 
-        与上游 V2 的差别只有一条、而且是本仓库的能力缺口：**PIECEWISE 那一半没接**（V2 不给
-        模型装分段件，`CompilationMode` 也只有 NONE）。所以这里 warning 一次，并让草稿的两张图
-        只认 FULL 那一半（`init_cudagraph_manager()` 里收敛）——混合批一律走 eager，
-        **不会**出现"选中 PIECEWISE 却什么都没捕获"的假命中。
+        本仓库已接 Phase 3 的 breakable PIECEWISE：混合 prefill/decode 批走 PIECEWISE，
+        统一 decode 批走 FULL；但 `execute_model()` 对**纯 prefill 批**显式回退 NONE
+        （`is_prefilling_np.all()`）。这不是 PIECEWISE 的语义限制，而是本仓库的捕获时机
+        取舍：PIECEWISE 惰性捕获，若在启动后的第一轮纯 prefill 就录 breakable 段，会和已录
+        的 FULL 图/本机 pinned 分配器互相干扰；因此把首次 capture 推迟到真正的混合批。
+        纯 prefill 的 eager 路径正确性不变，只是没有图；要放开需补纯 prefill 捕获与测试。
         """
         from ...attention.backends.torch_sdpa import TorchAttentionBackend
         from ...config import CUDAGraphMode
