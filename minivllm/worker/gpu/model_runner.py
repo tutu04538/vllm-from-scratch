@@ -300,14 +300,19 @@ class GPUModelRunner:
         return self.kv_caches
 
     def _target_varlen_cudagraphs_enabled(self) -> bool:
-        """本仓库 V2 的 target 是否会捕获 varlen decode CUDA graph（79 关）。
+        """是否要求上游那条“adaptive 必须 ALWAYS”的硬门（79 关）。
 
-        **当前恒 False**：V2 的 target 图尚未实现（74 关只做了提议者侧的两张图，target
-        eager）。所以自适应验证裁剪后的变长批走 `TorchAttentionImpl._forward_generic()`，
-        不需要 `AttentionCGSupport.ALWAYS`；只需要后端不依赖 CPU query 长度做规划。
+        **当前恒 False，但不是“target 不捕获 varlen”**：Phase 2 起 target 在 adaptive
+        开启时会捕获 varlen decode FULL 图（`varlen_decode=True`），裁剪后的 1..1+K 行批
+        走 `TorchAttentionImpl._forward_varlen_padded()`。
 
-        等 target varlen 图接上时，这个方法必须改成真实判定（并保留上游的 ALWAYS 检查），
-        否则图里会按捕获时的 query 长度切行——那是"不报错、结果错"的典型来源。
+        这里仍返回 False 是为了**关闭上游的 ALWAYS 硬门**：Torch 后端能力档位仍是
+        `UNIFORM_BATCH`，target varlen 图是只服务 decode 的窄路径，不满足上游“任意批都能
+        进图”的 ALWAYS 语义。`maybe_create_adaptive_verification_manager` 因此只检查
+        “后端不依赖 CPU query 长度做规划”，不要求 ALWAYS。
+
+        要严格对齐上游：需要后端声明 ALWAYS（FlashAttention/Triton 那类）并把这里改成
+        True；否则不能声称完整支持。
         """
         return False
 
@@ -343,7 +348,8 @@ class GPUModelRunner:
             query_start_loc=self.input_buffers.query_start_loc,
             num_bonus_tokens=self.num_new_sampled_tokens_per_step,
             max_total_logits=get_max_chunk_logits(self.vocab_size),
-            # 上游默认要求 target 捕获 varlen 图；本仓库 target 图未接，见上面的方法。
+            # 本仓库 target 已捕获 varlen decode 图，但后端仍是 UNIFORM_BATCH；
+            # 这里关闭上游的 ALWAYS 硬门（见上一个方法的说明）。
             require_varlen_cudagraph=self._target_varlen_cudagraphs_enabled(),
         )
 
@@ -976,8 +982,9 @@ class GPUModelRunner:
         # 74 关：这一批是不是"统一 decode"（每条请求都恰好 `1 + K` 行、且没有请求在 prefill）。
         # 是的话它的形状是固定的、可以被图重放——草稿 prefill 图正是吃这个形状；不是就回退
         # eager（`uniform_query_len=None` → 注意力走逐请求路径）。
-        # 79 关：自适应验证裁剪后每请求行数可以不同，target 走 eager 变长路径，所以显式
-        # 不声明统一形状（本仓库 target 图未接；见 `_target_varlen_cudagraphs_enabled()`）。
+        # 79 关：自适应验证裁剪后每请求行数可以不同。Phase 2 起 target 有 varlen FULL 图：
+        # dispatch 会给出 `max_query_len=1+K`、`uniform_token_count=None` 的描述符；
+        # 这里把描述符的上界写进 metadata，注意力走 `_forward_varlen_padded()`。
         graph_max_query_len = None
         if batch_desc is not None and batch_desc.cg_mode == CUDAGraphMode.FULL:
             # Target FULL 图的形状由描述符定死；注意力必须走固定形状路径，不能用

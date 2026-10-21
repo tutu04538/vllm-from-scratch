@@ -29,10 +29,12 @@
 ## 与上游的差异（详见 `docs/step79_alignment.md` §5）
 
 - 本仓库没有 TP 进程组，`set_cost_curves()` 的广播退化为单进程直通。
-- V2 的 **target CUDA graph** 尚未实现（74 关边界），所以 runner 只在 target 真会捕获
-  varlen 图时才要求 `AttentionCGSupport.ALWAYS`；默认参数仍与上游一致。
-- 成本表 profiling 由 runner 的 eager dummy step 生成；`set_initial_cost_curves()` 在
-  "没有任何 full-cudagraph 样本"时回退到全部样本，否则 draft 曲线会为空。
+- Phase 2 起 V2 target 会捕获 **varlen decode CUDA graph**，但 Torch 后端能力仍是
+  `UNIFORM_BATCH`；runner 传 `require_varlen_cudagraph=False` 关闭上游的 ALWAYS 硬门。
+  这是“窄 varlen 图”而非上游 ALWAYS 语义，差异见 `docs/step74_target_graph_varlen.md`。
+- 成本表 profiling 由 runner 的 dummy step 生成；命中 target FULL 图的尺寸标
+  `full_cudagraph=True`，尾部 eager 尺寸标 False。`set_initial_cost_curves()` 有 full
+  样本时只拿 full 样本给 draft 曲线定价，没有 full 样本时才回退全部样本。
 """
 
 from collections import defaultdict
@@ -238,9 +240,9 @@ class AdaptiveVerificationManager:
         """把 profiling 样本变成两条中位数曲线（上游同名方法）。
 
         上游只允许 full-cudagraph 样本给 draft 曲线定价（eager target 的 CPU 启动间隙会
-        把 drafter 的 event 时间撑大）。本仓库 target 图尚未实现，profiling 全是 eager
-        样本；若严格过滤会得到空曲线，所以这里**在没有 full 样本时回退到全部样本**。
-        有 full 样本时仍严格按上游过滤。
+        把 drafter 的 event 时间撑大）。Phase 2 起 target 有 varlen FULL 图，profiling 会
+        在捕获档位内产生 full 样本；本仓库仍保留“没有 full 样本时回退全部样本”的兜底，
+        但正常路径应当走 full 样本。
         """
         full_samples = [s for s in samples if s.full_cudagraph]
         draft_samples = full_samples or samples
@@ -498,9 +500,10 @@ def maybe_create_adaptive_verification_manager(
     """按上游的两条能力检查决定是否建 manager（上游同名函数）。
 
     `require_varlen_cudagraph` 是本仓库的唯一扩展：默认 True，语义与上游完全一致
-    （要求 `AttentionCGSupport.ALWAYS`）。V2 的 target 图尚未实现时，runner 传 False，
-    因为这条执行路径不会捕获 target varlen 图——但**语义**能力
-    （`supports_device_cpu_query_lens_mismatch`）仍然必须满足。
+    （要求 `AttentionCGSupport.ALWAYS`）。Phase 2 起 target 会捕获 varlen decode 图，但
+    Torch 后端仍是 `UNIFORM_BATCH`，runner 传 False 关闭这条 ALWAYS 硬门；此时仍要求
+    **语义**能力（`supports_device_cpu_query_lens_mismatch`）。这是窄 varlen 图的差异，
+    不是“target 完全没接图”。
     """
     if not enable_adaptive_verification:
         return None
