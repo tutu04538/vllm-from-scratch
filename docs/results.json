@@ -26,7 +26,8 @@
   "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））",
   "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)",
   "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)",
-  "step74_target_graph": "implemented + self-verified（Phase 1：V2 target FULL_DECODE_ONLY；统一 decode 满图 + padding + 静态 hidden/aux；混合批 eager；adaptive 仍 eager；5 项 target 图 + 950 回归）"
+  "step74_target_graph": "implemented + self-verified（Phase 1：V2 target FULL_DECODE_ONLY；统一 decode 满图 + padding + 静态 hidden/aux；混合批 eager；adaptive 仍 eager；5 项 target 图 + 950 回归）",
+  "step74_target_graph_varlen": "implemented + self-verified（Phase 2：varlen decode target 图；max_query_len 图键、图安全 varlen attention、adaptive profiling 用 captured_token_counts；955 回归）"
  },
  "step58": {
   "results": {
@@ -4819,6 +4820,87 @@
     "path": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa') / tiny_dspark_dir(...)",
     "dtype": "float32",
     "note": "Phase 1 target 图与 draft 类型无关；测试用 EAGLE3 与 DSpark tiny"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机无真实 DSpark 权重"
+   }
+  }
+ },
+ "step74_target_graph_varlen": {
+  "results": {
+   "step": "74-target-phase2",
+   "requirement": "学习目标：V2 target CUDA Graph 三阶段（Phase 2 / varlen + adaptive）",
+   "status": "implemented + self-verified（Phase 2：varlen decode target 图 + adaptive 合并）。`BatchExecutionDescriptor.max_query_len=1+K` 取代 uniform_token_count；target manager `varlen_decode=True`，捕获 1..1+K 行的 FULL decode 图；`TorchAttentionImpl._forward_varlen_padded()` 从 GPU query_start_loc/seq_lens 读每请求长度，按 max_query_len 固定形状，无效行写 scratch，无 .item()/Python 请求循环；target 图只服务 decode（has_prefill 时 eager）；adaptive profiling 改用 captured_token_counts()，cudagraph_limit=真实最大捕获 token。",
+   "recorded_at": "2026-10-21T15:45:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "b151f76",
+    "implementation_commit": "见本轮提交（Phase 2：varlen decode target 图）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 152,
+    "sha256": "3a42c962a80f823955251fd00d04bda56080eb24f14694a91e8a0ef94f181f6c",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（参考源码，不 import 生产路径）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_USE_V2_MODEL_RUNNER=1 + VLLM_WSL2_ENABLE_PIN_MEMORY=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74/test_varlen_attention.py -q",
+     "result": "4 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step79/test_adaptive_layout.py::test_adaptive_target_varlen_graph_matches_eager -q",
+     "result": "1 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "955 passed（= 950 + varlen attention 4 + adaptive varlen 1）"
+    },
+    {
+     "cmd": "python benchmarks/check_step74_fused_draft.py",
+     "result": "23/23"
+    },
+    {
+     "cmd": "python benchmarks/check_step79_adaptive.py",
+     "result": "23/23（F1 曲线来自 target 图；cudagraph_limit=8）"
+    }
+   ],
+   "execution_trace": {
+    "varlen attention vs generic": "q_lens=[3,2]、seq_lens=[5,6]，因果/非因果 max|Δ|=0.0；q_len=0 的 padding 请求不影响真实行",
+    "图内无 host sync": "monkeypatch Tensor.item 抛错后 _forward_varlen_padded 仍通过",
+    "adaptive target 图": "真实 5 行（A=3,B=2）命中捕获 8 行 varlen 图；输出与 adaptive eager 逐 token 相同",
+    "图键": "[(FULL,8,2,max_query_len=4),(FULL,4,2,max_query_len=4)]；没有 uniform_token_count",
+    "prefill gate": "has_prefill=True 时不 dispatch target 图；短 prompt 不会误命中 decode 图",
+    "profiling": "captured_token_counts=[4,8]；_cudagraph_limit=8；draft 曲线只取 full 样本",
+    "padding": "真实 5 行补到 8 行；padding 行 slot=-1/seq_lens=0；q_lens 从 query_start_loc 张量读"
+   },
+   "known_gaps": [
+    "Torch 稠密 varlen（gather+mask）不是上游 FlashAttention/Triton varlen kernel；长上下文显存/算力更贵",
+    "capability 仍是 UNIFORM_BATCH，未声明 ALWAYS；mixed prefill/decode target 图仍 eager（Phase 3）",
+    "target 图只服务 decode；prefill 批不命中",
+    "没有真实 DSpark 权重；只验证协议/数值/图，不给加速比"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir(...)",
+    "dtype": "float32"
    },
    "real_weights": {
     "status": "缺",

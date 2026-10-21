@@ -167,8 +167,11 @@ class TorchAttentionImpl:
     def forward(self, layer, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 kv_cache, attn_metadata: AttentionMetadata):
         self.write_kv(key, value, kv_cache, attn_metadata)
-        if attn_metadata.uniform_query_len is not None and self._graph_dispatched():
-            return self._forward_padded(query, kv_cache, attn_metadata)
+        if self._graph_dispatched():
+            if attn_metadata.uniform_query_len is not None:
+                return self._forward_padded(query, kv_cache, attn_metadata)
+            if attn_metadata.max_query_len is not None:
+                return self._forward_varlen_padded(query, kv_cache, attn_metadata)
         return self._forward_generic(query, kv_cache, attn_metadata)
 
     def do_kv_cache_update(self, layer, key: torch.Tensor, value: torch.Tensor,
@@ -289,6 +292,82 @@ class TorchAttentionImpl:
         out = torch.matmul(probs, v)                                  # [B, H, q, D]
         return out.transpose(1, 2).reshape(num_reqs * q_len,
                                            heads * head_size).to(query.dtype)
+
+    def _forward_varlen_padded(self, query: torch.Tensor, kv_cache,
+                               attn_metadata: AttentionMetadata) -> torch.Tensor:
+        """varlen decode 的图安全路径：每请求 1..max_query_len 行。
+
+        与 `_forward_padded` 的区别只有一个：query 行不是 `[B, q_len]` 矩形，而是按
+        `query_start_loc` 打包的扁平行。所有动态量（每请求起止、seq_len）都从 GPU 张量读：
+
+            q_lens = query_start_loc[1:] - query_start_loc[:-1]
+            row(b, i) = query_start_loc[b] + i
+
+        形状只由 Python int（`B`、`max_query_len`、块表宽度）决定，所以能进图。padding
+        请求的 `q_lens=0`，所有 query 行被 mask 成无效；输出写到一个专用 scratch 行，
+        不污染真实行。
+
+        **为什么需要 scatter + scratch**：图里的输出必须按扁平行序写回（`[N, H]`），而
+        计算出来的 `out` 是 `[B, max_q, H]`。无效的 `(b,i)`（i >= q_lens[b]）索引会落到
+        别的请求或尾部 padding 上，所以统一改指 `out_flat[N]` 这个 scratch；它是最后一行，
+        不在 `return out_flat[:N]` 里。
+        """
+        heads, head_size = self.num_heads, self.head_size
+        kv_heads = self.num_kv_heads
+        num_blocks_total, block_size = kv_cache.shape[1], kv_cache.shape[2]
+        flat = kv_cache.view(2, num_blocks_total * block_size, kv_heads, head_size)
+
+        num_reqs = attn_metadata.num_reqs
+        max_q = int(attn_metadata.max_query_len)
+        num_tokens = query.shape[0]
+        num_positions = attn_metadata.block_table.shape[1] * block_size
+        device = query.device
+
+        key_pos = torch.arange(num_positions, device=device)
+        block_slots = attn_metadata.block_table * block_size
+        gather = block_slots[:, key_pos // block_size] + (key_pos % block_size)
+        keys = flat[0][gather]
+        values = flat[1][gather]
+
+        qsl = attn_metadata.query_start_loc[: num_reqs + 1]
+        q_lens = qsl[1:] - qsl[:-1]
+        q_idx = torch.arange(max_q, device=device)
+        row = qsl[:-1, None] + q_idx[None, :]
+        row = row.clamp_max(num_tokens - 1)
+        q = query[row].view(num_reqs, max_q, heads, head_size)
+        q = q.transpose(1, 2).float()
+
+        k = keys.transpose(1, 2).float()
+        v = values.transpose(1, 2).float()
+        if self.num_queries_per_kv > 1:
+            k = k.repeat_interleave(self.num_queries_per_kv, dim=1)
+            v = v.repeat_interleave(self.num_queries_per_kv, dim=1)
+
+        scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        seq_lens = attn_metadata.seq_lens[:num_reqs].view(num_reqs, 1, 1, 1)
+        # 越界 key 要 mask；注意是 `>= seq_lens`（无效），不是 `< seq_lens`。
+        mask = key_pos.view(1, 1, 1, num_positions) >= seq_lens
+        if attn_metadata.causal:
+            q_pos = (attn_metadata.seq_lens[:num_reqs] - q_lens).view(
+                num_reqs, 1, 1) + q_idx.view(1, 1, max_q)
+            mask = mask | (key_pos.view(1, 1, 1, num_positions)
+                           > q_pos.unsqueeze(-1))
+        # q 行本身越界（padding 请求或 i >= q_lens[b]）：整行掩掉。
+        mask = mask | (q_idx.view(1, 1, max_q) >= q_lens.view(num_reqs, 1, 1)).unsqueeze(-1)
+        scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
+        probs = torch.softmax(scores, dim=-1)
+        out = torch.matmul(probs, v).transpose(1, 2).reshape(
+            num_reqs, max_q, heads * head_size).to(query.dtype)
+
+        # 按真实 query_start_loc 写回扁平缓冲；无效行统一写 scratch。
+        valid_rows = (q_idx.view(1, max_q) < q_lens.view(num_reqs, 1)).reshape(-1)
+        idx = row.reshape(-1)
+        idx = torch.where(valid_rows, idx,
+                          torch.full_like(idx, num_tokens))
+        out_flat = torch.empty(
+            num_tokens + 1, heads * head_size, dtype=query.dtype, device=device)
+        out_flat.index_copy_(0, idx, out.reshape(-1, heads * head_size))
+        return out_flat[:num_tokens]
 
     def _gather_kv(self, kv_cache, attn_metadata: AttentionMetadata, req_index: int,
                    seq_len: int):

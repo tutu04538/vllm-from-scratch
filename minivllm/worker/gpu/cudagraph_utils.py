@@ -138,6 +138,7 @@ class CudaGraphManager:
         cudagraph_mode: CUDAGraphMode,
         decode_query_len: int,
         allow_shape_padding: bool = True,
+        varlen_decode: bool = False,
     ):
         self.vllm_config = vllm_config
         self.device = device
@@ -148,6 +149,9 @@ class CudaGraphManager:
         self.decode_query_len = decode_query_len
         #: 见 `_is_compatible` 的长注释：图能不能服务更小的批
         self.allow_shape_padding = allow_shape_padding
+        #: varlen decode 图：每请求 query 行数可在 1..decode_query_len 之间变化，
+        #: 图键用 `max_query_len` 而不是 `uniform_token_count`（上游同名开关）。
+        self.varlen_decode = varlen_decode
 
         #: 键 → 图。**唯一的图缓存**（AGENTS §9：不自造第二套图缓存）
         self.graphs: dict[BatchExecutionDescriptor, torch.cuda.CUDAGraph] = {}
@@ -196,22 +200,39 @@ class CudaGraphManager:
 
         for num_tokens in capture_sizes:
             if separate_decode_routine and decode_mode:
-                rounded_num_tokens = -(-num_tokens // self.decode_query_len) * self.decode_query_len
-                rounded_num_reqs = rounded_num_tokens // self.decode_query_len
-                if not (
-                    rounded_num_tokens > max_decode_tokens
-                    or rounded_num_tokens > max_cg_capture_size
-                    or rounded_num_reqs > self.max_num_reqs
-                ):
-                    desc = BatchExecutionDescriptor(
-                        cg_mode=decode_mode,
-                        num_tokens=rounded_num_tokens,
-                        num_reqs=rounded_num_reqs,
-                        uniform_token_count=self.decode_query_len,
-                    )
-                    if desc not in descs_by_mode[decode_mode]:
-                        descs_by_mode[decode_mode].append(desc)
-                        descs_by_token[rounded_num_tokens].append(desc)
+                if self.varlen_decode:
+                    # varlen decode：一个捕获档位服务任意 1..K+1 行/请求的批。
+                    # 捕获时的 dummy 批按 min(num_tokens, max_num_reqs) 条请求摊，
+                    # metadata 用 max_query_len 限定每请求上界（上游同款）。
+                    if num_tokens <= max_decode_tokens and num_tokens <= max_cg_capture_size:
+                        num_reqs = min(num_tokens, self.max_num_reqs)
+                        desc = BatchExecutionDescriptor(
+                            cg_mode=decode_mode,
+                            num_tokens=num_tokens,
+                            num_reqs=num_reqs,
+                            max_query_len=self.decode_query_len,
+                        )
+                        if desc not in descs_by_mode[decode_mode]:
+                            descs_by_mode[decode_mode].append(desc)
+                            descs_by_token[num_tokens].append(desc)
+                else:
+                    rounded_num_tokens = (-(-num_tokens // self.decode_query_len)
+                                          * self.decode_query_len)
+                    rounded_num_reqs = rounded_num_tokens // self.decode_query_len
+                    if not (
+                        rounded_num_tokens > max_decode_tokens
+                        or rounded_num_tokens > max_cg_capture_size
+                        or rounded_num_reqs > self.max_num_reqs
+                    ):
+                        desc = BatchExecutionDescriptor(
+                            cg_mode=decode_mode,
+                            num_tokens=rounded_num_tokens,
+                            num_reqs=rounded_num_reqs,
+                            uniform_token_count=self.decode_query_len,
+                        )
+                        if desc not in descs_by_mode[decode_mode]:
+                            descs_by_mode[decode_mode].append(desc)
+                            descs_by_token[rounded_num_tokens].append(desc)
 
             if mixed_mode:
                 # PIECEWISE 图重放时不限制请求数（不需要请求补齐），所以是 None。
@@ -395,14 +416,16 @@ class ModelCudaGraphManager(CudaGraphManager):
 
     def __init__(self, vllm_config, device: torch.device,
                  cudagraph_mode: CUDAGraphMode, decode_query_len: int,
-                 allow_shape_padding: bool = True):
+                 allow_shape_padding: bool = True, varlen_decode: bool = False):
         super().__init__(
             vllm_config, device, cudagraph_mode, decode_query_len,
             allow_shape_padding=allow_shape_padding,
+            varlen_decode=varlen_decode,
         )
         self.hidden_states: torch.Tensor | None = None
         self.aux_hidden_states: list[torch.Tensor] = []
         self.use_aux_hidden_state_outputs = False
+        self._max_output_tokens = 0
 
     @torch.inference_mode()
     def capture(
@@ -415,6 +438,11 @@ class ModelCudaGraphManager(CudaGraphManager):
         progress_bar_desc: str = "Capturing target CUDA graphs",
     ) -> None:
         self.use_aux_hidden_state_outputs = use_aux_hidden_state_outputs
+        # 所有图共用一个静态输出缓冲；先按**最大**捕获尺寸分配，避免捕获顺序
+        # 恰好从“小图”开始时第二次捕获写不下。
+        self._max_output_tokens = max(
+            (d.num_tokens for descs in self._capture_descs.values() for d in descs),
+            default=0)
 
         def create_forward_fn(desc: BatchExecutionDescriptor, warmup: bool):
             num_tokens = desc.num_tokens
@@ -423,6 +451,9 @@ class ModelCudaGraphManager(CudaGraphManager):
                 num_reqs, num_tokens, input_buffers, block_tables,
                 build_attn_metadata,
                 full_cudagraph=desc.cg_mode == CUDAGraphMode.FULL,
+                max_query_len=desc.max_query_len,
+                varlen=(desc.max_query_len is not None
+                        and desc.uniform_token_count is None),
             )
             batch_descriptor = BatchDescriptor(
                 num_tokens=num_tokens,
@@ -447,12 +478,16 @@ class ModelCudaGraphManager(CudaGraphManager):
                 else:
                     hidden_states, aux_hidden_states = model_output, None
                 if self.hidden_states is None:
-                    self.hidden_states = torch.empty_like(hidden_states)
+                    self.hidden_states = torch.empty(
+                        self._max_output_tokens, *hidden_states.shape[1:],
+                        dtype=hidden_states.dtype, device=hidden_states.device)
                 self.hidden_states[:num_tokens] = hidden_states
                 if self.use_aux_hidden_state_outputs:
                     if not self.aux_hidden_states:
                         self.aux_hidden_states = [
-                            torch.empty_like(x) for x in aux_hidden_states]
+                            torch.empty(self._max_output_tokens, *x.shape[1:],
+                                        dtype=x.dtype, device=x.device)
+                            for x in aux_hidden_states]
                     for i, aux in enumerate(aux_hidden_states):
                         self.aux_hidden_states[i][:num_tokens] = aux
 
@@ -476,6 +511,8 @@ def prepare_inputs_to_capture(
     block_tables: BlockTables,
     build_attn_metadata: Callable[[InputBatch], dict[str, Any]],
     full_cudagraph: bool,
+    max_query_len: int | None = None,
+    varlen: bool = False,
 ) -> AttentionState:
     """为一次捕获准备"假"输入与注意力元数据（上游同名函数的等价实现）。
 
@@ -492,7 +529,12 @@ def prepare_inputs_to_capture(
     与上游的差异：没有 DCP 的 `dcp_local_seq_lens`、没有 `model_state`（本仓库的注意力元数据
     由 Runner 侧一个回调构造，而不是 ModelState 对象）。
     """
-    input_batch = InputBatch.make_dummy(num_reqs, num_tokens, input_buffers)
+    input_batch = InputBatch.make_dummy(
+        num_reqs, num_tokens, input_buffers, max_query_len=max_query_len)
+    if varlen:
+        # varlen 图不能走 `_forward_padded`（矩形 uniform 路径）；必须让 metadata
+        # 明确标记“使用 max_query_len 的逐请求路径”。
+        input_batch.uniform_query_len = None
     block_tables.get_dummy_block_tables(num_reqs)
     block_tables.get_dummy_slot_mappings(num_tokens)
     attn_metadata = build_attn_metadata(input_batch)

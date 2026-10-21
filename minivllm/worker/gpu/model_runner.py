@@ -383,13 +383,16 @@ class GPUModelRunner:
         # PIECEWISE / varlen decode 分别属 Phase 3 / Phase 2。自适应验证在 Phase 1
         # 保持 eager（target 图与 adaptive 的 varlen 图在 Phase 2 才合并）。
         self.target_cudagraph_manager = None
-        if mode.has_full_cudagraphs() and not getattr(
-                self.speculator, "enable_adaptive_verification", False):
+        if mode.has_full_cudagraphs():
+            # Phase 2：adaptive 开启时 target 用 varlen decode 图（每请求 1..1+K 行）；
+            # 否则仍是统一 decode 图（每请求 1+K 行）。
             self.target_cudagraph_manager = ModelCudaGraphManager(
                 self.vllm_config, self.device,
                 CUDAGraphMode.FULL_DECODE_ONLY,
                 self.decode_query_len,
                 allow_shape_padding=True,
+                varlen_decode=bool(getattr(
+                    self.speculator, "enable_adaptive_verification", False)),
             )
 
     def _draft_attention_layer_names(self) -> set[str]:
@@ -553,28 +556,36 @@ class GPUModelRunner:
 
     @torch.inference_mode()
     def _dummy_run_adaptive(self, num_tokens: int, context_len: int = 0) -> None:
-        """跑一个 dummy 前向 + 草稿提议，供 `StepTimingCollector` 记两段 GPU 时间。
+        """跑一个 dummy 前向/图重放 + 草稿提议，供 `StepTimingCollector` 记录两段 GPU 时间。
 
-        输入写的是**常驻缓冲**（`InputBatch.make_dummy`），与图捕获同一条路径；不碰真实
-        请求状态。dummy 的 KV 会写到块表 0 号行指向的块（通常是 0 号留白块或尚未分配的
-        块），profiling 发生在服务开始之前，真实请求的 prefill 会覆盖自己用到的槽位。
+        Phase 2：target 已有 varlen decode 图时，这里走 `run_fullgraph()`；没有对应图的
+        尾部尺寸仍走 eager（上游 `batches_to_profile` 也会为捕获上限之外补尺寸）。
         """
         from ...forward_context import BatchDescriptor, set_forward_context
 
         num_tokens = max(1, min(int(num_tokens), self.max_num_tokens))
-        # 按"每请求 1+K 行"反推请求数，这样 draft 成本曲线才有多个 num_reqs 点；
-        # 若按 min(max_num_reqs, num_tokens) 摊，所有尺寸都会落到 max_num_reqs 一个点。
         num_reqs = max(1, num_tokens // self.decode_query_len)
         num_reqs = min(self.max_num_reqs, num_tokens, num_reqs)
-        # context + 每请求 query 行不能超过 max_model_len；超了就裁 token 数，而不是造
-        # 一个位置越界的假批（位置表越界会在 embedding/RoPE 里直接炸）。
+
+        batch_desc = None
+        if self.target_cudagraph_manager is not None:
+            batch_desc = self.target_cudagraph_manager.dispatch(
+                num_reqs, num_tokens, None,
+                max_query_len=self.decode_query_len)
+            if batch_desc.cg_mode == CUDAGraphMode.FULL:
+                num_tokens = batch_desc.num_tokens
+                num_reqs = batch_desc.num_reqs or num_reqs
+
         context_len = max(0, min(int(context_len), self.max_model_len - 1))
         max_per_req = max(1, self.max_model_len - context_len)
         num_tokens = min(num_tokens, num_reqs * max_per_req)
         num_reqs = min(num_reqs, num_tokens)
         input_batch = InputBatch.make_dummy(
-            num_reqs, num_tokens, self.input_buffers
+            num_reqs, num_tokens, self.input_buffers,
+            max_query_len=(batch_desc.max_query_len if batch_desc is not None else None),
         )
+        if batch_desc is not None and batch_desc.uniform_token_count is None:
+            input_batch.uniform_query_len = None
         if context_len:
             input_batch.seq_lens.add_(context_len)
             input_batch.seq_lens_cpu_upper_bound.add_(context_len)
@@ -584,27 +595,43 @@ class GPUModelRunner:
             self.input_buffers.positions[:num_tokens].copy_(
                 context_len + torch.arange(num_tokens, dtype=torch.int64) - starts
             )
-        block_tables, slot_mappings = self.prepare_attn(input_batch)
-        slot_mappings_by_layer = {"slot_mapping": slot_mappings}
-        attn_metadata = self._build_attn_metadata(
-            input_batch, block_tables, slot_mappings
-        )
 
-        self.step_timing.record_batch(input_batch, False)
+        is_full = (batch_desc is not None
+                   and batch_desc.cg_mode == CUDAGraphMode.FULL)
+        if is_full:
+            # 图重放不读 Python 侧 metadata；但草稿 propose 要一份与 input_batch 同源的
+            # slot_mapping/metadata，所以仍按 dummy 缓冲构造一份。
+            self.block_tables.get_dummy_block_tables(num_reqs)
+            slot_mappings = self.block_tables.get_dummy_slot_mappings(num_tokens)
+            block_tables = tuple(
+                bt[:num_reqs] for bt in self.block_tables.input_block_tables)
+            attn_metadata = self._build_attn_metadata(
+                input_batch, block_tables, slot_mappings)
+        else:
+            block_tables, slot_mappings = self.prepare_attn(input_batch)
+            attn_metadata = self._build_attn_metadata(
+                input_batch, block_tables, slot_mappings)
+        slot_mappings_by_layer = {"slot_mapping": slot_mappings}
+
+        self.step_timing.record_batch(input_batch, is_full)
         self.step_timing.forward_start()
-        with set_forward_context(
-            attn_metadata,
-            num_tokens=input_batch.num_tokens_after_padding,
-            cudagraph_runtime_mode=CUDAGraphMode.NONE,
-            batch_descriptor=BatchDescriptor(
-                num_tokens=input_batch.num_tokens_after_padding
-            ),
-            slot_mapping=slot_mappings_by_layer,
-        ):
-            model_output = self.model(
-                input_ids=input_batch.input_ids,
-                positions=input_batch.positions,
-            )
+        if is_full:
+            assert self.target_cudagraph_manager is not None
+            model_output = self.target_cudagraph_manager.run_fullgraph(batch_desc)
+        else:
+            with set_forward_context(
+                attn_metadata,
+                num_tokens=input_batch.num_tokens_after_padding,
+                cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                batch_descriptor=BatchDescriptor(
+                    num_tokens=input_batch.num_tokens_after_padding
+                ),
+                slot_mapping=slot_mappings_by_layer,
+            ):
+                model_output = self.model(
+                    input_ids=input_batch.input_ids,
+                    positions=input_batch.positions,
+                )
         self.step_timing.forward_end()
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = model_output
@@ -647,15 +674,16 @@ class GPUModelRunner:
                 "num_samples": 0,
                 "cached": True,
             }
-        sizes = self._adaptive_profile_sizes()
+        target_manager = self.target_cudagraph_manager
+        captured = (target_manager.captured_token_counts()
+                    if target_manager is not None else [])
+        sizes = captured or self._adaptive_profile_sizes()
         with self.step_timing.collect() as timings:
             for batch in manager.batches_to_profile(sizes):
                 self._dummy_run_adaptive(**batch)
-        # 本仓库 V2 的 **target** 图尚未实现：target 前向是 eager，没有"补齐到捕获档位"
-        # 的阶梯成本。`batches_to_profile()` 暂用 profiling 网格的最后一个值当捕获上限；
-        # 这里显式改成 0，避免把不存在的 pad bucket 写进成本表。
-        # （target varlen 图接上后，应改回真实的 `captured_token_counts()`。）
-        manager._cudagraph_limit = 0
+        # Phase 2：target 有 FULL 图时，捕获上限内的成本是图阶梯；上限外仍 eager。
+        # 没有 target 图（例如只有草稿图）时才把 limit 置 0。
+        manager._cudagraph_limit = max(captured) if captured else 0
         manager.set_initial_cost_curves(timings)
         return {
             "cost_curves": manager.cost_curves,
@@ -949,10 +977,13 @@ class GPUModelRunner:
         # eager（`uniform_query_len=None` → 注意力走逐请求路径）。
         # 79 关：自适应验证裁剪后每请求行数可以不同，target 走 eager 变长路径，所以显式
         # 不声明统一形状（本仓库 target 图未接；见 `_target_varlen_cudagraphs_enabled()`）。
+        graph_max_query_len = None
         if batch_desc is not None and batch_desc.cg_mode == CUDAGraphMode.FULL:
-            # Target FULL 图的形状由描述符定死；注意力必须走 `_forward_padded` 那条
-            # 固定形状路径，不能用“按真实批重新推”的值。
+            # Target FULL 图的形状由描述符定死；注意力必须走固定形状路径，不能用
+            # “按真实批重新推”的值。uniform 图用 uniform_query_len；varlen 图用 max_query_len。
             uniform_query_len = batch_desc.uniform_token_count
+            graph_max_query_len = (
+                batch_desc.max_query_len or batch_desc.uniform_token_count)
         else:
             uniform_query_len = (
                 None
@@ -995,6 +1026,7 @@ class GPUModelRunner:
             cu_num_logits_np=cu_num_logits_np,
             has_structured_output_reqs=scheduler_output.has_structured_output_requests,
             cu_num_logits_np_exact=cu_num_logits_np_exact,
+            max_query_len=graph_max_query_len,
             uniform_query_len=uniform_query_len,
         )
 
@@ -1046,6 +1078,7 @@ class GPUModelRunner:
             slot_mapping=slot_mappings[0][: input_batch.num_tokens_after_padding],
             num_reqs=input_batch.num_reqs_after_padding,
             uniform_query_len=input_batch.uniform_query_len,
+            max_query_len=input_batch.max_query_len,
         )
         return {name: metadata for name in self._attn_metadata_layer_names}
 
@@ -1116,7 +1149,10 @@ class GPUModelRunner:
             batch_req_state.has_prefill,
         )
         batch_desc = None
-        if self.target_cudagraph_manager is not None:
+        if (self.target_cudagraph_manager is not None
+                and not batch_req_state.has_prefill):
+            # 图只服务 decode 批：prefill 的 query 长度可能恰好 <= 1+K（例如短 prompt），
+            # 但它的 metadata/因果路径是另一回事，不能命中 varlen decode 图。
             batch_desc = self.target_cudagraph_manager.dispatch(
                 num_reqs,
                 batch_req_state.num_tokens,

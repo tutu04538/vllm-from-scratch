@@ -308,3 +308,33 @@ def test_adaptive_trimming_works_with_block_and_synthetic_verification(method, k
     rows = [r for r in rec.rows if r["num_draft_tokens"] == 3]
     assert rows
     assert all(r["cu_num_logits"][-1] == 3 + r["num_reqs"] for r in rows)
+
+
+@requires_cuda
+def test_adaptive_target_varlen_graph_matches_eager():
+    """Phase 2：自适应裁剪后的 1..1+K 行 decode 批命中 target varlen FULL 图。"""
+    prompts = [("a", [1, 2, 3, 4]), ("b", [5, 6, 7])]
+    eager_engine, _, eager_runner = make_adaptive_engine(
+        adaptive=True, mode="none")
+    _set_intermediate_budget(eager_runner)
+    eager_out = run_adaptive(eager_engine, prompts, max_tokens=4)
+
+    graph_engine, _, graph_runner = make_adaptive_engine(
+        adaptive=True, mode="full", capture_sizes=(4, 8), max_num_seqs=2)
+    _set_intermediate_budget(graph_runner)
+    rec = RecordBatch(graph_runner)
+    try:
+        graph_out = run_adaptive(graph_engine, prompts, max_tokens=4)
+    finally:
+        rec.stop()
+    manager = graph_runner.target_cudagraph_manager
+    assert manager is not None and manager.varlen_decode is True
+    assert graph_out == eager_out
+    full = [s for s in manager.selections if s["mode"] == "FULL"]
+    assert full
+    assert all(s["desc_num_tokens"] >= s["num_tokens"] for s in full)
+    assert all(s["desc_num_reqs"] == 2 for s in full)
+    assert graph_runner.adaptive_verification._cudagraph_limit == 8
+    # 真实 5 行命中捕获 8 行；图内 varlen 不按补齐后的 4 行/请求算。
+    assert any(r["num_reqs"] == 2 and r["num_tokens"] == 5
+               for r in rec.rows if r["num_draft_tokens"] == 3)

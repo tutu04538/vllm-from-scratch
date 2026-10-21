@@ -549,7 +549,7 @@ fused（融合）     元数据只建一次（step=1），整个 K−1 步的循
   传入 `derive_mtp_draft_config(target_config)` 派生好的 draft 配置（派生时机属 80 关）。
 
 ```bash
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step74 -q              # 50 项（含 target 图 5 项）
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step74 -q              # 54 项（含 target 图 5 + varlen attention 4）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step74_fused_draft.py # 23 项 + profiler 段
 # V2 + 图跑一段生成（73 关要的 --enforce-eager 现在可以去掉）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
@@ -561,9 +561,11 @@ VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
 K 列草稿全写出来（多步**真的在图里**）；EAGLE3 与原生 MTP 下 `V2 图 == V2 eager == V1`。
 ⚠️ 74 关原始范围只做**提议者侧**的图；后续 Phase 1 已补上 V2 target 的
 **`FULL_DECODE_ONLY`**（统一 decode 的 target 满图 + 运行时 padding + 静态 hidden/aux 输出），
-见 [`docs/step74_target_graph.md`](../docs/step74_target_graph.md)。仍未接：varlen decode 图
-（自适应验证，Phase 2）、PIECEWISE / 混合 prefill+decode 图（Phase 3）。所以：
-target 图只命中统一 decode 批，混合批仍走 eager；草稿 prefill 图仍要求精确命中形状。
+见 [`docs/step74_target_graph.md`](../docs/step74_target_graph.md)。Phase 2 又补上
+**varlen decode 图 + 图安全 varlen 注意力**（自适应裁剪后的 1..1+K 行；target 只服务 decode，
+mixed/prefill 回退 eager），见 [`docs/step74_target_graph_varlen.md`](../docs/step74_target_graph_varlen.md)。
+仍未接：PIECEWISE / 混合 prefill+decode 图（Phase 3）；后端 capability 仍是 `UNIFORM_BATCH`，
+不声明 ALWAYS。草稿 prefill 图仍要求精确命中形状。
 
 ## 第七十五关：块验证 / synthetic 接受率 / 分块 logits
 
@@ -779,7 +781,7 @@ target 只验证这些前缀；CPU compact_batch 只保留“均分上界”
 
 ```bash
 python benchmarks/check_step79_adaptive.py        # 23 项
-python -m pytest tests/step79 -q                  # 44 项
+python -m pytest tests/step79 -q                  # 45 项
 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 \
     python benchmarks/check_step79_adaptive.py    # 真实 profiling + off/on
 ```
@@ -796,9 +798,9 @@ EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未
 V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
-+ 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）；多模块 MTP（80 关）、
-target 的 varlen decode 图（Phase 2）与 PIECEWISE（Phase 3）还没接（各自报错并写明归属关卡）；
-adaptive verification 已在 79 关接上（target varlen 图未接，见该节边界）。
++ 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）；
+多模块 MTP（80 关）与 target 的 PIECEWISE（Phase 3）还没接；adaptive verification 已在 79 关接上，
+Phase 2 起 target varlen 图与 adaptive 共存（混合批仍 eager）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -858,12 +860,12 @@ python -m pytest tests/step68 -q                     # 67 项：step68（logprob
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
 python -m pytest tests/step73 -q                     # 66 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
-python -m pytest tests/step74 -q                     # 50 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约；target FULL_DECODE_ONLY）
+python -m pytest tests/step74 -q                     # 54 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约；target FULL_DECODE_ONLY；varlen attention）
 python -m pytest tests/step75 -q                     # 51 项：step75（块验证三方对照/分布统计；synthetic 配置与经验率；分块与陈旧 offsets 保护）
 python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 布局/上下文 KV/冻结参考/端到端与图）
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
-python -m pytest tests/step79 -q                     # 44 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局）
+python -m pytest tests/step79 -q                     # 45 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + target varlen 图）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

@@ -13,6 +13,7 @@ V2 的 **target** 现在也会捕获并重放 CUDA Graph，但范围严格限定
 FULL_DECODE_ONLY：每请求恰好 1+K 行的统一 decode 批 → FULL 图
 混合 prefill/decode 批 → 回退 eager
 自适应验证（varlen decode）→ Phase 1 不接，target 图关闭，仍走 eager
+（Phase 2 已接上 varlen decode 图，见 `docs/step74_target_graph_varlen.md`）
 ```
 
 这样做的好处是先把最容易验证的一档跑通：同一套 target 模型、同一套 KV/块表、同一套
@@ -149,14 +150,14 @@ check_step79_adaptive.py                      → 23/23
 |---|---|---|---|
 | D-74T-1 | target manager 固定用 `FULL_DECODE_ONLY`，即使配置是 `FULL_AND_PIECEWISE` | Phase 1 不做 PIECEWISE；FULL 那一半独立可用 | 混合批回退 eager；Phase 3 再换回完整模式 |
 | D-74T-2 | 没有 `ModelState` 抽象；用一个回调 `_build_target_capture_attn_metadata()` | 本仓库只有 Qwen3 一个基座、一个 KV group | 行为等价，少一层模型适配 |
-| D-74T-3 | target 图与自适应验证**互斥**：adaptive=True 时 target manager 为 None | 自适应需要 varlen decode 图，属 Phase 2 | Phase 1 的 adaptive 仍走 eager；不会假装支持 |
+| D-74T-3 | Phase 1 的 target 图与自适应验证**互斥**：adaptive=True 时 target manager 为 None | 自适应需要 varlen decode 图，属 Phase 2 | **Phase 2 已接上**（varlen decode 图 + 图安全 varlen 注意力）；本行保留 Phase 1 当时状态 |
 | D-74T-4 | 混合批没有 target PIECEWISE，dispatch 返回 NONE | 本仓库 V2 尚未接分段图 | 混合批性能不变（eager），正确性不变 |
 | D-74T-5 | 没有 LoRA/DP/PP/offloader/多模态的图分支 | 本仓库没有这些能力 | 不生成对应图键；以后加能力时按上游扩展 |
 | D-74T-6 | 静态输出只有 hidden/aux，没有 PP 的 intermediate tensors | 本仓库单卡、无 PP | 单卡路径完整 |
 
 ## 6. Phase 1 明确没做
 
-- varlen decode 图（自适应验证）→ Phase 2；
+- varlen decode 图（自适应验证）→ **Phase 2 已实现**，见 `docs/step74_target_graph_varlen.md`；
 - PIECEWISE / 混合 prefill+decode 图 → Phase 3；
 - `AttentionCGSupport.ALWAYS`：Torch 后端仍是 `UNIFORM_BATCH`；
 - 目标图的成本 profiling：Phase 1 的 target 图不参与 adaptive，仍用 eager 成本表；
