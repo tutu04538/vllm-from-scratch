@@ -1,10 +1,19 @@
-"""Attention 后端：模型只表达"这里做 attention"，块表怎么排布由后端决定。
-
-对应 vLLM `v1/attention/backends/`。本关只有一个教学后端（逐请求 gather + Torch 数学）。
-"""
+"""Attention 后端注册：默认 Torch SDPA；可选 Triton paged。"""
 
 from .torch_sdpa import (TorchAttentionBackend, TorchAttentionImpl,
                          TorchAttentionMetadataBuilder)
 
+
+def get_attention_backend(name: str):
+    name = str(name).lower()
+    if name in ("torch", "torch_sdpa"):
+        return TorchAttentionBackend
+    if name == "triton":
+        from .triton_paged import TritonPagedAttentionBackend
+
+        return TritonPagedAttentionBackend
+    raise ValueError(f"未知 attention_backend={name!r}（只支持 torch / triton）")
+
+
 __all__ = ["TorchAttentionBackend", "TorchAttentionImpl",
-           "TorchAttentionMetadataBuilder"]
+           "TorchAttentionMetadataBuilder", "get_attention_backend"]

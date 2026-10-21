@@ -55,7 +55,7 @@ DEFAULT_SIZES = [1, 2, 3, 4, 8]
 def make_config(*, spec_k: int = 3, mode: str = "full_decode_only",
                 capture_sizes=DEFAULT_SIZES, budget: int = 64, blocks: int = 64,
                 max_num_seqs: int = 3, max_model_len: int = 64,
-                draft_sample: str = "greedy"):
+                draft_sample: str = "greedy", attention_backend: str = "torch"):
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     spec = None
     if spec_k is not None:
@@ -74,6 +74,7 @@ def make_config(*, spec_k: int = 3, mode: str = "full_decode_only",
         compilation_config=CompilationConfig(
             cudagraph_mode=mode,
             cudagraph_capture_sizes=None if capture_sizes is None else list(capture_sizes)),
+        attention_backend=attention_backend,
     )
 
 

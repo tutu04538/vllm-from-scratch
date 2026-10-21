@@ -1718,12 +1718,28 @@ class VllmConfig:
     # 69 关：编译/图配置（上游 `VllmConfig.compilation_config`）。默认值本身是 None 语义：
     # `cudagraph_mode=None` 表示"让引擎按能力解析"，解析结果写回这个可变对象。
     compilation_config: CompilationConfig = field(default_factory=CompilationConfig)
+    #: 注意力后端：`torch`（默认，Torch SDPA 参考实现）或 `triton`
+    #: （Triton paged attention；声明 AttentionCGSupport.ALWAYS）。
+    attention_backend: str = "torch"
 
     def __post_init__(self):
+        self._validate_attention_backend()
         self._resolve_cudagraph_config()
         # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
         # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
         self.validate_v2_model_runner()
+
+    def _validate_attention_backend(self) -> None:
+        name = str(self.attention_backend).lower()
+        if name not in ("torch", "triton"):
+            raise ValueError(
+                f"attention_backend 只支持 'torch' / 'triton'，收到 "
+                f"{self.attention_backend!r}")
+        # VllmConfig 是 frozen dataclass；归一化交给调用方读取时做，不在这里赋值。
+        if name == "triton" and not self.use_v2_model_runner:
+            raise NotImplementedError(
+                "Triton paged attention 后端目前只接在 V2 Model Runner 上；"
+                "请设 VLLM_USE_V2_MODEL_RUNNER=1")
 
     def _resolve_cudagraph_config(self) -> None:
         """把 `cudagraph_mode=None` 解析成本仓库**真的支持**的模式，并算出图档位表。

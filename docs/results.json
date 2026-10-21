@@ -28,7 +28,8 @@
   "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)",
   "step74_target_graph": "implemented + self-verified（Phase 1：V2 target FULL_DECODE_ONLY；统一 decode 满图 + padding + 静态 hidden/aux；混合批 eager；adaptive 仍 eager；5 项 target 图 + 950 回归）",
   "step74_target_graph_varlen": "implemented + self-verified（Phase 2：varlen decode target 图；max_query_len 图键、图安全 varlen attention、adaptive profiling 用 captured_token_counts；955 回归）",
-  "step74_target_graph_breakable": "implemented + self-verified（Phase 3：breakable PIECEWISE；混合 prefill/decode 批与 eager 逐 token 相同；956 回归）"
+  "step74_target_graph_breakable": "implemented + self-verified（Phase 3：breakable PIECEWISE；混合 prefill/decode 批与 eager 逐 token 相同；956 回归）",
+  "step74_triton_paged_backend": "implemented + self-verified（Triton paged 后端，AttentionCGSupport.ALWAYS；target 混合批 FULL；DSpark adaptive 真 ALWAYS；965 回归）"
  },
  "step58": {
   "results": {
@@ -4921,8 +4922,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 153,
-    "sha256": "2eb04095398b4a73d495c057828faec29e5522cb862e857a666f6a8043ed2a5c",
+    "python_files": 154,
+    "sha256": "8ed7d5ef6afecbee0d9d1e8762f44334441e868d5ccc15d18a13479221461b55",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4984,6 +4985,84 @@
    },
    "draft": {
     "path": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa')",
+    "dtype": "float32"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机无真实 DSpark 权重"
+   }
+  }
+ },
+ "step74_triton_paged_backend": {
+  "results": {
+   "step": "74-triton-paged",
+   "requirement": "学习目标：给 V2 target 加 FlashAttention 风格后端，兑现 AttentionCGSupport.ALWAYS",
+   "status": "implemented + self-verified。本机没有 flash_attn，恢复本仓库 step22/37 的 Triton paged attention kernel，新增 `TritonPagedAttentionBackend`（builder ALWAYS）；配置 `attention_backend='triton'` 后 mode='full' 不再降级，target 捕获混合 prefill/decode FULL 图；DSpark adaptive 走 require_varlen_cudagraph=True 的 ALWAYS 检查。默认后端仍是 torch。",
+   "recorded_at": "2026-10-21T22:30:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "75955e6",
+    "implementation_commit": "见本轮提交（Triton paged 后端 + ALWAYS）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 154,
+    "sha256": "8ed7d5ef6afecbee0d9d1e8762f44334441e868d5ccc15d18a13479221461b55",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（参考源码，不 import 生产路径）",
+    "flash_attn": "未安装",
+    "flashinfer": "0.6.16",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74/test_triton_paged.py -q",
+     "result": "6 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step74/test_triton_backend_e2e.py -q",
+     "result": "2 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step79/test_adaptive_layout.py::test_adaptive_triton_backend_is_really_always -q",
+     "result": "1 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "965 passed"
+    }
+   ],
+   "execution_trace": {
+    "kernel 对照": "Triton vs Torch generic：causal/非 causal、fp16/fp32，rtol=1e-3；padding 请求/尾部行有限",
+    "ALWAYS 行为": "attention_backend=triton + mode=full → cudagraph_mode=FULL（不降级）；target graphs 含混合批 FULL",
+    "混合批": "A decode 1 行 + B prefill 4 行 → DESC FULL(num_tokens=8,num_reqs=2,uniform=None,max=None)；与 Torch eager 逐 token 相同",
+    "投机": "EAGLE3 K=3 target FULL 图与 eager 相同",
+    "adaptive": "DSpark adaptive + Triton：_target_varlen_cudagraphs_enabled()=True；_cudagraph_limit=8；输出与 eager 相同",
+    "默认": "attention_backend 默认 torch；现有 965 回归全绿"
+   },
+   "known_gaps": [
+    "不是 flash-attn 包；是本地历史逐行 Triton paged kernel，性能不等价",
+    "只接 V2 target；草稿层仍是 Torch 参考后端",
+    "不支持量化 KV / sliding window / MLA / tiled kernel",
+    "没有真实 DSpark 权重；只验证 tiny 协议/数值/图，不给加速比",
+    "默认 FULL_AND_PIECEWISE 下混合批仍走 breakable PIECEWISE；FULL 混合批需 mode='full'"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa') / tiny_dspark_dir(...)",
     "dtype": "float32"
    },
    "real_weights": {

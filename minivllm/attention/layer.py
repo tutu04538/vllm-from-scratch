@@ -25,6 +25,20 @@ from ..compilation.breakable_cudagraph import eager_break_during_capture
 from .backends import TorchAttentionImpl
 from .forward_context import get_forward_context
 
+#: 当前模型加载时选用的 attention impl。默认 Torch；V2 Runner 在加载 target 前按
+#: `vllm_config.attention_backend` 设置，加载完 target 后重置为 Torch，避免草稿层
+#: 误用 target 的后端（草稿的 metadata/能力仍是 Torch 那套）。
+_ATTENTION_IMPL_CLS = TorchAttentionImpl
+
+
+def set_attention_impl_cls(cls) -> None:
+    global _ATTENTION_IMPL_CLS
+    _ATTENTION_IMPL_CLS = cls
+
+
+def get_attention_impl_cls():
+    return _ATTENTION_IMPL_CLS
+
 
 class Attention(nn.Module):
     def __init__(self, num_heads: int, head_size: int, scale: float | None = None,
@@ -35,7 +49,8 @@ class Attention(nn.Module):
         self.head_size = head_size
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         self.scale = 1.0 / math.sqrt(head_size) if scale is None else scale
-        self.impl = TorchAttentionImpl(num_heads, head_size, self.scale, self.num_kv_heads)
+        self.impl = _ATTENTION_IMPL_CLS(
+            num_heads, head_size, self.scale, self.num_kv_heads)
         # 由 Runner 在 KV 分配之后绑定：`[2, num_blocks, block_size, kv_heads, head_size]`
         self.kv_cache = None
         #: breakable PIECEWISE 的固定输出缓冲（runner 在 KV 分配后设置）。

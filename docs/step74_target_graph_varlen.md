@@ -154,8 +154,8 @@ check_step79_adaptive.py                          → 23/23
 
 | 编号 | 差异 | 为什么 | 影响 |
 |---|---|---|---|
-| D-74V-1 | varlen 注意力用 Torch 稠密 gather+mask，不是上游 FlashAttention/Triton varlen kernel | 本仓库只有 Torch SDPA 后端；不假装有 Triton 后端 | 语义/图安全性对齐；显存/算力按 `B × max_query_len × P` 物化，长上下文更贵 |
-| D-74V-2 | 后端 capability 仍是 `UNIFORM_BATCH`，不是上游 `ALWAYS`；`maybe_create_adaptive_verification_manager` 仍传 `require_varlen_cudagraph=False` | 本仓库没有 mixed prefill/decode 的图内 full 路径（Phase 3 breakable 才处理混合批） | target varlen decode 图可用，但 `FULL` 混合批仍会被降级/回退；不能宣称 ALWAYS |
+| D-74V-1 | 默认 varlen 注意力用 Torch 稠密 gather+mask，不是上游 FlashAttention/Triton varlen kernel | 默认后端是 Torch SDPA；Phase 3 补充另提供 `attention_backend="triton"` 的 paged kernel（见 `docs/step74_triton_paged_backend.md`） | 默认路径仍是教学参考；显存/算力按 `B × max_query_len × P` 物化，长上下文更贵；Triton 路径显式开启 |
+| D-74V-2 | **默认 Torch 后端** capability 仍是 `UNIFORM_BATCH`，不是上游 `ALWAYS`；`maybe_create_adaptive_verification_manager` 仍传 `require_varlen_cudagraph=False` | 本仓库默认没有 mixed prefill/decode 的图内 full 路径；Phase 3 的 `attention_backend="triton"` 另提供 ALWAYS（见 `docs/step74_triton_paged_backend.md`） | 默认路径的 `FULL` 混合批仍会被降级/回退；Triton 路径才宣称 ALWAYS |
 | D-74V-3 | varlen target 图只服务 **decode** 批 | 短 prefill 的 query_len 可能 <= 1+K，误命中会按 decode 语义算 | 混合/纯 prefill 走 eager；正确性优先 |
 | D-74V-4 | profiling 的静态输出缓冲按**最大捕获 token** 分配 | 捕获顺序从大图开始，但显式按 max 分配更稳 | 所有图共用一块 hidden/aux；重放地址稳定 |
 | D-74V-5 | target 图的 `max_query_len=1+K` 固定；budget 裁剪后的真实 q_lens 只作为张量值 | 捕获时形状固定，重放时长度可变 | 与上游 varlen decode 的语义一致 |

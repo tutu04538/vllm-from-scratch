@@ -43,6 +43,8 @@ from ..gpu.sample.sampler import Sampler
 from ..gpu.spec_decode import init_speculator
 from ..gpu.spec_decode.rejection_sampler import RejectionSampler, get_max_chunk_logits
 from ..gpu.spec_decode.speculator import DraftModelSpeculator
+from ...attention.backend import AttentionCGSupport
+from ...attention.backends import get_attention_backend
 from ..utils import AttentionGroup, get_uniform_decode_token_count
 from ..gpu.spec_decode.utils import DraftTokensHandler
 from ..gpu.states import RequestState
@@ -98,6 +100,11 @@ class GPUModelRunner:
         self.device = device
         self.dtype = self.model_config.dtype
         self.block_size = vllm_config.cache_config.block_size
+        self.attention_backend_name = str(
+            getattr(vllm_config, "attention_backend", "torch")).lower()
+        self.attention_backend = get_attention_backend(self.attention_backend_name)
+        self.attn_builder_cls = self.attention_backend.get_builder_cls()
+        self.attn_metadata_builder = self.attn_builder_cls(self.block_size)
 
         self.vocab_size = self.model_config.get_vocab_size()
         self.max_model_len = self.model_config.max_model_len
@@ -182,9 +189,16 @@ class GPUModelRunner:
     # -------- 模型与缓存 --------
 
     def load_model(self) -> None:
+        from ...attention.backends import TorchAttentionImpl
+        from ...attention.layer import set_attention_impl_cls
         from ...model_loader import get_model
 
-        self.model = get_model(self.model_config, self.device)
+        # 只有 target 用选定的后端；speculator 的草稿层仍是 Torch 参考后端。
+        set_attention_impl_cls(self.attention_backend.get_impl_cls())
+        try:
+            self.model = get_model(self.model_config, self.device)
+        finally:
+            set_attention_impl_cls(TorchAttentionImpl)
 
         if self.speculative_config is not None:
             self.speculator = init_speculator(self.vllm_config, self.device)
@@ -314,7 +328,8 @@ class GPUModelRunner:
         要严格对齐上游：需要后端声明 ALWAYS（FlashAttention/Triton 那类）并把这里改成
         True；否则不能声称完整支持。
         """
-        return False
+        return (self.attn_builder_cls.get_cudagraph_support(self.vllm_config)
+                == AttentionCGSupport.ALWAYS)
 
     def _create_adaptive_verification_manager(self):
         """按实际注意力后端能力建 `AdaptiveVerificationManager`（79 关）。
@@ -323,22 +338,21 @@ class GPUModelRunner:
         一个 KV group，所以这里显式造一个 `AttentionGroup`（后端 + 层名 + 元数据构造器）
         喂给同一个 `maybe_create_adaptive_verification_manager()`。
         """
-        from ...attention.backends.torch_sdpa import TorchAttentionBackend
         from ..gpu.attn_utils import AttentionCGSupportInfo
         from ..gpu.spec_decode.adaptive_verification import (
             maybe_create_adaptive_verification_manager,
         )
 
         enable = bool(getattr(self.speculator, "enable_adaptive_verification", False))
-        builder_cls = TorchAttentionBackend.get_builder_cls()
+        builder_cls = self.attn_builder_cls
         group = AttentionGroup(
-            backend=TorchAttentionBackend,
+            backend=self.attention_backend,
             layer_names=sorted(self._attn_metadata_layer_names),
             metadata_builders=[builder_cls(self.block_size)],
         )
         attn_cg_support = AttentionCGSupportInfo(
             builder_cls.get_cudagraph_support(self.vllm_config),
-            TorchAttentionBackend.get_name(),
+            self.attention_backend.get_name(),
         )
         return maybe_create_adaptive_verification_manager(
             enable_adaptive_verification=enable,
@@ -367,10 +381,9 @@ class GPUModelRunner:
         的 FULL 图/本机 pinned 分配器互相干扰；因此把首次 capture 推迟到真正的混合批。
         纯 prefill 的 eager 路径正确性不变，只是没有图；要放开需补纯 prefill 捕获与测试。
         """
-        from ...attention.backends.torch_sdpa import TorchAttentionBackend
         from ...config import CUDAGraphMode
 
-        builder_cls = TorchAttentionBackend.get_builder_cls()
+        builder_cls = self.attn_builder_cls
         mode = self.vllm_config.compilation_config.cudagraph_mode
         if mode != CUDAGraphMode.NONE and not torch.cuda.is_available():
             # 环境事实：配置写着 cuda 不等于这台机器有 CUDA。真去捕获只会炸，不如在这里退 eager。
@@ -389,10 +402,13 @@ class GPUModelRunner:
         if mode.has_full_cudagraphs():
             # Phase 2：adaptive 开启时 target 用 varlen decode 图（每请求 1..1+K 行）；
             # 否则仍是统一 decode 图（每请求 1+K 行）。
-            target_mode = (
-                CUDAGraphMode.FULL_AND_PIECEWISE
-                if mode.has_piecewise_cudagraphs()
-                else CUDAGraphMode.FULL_DECODE_ONLY)
+            if mode == CUDAGraphMode.FULL:
+                # ALWAYS 后端（Triton paged）：混合批也录整张 FULL 图。
+                target_mode = CUDAGraphMode.FULL
+            elif mode.has_piecewise_cudagraphs():
+                target_mode = CUDAGraphMode.FULL_AND_PIECEWISE
+            else:
+                target_mode = CUDAGraphMode.FULL_DECODE_ONLY
             self.target_cudagraph_manager = ModelCudaGraphManager(
                 self.vllm_config, self.device,
                 target_mode,
@@ -1076,9 +1092,7 @@ class GPUModelRunner:
         它是 `1 + K`，其它批是 None。**它决定图内注意力的形状**——草稿 prefill 图重放时正是
         靠 target 这份元数据里的这个 Python int 走 `_forward_padded()`。
         """
-        from ...attention.backends.torch_sdpa import TorchAttentionBackend
-
-        builder = TorchAttentionBackend.get_builder_cls()(self.block_size)
+        builder = self.attn_metadata_builder
         metadata = builder.build(
             query_start_loc=input_batch.query_start_loc,
             seq_lens=input_batch.seq_lens,
@@ -1167,7 +1181,11 @@ class GPUModelRunner:
             # varlen/uniform FULL 只服务 decode；短 prefill 的 query_len 也可能 <=1+K，
             # 不能误命中。混合批要等 dispatch 给出 PIECEWISE 描述符。
             if (batch_req_state.has_prefill
-                    and batch_desc.cg_mode == CUDAGraphMode.FULL):
+                    and batch_desc.cg_mode == CUDAGraphMode.FULL
+                    and (batch_desc.uniform_token_count is not None
+                         or batch_desc.max_query_len is not None)):
+                # decode FULL 图（uniform / varlen）不能吃 prefill；混合 FULL 图的
+                # 两个字段都为 None，交给 ALWAYS 后端。
                 batch_desc = None
             # 纯 prefill 也暂不碰 breakable：Phase 3 的惰性捕获只在**混合批**
             # （至少一条 prefill + 至少一条 decode）上触发，避免纯 prefill 首次

@@ -338,3 +338,31 @@ def test_adaptive_target_varlen_graph_matches_eager():
     # 真实 5 行命中捕获 8 行；图内 varlen 不按补齐后的 4 行/请求算。
     assert any(r["num_reqs"] == 2 and r["num_tokens"] == 5
                for r in rec.rows if r["num_draft_tokens"] == 3)
+
+
+@requires_cuda
+def test_adaptive_triton_backend_is_really_always():
+    """Triton paged 后端声明 ALWAYS：adaptive 走 target FULL（含混合批），不再 bypass。"""
+    from minivllm.config import CUDAGraphMode
+
+    eager_engine, _, eager_runner = make_adaptive_engine(
+        adaptive=True, mode="none", attention_backend="torch")
+    _set_intermediate_budget(eager_runner)
+    eager_out = run_adaptive(eager_engine, PROMPTS, max_tokens=4)
+
+    graph_engine, _, graph_runner = make_adaptive_engine(
+        adaptive=True, mode="full", capture_sizes=(4, 8), max_num_seqs=2,
+        attention_backend="triton")
+    _set_intermediate_budget(graph_runner)
+    assert graph_runner.attention_backend_name == "triton"
+    assert graph_runner.cudagraph_mode == CUDAGraphMode.FULL
+    assert graph_runner._target_varlen_cudagraphs_enabled() is True
+    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4)
+
+    assert graph_out == eager_out
+    assert graph_runner.adaptive_verification._cudagraph_limit == 8
+    manager = graph_runner.target_cudagraph_manager
+    assert manager is not None and manager.graphs
+    assert manager.varlen_decode is True
+    assert any(s["mode"] == "FULL" and s["replayed"]
+               for s in manager.selections)
