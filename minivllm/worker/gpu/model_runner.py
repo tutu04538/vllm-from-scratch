@@ -279,6 +279,9 @@ class GPUModelRunner:
                 device=self.device,
             )
             layer.kv_cache = cache
+            # Phase 3：breakable PIECEWISE 的 attention 输出必须落在固定地址。
+            layer.set_output_buffer(
+                self.max_num_tokens, dtype=dtype, device=self.device)
             self.kv_caches[layer_name] = cache
         if self.speculator is not None:
             # 草稿层的物理缓存：与 target **同形同块数**（块号在两边代表同一段位置），
@@ -371,24 +374,20 @@ class GPUModelRunner:
             min_support = builder_cls.get_cudagraph_support(self.vllm_config)
             mode = self.vllm_config.resolve_cudagraph_mode_and_sizes(
                 min_support, builder_cls.__name__, self.decode_query_len)
-            if mode.has_piecewise_cudagraphs():
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "V2 的 PIECEWISE 分段图本关未接（V2 不给模型装分段件）：混合 prefill/decode "
-                    "批走 eager，图只在'每请求 %d 行'的统一 decode 批上生效（草稿 prefill 图 + "
-                    "融合多步 decode 图）", self.decode_query_len)
         self.cudagraph_mode = mode
-        # Phase 1：target 只做“统一 decode 的 FULL_DECODE_ONLY”。混合批仍走 eager；
-        # PIECEWISE / varlen decode 分别属 Phase 3 / Phase 2。自适应验证在 Phase 1
-        # 保持 eager（target 图与 adaptive 的 varlen 图在 Phase 2 才合并）。
+        # target 图管理器：Phase 1 FULL_DECODE_ONLY；Phase 2 varlen；Phase 3
+        # FULL_AND_PIECEWISE（混合批走 breakable PIECEWISE）。
         self.target_cudagraph_manager = None
         if mode.has_full_cudagraphs():
             # Phase 2：adaptive 开启时 target 用 varlen decode 图（每请求 1..1+K 行）；
             # 否则仍是统一 decode 图（每请求 1+K 行）。
+            target_mode = (
+                CUDAGraphMode.FULL_AND_PIECEWISE
+                if mode.has_piecewise_cudagraphs()
+                else CUDAGraphMode.FULL_DECODE_ONLY)
             self.target_cudagraph_manager = ModelCudaGraphManager(
                 self.vllm_config, self.device,
-                CUDAGraphMode.FULL_DECODE_ONLY,
+                target_mode,
                 self.decode_query_len,
                 allow_shape_padding=True,
                 varlen_decode=bool(getattr(
@@ -1149,18 +1148,28 @@ class GPUModelRunner:
             batch_req_state.has_prefill,
         )
         batch_desc = None
-        if (self.target_cudagraph_manager is not None
-                and not batch_req_state.has_prefill):
-            # 图只服务 decode 批：prefill 的 query 长度可能恰好 <= 1+K（例如短 prompt），
-            # 但它的 metadata/因果路径是另一回事，不能命中 varlen decode 图。
+        if self.target_cudagraph_manager is not None:
             batch_desc = self.target_cudagraph_manager.dispatch(
                 num_reqs,
                 batch_req_state.num_tokens,
                 uniform_tok_count,
                 max_query_len=max_query_len,
             )
-            self.target_cudagraph_manager.record_selection(
-                batch_desc, num_reqs, batch_req_state.num_tokens)
+            # varlen/uniform FULL 只服务 decode；短 prefill 的 query_len 也可能 <=1+K，
+            # 不能误命中。混合批要等 dispatch 给出 PIECEWISE 描述符。
+            if (batch_req_state.has_prefill
+                    and batch_desc.cg_mode == CUDAGraphMode.FULL):
+                batch_desc = None
+            # 纯 prefill 也暂不碰 breakable：Phase 3 的惰性捕获只在**混合批**
+            # （至少一条 prefill + 至少一条 decode）上触发，避免纯 prefill 首次
+            # 捕获与已录好的 FULL 图共享图池时互相干扰。
+            if (batch_desc is not None
+                    and batch_desc.cg_mode == CUDAGraphMode.PIECEWISE
+                    and batch_req_state.is_prefilling_np.all()):
+                batch_desc = None
+            if batch_desc is not None:
+                self.target_cudagraph_manager.record_selection(
+                    batch_desc, num_reqs, batch_req_state.num_tokens)
         input_batch = self.prepare_inputs(
             scheduler_output, batch_req_state, batch_desc)
         block_tables, slot_mappings = self.prepare_attn(input_batch)
@@ -1169,7 +1178,6 @@ class GPUModelRunner:
             input_batch, block_tables, slot_mappings
         )
 
-        from ...config import CUDAGraphMode
         from ...forward_context import BatchDescriptor, set_forward_context
 
         try:
@@ -1177,6 +1185,33 @@ class GPUModelRunner:
                 # 图重放：输入已经写进常驻缓冲；不能再调 model()，否则会跑 eager。
                 assert self.target_cudagraph_manager is not None
                 model_output = self.target_cudagraph_manager.run_fullgraph(batch_desc)
+            elif (batch_desc is not None
+                  and batch_desc.cg_mode == CUDAGraphMode.PIECEWISE):
+                assert self.target_cudagraph_manager is not None
+                # breakable PIECEWISE：graph 段由 wrapper 重放；attention 在 eager 段里
+                # 读**当前** forward context 的 metadata。
+                pw_context = dict(
+                    attn_metadata=attn_metadata,
+                    num_tokens=input_batch.num_tokens_after_padding,
+                    cudagraph_runtime_mode=CUDAGraphMode.PIECEWISE,
+                    batch_descriptor=BatchDescriptor(
+                        num_tokens=batch_desc.num_tokens,
+                        num_reqs=None,
+                    ),
+                    slot_mapping=slot_mappings_by_layer,
+                )
+                wrapper = self.target_cudagraph_manager.pw_model
+                assert wrapper is not None
+                # 惰性捕获：先按**这一轮真实输入**录段，再重放。捕获点必须在 model()
+                # 之外，不能藏在 wrapper.__call__ 里（否则 capture 的 eager attention
+                # 与后续 replay 共用同一份输入，容易读到半成品）。
+                if wrapper.entries.get(pw_context["batch_descriptor"]) is None:
+                    with set_forward_context(**pw_context):
+                        self.target_cudagraph_manager.capture_pw_graph(
+                            input_batch.input_ids, input_batch.positions)
+                with set_forward_context(**pw_context):
+                    model_output = self.target_cudagraph_manager.run_pw_graph(
+                        input_batch.input_ids, input_batch.positions)
             else:
                 with set_forward_context(
                     attn_metadata,

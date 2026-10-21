@@ -161,9 +161,9 @@ check_step79_adaptive.py                          → 23/23
 | D-74V-5 | target 图的 `max_query_len=1+K` 固定；budget 裁剪后的真实 q_lens 只作为张量值 | 捕获时形状固定，重放时长度可变 | 与上游 varlen decode 的语义一致 |
 | D-74V-6 | `batches_to_profile` 仍会补捕获上限外的 eager 尺寸 | 与上游一致：图外成本用实测而不是纯外推 | 成本表在 limit 以上按实测点插值/外推 |
 
-## 7. 明确没做（Phase 3）
+## 7. 后续 phase 状态（Phase 2 当时明确没做）
 
-- 混合 prefill/decode 的 target 图（PIECEWISE / breakable）；
+- 混合 prefill/decode 的 target 图（PIECEWISE / breakable）→ **Phase 3 已实现**，见 `docs/step74_target_graph_breakable.md`；
 - `AttentionCGSupport.ALWAYS`；
-- `FULL_AND_PIECEWISE` 的 target 混合批；
+- `FULL_AND_PIECEWISE` 的 target 混合批 → **Phase 3 已实现**；
 - 真实 DSpark 权重下的收益/加速比（本机无权重，仅 tiny 协议与数值）。

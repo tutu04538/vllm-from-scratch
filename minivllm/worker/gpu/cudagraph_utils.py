@@ -34,6 +34,7 @@ import torch
 
 from ...compilation import graph_capture
 from ...config import CUDAGraphMode
+from ...compilation.breakable_cudagraph import BreakableCUDAGraphWrapper
 from ...forward_context import BatchDescriptor, set_forward_context
 from .block_table import BlockTables
 from .input_batch import InputBatch, InputBuffers
@@ -426,6 +427,7 @@ class ModelCudaGraphManager(CudaGraphManager):
         self.aux_hidden_states: list[torch.Tensor] = []
         self.use_aux_hidden_state_outputs = False
         self._max_output_tokens = 0
+        self.pw_model: BreakableCUDAGraphWrapper | None = None
 
     @torch.inference_mode()
     def capture(
@@ -438,6 +440,8 @@ class ModelCudaGraphManager(CudaGraphManager):
         progress_bar_desc: str = "Capturing target CUDA graphs",
     ) -> None:
         self.use_aux_hidden_state_outputs = use_aux_hidden_state_outputs
+        # PIECEWISE 用 breakable wrapper 包住整个 target；FULL 仍用普通 model。
+        self.pw_model = BreakableCUDAGraphWrapper(model)
         # 所有图共用一个静态输出缓冲；先按**最大**捕获尺寸分配，避免捕获顺序
         # 恰好从“小图”开始时第二次捕获写不下。
         self._max_output_tokens = max(
@@ -457,7 +461,8 @@ class ModelCudaGraphManager(CudaGraphManager):
             )
             batch_descriptor = BatchDescriptor(
                 num_tokens=num_tokens,
-                num_reqs=num_reqs,
+                # PIECEWISE 的键不约束请求数（上游同款）；FULL 精确到请求数。
+                num_reqs=None if desc.cg_mode == CUDAGraphMode.PIECEWISE else num_reqs,
                 uniform=desc.uniform_token_count is not None,
             )
 
@@ -469,6 +474,8 @@ class ModelCudaGraphManager(CudaGraphManager):
                     batch_descriptor=batch_descriptor,
                     slot_mapping=attn_state.slot_mappings,
                 ):
+                    # PIECEWISE 惰性捕获：capture_model() 只热身输入；第一轮真正的
+                    # 混合批在 execute_model() 里先 capture 再 replay。
                     model_output = model(
                         input_ids=input_buffers.input_ids[:num_tokens],
                         positions=input_buffers.positions[:num_tokens],
@@ -502,6 +509,18 @@ class ModelCudaGraphManager(CudaGraphManager):
         if not self.use_aux_hidden_state_outputs:
             return hidden_states
         return hidden_states, [x[: desc.num_tokens] for x in self.aux_hidden_states]
+
+    def capture_pw_graph(self, input_ids: torch.Tensor, positions: torch.Tensor) -> None:
+        from ...compilation.cuda_graph import graph_capture
+
+        assert self.pw_model is not None
+        with graph_capture(self.device):
+            self.pw_model.capture(input_ids=input_ids, positions=positions)
+
+    def run_pw_graph(self, input_ids: torch.Tensor, positions: torch.Tensor):
+        """PIECEWISE 重放：wrapper 从当前 forward context 取图键，再重放段序列。"""
+        assert self.pw_model is not None, "先 capture()"
+        return self.pw_model(input_ids=input_ids, positions=positions)
 
 
 def prepare_inputs_to_capture(

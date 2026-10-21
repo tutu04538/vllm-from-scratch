@@ -27,7 +27,8 @@
   "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)",
   "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)",
   "step74_target_graph": "implemented + self-verified（Phase 1：V2 target FULL_DECODE_ONLY；统一 decode 满图 + padding + 静态 hidden/aux；混合批 eager；adaptive 仍 eager；5 项 target 图 + 950 回归）",
-  "step74_target_graph_varlen": "implemented + self-verified（Phase 2：varlen decode target 图；max_query_len 图键、图安全 varlen attention、adaptive profiling 用 captured_token_counts；955 回归）"
+  "step74_target_graph_varlen": "implemented + self-verified（Phase 2：varlen decode target 图；max_query_len 图键、图安全 varlen attention、adaptive profiling 用 captured_token_counts；955 回归）",
+  "step74_target_graph_breakable": "implemented + self-verified（Phase 3：breakable PIECEWISE；混合 prefill/decode 批与 eager 逐 token 相同；956 回归）"
  },
  "step58": {
   "results": {
@@ -4900,6 +4901,89 @@
    },
    "draft": {
     "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir(...)",
+    "dtype": "float32"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机无真实 DSpark 权重"
+   }
+  }
+ },
+ "step74_target_graph_breakable": {
+  "results": {
+   "step": "74-target-phase3",
+   "requirement": "学习目标：V2 target CUDA Graph 三阶段（Phase 3 / breakable PIECEWISE）",
+   "status": "implemented + self-verified（Phase 3：breakable PIECEWISE target 混合批）。新增 `BreakableCUDAGraphCapture`（多段 capture + eager 断点 + replay）与 `BreakableCUDAGraphWrapper`（按 (num_tokens, num_reqs=None) 缓存）；`Attention.forward` 加 `eager_break_during_capture` 装饰器并写固定 `_output_buffer`；target manager 改为 FULL_AND_PIECEWISE，混合批 dispatch PIECEWISE；首次执行先 capture 再 replay；纯 prefill 仍 eager。实测混合批与 eager 逐 token 相同。",
+   "recorded_at": "2026-10-21T15:55:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "c308ed3",
+    "implementation_commit": "见本轮提交（Phase 3：breakable PIECEWISE）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 153,
+    "sha256": "1a9741aeb8e3eb878d202e06b68ff67d2a07fb986d1c8345c9909d5c2e526605",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（参考源码，不 import 生产路径）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_USE_V2_MODEL_RUNNER=1 + VLLM_WSL2_ENABLE_PIN_MEMORY=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74/test_target_graph.py -q",
+     "result": "6 passed（含 breakable 混合批）"
+    },
+    {
+     "cmd": "python -m pytest tests/step79 -q",
+     "result": "45 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "956 passed（= 955 + breakable 混合批 1）"
+    },
+    {
+     "cmd": "python benchmarks/check_step74_fused_draft.py",
+     "result": "23/23（计时项有抖动，重跑通过）"
+    },
+    {
+     "cmd": "python benchmarks/check_step79_adaptive.py",
+     "result": "23/23"
+    }
+   ],
+   "execution_trace": {
+    "capture 段": "BreakableCUDAGraphCapture 多段：graph 段 → attention eager → graph 段；attention 输出写固定缓冲",
+    "断点": "eager_break_during_capture 只在 Breakable 活跃且 runtime_mode != FULL 时触发",
+    "混合批": "第一轮 a prefill 6 行 eager；第二轮 a decode 1 行 + b prefill 4 行 = 5 行 → desc PIECEWISE 8 行；图段重放 + attention eager；输出与 eager 逐 token 相同",
+    "纯 prefill": "is_prefilling_np.all() → 不碰 breakable，eager",
+    "decode": "统一 decode 仍优先 FULL 图（8/2），PIECEWISE 不抢",
+    "惰性捕获": "wrapper.entries 为空时 execute_model 先 capture_pw_graph（真实输入）再 run_pw_graph；后续只 replay",
+    "验收": "selection mode=PIECEWISE、desc_num_reqs=None；pw_model.entries 非空、num_replays>0"
+   },
+   "known_gaps": [
+    "手工断点而非上游 torch.compile/FX splitting；段内未融合、无 compile cache",
+    "eager 断点用强引用（weakref 在本仓库图段生命周期下会失效）",
+    "PIECEWISE 惰性捕获（本机 pinned/UVA 分配器在多次 init breakable capture 后会踩 CachingHostAllocator 断言）",
+    "纯 prefill 仍 eager；只有混合批走 PIECEWISE",
+    "target capability 仍是 UNIFORM_BATCH，不声明 ALWAYS；没有 offloader/SP/DP 分支",
+    "没有真实 DSpark 权重；只验证 tiny 协议/数值/图，不给加速比"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa')",
     "dtype": "float32"
    },
    "real_weights": {

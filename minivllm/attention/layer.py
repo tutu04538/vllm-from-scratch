@@ -18,8 +18,10 @@ metadata 挂到每个层名下的。做成普通 Python 对象的话它就"隐�
 
 import math
 
+import torch
 from torch import nn
 
+from ..compilation.breakable_cudagraph import eager_break_during_capture
 from .backends import TorchAttentionImpl
 from .forward_context import get_forward_context
 
@@ -36,7 +38,17 @@ class Attention(nn.Module):
         self.impl = TorchAttentionImpl(num_heads, head_size, self.scale, self.num_kv_heads)
         # 由 Runner 在 KV 分配之后绑定：`[2, num_blocks, block_size, kv_heads, head_size]`
         self.kv_cache = None
+        #: breakable PIECEWISE 的固定输出缓冲（runner 在 KV 分配后设置）。
+        #: 图段之间靠**同一地址**传递 attention 输出；返回新张量会让下一段读旧内存。
+        self._output_buffer: torch.Tensor | None = None
 
+    def set_output_buffer(self, max_num_tokens: int, dtype: torch.dtype,
+                          device: torch.device) -> None:
+        self._output_buffer = torch.empty(
+            max_num_tokens, self.num_heads * self.head_size,
+            dtype=dtype, device=device)
+
+    @eager_break_during_capture
     def forward(self, query, key, value):
         forward_context = get_forward_context()
         attn_metadata = forward_context.attn_metadata.get(self.layer_name)
@@ -45,4 +57,10 @@ class Attention(nn.Module):
                            f"Runner 必须为每个 Attention 层都建一份（键是层名）")
         if self.kv_cache is None:
             raise RuntimeError(f"层 {self.layer_name!r} 的 kv_cache 还没绑定（Runner 初始化时绑定）")
-        return self.impl.forward(self, query, key, value, self.kv_cache, attn_metadata)
+        result = self.impl.forward(
+            self, query, key, value, self.kv_cache, attn_metadata)
+        if self._output_buffer is None:
+            return result
+        out = self._output_buffer[: result.shape[0]]
+        out.copy_(result)
+        return out

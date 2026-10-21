@@ -155,10 +155,10 @@ check_step79_adaptive.py                      → 23/23
 | D-74T-5 | 没有 LoRA/DP/PP/offloader/多模态的图分支 | 本仓库没有这些能力 | 不生成对应图键；以后加能力时按上游扩展 |
 | D-74T-6 | 静态输出只有 hidden/aux，没有 PP 的 intermediate tensors | 本仓库单卡、无 PP | 单卡路径完整 |
 
-## 6. Phase 1 明确没做
+## 6. 后续 phase 状态（Phase 1 当时明确没做）
 
 - varlen decode 图（自适应验证）→ **Phase 2 已实现**，见 `docs/step74_target_graph_varlen.md`；
-- PIECEWISE / 混合 prefill+decode 图 → Phase 3；
+- PIECEWISE / 混合 prefill+decode 图 → **Phase 3 已实现**（breakable，见 `docs/step74_target_graph_breakable.md`）；
 - `AttentionCGSupport.ALWAYS`：Torch 后端仍是 `UNIFORM_BATCH`；
 - 目标图的成本 profiling：Phase 1 的 target 图不参与 adaptive，仍用 eager 成本表；
 - 真实模型加速比：本机没有真实 DSpark 权重，只验证协议/数值/图。
