@@ -126,8 +126,9 @@ class RecordBatch:
         self.rows: list[dict] = []
         self._orig = runner.prepare_inputs
 
-        def wrapped(scheduler_output, batch_req_state):
-            input_batch = self._orig(scheduler_output, batch_req_state)
+        def wrapped(scheduler_output, batch_req_state, *args, **kwargs):
+            input_batch = self._orig(
+                scheduler_output, batch_req_state, *args, **kwargs)
             num_reqs = input_batch.num_reqs
             self.rows.append({
                 "req_ids": list(input_batch.req_ids),

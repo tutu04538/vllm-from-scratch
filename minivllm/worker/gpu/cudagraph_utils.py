@@ -34,6 +34,7 @@ import torch
 
 from ...compilation import graph_capture
 from ...config import CUDAGraphMode
+from ...forward_context import BatchDescriptor, set_forward_context
 from .block_table import BlockTables
 from .input_batch import InputBatch, InputBuffers
 
@@ -378,6 +379,94 @@ def _get_graph_pool():
     from ...compilation.cuda_graph import _get_global_graph_pool
 
     return _get_global_graph_pool()
+
+
+class ModelCudaGraphManager(CudaGraphManager):
+    """target 模型的图管理器（对应上游 `ModelCudaGraphManager`，Phase 1 子集）。
+
+    与 speculator 的图管理器共用 `CudaGraphManager` 的候选表/捕获/分派/重放；
+    额外只做两件 target 特有的事：
+
+        **准备输入**：`create_forward_fn()` 在图外调 `prepare_inputs_to_capture()`，
+            把 dummy 批写进常驻输入缓冲，并用 `_build_attn_metadata` 造一份图内 metadata；
+        **持有输出**：图重放写进静态 hidden/aux 缓冲，`run_fullgraph()` 返回它们的切片。
+            `sample_tokens` 不能拿到一个重放时新分配的张量——图里记的是捕获时的地址。
+    """
+
+    def __init__(self, vllm_config, device: torch.device,
+                 cudagraph_mode: CUDAGraphMode, decode_query_len: int,
+                 allow_shape_padding: bool = True):
+        super().__init__(
+            vllm_config, device, cudagraph_mode, decode_query_len,
+            allow_shape_padding=allow_shape_padding,
+        )
+        self.hidden_states: torch.Tensor | None = None
+        self.aux_hidden_states: list[torch.Tensor] = []
+        self.use_aux_hidden_state_outputs = False
+
+    @torch.inference_mode()
+    def capture(
+        self,
+        model,
+        input_buffers: InputBuffers,
+        block_tables: BlockTables,
+        build_attn_metadata: Callable[[InputBatch], dict[str, Any]],
+        use_aux_hidden_state_outputs: bool = False,
+        progress_bar_desc: str = "Capturing target CUDA graphs",
+    ) -> None:
+        self.use_aux_hidden_state_outputs = use_aux_hidden_state_outputs
+
+        def create_forward_fn(desc: BatchExecutionDescriptor, warmup: bool):
+            num_tokens = desc.num_tokens
+            num_reqs = desc.num_reqs or min(num_tokens, self.max_num_reqs)
+            attn_state = prepare_inputs_to_capture(
+                num_reqs, num_tokens, input_buffers, block_tables,
+                build_attn_metadata,
+                full_cudagraph=desc.cg_mode == CUDAGraphMode.FULL,
+            )
+            batch_descriptor = BatchDescriptor(
+                num_tokens=num_tokens,
+                num_reqs=num_reqs,
+                uniform=desc.uniform_token_count is not None,
+            )
+
+            def forward_fn(cg_mode: CUDAGraphMode) -> None:
+                with set_forward_context(
+                    attn_state.attn_metadata,
+                    num_tokens=num_tokens,
+                    cudagraph_runtime_mode=cg_mode,
+                    batch_descriptor=batch_descriptor,
+                    slot_mapping=attn_state.slot_mappings,
+                ):
+                    model_output = model(
+                        input_ids=input_buffers.input_ids[:num_tokens],
+                        positions=input_buffers.positions[:num_tokens],
+                    )
+                if self.use_aux_hidden_state_outputs:
+                    hidden_states, aux_hidden_states = model_output
+                else:
+                    hidden_states, aux_hidden_states = model_output, None
+                if self.hidden_states is None:
+                    self.hidden_states = torch.empty_like(hidden_states)
+                self.hidden_states[:num_tokens] = hidden_states
+                if self.use_aux_hidden_state_outputs:
+                    if not self.aux_hidden_states:
+                        self.aux_hidden_states = [
+                            torch.empty_like(x) for x in aux_hidden_states]
+                    for i, aux in enumerate(aux_hidden_states):
+                        self.aux_hidden_states[i][:num_tokens] = aux
+
+            return forward_fn
+
+        super().capture(create_forward_fn, progress_bar_desc)
+
+    def run_fullgraph(self, desc: BatchExecutionDescriptor):
+        super().run_fullgraph(desc)
+        assert self.hidden_states is not None
+        hidden_states = self.hidden_states[: desc.num_tokens]
+        if not self.use_aux_hidden_state_outputs:
+            return hidden_states
+        return hidden_states, [x[: desc.num_tokens] for x in self.aux_hidden_states]
 
 
 def prepare_inputs_to_capture(

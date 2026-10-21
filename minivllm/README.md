@@ -549,7 +549,7 @@ fused（融合）     元数据只建一次（step=1），整个 K−1 步的循
   传入 `derive_mtp_draft_config(target_config)` 派生好的 draft 配置（派生时机属 80 关）。
 
 ```bash
-VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step74 -q              # 42 项
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 python -m pytest tests/step74 -q              # 50 项（含 target 图 5 项）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 python benchmarks/check_step74_fused_draft.py # 23 项 + profiler 段
 # V2 + 图跑一段生成（73 关要的 --enforce-eager 现在可以去掉）
 VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
@@ -559,9 +559,11 @@ VLLM_WSL2_ENABLE_PIN_MEMORY=1 VLLM_USE_V2_MODEL_RUNNER=1 \
 实测：融合与逐步两条路**逐轮**草稿 token / positions / seq_lens / slot_mapping / 草稿 KV 全等；
 融合路径一轮 decode 图重放 1 次、Python 前向 0 次、采样 0 次，而 `current_draft_step` 到 K−1、
 K 列草稿全写出来（多步**真的在图里**）；EAGLE3 与原生 MTP 下 `V2 图 == V2 eager == V1`。
-⚠️ 本关只做**提议者侧**的图：V2 的 target 图（含整批补齐）与 PIECEWISE 分段图未接，
-所以草稿 prefill 图要求**精确命中**批形状、混合批走 eager；差异账本（12 条）见
-[`docs/step74_alignment.md`](../docs/step74_alignment.md) §3。
+⚠️ 74 关原始范围只做**提议者侧**的图；后续 Phase 1 已补上 V2 target 的
+**`FULL_DECODE_ONLY`**（统一 decode 的 target 满图 + 运行时 padding + 静态 hidden/aux 输出），
+见 [`docs/step74_target_graph.md`](../docs/step74_target_graph.md)。仍未接：varlen decode 图
+（自适应验证，Phase 2）、PIECEWISE / 混合 prefill+decode 图（Phase 3）。所以：
+target 图只命中统一 decode 批，混合批仍走 eager；草稿 prefill 图仍要求精确命中形状。
 
 ## 第七十五关：块验证 / synthetic 接受率 / 分块 logits
 
@@ -794,8 +796,9 @@ EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未
 V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
-+ 草稿侧的 FULL 图；多模块 MTP（80 关）、V2 的 target 图与 PIECEWISE 还没接（各自报错并写明
-归属关卡）；adaptive verification 已在 79 关接上（target varlen 图未接，见该节边界）。
++ 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）；多模块 MTP（80 关）、
+target 的 varlen decode 图（Phase 2）与 PIECEWISE（Phase 3）还没接（各自报错并写明归属关卡）；
+adaptive verification 已在 79 关接上（target varlen 图未接，见该节边界）。
 另外两条容易误以为已经具备的能力：
 
 - **只支持 TP=1**：`layers/linear.py` 里的名字（`QKVParallelLinear` 等）是为了与 vLLM 源码
@@ -855,7 +858,7 @@ python -m pytest tests/step68 -q                     # 67 项：step68（logprob
 python -m pytest tests/step71 -q                     # 21 项：step71（表差分/配置边界/两轮时序/K=0 端到端/q 宽度）
 python -m pytest tests/step72 -q                     # 30 项：step72（并行输入协议/kernel 差分/槽位/一次 forward/端到端）
 python -m pytest tests/step73 -q                     # 66 项：step73（V2：上游内核逐值差分/常驻 slot/输入组装/V1-V2 一致/UVA 两条后端）
-python -m pytest tests/step74 -q                     # 42 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约）
+python -m pytest tests/step74 -q                     # 50 项：step74（融合/逐步两条路；图管理器单元；批边界；MTP hook 契约；target FULL_DECODE_ONLY）
 python -m pytest tests/step75 -q                     # 51 项：step75（块验证三方对照/分布统计；synthetic 配置与经验率；分块与陈旧 offsets 保护）
 python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 布局/上下文 KV/冻结参考/端到端与图）
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）

@@ -25,7 +25,8 @@
   "step76": "implemented + self-verified（V1/V2 两条路径；V1 展开 vs 上游内核 6/6 逐值相等、V2 内核 vs 上游 12/12 逐值相等；融合上下文 KV 与逐层参考逐值相等、query 前向与冻结参考 max diff 0.0（因果/非因果），两种模式互差 1.375；tiny 端到端 V1 == V2 == V2-eager、图确实捕获/重放（含补齐档位）、被拒尾部不入草稿缓存；⚠️ 本机没有真实 DFlash 权重 → 草稿质量/加速比「集成待验」（需求 §5 不做加速比结论）、混合滑窗与 sample_from_anchor 配置期拒绝）",
   "step77": "implemented + self-verified（只有 V2；两种 anchor 布局各与上游 `_prepare_dflash_inputs_kernel` 12/12 输出逐值相等、K=1 边界也算；缓存的 q 与沿实际路径复算的条件分布 max|Δ|=0.0；同一 base logits 换前一 token → q 与选择都变；缩减词表非 d2t 列恒 -inf、无残留；top-k=3 每步恰 3 个有限列；2000 种子经验分布 vs softmax(q) TV=0.0249；confidence 与参考逐值一致；tiny 端到端两种布局贪心输出相同、图/eager 逐轮草稿相同；⚠️ 本机没有真实 DSpark 权重 → 草稿质量/加速比「集成待验」、只实现 Qwen3 基座、adaptive verification 配置期拒绝（79 关））",
   "step78": "implemented + self-verified（只有 V2；method 仍是 dflash，靠 architectures=[\"DFlash2DraftModel\"] 分派；分组卷积与上游模块 max|Δ|=0、CandidateSelector max|Δ|=0、walk 16 组参数与上游内核逐位相等、cache 两轮逐位相等、q 只写候选列且旧列清成 -inf、2000 种子经验分布 vs softmax(q/temp) TV=0.0177、解码器层 vs 参考 max|Δ|=0、tiny greedy 无损、图/eager 6 轮草稿相同（captured=1）；⚠️ 本机没有真实 DFlash2 权重 → 质量/加速比「集成待验」、只实现 Qwen3 基座、缩减词表配置期拒绝、LiLiCorr 对应关系只列本机核对项（不声称相同）)",
-  "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)"
+  "step79": "implemented + self-verified（V2 DSpark；CPU stale 预算 + GPU 当前置信度全局 top-k + 真实 GPU event 成本表；满/0/中间预算、概率/block/synthetic、图、取消复用、logprobs 真实 offsets 都有测试；⚠️ 本机没有真实 DSpark 权重 → 质量/加速比「集成待验」；V2 target varlen 图未接，require_varlen_cudagraph=False，默认 helper 仍要求 ALWAYS)",
+  "step74_target_graph": "implemented + self-verified（Phase 1：V2 target FULL_DECODE_ONLY；统一 decode 满图 + padding + 静态 hidden/aux；混合批 eager；adaptive 仍 eager；5 项 target 图 + 950 回归）"
  },
  "step58": {
   "results": {
@@ -4742,6 +4743,86 @@
    "real_weights": {
     "status": "缺",
     "note": "本机只有 models/Qwen3-1.7B 与 models/Qwen3-1.7B-eagle3，没有 DSpark checkpoint；真实草稿质量、接受长度与加速比「集成待验」"
+   }
+  }
+ },
+ "step74_target_graph": {
+  "results": {
+   "step": "74-target-phase1",
+   "requirement": "学习目标：把 V2 target 接入 CUDA Graph（Phase 1 / 共 3 阶段）",
+   "status": "implemented + self-verified（Phase 1：V2 target 的 FULL_DECODE_ONLY）。target 复用本地 `CudaGraphManager`/`BatchExecutionDescriptor` 的候选表/捕获/分派/重放，新增 `ModelCudaGraphManager` 持有静态 hidden/aux 输出；`capture_model()` 先捕获 target、再捕获 speculator；`prepare_inputs()` 按 `batch_desc` 把真实小批 padding 到捕获档位（padding 行 input_ids/positions=0、seq_lens=0、slot=-1、block table 行清零），FULL 只 replay、不跑 model；混合 prefill/decode 批回退 eager。target 图与 adaptive 互斥（adaptive 仍 eager）；varlen decode 属 Phase 2、PIECEWISE 属 Phase 3。",
+   "recorded_at": "2026-10-21T15:40:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "578d249",
+    "implementation_commit": "见本轮提交（Phase 1：V2 target FULL_DECODE_ONLY）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 152,
+    "sha256": "f91bc52c1f88164ff9b8ef460749907cbbb9b338a465de9f59a2dee77ee7b550",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（参考源码，不 import 生产路径）",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "env": "VLLM_USE_V2_MODEL_RUNNER=1 + VLLM_WSL2_ENABLE_PIN_MEMORY=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74/test_target_graph.py -q",
+     "result": "5 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "950 passed（= 945 + target 图 5）"
+    },
+    {
+     "cmd": "python benchmarks/check_step74_fused_draft.py",
+     "result": "23/23"
+    },
+    {
+     "cmd": "python benchmarks/check_step76_dflash.py + check_step77_dspark.py + check_step78_dflash2.py + check_step79_adaptive.py",
+     "result": "27/27 + 28/28 + 31/31 + 23/23"
+    }
+   ],
+   "execution_trace": {
+    "target 图键（EAGLE3 K=3，max_num_seqs=2，capture_sizes=[4,8]）": "[(FULL, num_tokens=4, num_reqs=1, uniform=4), (FULL, num_tokens=8, num_reqs=2, uniform=4)]",
+    "统一 decode 命中": "真实 2 请求 8 行 → desc 8/2/FULL，重放 hidden 静态缓冲；greedy 与 eager 逐 token 相同",
+    "padding 命中": "K=1、真实 1 请求 2 行、捕获 2 请求 4 行 → desc 4/2/FULL；qsl=[0,2,2]，输出与 eager 相同",
+    "混合批": "uniform_token_count=None → dispatch 返回 NONE，走 eager",
+    "捕获顺序": "stats.target.captured=2；stats.graphs.prefill.captured=2；target 先于 speculator",
+    "静态输出": "target_manager.hidden_states 地址在重放前后不变",
+    "非投机": "decode_query_len=1 也捕获 target 图（capture_sizes=[2] → desc 2/2）"
+   },
+   "known_gaps": [
+    "Phase 1 只做 FULL_DECODE_ONLY；混合 prefill/decode 仍 eager",
+    "adaptive=True 时 target 图关闭，仍走 eager；varlen decode 属 Phase 2",
+    "PIECEWISE 属 Phase 3（breakable）",
+    "没有 LoRA/DP/PP/offloader/多模态图分支",
+    "本机没有真实 DSpark 权重；只验证协议/数值/图，不给加速比"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32",
+    "max_model_len": 64
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_eagle3_dir('tiny_gqa') / tiny_dspark_dir(...)",
+    "dtype": "float32",
+    "note": "Phase 1 target 图与 draft 类型无关；测试用 EAGLE3 与 DSpark tiny"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机无真实 DSpark 权重"
    }
   }
  }
