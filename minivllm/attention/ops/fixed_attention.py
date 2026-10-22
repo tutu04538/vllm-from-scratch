@@ -41,20 +41,46 @@ def _fixed_paged_attention_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCKS_PER_REQ: tl.constexpr,
+    NUM_REQS: tl.constexpr,
+    USE_BLOCK_MAP: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     BLOCK_D: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
 ):
-    # program = (request, query block, query head)
-    # grid 的第 0 维把 BLOCKS_PER_REQ 个 query block 串起来：
-    #   pid0 = req * BLOCKS_PER_REQ + q_blk
-    # 这样 query block 之间是并行的；decode 时 q_len <= K+1，通常只有 1 个 block。
-    req = tl.program_id(0) // BLOCKS_PER_REQ
-    q_blk = tl.program_id(0) % BLOCKS_PER_REQ
-    q_head = tl.program_id(1)
-    kv_head = q_head // GROUP_SIZE
+    # program = (global query block, kv head)
+    # 一个 program 把 GROUP_SIZE 个 query head 打包进 BLOCK_M 行：
+    #   BLOCK_Q = BLOCK_M // GROUP_SIZE 个 query 位置 × GROUP_SIZE 个 head
+    # 这样 K/V 在同一 GQA 组内只读一遍，grid 第二维是 num_kv_heads，不是 num_heads。
+    pid = tl.program_id(0)
+    kv_head = tl.program_id(1)
+    BLOCK_Q: tl.constexpr = BLOCK_M // GROUP_SIZE
 
-    q_start = tl.load(query_start_loc_ptr + req)
+    if USE_BLOCK_MAP:
+        # 上游同款：grid 第 0 维是整个 batch 的 block 上界
+        #   floor(N / BLOCK_M) + num_reqs
+        # 用 GPU 上的 query_start_loc 做二分，把 pid 映射到 (req, q_blk)。
+        # 这样不需要“每请求固定 block 数”，prefill 不会因为某条请求长而
+        # 给所有请求都分配同样多的空 block。
+        left = tl.full([], 0, tl.int32)
+        right = tl.full([], NUM_REQS, tl.int32)
+        while left < right:
+            mid = (left + right) // 2
+            mid_val = tl.load(query_start_loc_ptr + mid) // BLOCK_Q + mid
+            if mid_val <= pid:
+                left = mid + 1
+            else:
+                right = mid
+        req = left - 1
+        q_start = tl.load(query_start_loc_ptr + req)
+        q_block_start = q_start // BLOCK_Q + req
+        q_blk = pid - q_block_start
+    else:
+        # decode 已知 max_query_len（Python int），用它得到紧上界：
+        #   pid0 = req * BLOCKS_PER_REQ + q_blk
+        req = pid // BLOCKS_PER_REQ
+        q_blk = pid % BLOCKS_PER_REQ
+        q_start = tl.load(query_start_loc_ptr + req)
+
     q_end = tl.load(query_start_loc_ptr + req + 1)
     q_len = q_end - q_start
     seq_len = tl.load(seq_lens_ptr + req)
@@ -65,18 +91,21 @@ def _fixed_paged_attention_kernel(
     offs_n = tl.arange(0, BLOCK_N)
 
     # 这个 query block 可能超过该请求的真实 q_len（grid 是上界对齐的）。
-    if q_blk * BLOCK_M < q_len:
-        row = q_start + q_blk * BLOCK_M + offs_m
-        valid_m = offs_m < q_len - q_blk * BLOCK_M
+    if q_blk * BLOCK_Q < q_len:
+        # 16 行 = (query 位置, 组内 head) 的笛卡尔积。
+        local_q = offs_m // GROUP_SIZE
+        q_head = kv_head * GROUP_SIZE + (offs_m % GROUP_SIZE)
+        row = q_start + q_blk * BLOCK_Q + local_q
+        valid_m = local_q < q_len - q_blk * BLOCK_Q
 
         q = tl.load(
-            q_ptr + row[:, None] * stride_qn + q_head * stride_qh
+            q_ptr + row[:, None] * stride_qn + q_head[:, None] * stride_qh
             + offs_d[None, :] * stride_qd,
             mask=valid_m[:, None] & mask_d[None, :], other=0.0,
         ).to(tl.float32)
 
         # query 的绝对位置：seq_len - q_len + 行在请求内的位置。
-        q_pos = seq_len - q_len + q_blk * BLOCK_M + offs_m
+        q_pos = seq_len - q_len + q_blk * BLOCK_Q + local_q
 
         m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
         z_i = tl.zeros([BLOCK_M], dtype=tl.float32)
@@ -127,7 +156,7 @@ def _fixed_paged_attention_kernel(
         # seq_len=0 / 全无效行：0/0 会产生 NaN；真实行不会走到这里。
         out = tl.where(z_i[:, None] > 0.0, acc / z_i[:, None], 0.0)
         tl.store(
-            out_ptr + row[:, None] * stride_on + q_head * stride_oh
+            out_ptr + row[:, None] * stride_on + q_head[:, None] * stride_oh
             + offs_d[None, :] * stride_od,
             out.to(out_ptr.dtype.element_ty),
             mask=valid_m[:, None] & mask_d[None, :],
@@ -155,14 +184,24 @@ def fixed_paged_attention(
     block_m = 16
     block_n = 64
     block_d = max(16, triton.next_power_of_2(head_dim))
+    if group_size > block_m or block_m % group_size != 0:
+        raise ValueError(
+            f"fixed kernel 要求 GQA group_size 整除 {block_m}，收到 {group_size}")
+    block_q = block_m // group_size
     # 每请求的 block 数必须是 Python int（图内不能 .item()）：
-    #   - uniform/varlen decode 有每请求上界，用它，避免按整批 N 过度分配；
-    #   - 混合 prefill 没有单请求上界，只能用整批 N 作为上界。
+    #   - uniform/varlen decode 有每请求上界，用它得到紧 grid；
+    #   - 混合 prefill 没有单请求上界，用“总 block 上界 + kernel 内二分映射”，
+    #     避免给每条请求都分配 ceil(N/BLOCK_M) 个 block。
     if max_query_len is not None:
-        blocks_per_req = max(1, triton.cdiv(max_query_len, block_m))
+        blocks_per_req = max(1, triton.cdiv(max_query_len, block_q))
+        num_blocks = num_reqs * blocks_per_req
+        use_block_map = False
     else:
-        blocks_per_req = triton.cdiv(q.shape[0], block_m)
-    _fixed_paged_attention_kernel[(num_reqs * blocks_per_req, num_heads)](
+        blocks_per_req = 1
+        num_blocks = q.shape[0] // block_q + num_reqs
+        use_block_map = True
+    num_kv_heads = k.shape[2]
+    _fixed_paged_attention_kernel[(num_blocks, num_kv_heads)](
         q, out, k, v,
         block_table, seq_lens, query_start_loc,
         q.stride(0), q.stride(1), q.stride(2),
@@ -175,6 +214,8 @@ def fixed_paged_attention(
         BLOCK_M=block_m,
         BLOCK_N=block_n,
         BLOCKS_PER_REQ=blocks_per_req,
+        NUM_REQS=num_reqs,
+        USE_BLOCK_MAP=use_block_map,
         HEAD_DIM=head_dim,
         BLOCK_D=block_d,
         GROUP_SIZE=group_size,

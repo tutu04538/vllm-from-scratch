@@ -39,7 +39,8 @@ class TritonAttentionImpl(TritonPagedAttentionImpl):
         self.write_kv(key, value, kv_cache, attn_metadata)
         if self._graph_dispatched():
             bs = attn_metadata.block_size
-            if self.head_size >= 16 and bs >= 16:
+            if (self.head_size >= 16 and bs >= 16
+                    and self.num_queries_per_kv <= 16):
                 return self._forward_unified(query, kv_cache, attn_metadata)
             return self._forward_paged(query, kv_cache, attn_metadata)
         return self._forward_generic(query, kv_cache, attn_metadata)
