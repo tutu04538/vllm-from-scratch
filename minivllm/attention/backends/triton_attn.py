@@ -1,21 +1,15 @@
-"""上游 `TRITON_ATTN` 的核心子集：vendored `unified_attention` kernel。
+"""固定场景的 Triton paged attention 后端。
 
-与本地 `triton_paged.py` 的区别：
+固定条件：
 
-    triton_paged    本仓库 step22/37 的逐行 paged kernel；作为 block_size<16 或
-                    head_dim<16 的 fallback。
-    triton_attn     上游 `triton_unified_attention.py` 的 2D unified kernel；
-                    使用与上游同形的 `max_query_len/max_seq_len/qsl/seq_lens/block_table`
-                    参数和 KV 布局 `[num_blocks, block_size, Hk, D]`。
+    Qwen3 target / block_size=16 / head_dim in {16,32,64,128}
+    causal / GQA / paged KV / fp16·bf16·fp32
+    query 行按 query_start_loc 打包，prefill/decode/混合批都支持
+    无量化 / 无 sliding / 无 cascade / 无 sinks / 无 MM prefix / 无 RSWA
 
-本子集只支持：
-
-    fp16 / bf16 / fp32，block_size >= 16，head_dim >= 16
-    causal / 非 causal、GQA、varlen、混合 prefill/decode
-
-明确拒绝（由 builder/impl 或上游 kernel 本身报错）：
-
-    量化 KV、sliding window、cascade、sinks、MM prefix、RSWA、tensor descriptor
+一个 program 负责一条请求的一个 query block 的一个 query head；query block 之间并行，
+不再像旧 `triton_paged` 那样“一行 query 一个 program”。block4/head4 回退旧 kernel。
+本后端不是完整上游 TRITON_ATTN；配置名 `triton_attn`，`triton` 是别名。
 """
 
 from __future__ import annotations
@@ -24,9 +18,7 @@ import torch
 
 from ..backend import AttentionCGSupport
 from ..metadata import AttentionMetadata
-from ..ops.kv_quant import KVQuantMode
-from ..ops.triton_unified_attention import unified_attention
-from .torch_sdpa import TorchAttentionImpl
+from ..ops.fixed_attention import fixed_paged_attention
 from .triton_paged import (TritonPagedAttentionBackend,
                            TritonPagedAttentionImpl,
                            TritonPagedAttentionMetadataBuilder)
@@ -57,53 +49,15 @@ class TritonAttentionImpl(TritonPagedAttentionImpl):
         num_tokens = query.shape[0]
         num_heads, head_size = self.num_heads, self.head_size
         q = query.reshape(num_tokens, num_heads, head_size)
-        out = torch.empty_like(q)
-
-        num_reqs = attn_metadata.num_reqs
-        block_table = attn_metadata.block_table[:num_reqs]
-        # max_seqlen_q/k 必须是 Python int（图内不能 .item()）；这里用固定上界：
-        #   q 上界 = 本轮总行数
-        #   k 上界 = 块表宽度 × block_size（= 上下文容量）
-        # 2D kernel 只用它们算 grid/tile，不会按最大值真扫满。
-        max_seqlen_q = num_tokens
-        max_seqlen_k = block_table.shape[1] * attn_metadata.block_size
-
-        unified_attention(
-            q=q,
-            k=kv_cache[0],
-            v=kv_cache[1],
-            out=out,
-            cu_seqlens_q=attn_metadata.query_start_loc[: num_reqs + 1],
-            max_seqlen_q=max_seqlen_q,
-            seqused_k=attn_metadata.seq_lens[:num_reqs],
-            max_seqlen_k=max_seqlen_k,
-            softmax_scale=self.scale,
-            causal=attn_metadata.causal,
-            window_size=(-1, -1),
-            block_table=block_table,
-            softcap=0.0,
-            q_descale=None,
-            k_descale=None,
-            v_descale=None,
-            seq_threshold_3D=None,
-            num_par_softmax_segments=None,
-            softmax_segm_output=None,
-            softmax_segm_max=None,
-            softmax_segm_expsum=None,
-            alibi_slopes=None,
-            output_scale=None,
-            qq_bias=None,
-            sinks=None,
-            mm_prefix_range=None,
-            rswa_prefix_lens=None,
-            rswa_window=None,
-            use_alibi_sqrt=False,
-            kv_quant_mode=KVQuantMode.NONE,
-            k_scale_cache=None,
-            v_scale_cache=None,
-            chunk_lookback=-1,
-            use_td=False,
-            mm_prefix_clamp_sliding_window=False,
+        # 固定场景要求 block16、head_dim>=16；调用方已 gate。
+        out = torch.zeros_like(q)
+        fixed_paged_attention(
+            q, out, kv_cache[0], kv_cache[1],
+            attn_metadata.block_table[: attn_metadata.num_reqs],
+            attn_metadata.seq_lens[: attn_metadata.num_reqs],
+            attn_metadata.query_start_loc[: attn_metadata.num_reqs + 1],
+            block_size=attn_metadata.block_size,
+            scale=self.scale,
         )
         return out.reshape(num_tokens, num_heads * head_size)
 
@@ -111,7 +65,7 @@ class TritonAttentionImpl(TritonPagedAttentionImpl):
 class TritonAttentionBackend(TritonPagedAttentionBackend):
     @staticmethod
     def get_name() -> str:
-        return "TRITON_ATTN"
+        return "TRITON_ATTN_FIXED"
 
     @staticmethod
     def get_builder_cls():

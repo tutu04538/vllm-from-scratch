@@ -97,7 +97,7 @@ def test_triton_attn_upstream_kernel_block16_matches_torch():
     got = _run_mixed(graph)
     assert got == want
     assert runner.attention_backend_name == "triton_attn"
-    assert runner.attention_backend.get_name() == "TRITON_ATTN"
+    assert runner.attention_backend.get_name() == "TRITON_ATTN_FIXED"
     assert runner.cudagraph_mode == CUDAGraphMode.FULL
     assert runner.target_cudagraph_manager is not None
     assert runner.target_cudagraph_manager.graphs

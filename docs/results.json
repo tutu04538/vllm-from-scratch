@@ -30,7 +30,8 @@
   "step74_target_graph_varlen": "implemented + self-verified（Phase 2：varlen decode target 图；max_query_len 图键、图安全 varlen attention、adaptive profiling 用 captured_token_counts；955 回归）",
   "step74_target_graph_breakable": "implemented + self-verified（Phase 3：breakable PIECEWISE；混合 prefill/decode 批与 eager 逐 token 相同；956 回归）",
   "step74_triton_paged_backend": "implemented + self-verified（Triton paged 后端，AttentionCGSupport.ALWAYS；target 混合批 FULL；DSpark adaptive 真 ALWAYS；965 回归）",
-  "step74_triton_attn_upstream": "implemented + self-verified（上游 TRITON_ATTN 核心子集：2D unified_attention、block16/head16、paged/GQA/varlen；967 回归）"
+  "step74_triton_attn_upstream": "implemented + self-verified（上游 TRITON_ATTN 核心子集：2D unified_attention、block16/head16、paged/GQA/varlen；967 回归）",
+  "step74_triton_fixed_attention": "implemented + self-verified（固定场景 query-tiled Triton；block16 混合批 + adaptive；968 回归）"
  },
  "step58": {
   "results": {
@@ -4923,8 +4924,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 159,
-    "sha256": "4c8cd175d144dadd8182c1159684f43101dda54189b7311b5301c5b6b5cabdbb",
+    "python_files": 157,
+    "sha256": "818a3751601e8e0c58d014bf35f4b8106b0f267b9e25bbb33e918767452f5d72",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5006,8 +5007,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 159,
-    "sha256": "4c8cd175d144dadd8182c1159684f43101dda54189b7311b5301c5b6b5cabdbb",
+    "python_files": 157,
+    "sha256": "818a3751601e8e0c58d014bf35f4b8106b0f267b9e25bbb33e918767452f5d72",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5076,7 +5077,7 @@
   "results": {
    "step": "74-triton-attn-upstream",
    "requirement": "学习目标：把本地 Triton paged 升级为上游 TRITON_ATTN 核心子集",
-   "status": "implemented + self-verified。vendor 上游 vllm 0.28.0 的 `triton_unified_attention.py` （1189 行）与 `triton_attention_helpers.py`（440 行），适配 import/平台/KVQuantMode；新增 `TritonAttentionImpl`，full 图内 block16/head16 走上游 2D unified_attention，block4/head4 回退本地逐行 kernel。支持 paged KV、GQA、causal/非 causal、varlen、fp16/bf16/fp32；量化/sliding/cascade/sinks/MM prefix/RSWA/3D 明确不支持。`attention_backend='triton_attn'`，`'triton'` 为别名，默认 torch。",
+   "status": "superseded：已删除 vendored unified_attention，改为 step74_triton_fixed_attention 的固定场景 kernel",
    "recorded_at": "2026-10-22T10:45:00+08:00",
    "git": {
     "baseline_commit_at_record_time": "52dbd7f",
@@ -5084,8 +5085,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 159,
-    "sha256": "4c8cd175d144dadd8182c1159684f43101dda54189b7311b5301c5b6b5cabdbb",
+    "python_files": 157,
+    "sha256": "818a3751601e8e0c58d014bf35f4b8106b0f267b9e25bbb33e918767452f5d72",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5128,6 +5129,85 @@
     "不支持量化 KV、sliding window、cascade、sinks、MM prefix、RSWA、tensor descriptor",
     "KV 布局是本地分离 [2,blocks,bs,Hk,D]，不是上游 packed [blocks,Hk,bs,2D]",
     "block<16 或 head_dim<16 回退本地逐行 kernel，不是上游行为",
+    "只接 V2 target；草稿层仍 Torch",
+    "没有真实 DSpark 权重；只验证 tiny 协议/数值/图，不给加速比"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "minivllm/testing/tiny_models.py::tiny_qwen3_dir('tiny_gqa')",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "dtype": "float32"
+   },
+   "draft": {
+    "path": "minivllm/testing/tiny_models.py::tiny_dspark_dir(...)",
+    "dtype": "float32"
+   },
+   "real_weights": {
+    "status": "缺",
+    "note": "本机无真实 DSpark 权重"
+   }
+  }
+ },
+ "step74_triton_fixed_attention": {
+  "results": {
+   "step": "74-triton-fixed",
+   "requirement": "学习目标：固定场景 Triton paged attention（含 query 分块）",
+   "status": "implemented + self-verified。删除 vendored 上游 unified_attention（1199+440 行），改为固定场景单 kernel：Qwen3 target / block16 / head_dim16·32·64·128 / causal / GQA / paged KV / fp16·bf16·fp32；一个 program 一个 query block/head，BLOCK_M=16 走 tl.dot，query block 并行；decode 的 1..K+1 行共享一次 K/V；prefill 多 query block 并行。量化/sliding/cascade/sinks/MM/RSWA/非 causal/3D 明确不支持；block4/head4 回退旧逐行 kernel。配置 attention_backend='triton_attn'（'triton' 别名），默认 torch。",
+   "recorded_at": "2026-10-22T11:05:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "d1a9ac0",
+    "implementation_commit": "见本轮提交（固定 kernel + query 分块）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 157,
+    "sha256": "818a3751601e8e0c58d014bf35f4b8106b0f267b9e25bbb33e918767452f5d72",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "vllm": "0.28.0（参考源码，不 import 生产路径）",
+    "flash_attn": "未安装",
+    "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step74/test_triton_paged.py -q",
+     "result": "7 passed（含 query-tiled prefill 20+7 行）"
+    },
+    {
+     "cmd": "python -m pytest tests/step74/test_triton_backend_e2e.py -q",
+     "result": "3 passed（block4 fallback / EAGLE3 / block16 fixed）"
+    },
+    {
+     "cmd": "python -m pytest tests/step74 tests/step79 -q",
+     "result": "112 passed"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step79 -q",
+     "result": "968 passed"
+    }
+   ],
+   "execution_trace": {
+    "kernel": "一个 program = (request, query block, query head)；grid=(num_reqs*ceil(N/16), num_heads)",
+    "query tiling": "Q tile [16,D]，K tile [64,D]，tl.dot；decode 1 块，prefill 多块并行；超出 q_len 的 block guard 跳过",
+    "decode K/V": "1..K+1 行同 program，共享一次 K/V 扫描",
+    "prefill": "20 行 + 7 行 case 与 Torch generic 对照通过；多个 query block 并行",
+    "block16 e2e": "非投机混合批、block16、head16，输出与 Torch eager 逐 token 相同",
+    "adaptive": "DSpark adaptive + block16，输出与 eager 相同；_cudagraph_limit=8",
+    "代码量": "fixed_attention.py 约 230 行；triton_attn.py 约 100 行；删除 vendored 1639 行"
+   },
+   "known_gaps": [
+    "只支持固定场景；量化/sliding/cascade/sinks/MM/RSWA/非 causal 不支持",
+    "没有上游 2D/3D、softmax 分段、tensor descriptor；性能不等价完整 TRITON_ATTN",
+    "prefill 的 K/V 会被多个 query block 重读；decode 优先",
+    "block4/head4 回退旧逐行 kernel",
     "只接 V2 target；草稿层仍 Torch",
     "没有真实 DSpark 权重；只验证 tiny 协议/数值/图，不给加速比"
    ]

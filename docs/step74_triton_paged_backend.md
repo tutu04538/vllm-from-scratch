@@ -1,7 +1,7 @@
 # 第七十四关补充：Triton paged attention 后端与真正的 ALWAYS
 
 > **状态更新（2026-10-22）**：`attention_backend="triton"` 现在优先映射到
-> `docs/step74_triton_attn_upstream.md` 的上游 `TRITON_ATTN` 核心子集（block16/head16）；
+> `docs/step74_triton_fixed_attention.md` 的固定场景 query-tiled kernel（block16/head16）；
 > 本文件的逐行 kernel 保留为 `triton_paged` / 小 block/head 的 fallback。
 
 > 目标：不再让 target 的 varlen/FULL 图受 `AttentionCGSupport.UNIFORM_BATCH` 限制。
