@@ -192,13 +192,22 @@ def fixed_paged_attention(
     #   - uniform/varlen decode 有每请求上界，用它得到紧 grid；
     #   - 混合 prefill 没有单请求上界，用“总 block 上界 + kernel 内二分映射”，
     #     避免给每条请求都分配 ceil(N/BLOCK_M) 个 block。
+    total_blocks = q.shape[0] // block_q + num_reqs
     if max_query_len is not None:
         blocks_per_req = max(1, triton.cdiv(max_query_len, block_q))
-        num_blocks = num_reqs * blocks_per_req
-        use_block_map = False
+        per_req_blocks = num_reqs * blocks_per_req
+        if per_req_blocks <= total_blocks:
+            # 每请求上界更紧：pid -> (req, q_blk) 用整除，不需要二分。
+            num_blocks = per_req_blocks
+            use_block_map = False
+        else:
+            # max_query_len 只是上界，真实 q_len 很小时总 block 上界反而更紧。
+            blocks_per_req = 1
+            num_blocks = total_blocks
+            use_block_map = True
     else:
         blocks_per_req = 1
-        num_blocks = q.shape[0] // block_q + num_reqs
+        num_blocks = total_blocks
         use_block_map = True
     num_kv_heads = k.shape[2]
     _fixed_paged_attention_kernel[(num_blocks, num_kv_heads)](

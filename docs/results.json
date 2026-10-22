@@ -5164,7 +5164,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 157,
-    "sha256": "5e62b69be9b09fff3751b3320a1d39f075eae1407154fd2ba606c98c9e014823",
+    "sha256": "8fde09b881efdb89c00e8d4cb1900bca206e61a3015c0125e6d08a0f3375d9a9",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5202,7 +5202,7 @@
     "block16 e2e": "非投机混合批、block16、head16，输出与 Torch eager 逐 token 相同",
     "adaptive": "DSpark adaptive + block16，输出与 eager 相同；_cudagraph_limit=8",
     "代码量": "fixed_attention.py 约 230 行；triton_attn.py 约 100 行；删除 vendored 1639 行",
-    "grid": "decode 有 max_query_len → grid=(B*ceil(max_q/BLOCK_Q),Hk)；prefill/混合 → grid=(floor(N/BLOCK_Q)+B,Hk)，kernel 内二分映射 block→(req,q_blk)",
+    "grid": "decode: min(B*ceil(max_q/BLOCK_Q), floor(N/BLOCK_Q)+B)，取较小者；prefill/混合: floor(N/BLOCK_Q)+B + kernel 二分",
     "GQA": "BLOCK_M=16 行 = BLOCK_Q×GROUP_SIZE；一个 program 覆盖 GROUP_SIZE 个 q head，K/V 在 GQA 组内复用；grid 第二维 Hk"
    },
    "known_gaps": [
