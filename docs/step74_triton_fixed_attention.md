@@ -62,10 +62,23 @@ kv_quant.py
 grid：
 
 ```text
-(num_reqs * ceil(N / BLOCK_M), num_heads)
+(num_reqs * blocks_per_req, num_heads)
 ```
 
-其中 `N = q.shape[0]`（本轮 token 行数），`BLOCK_M = 16`。
+其中：
+
+```text
+BLOCK_M = 16
+N = q.shape[0]（本轮 token 行数，图路径里是补齐后的宽度）
+
+blocks_per_req =
+    ceil(max_query_len / BLOCK_M)   若 metadata 有 uniform_query_len / max_query_len
+    ceil(N / BLOCK_M)               否则（混合 prefill 没有单请求上界）
+```
+
+`max_query_len` 是 Python int（uniform decode = 1+K，varlen decode = 1+K 上界），
+所以用它可以把每请求的 block 数收紧；混合 prefill 的 `max_query_len=None`，只能用整批
+`N` 作为上界。grid 里多出来的 block 由 kernel 的 `q_blk * BLOCK_M < q_len` guard 跳过。
 
 - decode：`q_len` 通常 1..K+1，只有一个 query block；
 - prefill：`q_len` 可达多块，每个 query block 独立 program，**并行执行**；
@@ -97,6 +110,31 @@ O = P @ V
 
 decode 的 K+1 行现在在同一个 program 里共享一次 K/V 扫描；prefill 的多个 query
 block 并行。这个固定 kernel 的目标就是这个场景，而不是通用 TRITON_ATTN。
+
+### 每请求固定 block 数会浪费吗？
+
+会，尤其在每请求 q_len 不均时：
+
+```text
+B=8, decode q_len=4, N=32
+  ceil(N/16)=2  → grid 16 个 program
+  实际每请求只需要 1 个 block → 8 个 program 空转（50%）
+
+有 max_query_len=4 后：
+  ceil(4/16)=1 → grid 8 个 program，没有空转
+```
+
+混合 prefill 仍用 `ceil(N/16)` 作为每请求上界。例如：
+
+```text
+B=4, N=64, q_lens=[1,1,1,61]
+  每请求 4 个 block → grid 16
+  实际需要 1+1+1+4=7 个 → 9 个空转
+```
+
+空转 program 只读 qsl/seq_lens 后走 guard 返回，不写显存，正确性不受影响；浪费的是
+grid 调度/occupancy。要彻底消除，需要“block → request”的映射（总 block 上界
+`ceil(N/16)+B`，每个 program 查自己的 request/q_start），属于下一步优化，当前没做。
 
 ## 5. 配置
 

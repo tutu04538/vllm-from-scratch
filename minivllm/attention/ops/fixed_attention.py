@@ -145,6 +145,7 @@ def fixed_paged_attention(
     *,
     block_size: int,
     scale: float,
+    max_query_len: int | None = None,
 ) -> torch.Tensor:
     """固定场景 launcher；q/out [N,H,D]，k/v [blocks, block_size, Hk, D]。"""
     # q 是扁平行 [N,H,D]；num_reqs 来自 metadata，不是 N。
@@ -154,8 +155,13 @@ def fixed_paged_attention(
     block_m = 16
     block_n = 64
     block_d = max(16, triton.next_power_of_2(head_dim))
-    # q block 数是上界；kernel 内用 q_len 做 guard，多出来的 program 直接跳过。
-    blocks_per_req = triton.cdiv(q.shape[0], block_m)
+    # 每请求的 block 数必须是 Python int（图内不能 .item()）：
+    #   - uniform/varlen decode 有每请求上界，用它，避免按整批 N 过度分配；
+    #   - 混合 prefill 没有单请求上界，只能用整批 N 作为上界。
+    if max_query_len is not None:
+        blocks_per_req = max(1, triton.cdiv(max_query_len, block_m))
+    else:
+        blocks_per_req = triton.cdiv(q.shape[0], block_m)
     _fixed_paged_attention_kernel[(num_reqs * blocks_per_req, num_heads)](
         q, out, k, v,
         block_table, seq_lens, query_start_loc,

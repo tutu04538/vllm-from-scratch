@@ -5164,7 +5164,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 157,
-    "sha256": "818a3751601e8e0c58d014bf35f4b8106b0f267b9e25bbb33e918767452f5d72",
+    "sha256": "2ee6312375e1170144c1b074014a6a5572115745b958be6f1fa0158dd51a87be",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5201,7 +5201,8 @@
     "prefill": "20 行 + 7 行 case 与 Torch generic 对照通过；多个 query block 并行",
     "block16 e2e": "非投机混合批、block16、head16，输出与 Torch eager 逐 token 相同",
     "adaptive": "DSpark adaptive + block16，输出与 eager 相同；_cudagraph_limit=8",
-    "代码量": "fixed_attention.py 约 230 行；triton_attn.py 约 100 行；删除 vendored 1639 行"
+    "代码量": "fixed_attention.py 约 230 行；triton_attn.py 约 100 行；删除 vendored 1639 行",
+    "grid": "blocks_per_req = ceil(max_query_len/16) 若有 uniform/max；否则 ceil(N/16)；decode 用前者收紧，混合 prefill 仍保守"
    },
    "known_gaps": [
     "只支持固定场景；量化/sliding/cascade/sinks/MM/RSWA/非 causal 不支持",
