@@ -40,9 +40,7 @@ def _fixed_paged_attention_kernel(
     BLOCK_SIZE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    BLOCKS_PER_REQ: tl.constexpr,
     NUM_REQS: tl.constexpr,
-    USE_BLOCK_MAP: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     BLOCK_D: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -55,31 +53,23 @@ def _fixed_paged_attention_kernel(
     kv_head = tl.program_id(1)
     BLOCK_Q: tl.constexpr = BLOCK_M // GROUP_SIZE
 
-    if USE_BLOCK_MAP:
-        # 上游同款：grid 第 0 维是整个 batch 的 block 上界
-        #   floor(N / BLOCK_M) + num_reqs
-        # 用 GPU 上的 query_start_loc 做二分，把 pid 映射到 (req, q_blk)。
-        # 这样不需要“每请求固定 block 数”，prefill 不会因为某条请求长而
-        # 给所有请求都分配同样多的空 block。
-        left = tl.full([], 0, tl.int32)
-        right = tl.full([], NUM_REQS, tl.int32)
-        while left < right:
-            mid = (left + right) // 2
-            mid_val = tl.load(query_start_loc_ptr + mid) // BLOCK_Q + mid
-            if mid_val <= pid:
-                left = mid + 1
-            else:
-                right = mid
-        req = left - 1
-        q_start = tl.load(query_start_loc_ptr + req)
-        q_block_start = q_start // BLOCK_Q + req
-        q_blk = pid - q_block_start
-    else:
-        # decode 已知 max_query_len（Python int），用它得到紧上界：
-        #   pid0 = req * BLOCKS_PER_REQ + q_blk
-        req = pid // BLOCKS_PER_REQ
-        q_blk = pid % BLOCKS_PER_REQ
-        q_start = tl.load(query_start_loc_ptr + req)
+    # 上游同款：grid 第 0 维是整个 batch 的 block 上界
+    #   floor(N / BLOCK_Q) + num_reqs
+    # 用 GPU 上的 query_start_loc 做二分，把 pid 映射到 (req, q_blk)。
+    # 不再按 max_query_len 给每条请求预分配固定 block 数。
+    left = tl.full([], 0, tl.int32)
+    right = tl.full([], NUM_REQS, tl.int32)
+    while left < right:
+        mid = (left + right) // 2
+        mid_val = tl.load(query_start_loc_ptr + mid) // BLOCK_Q + mid
+        if mid_val <= pid:
+            left = mid + 1
+        else:
+            right = mid
+    req = left - 1
+    q_start = tl.load(query_start_loc_ptr + req)
+    q_block_start = q_start // BLOCK_Q + req
+    q_blk = pid - q_block_start
 
     q_end = tl.load(query_start_loc_ptr + req + 1)
     q_len = q_end - q_start
@@ -174,7 +164,6 @@ def fixed_paged_attention(
     *,
     block_size: int,
     scale: float,
-    max_query_len: int | None = None,
 ) -> torch.Tensor:
     """固定场景 launcher；q/out [N,H,D]，k/v [blocks, block_size, Hk, D]。"""
     # q 是扁平行 [N,H,D]；num_reqs 来自 metadata，不是 N。
@@ -188,27 +177,9 @@ def fixed_paged_attention(
         raise ValueError(
             f"fixed kernel 要求 GQA group_size 整除 {block_m}，收到 {group_size}")
     block_q = block_m // group_size
-    # 每请求的 block 数必须是 Python int（图内不能 .item()）：
-    #   - uniform/varlen decode 有每请求上界，用它得到紧 grid；
-    #   - 混合 prefill 没有单请求上界，用“总 block 上界 + kernel 内二分映射”，
-    #     避免给每条请求都分配 ceil(N/BLOCK_M) 个 block。
-    total_blocks = q.shape[0] // block_q + num_reqs
-    if max_query_len is not None:
-        blocks_per_req = max(1, triton.cdiv(max_query_len, block_q))
-        per_req_blocks = num_reqs * blocks_per_req
-        if per_req_blocks <= total_blocks:
-            # 每请求上界更紧：pid -> (req, q_blk) 用整除，不需要二分。
-            num_blocks = per_req_blocks
-            use_block_map = False
-        else:
-            # max_query_len 只是上界，真实 q_len 很小时总 block 上界反而更紧。
-            blocks_per_req = 1
-            num_blocks = total_blocks
-            use_block_map = True
-    else:
-        blocks_per_req = 1
-        num_blocks = total_blocks
-        use_block_map = True
+    # 上游同款上界：sum ceil(q_len/BLOCK_Q) <= floor(N/BLOCK_Q) + num_reqs。
+    # 不做 max_query_len 分支；kernel 内二分负责 block -> (req, q_blk)。
+    num_blocks = q.shape[0] // block_q + num_reqs
     num_kv_heads = k.shape[2]
     _fixed_paged_attention_kernel[(num_blocks, num_kv_heads)](
         q, out, k, v,
@@ -222,9 +193,7 @@ def fixed_paged_attention(
         BLOCK_SIZE=block_size,
         BLOCK_M=block_m,
         BLOCK_N=block_n,
-        BLOCKS_PER_REQ=blocks_per_req,
         NUM_REQS=num_reqs,
-        USE_BLOCK_MAP=use_block_map,
         HEAD_DIM=head_dim,
         BLOCK_D=block_d,
         GROUP_SIZE=group_size,

@@ -66,19 +66,15 @@ BLOCK_Q = BLOCK_M // GROUP_SIZE     # 每个 program 覆盖的 query 位置数
 BLOCK_M = 16                        # Q tile 行数 = BLOCK_Q × GROUP_SIZE
 ```
 
-grid：
+grid（所有 batch 统一）：
 
 ```text
-decode（有 max_query_len）：
-    (num_reqs * ceil(max_query_len / BLOCK_Q), num_kv_heads)
-
-prefill/混合（没有单请求上界）：
-    (floor(N / BLOCK_Q) + num_reqs, num_kv_heads)
+(floor(N / BLOCK_Q) + num_reqs, num_kv_heads)
 ```
 
 `N = q.shape[0]`（本轮 token 行数，图路径里是补齐后的宽度）。
 
-prefill 的 grid 用**上游同款的上界**：
+grid 用**上游同款的上界**：
 
 ```text
 sum_i ceil(q_len_i / BLOCK_Q)
@@ -97,20 +93,9 @@ q_block_local = pid - (query_start_loc[req] // BLOCK_Q + req)
 `ceil(N/BLOCK_M)` 个 block。多出来的少量 block 由
 `q_blk * BLOCK_Q < q_len` guard 跳过。
 
-decode 有 `uniform_query_len` / `max_query_len`（Python int），但它只是**上界**。
-所以 launcher 取两者较小值：
-
-```text
-per_request_bound = num_reqs * ceil(max_query_len / BLOCK_Q)
-total_bound       = floor(N / BLOCK_Q) + num_reqs
-
-num_blocks = min(per_request_bound, total_bound)
-```
-
-- 若 `per_request_bound <= total_bound`：用整除映射（无二分）；
-- 否则：用总 block 上界 + kernel 内二分。
-
-因此 decode 不是“永远用 max_query_len 更紧”；它只是候选上界之一，最终取更紧的那个。
+**上游 grid 不使用 `max_query_len`**：`max_query_len` 只作为 kernel 的
+`max_seqlen_q`/tile 参数；grid 始终是总 block 上界 + 二分映射。本实现也统一成这一条，
+不再加“decode 按 max_query_len 预分配 block”的分支。
 
 - decode：`q_len` 通常 1..K+1，只有一个 query block；
 - prefill：`q_len` 可达多块，每个 query block 独立 program，**并行执行**；
@@ -147,8 +132,7 @@ block 并行。这个固定 kernel 的目标就是这个场景，而不是通用
 
 不会再有“每请求固定 `ceil(N/BLOCK_M)` 个 block”的浪费：
 
-- decode：`min(B*ceil(max_query_len/BLOCK_Q), floor(N/BLOCK_Q)+B)`；
-- prefill/混合：grid 上界 `floor(N/BLOCK_Q)+num_reqs`，kernel 内二分映射；
+- 所有 batch：grid 上界 `floor(N/BLOCK_Q)+num_reqs`，kernel 内二分映射；
 - 上界之外只可能有至多 `num_reqs` 个空 block（数学上界），由 guard 跳过。
 
 例如：
@@ -158,15 +142,6 @@ B=4, N=64, q_lens=[1,1,1,61], BLOCK_Q=8（GQA group=2）
 sum ceil = 1+1+1+8 = 11
 grid 上界 = floor(64/8)+4 = 12
 → 最多 1 个空 block（旧的“每请求 8 个”会是 32 个）
-```
-
-反例：`max_query_len` 很松时，总 block 上界可能更紧：
-
-```text
-B=8, N=8, 每请求 1 行, max_query_len=16, BLOCK_Q=4
-per_request_bound = 8 * ceil(16/4) = 32
-total_bound       = floor(8/4) + 8 = 10
-→ 选 total_bound=10，而不是 32
 ```
 
 上游也是同样的思路；它没有把每请求 block 数写到 Python 侧，而是把
@@ -194,7 +169,7 @@ pytest tests/step74/test_triton_backend_e2e.py -q → 3 passed
   - block4 fallback、EAGLE3 target、block16 fixed kernel
 pytest tests/step79 -q                            → 47 passed
   - DSpark adaptive + block16 fixed kernel
-pytest tests/step58 … tests/step79 -q             → 969 passed
+pytest tests/step58 … tests/step79 -q             → 968 passed
 ```
 
 ## 7. 差异账本

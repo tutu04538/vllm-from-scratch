@@ -5164,7 +5164,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 157,
-    "sha256": "8fde09b881efdb89c00e8d4cb1900bca206e61a3015c0125e6d08a0f3375d9a9",
+    "sha256": "eccde5c8919c97b1bb1762f55be733856b32b5501225608978be572b524af715",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5195,14 +5195,14 @@
     }
    ],
    "execution_trace": {
-    "kernel": "一个 program = (request, query block, query head)；grid=(num_reqs*ceil(N/16), num_heads)",
+    "kernel": "一个 program = (query block, kv head)；grid=(floor(N/BLOCK_Q)+B, num_kv_heads)",
     "query tiling": "Q tile [16,D]，K tile [64,D]，tl.dot；decode 1 块，prefill 多块并行；超出 q_len 的 block guard 跳过",
     "decode K/V": "1..K+1 行同 program，共享一次 K/V 扫描",
     "prefill": "20 行 + 7 行 case 与 Torch generic 对照通过；多个 query block 并行",
     "block16 e2e": "非投机混合批、block16、head16，输出与 Torch eager 逐 token 相同",
     "adaptive": "DSpark adaptive + block16，输出与 eager 相同；_cudagraph_limit=8",
     "代码量": "fixed_attention.py 约 230 行；triton_attn.py 约 100 行；删除 vendored 1639 行",
-    "grid": "decode: min(B*ceil(max_q/BLOCK_Q), floor(N/BLOCK_Q)+B)，取较小者；prefill/混合: floor(N/BLOCK_Q)+B + kernel 二分",
+    "grid": "grid 统一为 floor(N/BLOCK_Q)+B + kernel 内二分；不使用 max_query_len 预分配 block",
     "GQA": "BLOCK_M=16 行 = BLOCK_Q×GROUP_SIZE；一个 program 覆盖 GROUP_SIZE 个 q head，K/V 在 GQA 组内复用；grid 第二维 Hk"
    },
    "known_gaps": [

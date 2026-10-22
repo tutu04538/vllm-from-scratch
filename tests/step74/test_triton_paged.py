@@ -106,38 +106,3 @@ def test_fixed_kernel_query_tiled_prefill_matches_generic():
         block_size=block_size, scale=1.0 / 4.0)
     torch.testing.assert_close(out.view(num_tokens, -1), want,
                                rtol=1e-3, atol=1e-3)
-
-
-@requires_cuda
-def test_fixed_kernel_chooses_tighter_total_block_bound():
-    """max_query_len 很松（16）但真实每请求 1 行：总 block 上界反而更紧。"""
-    from minivllm.attention.ops.fixed_attention import fixed_paged_attention
-
-    torch.manual_seed(0)
-    heads, head_size, kv_heads = 8, 16, 2
-    block_size, num_blocks, num_reqs = 16, 4, 8
-    kv_cache = torch.randn(2, num_blocks, block_size, kv_heads, head_size,
-                           device="cuda", dtype=torch.float16)
-    block_table = torch.stack([
-        torch.arange(num_blocks, dtype=torch.int32, device="cuda")
-        for _ in range(num_reqs)])
-    qsl = torch.tensor([0] + [i + 1 for i in range(num_reqs)],
-                       dtype=torch.int32, device="cuda")
-    seq = torch.ones(num_reqs, dtype=torch.int32, device="cuda")
-    query = torch.randn(num_reqs, heads * head_size,
-                        device="cuda", dtype=torch.float16)
-    meta = AttentionMetadata(
-        query_start_loc=qsl, seq_lens=seq, block_table=block_table,
-        slot_mapping=torch.arange(num_reqs, device="cuda"),
-        block_size=block_size, num_reqs=num_reqs,
-        max_query_len=16)
-    want = TorchAttentionImpl(heads, head_size, 1.0 / 4.0, kv_heads)\
-        ._forward_generic(query, kv_cache, meta)
-    out = torch.zeros(num_reqs, heads, head_size,
-                      device="cuda", dtype=torch.float16)
-    fixed_paged_attention(
-        query.view(num_reqs, heads, head_size), out,
-        kv_cache[0], kv_cache[1], block_table, seq, qsl,
-        block_size=block_size, scale=1.0 / 4.0, max_query_len=16)
-    torch.testing.assert_close(out.view(num_reqs, -1), want,
-                               rtol=1e-3, atol=1e-3)

@@ -59,8 +59,6 @@ class TritonAttentionImpl(TritonPagedAttentionImpl):
             attn_metadata.query_start_loc[: attn_metadata.num_reqs + 1],
             block_size=attn_metadata.block_size,
             scale=self.scale,
-            max_query_len=(attn_metadata.uniform_query_len
-                           or attn_metadata.max_query_len),
         )
         return out.reshape(num_tokens, num_heads * head_size)
 
