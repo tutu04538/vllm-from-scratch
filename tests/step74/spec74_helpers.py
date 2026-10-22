@@ -55,7 +55,8 @@ DEFAULT_SIZES = [1, 2, 3, 4, 8]
 def make_config(*, spec_k: int = 3, mode: str = "full_decode_only",
                 capture_sizes=DEFAULT_SIZES, budget: int = 64, blocks: int = 64,
                 max_num_seqs: int = 3, max_model_len: int = 64,
-                draft_sample: str = "greedy", attention_backend: str = "torch"):
+                draft_sample: str = "greedy", attention_backend: str = "torch",
+                block_size: int = 4):
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     spec = None
     if spec_k is not None:
@@ -67,7 +68,7 @@ def make_config(*, spec_k: int = 3, mode: str = "full_decode_only",
     return VllmConfig(
         model_config=ModelConfig(model=TINY, dtype="float32", max_model_len=max_model_len,
                                  hf_config=HF),
-        cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks),
+        cache_config=CacheConfig(block_size=block_size, num_gpu_blocks=blocks),
         scheduler_config=SchedulerConfig(max_num_seqs=max_num_seqs,
                                          max_num_batched_tokens=budget),
         device_config=DeviceConfig(device=DEVICE), speculative_config=spec,

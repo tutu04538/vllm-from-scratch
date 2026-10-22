@@ -366,3 +366,26 @@ def test_adaptive_triton_backend_is_really_always():
     assert manager.varlen_decode is True
     assert any(s["mode"] == "FULL" and s["replayed"]
                for s in manager.selections)
+
+
+@requires_cuda
+def test_adaptive_triton_attn_unified_block16_matches_eager():
+    """block16 时走 vendored 上游 unified_attention，而不是本地逐行 fallback。"""
+    from minivllm.config import CUDAGraphMode
+
+    eager_engine, _, eager_runner = make_adaptive_engine(
+        adaptive=True, mode="none", attention_backend="torch", block_size=16)
+    _set_intermediate_budget(eager_runner)
+    eager_out = run_adaptive(eager_engine, PROMPTS, max_tokens=4)
+
+    graph_engine, _, graph_runner = make_adaptive_engine(
+        adaptive=True, mode="full", capture_sizes=(4, 8), max_num_seqs=2,
+        attention_backend="triton_attn", block_size=16)
+    _set_intermediate_budget(graph_runner)
+    assert graph_runner.attention_backend_name == "triton_attn"
+    assert graph_runner.attention_backend.get_name() == "TRITON_ATTN"
+    assert graph_runner.cudagraph_mode == CUDAGraphMode.FULL
+    assert graph_runner._target_varlen_cudagraphs_enabled() is True
+    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4)
+    assert graph_out == eager_out
+    assert graph_runner.adaptive_verification._cudagraph_limit == 8

@@ -1731,10 +1731,10 @@ class VllmConfig:
 
     def _validate_attention_backend(self) -> None:
         name = str(self.attention_backend).lower()
-        if name not in ("torch", "triton"):
+        if name not in ("torch", "triton", "triton_attn", "triton_paged"):
             raise ValueError(
-                f"attention_backend 只支持 'torch' / 'triton'，收到 "
-                f"{self.attention_backend!r}")
+                f"attention_backend 只支持 'torch' / 'triton' / 'triton_attn' / "
+                f"'triton_paged'，收到 {self.attention_backend!r}")
         # VllmConfig 是 frozen dataclass；归一化交给调用方读取时做，不在这里赋值。
         if name == "triton" and not self.use_v2_model_runner:
             raise NotImplementedError(

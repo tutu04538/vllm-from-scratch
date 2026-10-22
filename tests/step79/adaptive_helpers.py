@@ -97,7 +97,7 @@ class ManagerFixture:
 def make_adaptive_engine(*, k=3, draft_sample_method="greedy", adaptive=True,
                          confidence_head=True, max_num_seqs=2, mode="none",
                          capture_sizes=(6, 12), budget=64, spec_kwargs=None,
-                         attention_backend="torch", **kwargs):
+                         attention_backend="torch", block_size=4, **kwargs):
     """真正的 V2 引擎；`adaptive=False` 用于固定枚数对照。"""
     _, draft_config = model_configs(confidence_head=confidence_head, **kwargs)
     spec = SpeculativeConfig(
@@ -110,7 +110,7 @@ def make_adaptive_engine(*, k=3, draft_sample_method="greedy", adaptive=True,
     )
     config = make_vllm_config(
         spec, max_num_seqs=max_num_seqs, budget=budget, mode=mode,
-        capture_sizes=capture_sizes)
+        capture_sizes=capture_sizes, block_size=block_size)
     object.__setattr__(config, "attention_backend", attention_backend)
     with v2_env():
         engine = LLMEngine(

@@ -108,14 +108,14 @@ def make_spec_config(*, k: int = 3, draft_sample_method: str = "probabilistic",
 
 def make_vllm_config(spec: SpeculativeConfig, *, max_num_seqs: int = 2,
                      budget: int = 64, blocks: int = 64, mode: str = "none",
-                     capture_sizes=(6, 12)) -> VllmConfig:
+                     capture_sizes=(6, 12), block_size: int = 4) -> VllmConfig:
     from minivllm.config import CompilationConfig
 
     target_config, _ = model_configs()
     with v2_env():
         return VllmConfig(
             model_config=target_config,
-            cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks),
+            cache_config=CacheConfig(block_size=block_size, num_gpu_blocks=blocks),
             scheduler_config=SchedulerConfig(max_num_seqs=max_num_seqs,
                                              max_num_batched_tokens=budget),
             device_config=DeviceConfig(device=DEVICE), speculative_config=spec,

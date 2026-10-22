@@ -81,3 +81,23 @@ def test_triton_spec_target_graph_matches_torch_eager():
     assert runner.cudagraph_mode == CUDAGraphMode.FULL
     assert runner.target_cudagraph_manager is not None
     assert runner.target_cudagraph_manager.graphs
+
+
+@requires_cuda
+def test_triton_attn_upstream_kernel_block16_matches_torch():
+    """上游 unified_attention 子集：block_size=16、head_dim=16 的真实 kernel。"""
+    eager, _, _ = make_engine(
+        spec_k=None, mode="none", capture_sizes=[4, 8, 12], max_num_seqs=2,
+        block_size=16)
+    want = _run_mixed(eager)
+
+    graph, _, runner = make_engine(
+        spec_k=None, mode="full", capture_sizes=[4, 8, 12], max_num_seqs=2,
+        block_size=16, attention_backend="triton_attn")
+    got = _run_mixed(graph)
+    assert got == want
+    assert runner.attention_backend_name == "triton_attn"
+    assert runner.attention_backend.get_name() == "TRITON_ATTN"
+    assert runner.cudagraph_mode == CUDAGraphMode.FULL
+    assert runner.target_cudagraph_manager is not None
+    assert runner.target_cudagraph_manager.graphs
