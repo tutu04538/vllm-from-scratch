@@ -626,6 +626,20 @@ class SpeculativeConfig:
         """是否为原生 MTP（权重在 target checkpoint 里）。"""
         return self.method == "mtp"
 
+    def use_gemma4_mtp(self) -> bool:
+        """是否为 Gemma4 assistant 的 Q-only MTP（80D 只做映射，80E 才接模型结构）。
+
+        判据与冻结配置一致：方法仍是 `mtp`，靠 draft 配置的 `model_type` 区分
+        `gemma4_mtp`。不能用 `num_nextn_predict_layers` 判——那是多模块 MTP 的判据，
+        两个维度互不替代。
+        """
+        return (
+            self.method == "mtp"
+            and self.draft_model_config is not None
+            and str((self.draft_model_config.hf_config or {}).get(
+                "model_type", "")) == "gemma4_mtp"
+        )
+
     def use_multi_module_mtp(self) -> bool:
         """是否用到**多个** MTP 模块（上游 `config/speculative.py:1501-1507`）。
 

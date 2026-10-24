@@ -167,6 +167,21 @@ class TorchAttentionImpl:
     def forward(self, layer, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 kv_cache, attn_metadata: AttentionMetadata):
         self.write_kv(key, value, kv_cache, attn_metadata)
+        return self._forward_from_cache(query, kv_cache, attn_metadata)
+
+    def forward_q_only(self, layer, query: torch.Tensor, kv_cache,
+                       attn_metadata: AttentionMetadata):
+        """80D：Q-only 层只读 target 已写好的 KV，**绝不写**。
+
+        入口与普通 `forward` 分开，而不是"传一对 dummy K/V 再判断"：一旦走错到
+        普通分支就会把 dummy 写进 target 的 cache（不报错，只污染上下文）。这里
+        连 `write_kv` 都不调用，读路径与普通注意力共用同一段（eager 逐请求 /
+        图内固定形状 / varlen）。
+        """
+        return self._forward_from_cache(query, kv_cache, attn_metadata)
+
+    def _forward_from_cache(self, query: torch.Tensor, kv_cache,
+                            attn_metadata: AttentionMetadata):
         if self._graph_dispatched():
             if attn_metadata.uniform_query_len is not None:
                 return self._forward_padded(query, kv_cache, attn_metadata)

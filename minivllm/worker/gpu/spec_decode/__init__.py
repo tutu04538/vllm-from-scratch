@@ -4,9 +4,10 @@
 EAGLE 系），最后 `else: raise NotImplementedError(f"{method} is not supported yet.")`。
 
 本仓库 73 关实现 EAGLE 系（`use_eagle()`：eagle / eagle3 / mtp）里的 **EAGLE3 与 EAGLE-1**、
-76 关加 **DFlash**、77 关加 **DSpark**、80B 加 **多模块 MTP**（`use_multi_module_mtp()`）；
-其余分支保持"明确拒绝"——**不把普通 draft/ngram 等自动转接到别的算法上**（那会让配置说一套、
-跑的是另一套）。每个未实现分支都写明归属关卡。
+76 关加 **DFlash**、77 关加 **DSpark**、80B 加 **多模块 MTP**（`use_multi_module_mtp()`）、
+80D 加 **Gemma4 Q-only 共享映射**（映射本身在 `gemma4/kv_sharing.py`；这里只明确拒绝，
+把模型结构与真实接入留给 80E）；其余分支保持"明确拒绝"——**不把普通 draft/ngram 等自动
+转接到别的算法上**（那会让配置说一套、跑的是另一套）。每个未实现分支都写明归属关卡。
 """
 
 import torch
@@ -34,10 +35,18 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
         from .dspark.speculator import DSparkSpeculator
 
         return DSparkSpeculator(vllm_config, device)
+    elif speculative_config.use_gemma4_mtp():
+        # 80D 只落地 Q-only 共享映射与只读契约；Gemma4 assistant 的模型结构、加载和
+        # 真实接入属 80E。这里明确拒绝，不能让它落到普通 mtp 分支——那条路会按 Qwen
+        # MTP 加载/对齐，KV 读错也不会报 shape 错。
+        raise NotImplementedError(
+            "Gemma4 MTP 的 Q-only KV 共享映射已在 80D 落地，但 assistant 模型结构与"
+            "真实接入属 80E；当前不能把它当普通 mtp 运行（会读错 KV）。"
+        )
     elif speculative_config.use_multi_module_mtp():
         # 80B/80C：单卡、纯文本、支持整段 K 步循环 CUDA Graph 的
-        # MultiModuleMTPSpeculator。专用模型（Gemma4/Step3p5）、Q-only 共享 KV、
-        # 稀疏索引分别属 80D–80G，不在这个分支里偷偷替换。
+        # MultiModuleMTPSpeculator。Gemma4 已在上面明确拒绝；Step3p5、稀疏索引
+        # 分别属 80F/80G，不在这个分支里偷偷替换。
         from .multi_module_mtp.speculator import MultiModuleMTPSpeculator
 
         return MultiModuleMTPSpeculator(vllm_config, device)

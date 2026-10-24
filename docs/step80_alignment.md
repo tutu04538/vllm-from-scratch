@@ -1,9 +1,9 @@
-# 第 80 关对齐记录（80A / 80B / 80C）
+# 第 80 关对齐记录（80A / 80B / 80C / 80D）
 
-> 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复** 与
-> **80C 多模块整段 CUDA Graph/采样生命周期**；80D–80H 未开始。80C 之后，多模块
-> 草稿的 K 步循环可以被捕获成一张 FULL 图，混合批仍走 eager；PIECEWISE 按冻结源码
-> 降级，不做分段图。
+> 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复**、
+> **80C 多模块整段 CUDA Graph/采样生命周期** 与 **80D Q-only 共享 KV 的映射与只读
+> 契约**；80E–80H 未开始。80D 只做机制（源层映射、只读、固定位置、所有权），不加载
+> 真实 Gemma4；真实 assistant 结构与端到端接入属 80E。
 
 ## 0. 需求与边界
 
@@ -11,6 +11,7 @@
   - `投机解码完整需求/080A_多模块输入布局与跨轮缓存.md`
   - `投机解码完整需求/080B_多模块Eager执行与拒绝后KV修复.md`
   - `投机解码完整需求/080C_多模块Graph与采样生命周期.md`
+  - `投机解码完整需求/080D_Q_only共享KV的映射与只读契约.md`
 - 80A 做**输入准备和跨轮缓存布局**：把 target 本轮输入整理成 draft 的 packed 行，
   把窗口尾部 token/hidden/embedding 按持久 slot 缓存，定义窗口移动与尾部 padding。
 - 80B 把 80A 接成 V2 的 `MultiModuleMTPSpeculator`：显式 `propose()`、整段 packed
@@ -18,8 +19,12 @@
 - 80C 把 80B 已经正确的整段循环（`cache_inputs` → K 个 module forward → 采样 →
   hidden 回写/输入 shift）捕获成一张 FULL 图；`propose` 只做图外输入准备、分派和
   `run_fullgraph`，不在 replay 后补 CPU 计算。
-- 明确不做：Gemma4、Step3p5、Q-only 共享 KV、稀疏索引、真实 MTP 权重、性能矩阵。
-  生产工厂把 `use_multi_module_mtp()` 分派到本类；其它专用模型分支仍保持明确拒绝。
+- 80D 做 **Q-only 草稿层的源层映射 + 只读读路径**：按 target `layer_types` 与
+  `num_kv_shared_layers` 选同类型最后一个非共享源层；draft 层只绑 target 的 cache，
+  不计算/不写 K/V、不分配/不释放第二份 cache；同轮草稿步 positions/seq_lens 固定。
+  映射用冻结上游方法逐例差分，真实 Gemma4 assistant 仍明确拒绝（80E）。
+- 明确不做：Gemma4/Step3p5 模型结构、真实 MTP 权重、稀疏索引、性能矩阵。
+  生产工厂把 `use_multi_module_mtp()` 分派到多模块类；Gemma4 分支明确拒绝。
 
 ## 1. 路径映射
 
@@ -29,6 +34,10 @@
 | `minivllm/worker/gpu/input_batch.py::InputBuffers` | `v1/worker/gpu/input_batch.py::InputBuffers` |
 | `minivllm/worker/gpu/input_batch.py::InputBatch` | 同上 `InputBatch` |
 | `minivllm/worker/gpu/block_table.py::PAD_SLOT_ID` | `v1/attention/backends/utils.py::PAD_SLOT_ID` |
+| `minivllm/worker/gpu/spec_decode/gemma4/kv_sharing.py` | `v1/worker/gpu/spec_decode/gemma4/speculator.py::Gemma4Speculator._setup_gemma4_kv_sharing` |
+| `minivllm/attention/layer.py::Attention.bind_shared_kv_cache` / `forward` 的 `q_only` 分支 | `model_executor/models/gemma4_mtp.py::Gemma4MTPAttention` + `Attention` 的共享读路径 |
+| `minivllm/attention/backends/torch_sdpa.py::forward_q_only` | 后端"只读 cache、不写 K/V"的读路径 |
+| `minivllm/worker/gpu/model_runner.py::_allocate_draft_kv_caches` 的共享分支 | Runner 把 target cache 绑给 draft、跳过分配 |
 
 本关实现的函数（均与上游同名）：
 
@@ -449,7 +458,8 @@ CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80 -q
    `dispatch` 返回 NONE。直接 `FULL` 的混合桶虽能被源码 manager 捕获，但本机正常
    Torch V2 路径走不到；不把这条当生产能力。
 3. **单卡、纯文本**：不接 DP/EPLB/`num_tokens_across_dp`/多模态；`inputs_embeds=None`。
-4. **没有专用模型**：Gemma4/Step3p5/Q-only/稀疏索引分别属 80D–80G。
+4. **没有专用模型**：Gemma4/Step3p5/稀疏索引分别属 80E–80G；Q-only 共享契约已在
+   §10（80D）落地，但真实 Gemma4 仍未接入。
 5. **没有真实权重与性能结论**：tiny `Qwen3MTP` 是测试材料；不声称真实多模块 MTP
    的加速比。
 6. **旧测试名保留、字段不保留**：`test_multi_module_mtp_full_graph_matches_eager`
@@ -469,3 +479,149 @@ CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80 -q
   改成模式收敛断言。
 - `docs/step80_alignment.md`：本 §9；`docs/results.json` → `step80.subrequirements.80C`；
   `docs/README.md` / `minivllm/README.md` 同步 80C。
+
+## 10. 80D：Q-only 共享 KV 的映射与只读契约
+
+### 10.1 范围与冻结入口
+
+80D 只做"Q-only 草稿层怎么正确读 target 的 KV"这一层协议：
+
+- 参考冻结 `v1/worker/gpu/spec_decode/gemma4/speculator.py::_setup_gemma4_kv_sharing`
+  的选源规则；
+- 参考 `model_executor/models/gemma4_mtp.py::Gemma4MTPAttention` 的 `q_only` 语义：
+  本层只算 Q，K/V 来自 target；
+- 不实现 Gemma4 assistant 的模型结构/加载/真实接入（80E），也不把 tiny Qwen 层拼成
+  "能服务的 Gemma4" 来冒充。
+
+### 10.2 映射规则与固定例子
+
+所有权与字段：
+
+| 字段 | 来源/所有者 | 80D 的用法 |
+|---|---|---|
+| target `layer_types` | target 模型配置 | 建"类型 → 非共享层下标"表 |
+| target `num_kv_shared_layers` | target 模型配置 | 尾部这么多层是消费者，不参与选源 |
+| draft `layer_types` | assistant 配置 | 决定每个 draft 层选哪种类型 |
+| `kv_sharing_target_layer_name` | speculator 写入、Runner 消费 | 形如 `<真实前缀>.<idx>.self_attn.attn` |
+| 物理 KV | target 分配/写入，draft 只读 | draft 不分配、不写、不释放 |
+
+规则（与冻结方法逐条一致）：
+
+```text
+num_non_shared = len(target_layer_types) - target_num_kv_shared_layers
+候选 = target_layer_types[:num_non_shared] 中同类型的下标
+draft 第 i 层 → 候选[-1]（同类型最后一个非共享源层）
+draft 类型列表短了 → 默认 full_attention
+没找到同类型候选 → 保留 kv_sharing_target_layer_name=None，告警
+```
+
+固定例子：target `[S,F,S,F,S]`、`num_kv_shared_layers=1`，尾部第 4 层是 S 类型的
+**消费者**，只有前 4 层可以当源：
+
+| draft 层 | 类型 | 同类型非共享候选 | 选中 |
+|---|---|---|---|
+| 0 | S | 0, 2 | **2** |
+| 1 | F | 1, 3 | **3** |
+
+所以结果是 `model.layers.2.self_attn.attn` / `model.layers.3.self_attn.attn`，不是
+把所有 draft 层都指向第 4 层。真实层名前缀从 target 的注意力层名里取（例如
+`language_model.model.layers.2.self_attn.attn`），不写死 `model.layers`。
+
+`num_kv_shared_layers` 数的是 **target 内部复用别人 KV 的消费者层**，不是"被别人复用
+的源层"；80D 只用它排除尾部层，不实现 target 内部的跨层共享执行。
+
+### 10.3 只读契约与所有权
+
+- `Attention.q_only=True` 时，`forward()` 只调后端的 `forward_q_only()`；后者
+  直接 `_forward_from_cache()`，**不调用 `write_kv`**。后端没有 `forward_q_only`
+  就明确 `NotImplementedError`，不退回普通 `forward`（那会把 dummy K/V 写进 target）。
+- `Attention.bind_shared_kv_cache()` 只做检查与绑定：
+  - KV heads、head_size 必须一致；
+  - cache 形状必须是 `[2, blocks, block_size, kv_heads, head_size]` 且连续；
+  - draft 浮点 dtype 必须与 target cache 一致；
+  - **不要求 Q heads 相等**：GQA 下 draft 的 Q 头数可以与 target 不同；
+  - 源层不能自己也是 `q_only`（禁止共享链），且必须真正持有传入的 cache 对象。
+- Runner 的 `_allocate_draft_kv_caches()`：
+  - 有 `kv_sharing_target_layer_name` → 从 `self.kv_caches` 取 target 的那份，验证
+    block 数/block_size/层存在，然后 `bind_shared_kv_cache()`；**不新建 cache**；
+  - `q_only=True` 但没有映射 → 抛出 `NotImplementedError`；**不静默分配第二份**；
+  - 普通草稿层保持原有分配逻辑不变。
+- 源 cache 的分配/写入/释放仍归 target；草稿层重建、slot 复用或请求结束时都不 free
+  源 cache。
+
+### 10.4 固定位置
+
+Q-only 不追加 K/V，所以同一轮 K 个草稿步里 positions/seq_lens 必须保持不变。现有
+`advance_draft_positions=False` 会强制融合多步；80D 的测试直接跑
+`update_draft_inputs(..., advance_draft_positions=False)` 的 Triton 内核，确认它只改
+`input_ids`/hidden 反馈，不改 positions/seq_lens。
+
+### 10.5 验证
+
+新增 `tests/step80/test_q_only_contract.py`，共 **26 passed**，覆盖：
+
+1. 固定例子：`[S,F,S,F,S]` + `num_kv_shared_layers=1` → `[2,3]`；
+2. 与已安装冻结 vLLM 的 `_setup_gemma4_kv_sharing` 逐例差分（5 组：正常、默认类型、
+   缺类型、真实前缀、全部共享）；
+3. 缺类型保留 `None` + 告警，Runner 对未接线 Q-only 层明确拒绝；
+4. 源 KV 在 Q-only 前向（eager 与 FULL 读路径）前后逐字节一致；
+5. 相同 Q/KV 与独立手写注意力数学逐值对照；
+6. 无新增草稿 cache 分配（patch `torch.zeros` 为抛错，仍能绑定）；
+7. KV heads/head_size/dtype/非连续布局/共享链的拒绝；
+8. Q heads 不同但 KV 相同 → 允许；
+9. 重新绑定/重建草稿层后源 cache 对象与内容不变；
+10. `update_draft_inputs` 在 `advance_draft_positions=False` 下 positions/seq_lens 固定。
+
+命令与结果：
+
+```bash
+PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
+PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
+  tests/step80/test_q_only_contract.py -q      # 26 passed
+PATH=... $PY -m pytest tests/step80 -q          # 86 passed（60 + 26）
+CUDA_VISIBLE_DEVICES='' PATH=... $PY -m pytest \
+  tests/step80/test_q_only_contract.py -q      # 25 passed, 1 skipped
+```
+
+全量回归结果（2026-10-25 本机）：**1054 passed, 149 warnings in 136.04s**（80C 后
+1028 + 80D 26；无回归）。`tests/step80` 为 **86 passed**；CPU-only 跑本文件的
+Q-only 测试为 **25 passed, 1 skipped**（Triton 位置用例明确 skip）。
+包摘要：`minivllm/` **161** 个 `.py`，sha256
+`65b6ec08f6fed84ddb607651d3fb47720ad6fd4ee9de853e304a28984410e56d`。
+
+### 10.6 差异与边界
+
+1. **只做 V2 机制**：`Attention`/Runner 的共享读路径是 V2 的；V1 的 Gemma4 proposer
+   与 per-group metadata 属 80E，不在本关改。
+2. **不实现真实 Gemma4**：没有 `Gemma4MTPAttention`/decoder/loader，也没有真实权重；
+   工厂对 `model_type == "gemma4_mtp"` 明确拒绝并指向 80E，避免落到普通 mtp 分支。
+3. **混合 SWA/full 不执行**：本关只验证选源（例如 `[S,F,S,F,S]`），不同窗口/不同
+   KV group 的真实执行依赖 81 的多 group/backend；不能把"映射对"说成"混合执行完成"。
+4. **非法共享层数明确报错**：冻结方法对 `num_kv_shared_layers > len(layer_types)` 会
+   走 Python 负切片；本仓库在纯映射入口直接 `ValueError`，不静默少看层。合法配置
+   行为与冻结方法一致。
+5. **dtype 严格相等**：Q-only 读取按同一 cache dtype 检查；这是冻结路径的同 dtype
+   前提。没有用"读到 float32 再转"来掩盖不一致。
+6. **未做性能测量**：Q-only 的收益是省一份草稿 KV，不在本关给加速比。
+
+### 10.7 全量回归与改动文件
+
+- 全量回归：**1054 passed, 149 warnings in 136.04s**；`tests/step80` **86 passed**；
+  CPU-only Q-only 测试 **25 passed, 1 skipped**；包摘要 161 个 `.py` /
+  `65b6ec08f6fed84ddb607651d3fb47720ad6fd4ee9de853e304a28984410e56d`。
+- 改动文件：
+  - `minivllm/attention/layer.py`：`q_only`/`kv_sharing_target_layer_name`、
+    `bind_shared_kv_cache()`、`forward()` 的 Q-only 分派。
+  - `minivllm/attention/backends/torch_sdpa.py`：`forward_q_only()` 与
+    `_forward_from_cache()`（普通 forward 行为不变）。
+  - `minivllm/worker/gpu/model_runner.py`：`_allocate_draft_kv_caches()` 的共享绑定、
+    只读检查、未接线拒绝、禁止二次分配。
+  - `minivllm/worker/gpu/spec_decode/gemma4/kv_sharing.py`（新增）：纯映射与
+    `setup_gemma4_kv_sharing()`。
+  - `minivllm/worker/gpu/spec_decode/gemma4/__init__.py`（新增）。
+  - `minivllm/config.py`：`use_gemma4_mtp()` 判据。
+  - `minivllm/worker/gpu/spec_decode/__init__.py`：Gemma4 分支明确拒绝并指向 80E。
+  - `tests/step80/test_q_only_contract.py`（新增，26 项）。
+  - `docs/step80_alignment.md`、`docs/results.json`、`docs/README.md`、
+    `minivllm/README.md`。

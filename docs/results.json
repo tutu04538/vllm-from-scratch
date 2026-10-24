@@ -5486,6 +5486,64 @@
       "note": "本机没有真实多模块 MTP 权重；集成/质量/加速比「待验」"
      }
     }
+   },
+   "80D": {
+    "results": {
+     "step": "80D",
+     "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080D_Q_only共享KV的映射与只读契约.md",
+     "status": "implemented + self-verified（**只做 Q-only 共享机制**；不加载真实 Gemma4，不做混合 SWA/full 执行）。按冻结 `_setup_gemma4_kv_sharing` 实现纯映射：target `layer_types` + `num_kv_shared_layers` 只在非共享前缀里建候选，draft 每层取同类型最后一个源层；固定例子 `[S,F,S,F,S]` + 1 个共享尾层，draft `[S,F]` → target 2/3。`Attention.q_only` 走 `forward_q_only()`，只读 target cache、不写 K/V；Runner 只绑同一 cache 对象，不分配/不释放第二份；KV heads/head_size/dtype/连续布局/共享链逐项检查，Q heads 允许不同；缺失映射的 Q-only 层明确报错，不静默退回独立 cache。新增 26 项测试：固定映射、5 组冻结上游方法差分、源 KV 逐字节不变、无新增分配、独立注意力数学、eager/FULL 读路径、位置固定（Triton 实跑）、KV 参数/布局/共享链拒绝、重绑不释放源 cache。tests/step80 86 passed；全量 1054 passed。",
+     "recorded_at": "2026-10-25T00:03:00+08:00",
+     "git": {
+      "baseline_commit_at_record_time": "3f09a9a",
+      "implementation_commit": "见本轮提交（step80D：Q-only 共享 KV 的映射与只读契约）"
+     },
+     "package": {
+      "root": "minivllm/",
+      "python_files": 161,
+      "sha256": "65b6ec08f6fed84ddb607651d3fb47720ad6fd4ee9de853e304a28984410e56d",
+      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+     },
+     "environment": {
+      "python": "3.12.14",
+      "torch": "2.13.0+cu130",
+      "triton": "3.7.1",
+      "vllm": "0.28.0（测试中只读调用冻结 `Gemma4Speculator._setup_gemma4_kv_sharing` 做差分；生产路径不 import）",
+      "device": "cuda:0（RTX 5090 Laptop / WSL2）；映射/只读数学用例大部分在 CPU",
+      "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+      "env": "PATH 需包含 conda env 的 ninja（全量回归的 UVA 扩展）；80D 本身不需要新模型权重"
+     },
+     "commands": [{"cmd": "python -m pytest tests/step80/test_q_only_contract.py -q", "result": "26 passed（25 个 CPU 映射/只读/所有权用例 + 1 个 CUDA Triton 位置固定用例）"}, {"cmd": "python -m pytest tests/step80 -q", "result": "86 passed（80A 43 + 80B 8 + 80C 9 + 80D 26）"}, {"cmd": "python -m pytest tests/step58 … tests/step79 tests/step80 -q", "result": "1054 passed, 149 warnings in 136.04s（= 80C 后 1028 + 80D 26；无回归）"}, {"cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_q_only_contract.py -q", "result": "25 passed, 1 skipped（Triton 位置用例明确 skip；不是把未验项变 pass）"}],
+     "execution_trace": {
+      "映射规则": "num_non_shared = len(target_layer_types) - num_kv_shared_layers；只在 target 前 num_non_shared 层按类型建候选；draft 类型缺失默认 full_attention；每层取 candidates[-1]；源层名用 target 真实前缀拼 `.idx.self_attn.attn`。",
+      "固定例子": "target `[S,F,S,F,S]`、num_kv_shared_layers=1：可选源层 0..3；draft 第 0 层 S → 2，第 1 层 F → 3；第 4 层是消费者，不选。",
+      "冻结差分": "5 组输入（正常、draft 类型列表短、缺类型、language_model 前缀、全部共享）与已安装 vLLM 0.28.0 的 `_setup_gemma4_kv_sharing` 输出的 target layer name 完全一致。",
+      "只读": "Q-only `forward()` 调 `TorchAttentionImpl.forward_q_only()`，不调用 `write_kv`；执行前后 target cache 逐字节相同；eager 与 FULL 读路径都与独立手写 softmax(QK^T/√d)V 逐值对照。",
+      "所有权": "Runner 从 `kv_caches` 取 target 源层对象与 cache，`bind_shared_kv_cache()` 只检查并赋同一对象；patch `torch.zeros` 为抛错仍能绑定；源 cache 的 block 数/block_size/层存在性也检查。",
+      "未接线": "`q_only=True` 且 `kv_sharing_target_layer_name=None` → `NotImplementedError`；不会分配独立 KV。",
+      "兼容性": "KV heads/head_size 相等、cache 形状 [2,blocks,block_size,kv_heads,head] 且连续、draft dtype 与 cache 相等；Q heads 不同 → 允许；源层自己 q_only → 拒绝。",
+      "位置固定": "`update_draft_inputs(..., advance_draft_positions=False)` 实跑：positions `[7,11]`、seq_lens `[9,13]` 不变，input_ids 更新为草稿 token，hidden 反馈写入。",
+      "重绑": "替换草稿模型后再次绑定，target cache 仍是同一对象、内容不变；没有 free/二次分配。"
+     },
+     "known_gaps": ["真实 Gemma4 assistant 结构/加载/端到端接入未做（80E）；本关只有 Attention 级 Q-only 读路径与映射。工厂对 `model_type=gemma4_mtp` 明确拒绝，避免落到普通 mtp。", "混合 SWA/full 的真实执行未做：仅验证选源；不同窗口/不同 KV group 依赖 81 的多 group/backend。", "V1 的 Gemma4 proposer/per-group metadata 未改；本关是 V2 Attention/Runner 机制。", "非法 `num_kv_shared_layers`（负值或超过层数）在纯映射入口明确 ValueError；冻结方法会走负切片，这是有意的输入校验差异。合法配置逐例一致。", "dtype 严格要求与 target cache 相等；没有用读时转换掩盖不一致。", "没有真实权重，也没有性能矩阵；不声称 Q-only 的加速比或真实模型草稿质量。"]
+    },
+    "models": {
+     "target": {
+      "path": "无真实 Gemma4 target；映射测试使用带 `layer_types`/`num_kv_shared_layers` 的结构接口对象",
+      "architectures": ["Gemma4AssistantForCausalLM（仅配置判据，不加载）"],
+      "dtype": "未运行",
+      "note": "80D 不加载模型；真实 target 架构/权重属 80E/81"
+     },
+     "draft": {
+      "path": "无真实 Gemma4 assistant；Q-only 读路径用 `Attention` + target cache 的测试对象",
+      "architectures": ["Gemma4MTPModel（仅工厂拒绝分支判据）"],
+      "dtype": "float32（契约测试 cache）",
+      "note": "tiny Qwen 不冒充 Gemma4 assistant；真实结构属 80E.E1"
+     },
+     "real_weights": {
+      "status": "缺",
+      "note": "本机没有 Gemma4 assistant/target 权重；映射与只读机制已验，集成/质量/加速比「待验」"
+     }
+    }
    }
   }
  }

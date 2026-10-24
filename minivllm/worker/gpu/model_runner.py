@@ -445,10 +445,46 @@ class GPUModelRunner:
         # ——`next(parameters()).dtype` 会拿到 int64，KV 缓存就变成整型，写 K/V 时当场
         # `index_copy_` 的 dtype 不匹配（77 关做 DSpark 缩减词表时踩到；DFlash 同款）。
         draft_dtype = next(p.dtype for p in draft_model.parameters() if p.is_floating_point())
+        # 80D：Q-only 层直接绑 target 源层的物理 cache。先把 target 的层对象按层名找到；
+        # 只按名字从 `kv_caches` 里拿 cache 不够——兼容性检查还要读源层的 KV heads/head_size。
+        target_layers = self._attention_layers()
         names: set[str] = set()
         for name, module in draft_model.named_modules():
             if not isinstance(module, Attention):
                 continue
+            shared_name = module.kv_sharing_target_layer_name
+            if shared_name is not None:
+                if shared_name not in self.kv_caches:
+                    raise KeyError(
+                        f"Q-only 草稿层 {name!r} 要共享 target 层 {shared_name!r} 的 KV，"
+                        f"但 target 没有这个 cache（可用层：{sorted(self.kv_caches)}）"
+                    )
+                target_layer = target_layers.get(shared_name)
+                if target_layer is None:
+                    raise KeyError(
+                        f"Q-only 草稿层 {name!r} 的源层 {shared_name!r} 不是 target 的 "
+                        f"Attention 层"
+                    )
+                cache = self.kv_caches[shared_name]
+                if (cache.shape[0] != 2
+                        or cache.shape[1] != kv_cache_config.num_gpu_blocks
+                        or cache.shape[2] != self.block_size):
+                    raise ValueError(
+                        f"Q-only 源层 {shared_name!r} 的 KV cache 布局与本轮不一致："
+                        f"cache={tuple(cache.shape)}，期望 "
+                        f"[2, {kv_cache_config.num_gpu_blocks}, {self.block_size}, "
+                        f"kv_heads, head_size]"
+                    )
+                module.bind_shared_kv_cache(
+                    target_layer, cache, draft_dtype=draft_dtype)
+                names.add(name)
+                continue
+            if module.q_only:
+                raise NotImplementedError(
+                    f"草稿层 {name!r} 声明为 Q-only，但没有 kv_sharing_target_layer_name。"
+                    f"Q-only 共享映射未接线时不能给它分配独立 KV：那会静默读错上下文。"
+                    f"先由 speculator 的映射建立源层，再初始化 KV cache。"
+                )
             cache = torch.zeros(
                 2,
                 kv_cache_config.num_gpu_blocks,
