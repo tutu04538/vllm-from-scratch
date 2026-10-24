@@ -1,4 +1,4 @@
-"""多模块 MTP 的输入布局、跨轮缓存与 eager 执行（需求 080A / 080B）。
+"""多模块 MTP 的输入布局、跨轮缓存、eager 执行与 CUDA Graph（080A/080B/080C）。
 
 对应冻结上游 `v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py`。本文件分两层：
 
@@ -9,17 +9,19 @@
         pad_trailing_draft_slots / _pad_trailing_draft_slots_kernel
         update_draft_inputs / _shift_input_ids_kernel / _shift_input_embeds_kernel
 
-    执行层（80B）
+    执行层（80B eager + 80C Graph）
         MultiModuleMTPSpeculator：显式 propose → _prepare_inputs →
-        slots/pad/metadata → _generate_drafts → cache_inputs →
+        slots/pad/metadata → _generate_drafts（或整段 replay）→ cache_inputs →
         每个 module forward / sample / update_draft_inputs
 
-80B 只做**单卡、纯文本、eager**：没有 Gemma4、Step3p5、Q-only 共享 KV、稀疏索引
-或 CUDA Graph。图模式在 `init_cudagraph_manager()` 里明确拒绝（属 80C）；工厂仍会把
-`use_multi_module_mtp()` 分派到本类，其他专用模型分支保持原样。
+80B 做**单卡、纯文本、eager**；80C 把整段 K 步循环捕获成一张 FULL 图，混合批仍
+走 eager。图模式按冻结 `init_cudagraph_manager()` 收敛：PIECEWISE 不支持，纯
+PIECEWISE -> NONE，FULL_AND_PIECEWISE -> FULL_DECODE_ONLY。没有 Gemma4、Step3p5、
+Q-only 共享 KV 或稀疏索引。
 
 输入布局一旦错位，后面的模型计算与 KV 修复都会把错误带到更深处，而且不会报错；
-所以 80A 的逐值差分与 80B 的“逐模块 KV 对照”是两套独立证据。
+所以 80A 的逐值差分、80B 的“逐模块 KV 对照”与 80C 的“replay 后常驻状态对照”
+是三套独立证据。
 
 三个索引必须分开（本文件所有函数都按这条写）：
 
@@ -39,6 +41,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -46,11 +49,15 @@ import torch
 from .....config import CUDAGraphMode, VllmConfig
 from .....forward_context import BatchDescriptor, set_forward_context
 from .....triton_utils import tl, triton
-from ....utils import AttentionGroup
+from ....utils import AttentionGroup, get_uniform_decode_token_count
 from ...block_table import PAD_SLOT_ID
+from ...cudagraph_utils import BatchExecutionDescriptor
 from ...input_batch import InputBatch, InputBuffers
 from ..eagle.utils import load_eagle_model
 from ..speculator import DraftModelSpeculator
+from ..autoregressive.cudagraph_utils import SpeculatorCudaGraphManager
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -749,24 +756,27 @@ def update_draft_inputs(
 
 
 # ---------------------------------------------------------------------------
-# 6. eager 执行层（80B）
+# 6. 执行层（80B eager + 80C CUDA Graph）
 # ---------------------------------------------------------------------------
 
 
 class MultiModuleMTPSpeculator(DraftModelSpeculator):
     """多模块 MTP 的 V2 提议者（对应上游 `MultiModuleMTPSpeculator`）。
 
-    本类只实现 **单卡、纯文本、eager** 的冻结调用链。与上游的差异都来自本仓库缺少的
+    本类实现 **单卡、纯文本** 的冻结调用链，并且和上游一样把**整段 K 步循环**
+    `_generate_drafts` 录成图；混合批仍走 eager。与上游的差异都来自本仓库缺少的
     组件（ModelState / kv_cache_config / DP / 多模态），逐条记在
     `docs/step80_alignment.md`：
 
     - 不接收 `num_tokens_across_dp` / `mm_inputs` / `skip_attn_for_dummy_run`；
-    - 不建 `SpeculatorCudaGraphManager`（80C 才做图）；`init_cudagraph_manager()` 对
-      非 NONE 模式明确抛 `NotImplementedError`；
+    - 一个 `SpeculatorCudaGraphManager` 管理整段循环，不套用普通自回归的
+      prefill/decode 两张图；
+    - 图模式按冻结 `init_cudagraph_manager()` 收敛：带 PIECEWISE 时降级，
+      纯 PIECEWISE → NONE，FULL_AND_PIECEWISE → FULL_DECODE_ONLY；
     - `inputs_embeds` 恒为 None（本关纯文本），只走 80A 的无 embedding 分支。
     """
 
-    #: 80B 没有 adaptive verification；runner 用它决定是否建 79 关 manager。
+    #: 多模块 MTP 没有 adaptive verification；runner 用它决定是否建 79 关 manager。
     enable_adaptive_verification = False
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
@@ -812,9 +822,12 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         self.target_input_buffers: InputBuffers | None = None
         self.target_build_attn_metadata = None
 
-        # 80C 的图管理器；80B 恒为空。runner 的 capture 统计读这个字段。
-        self.cudagraph_manager = None
+        # 80C 的图管理器；一个 manager 管整段 K 步循环。runner 的 capture 统计读
+        # `cudagraph_managers`，所以这里保留与自回归路径同形的账本接口。
+        self.cudagraph_manager: SpeculatorCudaGraphManager | None = None
         self.cudagraph_managers: dict[str, Any] = {}
+        self.cudagraph_mode = CUDAGraphMode.NONE
+        self.requested_cudagraph_mode = CUDAGraphMode.NONE
         self.use_fused_multi_step_decode = False
 
     # -------- 加载与注意力设施 --------
@@ -857,18 +870,60 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         ]]
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
-        """80B 只支持 eager；图模式明确拒绝，留到 80C。"""
-        if cudagraph_mode != CUDAGraphMode.NONE:
-            raise NotImplementedError(
-                "多模块 MTP 的 CUDA Graph 属 80C；80B 只支持 eager "
-                f"（cudagraph_mode=NONE），收到 {cudagraph_mode!r}"
+        """建多模块草稿的图管理器（对应冻结 `init_cudagraph_manager()`）。
+
+        冻结源码只对 **PIECEWISE** 做降级，不把 FULL 降成 FULL_DECODE_ONLY：
+
+            PIECEWISE              -> NONE（没有 FULL 那一半）
+            FULL_AND_PIECEWISE     -> FULL_DECODE_ONLY（保留 decode 的 FULL）
+            FULL / FULL_DECODE_ONLY / NONE -> 原样
+
+        这就是“PIECEWISE 不支持，但不是一个未声明的 eager 假动作”：降级后的
+        mode 会写到 `self.cudagraph_mode`，测试与 results 可以查。
+        """
+        self.requested_cudagraph_mode = cudagraph_mode
+        draft_mode = cudagraph_mode
+        if draft_mode.has_piecewise_cudagraphs():
+            draft_mode = (
+                CUDAGraphMode.FULL_DECODE_ONLY
+                if draft_mode.has_full_cudagraphs()
+                else CUDAGraphMode.NONE
             )
-        self.cudagraph_manager = None
-        self.cudagraph_managers = {}
+            logger.warning(
+                "多模块 MTP 不支持 PIECEWISE CUDA Graph（冻结源码的 TODO）："
+                "requested=%s，草稿实际=%s",
+                cudagraph_mode.name,
+                draft_mode.name,
+            )
+        self.cudagraph_mode = draft_mode
+        self.cudagraph_manager = SpeculatorCudaGraphManager(
+            self.vllm_config,
+            self.device,
+            draft_mode,
+            # 整段 K 步循环按“每请求 K+1 行（anchor + K 个 draft 输入）”建图；
+            # 不能套普通 decode 的 1 行/请求。
+            self.num_speculative_steps + 1,
+        )
+        # runner 的 capture 统计按名字遍历；与自回归路径的 prefill/decode 账本同形。
+        self.cudagraph_managers = {"multi_module": self.cudagraph_manager}
 
     def capture(self) -> None:
-        raise NotImplementedError(
-            "多模块 MTP 的图捕获属 80C；80B 的 init_cudagraph_manager() 已拒绝非 NONE 模式"
+        """捕获整段 `_generate_drafts`（K 个模块步 + 采样 + 输入 shift）。
+
+        捕获前清掉两个跨轮索引的旧值：dummy 批会按它们选采样行/写 cache；上一轮
+        留下的 slot 可能越界。上游只清 `last_token_indices`，这里连 `idx_mapping`
+        一起清，避免 dummy 请求把 cache 写到非 0 slot（问题一样，只是更早暴露）。
+        """
+        assert self.cudagraph_manager is not None, "先调 init_cudagraph_manager()"
+        self.last_token_indices.zero_()
+        self.idx_mapping.zero_()
+        self.hidden_states.zero_()
+        self.cudagraph_manager.capture(
+            self._generate_drafts,
+            self._draft_attn_metadata_for_capture,
+            self.input_buffers,
+            self.block_tables,
+            progress_bar_desc="Capturing multi-module MTP CUDA graphs",
         )
 
     # -------- 主流程 --------
@@ -902,7 +957,8 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         if num_reqs == 0:
             return self.draft_tokens[:0]
 
-        num_tokens = input_batch.num_tokens
+        num_tokens = int(input_batch.num_tokens)
+        num_tokens_padded = int(input_batch.num_tokens_after_padding)
         max_query_len = int(input_batch.num_scheduled_tokens.max())
         max_seq_len = int(
             input_batch.seq_lens_cpu_upper_bound[:num_reqs].max().item()
@@ -927,7 +983,55 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
             next_prefill_tokens,
         )
 
-        # 槽位按“本轮 packed 窗口的位置”现算；尾部无效行必须打成 PAD。
+        # 统一 decode 的判定与自回归路径同一条：未补齐的 num_tokens、真实 max query。
+        # 多模块整段循环的图键是“每请求 K+1 行”，所以这里给出实际行数，不在外面
+        # 用 Python 去猜。
+        uniform_token_count = get_uniform_decode_token_count(
+            num_reqs, num_tokens, max_query_len, input_batch.has_prefill
+        )
+        batch_desc = self._dispatch_cudagraph(
+            num_reqs,
+            num_tokens_padded,
+            uniform_token_count,
+            need_eager=is_profile,
+        )
+
+        if batch_desc.cg_mode == CUDAGraphMode.FULL:
+            # 图在捕获时已经记下了整段循环的 metadata 指针。运行期必须把同一批
+            # 常驻缓冲（块表 / slot_mapping / seq_lens / query_start_loc）写到与
+            # 捕获桶一致的状态，然后只 replay，不再跑 `_generate_drafts`。
+            num_reqs_padded = batch_desc.num_reqs or num_reqs
+            num_tokens_graph = batch_desc.num_tokens
+            if num_tokens_graph > num_tokens:
+                # 图桶比真实批大：补齐行不能读上一轮的 token/position/hidden。
+                self.input_buffers.input_ids[num_tokens:num_tokens_graph].zero_()
+                self.input_buffers.positions[num_tokens:num_tokens_graph].zero_()
+                self.hidden_states[num_tokens:num_tokens_graph].zero_()
+
+            self.block_tables.gather_block_tables(
+                self.idx_mapping[:num_reqs], num_reqs_padded
+            )
+            slot_mappings_tensor = self.block_tables.compute_slot_mappings(
+                self.idx_mapping[:num_reqs],
+                self.input_buffers.query_start_loc,
+                self.input_buffers.positions,
+                num_tokens_graph,
+            )
+            if num_tokens_graph > num_tokens:
+                # `compute_slot_mappings` 只按真实请求数启动；图桶多出来的行
+                # 必须显式写哨兵，否则 replay 会按上一轮残值写 KV。
+                slot_mappings_tensor[:, num_tokens:].fill_(PAD_SLOT_ID)
+            pad_trailing_draft_slots(
+                slot_mappings_tensor,
+                self.input_buffers.query_start_loc,
+                self.last_token_indices[:num_reqs],
+                num_reqs,
+            )
+            assert self.cudagraph_manager is not None
+            self.cudagraph_manager.run_fullgraph(batch_desc)
+            return self.draft_tokens[:num_reqs]
+
+        # eager / 非图回退：槽位按“本轮 packed 窗口的位置”现算；尾部无效行必须打 PAD。
         slot_mappings_tensor = self.block_tables.compute_slot_mappings(
             self.idx_mapping[:num_reqs],
             self.input_buffers.query_start_loc,
@@ -952,6 +1056,38 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
             slot_mappings_by_layer,
         )
         return self.draft_tokens[:num_reqs]
+
+    def _dispatch_cudagraph(
+        self,
+        num_reqs: int,
+        num_tokens: int,
+        uniform_token_count: int | None,
+        need_eager: bool = False,
+    ) -> BatchExecutionDescriptor:
+        """图分派（唯一写入 selection 账本的地方；与 74 的薄封装同形）。"""
+        manager = self.cudagraph_manager
+        if manager is None:
+            return BatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.NONE,
+                num_tokens=num_tokens,
+                num_reqs=num_reqs,
+            )
+        desc = manager.dispatch(
+            num_reqs,
+            num_tokens,
+            uniform_token_count,
+            need_eager=need_eager,
+        )
+        manager.record_selection(desc, num_reqs, num_tokens)
+        return desc
+
+    @property
+    def cudagraph_selections(self) -> list[dict]:
+        """多模块草稿的“真实选中”账本（与自回归路径同形，测试直接读）。"""
+        manager = self.cudagraph_manager
+        if manager is None:
+            return []
+        return [dict(entry, graph="multi_module") for entry in manager.selections]
 
     def _prepare_inputs(
         self,
@@ -994,25 +1130,71 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         )
 
     def _build_draft_attn_metadata(
-        self, num_reqs: int, num_tokens: int
+        self,
+        num_reqs: int,
+        num_tokens: int,
+        *,
+        num_reqs_padded: int | None = None,
+        num_tokens_padded: int | None = None,
+        uniform_query_len: int | None = None,
+        max_query_len: int | None = None,
+        block_table: torch.Tensor | None = None,
+        slot_mapping: torch.Tensor | None = None,
     ) -> dict[str, Any] | None:
-        """为 packed query 建**一份**metadata（eager、非图、逐请求路径）。
+        """为 packed query 建**一份**metadata。
 
-        本后端在 eager 下按 `query_start_loc`/`seq_lens` 走 `_forward_generic`；这里不传
-        `uniform_query_len`，因为多模块第一遍的 query 长度可以是变长/混合 prefill。
+        eager 路径传 `uniform_query_len=None`，让 Torch 后端走逐请求 `_forward_generic`；
+        图捕获路径必须把图的形状固定成 Python int（统一 decode 时是 K+1，混合 FULL
+        桶则用 `max_query_len`），否则捕获窗口里会落到数据相关路径。
+
+        `num_reqs_padded` / `num_tokens_padded` 只在图桶比真实批大时传入；对应的
+        padding 行由调用方写 `seq_lens=0`、slot=-1 和块表 0。
         """
         if not self.attn_groups:
             return None
+        reqs = num_reqs if num_reqs_padded is None else num_reqs_padded
+        tokens = num_tokens if num_tokens_padded is None else num_tokens_padded
         builder = self.attn_groups[0][0].get_metadata_builder()
-        block_table = self.block_tables.input_block_tables[0][:num_reqs]
+        if block_table is None:
+            block_table = self.block_tables.input_block_tables[0][:reqs]
+        if slot_mapping is None:
+            slot_mapping = self.block_tables.slot_mappings[0][:tokens]
         metadata = builder.build(
-            query_start_loc=self.input_buffers.query_start_loc[: num_reqs + 1],
-            seq_lens=self.input_buffers.seq_lens[:num_reqs],
+            query_start_loc=self.input_buffers.query_start_loc[: reqs + 1],
+            seq_lens=self.input_buffers.seq_lens[:reqs],
             block_table=block_table,
-            slot_mapping=self.block_tables.slot_mappings[0][:num_tokens],
-            num_reqs=num_reqs,
+            slot_mapping=slot_mapping,
+            num_reqs=reqs,
+            uniform_query_len=uniform_query_len,
+            max_query_len=max_query_len,
         )
         return {name: metadata for name in self._draft_layer_names()}
+
+    def _draft_attn_metadata_for_capture(
+        self, input_batch: InputBatch
+    ) -> dict[str, Any]:
+        """捕获期 metadata：dummy 输入由 `prepare_inputs_to_capture()` 写进常驻缓冲。
+
+        统一 decode 桶的每请求行数就是 `input_batch.uniform_query_len`（K+1）；
+        混合 FULL 桶的 dummy 批可能不整齐，用 `max_query_len` 让 Torch 后端的
+        `_forward_varlen_padded` 仍然有固定上界。两种情况都不调用
+        `build_for_cudagraph_capture()`：本仓库的 Torch 图路径按 forward context 的
+        runtime mode 分流，不靠把 seq_lens 填 1 来选 kernel。
+        """
+        uniform = input_batch.uniform_query_len
+        max_query = None if uniform is not None else int(input_batch.max_query_len)
+        metadata = self._build_draft_attn_metadata(
+            input_batch.num_reqs,
+            input_batch.num_tokens,
+            uniform_query_len=uniform,
+            max_query_len=max_query,
+            block_table=self.block_tables.input_block_tables[0][
+                : input_batch.num_reqs
+            ],
+            slot_mapping=self.block_tables.slot_mappings[0][: input_batch.num_tokens],
+        )
+        assert metadata is not None
+        return metadata
 
     def _draft_layer_names(self) -> list[str]:
         if self.attn_groups:
@@ -1026,13 +1208,18 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         attn_metadata: dict[str, Any] | None,
         slot_mappings: dict[str, torch.Tensor] | None,
         spec_module_idx: int,
+        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """跑一个真实 MTP 模块；`spec_module_idx` 由模型自己的协议解释。"""
+        """跑一个真实 MTP 模块；`spec_module_idx` 由模型自己的协议解释。
+
+        `cudagraph_runtime_mode` 只在捕获时传 FULL；重放时整个 Python 循环不会执行，
+        由 `torch.cuda.CUDAGraph` 按捕获时的 kernels 顺序跑完 K 步。
+        """
         batch_descriptor = BatchDescriptor(num_tokens=num_tokens)
         with set_forward_context(
             attn_metadata,
             num_tokens=num_tokens,
-            cudagraph_runtime_mode=CUDAGraphMode.NONE,
+            cudagraph_runtime_mode=cudagraph_runtime_mode,
             batch_descriptor=batch_descriptor,
             slot_mapping=slot_mappings,
         ):
@@ -1055,6 +1242,7 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         num_tokens: int,
         attn_metadata: dict[str, Any] | None,
         slot_mappings: dict[str, torch.Tensor] | None,
+        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     ) -> None:
         """整段 packed query 的模块循环（对应上游同名方法）。
 
@@ -1087,12 +1275,23 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         for step in range(self.num_speculative_steps):
             self.current_draft_step.fill_(step)
 
-            last_hidden_states, hidden_states = self._run_model(
-                num_tokens,
-                attn_metadata,
-                slot_mappings,
-                spec_module_idx=step,
-            )
+            # eager 路径保持 4 参数调用（80B 的观测/替换点不变）；只有捕获时把
+            # FULL 传进 forward context，让注意力走图内固定形状路径。
+            if cudagraph_runtime_mode == CUDAGraphMode.NONE:
+                last_hidden_states, hidden_states = self._run_model(
+                    num_tokens,
+                    attn_metadata,
+                    slot_mappings,
+                    spec_module_idx=step,
+                )
+            else:
+                last_hidden_states, hidden_states = self._run_model(
+                    num_tokens,
+                    attn_metadata,
+                    slot_mappings,
+                    spec_module_idx=step,
+                    cudagraph_runtime_mode=cudagraph_runtime_mode,
+                )
             sample_hidden_states = last_hidden_states[last_token_indices]
             draft_tokens = self.sample_draft(
                 sample_hidden_states,

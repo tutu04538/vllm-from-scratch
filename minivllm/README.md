@@ -806,7 +806,7 @@ DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DF
 + standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）+
 breakable PIECEWISE（Phase 3，混合批）+ 固定场景 Triton paged（target 混合批 FULL、adaptive 真正 ALWAYS）；
-多模块 MTP（80 关）还没接；adaptive verification 已在 79 关接上；Triton 后端需显式
+多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph；专用模型/Q-only/稀疏索引仍属 80D–80G）；adaptive verification 已在 79 关接上；Triton 后端需显式
 `attention_backend="triton_attn"`（`"triton"` 别名），默认仍是 Torch。
 另外两条容易误以为已经具备的能力：
 
@@ -873,7 +873,7 @@ python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 python -m pytest tests/step79 -q                     # 47 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + TRITON_ATTN ALWAYS）
-python -m pytest tests/step80 -q                     # 51 项：step80A/80B（输入布局差分 + 多模块 eager/逐模块 KV 独立重放）
+python -m pytest tests/step80 -q                     # 60 项：step80A/80B/80C（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

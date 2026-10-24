@@ -35,9 +35,9 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
 
         return DSparkSpeculator(vllm_config, device)
     elif speculative_config.use_multi_module_mtp():
-        # 80B：单卡、纯文本、eager 的 MultiModuleMTPSpeculator。
-        # 专用模型（Gemma4/Step3p5）、Q-only 共享 KV、稀疏索引与 CUDA Graph
-        # 分别属 80C–80G，不在这个分支里偷偷替换。
+        # 80B/80C：单卡、纯文本、支持整段 K 步循环 CUDA Graph 的
+        # MultiModuleMTPSpeculator。专用模型（Gemma4/Step3p5）、Q-only 共享 KV、
+        # 稀疏索引分别属 80D–80G，不在这个分支里偷偷替换。
         from .multi_module_mtp.speculator import MultiModuleMTPSpeculator
 
         return MultiModuleMTPSpeculator(vllm_config, device)

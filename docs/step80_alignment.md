@@ -1,21 +1,25 @@
-# 第 80 关对齐记录（80A / 80B）
+# 第 80 关对齐记录（80A / 80B / 80C）
 
-> 本文件按子需求追加。当前完成 **80A 输入层**与 **80B eager 执行/拒绝后 KV 修复**；
-> 80C 的 Graph 与采样生命周期、80D–80H 均未开始。80B 只支持单卡、纯文本、eager；
-> `init_cudagraph_manager()` 对非 NONE 模式明确拒绝。
+> 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复** 与
+> **80C 多模块整段 CUDA Graph/采样生命周期**；80D–80H 未开始。80C 之后，多模块
+> 草稿的 K 步循环可以被捕获成一张 FULL 图，混合批仍走 eager；PIECEWISE 按冻结源码
+> 降级，不做分段图。
 
 ## 0. 需求与边界
 
 - 需求：
   - `投机解码完整需求/080A_多模块输入布局与跨轮缓存.md`
   - `投机解码完整需求/080B_多模块Eager执行与拒绝后KV修复.md`
+  - `投机解码完整需求/080C_多模块Graph与采样生命周期.md`
 - 80A 做**输入准备和跨轮缓存布局**：把 target 本轮输入整理成 draft 的 packed 行，
   把窗口尾部 token/hidden/embedding 按持久 slot 缓存，定义窗口移动与尾部 padding。
 - 80B 把 80A 接成 V2 的 `MultiModuleMTPSpeculator`：显式 `propose()`、整段 packed
   query 的模块循环、按 `spec_step_idx` 选模块、拒绝后 gap 在当前 query 窗口内重算。
-- 明确不做：Gemma4、Step3p5、Q-only 共享 KV、稀疏索引、CUDA Graph、真实 MTP 权重、
-  性能测试。生产工厂现在会把 `use_multi_module_mtp()` 分派到 80B 的类；其它专用模型
-  分支仍保持明确拒绝。
+- 80C 把 80B 已经正确的整段循环（`cache_inputs` → K 个 module forward → 采样 →
+  hidden 回写/输入 shift）捕获成一张 FULL 图；`propose` 只做图外输入准备、分派和
+  `run_fullgraph`，不在 replay 后补 CPU 计算。
+- 明确不做：Gemma4、Step3p5、Q-only 共享 KV、稀疏索引、真实 MTP 权重、性能矩阵。
+  生产工厂把 `use_multi_module_mtp()` 分派到本类；其它专用模型分支仍保持明确拒绝。
 
 ## 1. 路径映射
 
@@ -246,12 +250,12 @@ seq_len: 8 -> 8 - 2 = 6
 
 ### 8.3 验证
 
-新增 `tests/step80/test_multi_module_reprefill_alignment.py`，**8 passed**。加上 80A
-的 43 项，`tests/step80` 共 **51 passed**。
+新增 `tests/step80/test_multi_module_reprefill_alignment.py`，**8 passed**。80B 完成时
+加上 80A 的 43 项，`tests/step80` 共 **51 passed**（80C 后为 60）。
 
 - **调用链/边界**（纯 CPU + CUDA）：工厂返回 `MultiModuleMTPSpeculator`；K=2/4、
-  模块数=2；每轮 `spec_step_idx` 为 `0..K-1`；`init_cudagraph_manager(FULL)` 与
-  `capture()` 都明确抛 80C 的 `NotImplementedError`。
+  模块数=2；每轮 `spec_step_idx` 为 `0..K-1`；纯 CPU 用例检查
+  `init_cudagraph_manager()` 的模式收敛（80C 起不再拒绝图；见 §9）。
 - **greedy 烟测**：K=2/4 的投机输出与不投机逐 token 相同（只作为最后一项，不当主证据）。
 - **独立重放**（主证据）：`RoundRecorder` 记录生产每轮的 target hidden/token/
   position、`num_rejected/num_sampled/last_sampled/next_prefill`、上一轮 cache 与各模块
@@ -272,7 +276,7 @@ seq_len: 8 -> 8 - 2 = 6
   trace 里必须有 partial prefill、prefix 命中、抢占恢复；输出与不投机相同
   （`num_preemptions > 0` 有断言，不是空转）。
 
-全量回归：
+全量回归（80B 完成时）：
 
 ```bash
 PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
@@ -286,8 +290,9 @@ python -m pytest tests/step58 … tests/step79 tests/step80 -q
 
 ### 8.4 80B 的差异与边界
 
-1. **只支持 eager**：`init_cudagraph_manager` 对 `FULL`/`FULL_AND_PIECEWISE` 等非
-   NONE 模式明确拒绝；图捕获、q/RNG/slot 归属属 80C。
+1. **80B 本身只验证 eager**：80C 已把 `init_cudagraph_manager`/`capture` 接到
+   `SpeculatorCudaGraphManager`，并覆盖 q/RNG/slot 归属；Graph 的模式收敛、
+   replay 对齐与图桶复用见 §9。
 2. **只支持纯文本**：`inputs_embeds` 恒为 None；80A 的 embedding 分支不接生产。
    多模态 MTP 不在本关。
 3. **只支持单卡**：不接 DP/EPLB/`num_tokens_across_dp`；上游这些参数本仓库没有对应
@@ -312,3 +317,155 @@ python -m pytest tests/step58 … tests/step79 tests/step80 -q
 - `minivllm/worker/gpu/model_runner.py`：多模块 MTP 的 `num_prefill_lookahead=K`。
 - `tests/step80/test_multi_module_reprefill_alignment.py`：新增 8 项。
 - 本文件追加 80B 小节；`docs/results.json` → `step80.subrequirements.80B`。
+
+## 9. 80C：多模块 Graph 与采样生命周期
+
+### 9.1 范围与冻结入口
+
+80C 不新增模型结构，只把 80B 已经跑通的整段多模块循环录成图。参考：
+
+- 冻结 `v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py` 的
+  `init_cudagraph_manager()` / `capture()` / `propose()` / `_generate_drafts()`；
+- `v1/worker/gpu/spec_decode/autoregressive/cudagraph_utils.py::SpeculatorCudaGraphManager`；
+- 本仓库 74 的 `CudaGraphManager` / `BatchExecutionDescriptor` / 常驻输入缓冲。
+
+和普通自回归路径最大的区别：**一个 manager 捕获整段 K 步循环**，不是 prefill/decode
+两张图。`decode_query_len = K + 1`（每请求 anchor + K 个 draft 输入行）。
+
+### 9.2 请求模式 → 草稿实际模式
+
+冻结源码只对 PIECEWISE 降级，不把 FULL 降成 FULL_DECODE_ONLY：
+
+| 请求的 `cudagraph_mode` | 实际草稿 manager 模式 | 行为 |
+|---|---|---|
+| `NONE` | `NONE` | 全 eager |
+| `PIECEWISE` | `NONE` | 全 eager；log 记录 requested/actual |
+| `FULL` | `FULL` | 源码原样保留 |
+| `FULL_DECODE_ONLY` | `FULL_DECODE_ONLY` | decode 批 FULL，混合批 eager |
+| `FULL_AND_PIECEWISE` | `FULL_DECODE_ONLY` | 丢掉 PIECEWISE 那一半 |
+
+运行时真正捕获的图只有 FULL；multi-module 没有 PIECEWISE 分段图。冻结源码的
+`# TODO: Support piecewise cudagraph for multi-module MTP` 原样保留为边界，不自己发明
+一套分段图。
+
+注意 `FULL` 在源码里不降级，但本仓库正常 V2 + Torch 后端路径会在 74 的
+`resolve_cudagraph_mode_and_sizes()` 里先把 `FULL` 收成 `FULL_AND_PIECEWISE`（Torch
+后端只支持 UNIFORM_BATCH），80C 再收成 `FULL_DECODE_ONLY`。直接对 speculator 调
+`init_cudagraph_manager(FULL)` 时 manager 仍保留 FULL；这是源码语义与本地后端能力的
+交界，不是 80C 偷偷改写模式。
+
+### 9.3 捕获与重放边界
+
+捕获对象就是 `_generate_drafts`：
+
+```text
+cache_inputs（第一个模块之前）
+→ for step in 0..K-1:
+      module forward(spec_module_idx=step)
+      sample_draft（真实 q 缓存路径）
+      hidden 回写 / update_draft_inputs
+```
+
+关键点：
+
+1. **顺序与 eager 完全一致**。图里没有“采样后再用 CPU 修正”的第二套逻辑。
+2. `spec_module_idx` 是 Python 循环变量，捕获时展开，决定每步用哪个 MTP module；
+   `current_draft_step` 是 GPU 标量，`fill_(step)` 也被录进图，供采样/q 缓存使用。
+   两者不能互相替代：不能用 `.item()` 从 GPU 标量选 module，也不能用 Python step
+   冒充采样需要的 GPU 标量。
+3. `capture()` 前清 `last_token_indices` / `idx_mapping` / `hidden_states`，避免 dummy
+   批读到上一轮的越界 slot；上游只清 `last_token_indices`，这里多清两个是同一类防护。
+4. 运行期 `propose()` 在图外做 `_prepare_inputs`、块表 gather、slot mapping/pad；
+   选中 FULL 后只调 `run_fullgraph(desc)`，不执行 Python `_generate_drafts`。
+5. 图桶比真实批大时：补齐的 input_ids/positions/hidden 清零，块表行清零，
+   `seq_lens=0`，slot 写 `PAD_SLOT_ID(-1)`；0 号块留白。重放只写真实槽位。
+
+### 9.4 q / RNG / slot 归属
+
+- q 缓存列按 `current_draft_step` 落到 0..K-1；不是重放时都写同一列。
+- temperature/seeds 是逐请求常驻缓冲；图里采样 kernel 读当前值，不会冻结捕获时的
+  随机数。
+- `idx_mapping` 每轮在 replay 前更新；图地址不变，但 q/候选/KV 归属跟随新的 batch
+  顺序，不跟随捕获时 dummy 顺序。
+- padding 请求 `idx_mapping=-1`：`cache_inputs` 跳过、采样忽略、槽位 PAD；不能写到
+  0 号 slot 或有效请求的块。
+
+### 9.5 验证
+
+新增 `tests/step80/test_multi_module_graph_state.py`，**9 passed**：
+
+1. `test_graph_modes_follow_frozen_downgrade`：五种请求模式的收敛表（纯 CPU）。
+2. `test_k1_does_not_take_multi_module_path`：K=1 仍走普通 `MTPSpeculator`，不冒充
+   多模块。
+3. `test_graph_replay_matches_eager_q_and_module_kv`：K=3、probabilistic、B=2；
+   replay 与 eager 比候选 token、q 的 K 列、跨轮 `cached_ids/cached_hidden`，以及
+   每个模块在本轮 draft 窗口**同一逻辑位置**上的 KV（经各自 block table 映射，不能
+   直接比物理块号）。
+4. `test_multi_module_mtp_full_graph_matches_eager`：需求点名的旧测试名保留；断言
+   一个 manager、捕获 2 个桶、selection 真正 replayed，不再维护旧实验实现里不存在的
+   内部字段。
+5. `test_graph_padding_bucket_with_one_real_request_is_safe`：只捕获 2 请求桶，用
+   1 请求 replay；补齐行不能污染真实槽位/输出。
+6. `test_graph_bucket_reuse_1_2_1_and_padding_safety`：B=1→2→1 复用同一批
+   descriptor/graph 对象；0 号块留白，真实请求块号不为 0。
+7. `test_graph_replay_segment_has_no_tensor_item`：在 `run_fullgraph()` 段内把
+   `Tensor.item` 打成异常，确认 replay 没有 CPU 标量读回。
+8. `test_graph_forced_rejection_and_acceptance[1]`：强制 `num_rejected=1`，图内仍
+   按拒绝后的 gap/窗口修复。
+9. `test_graph_forced_rejection_and_acceptance[0]`：强制全接受。
+
+### 9.6 回归与 trace
+
+```bash
+PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest tests/step80 -q
+# 60 passed（80A 43 + 80B 8 + 80C 9）
+
+PATH=... python -m pytest tests/step58 … tests/step79 tests/step80 -q
+# 1028 passed, 149 warnings in 98.08s
+```
+
+CPU：
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80 -q
+# 6 passed, 53 skipped
+```
+
+小型 trace：K=2、B=2 的一次 decode `propose` 选中
+`FULL num_tokens=6 / num_reqs=2`，`torch.profiler` 记录到 **2 次 `cudaGraphLaunch`**
+（target 图 + 多模块草稿图各一次）；草稿段没有 Python `_generate_drafts`，也没有
+`Tensor.item()`（由上面的异常测试钉住）。不跑吞吐矩阵。
+
+包摘要：`minivllm/` 159 个 `.py`，sha256
+`63767e3d1bdd228f4a59259ecd1b3e41376b71e70dd19f61ecfe00712bca8760`。
+
+### 9.7 80C 的差异与边界
+
+1. **不做 PIECEWISE 草稿图**：冻结源码只接整段 FULL；带 PIECEWISE 的请求按 §9.2
+   降级，并记录 requested/actual。不是“选了 PIECEWISE 但什么都没捕获”。
+2. **混合批仍走 eager**：`FULL_DECODE_ONLY` 只服务统一 decode；纯 prefill / 混合批
+   `dispatch` 返回 NONE。直接 `FULL` 的混合桶虽能被源码 manager 捕获，但本机正常
+   Torch V2 路径走不到；不把这条当生产能力。
+3. **单卡、纯文本**：不接 DP/EPLB/`num_tokens_across_dp`/多模态；`inputs_embeds=None`。
+4. **没有专用模型**：Gemma4/Step3p5/Q-only/稀疏索引分别属 80D–80G。
+5. **没有真实权重与性能结论**：tiny `Qwen3MTP` 是测试材料；不声称真实多模块 MTP
+   的加速比。
+6. **旧测试名保留、字段不保留**：`test_multi_module_mtp_full_graph_matches_eager`
+   在当前回退后的树里原本不存在；80C 新增同名测试，按一个 manager 的冻结结构断言，
+   不为了保留旧字段维持错误设计。
+
+### 9.8 80C 改动文件
+
+- `minivllm/worker/gpu/spec_decode/multi_module_mtp/speculator.py`：新增
+  `init_cudagraph_manager()` 的模式收敛/manager 创建、`capture()`、
+  `_dispatch_cudagraph()`、`_draft_attn_metadata_for_capture()`；`propose()` 增加
+  FULL replay 路径与补齐缓冲；`_run_model()`/`_generate_drafts()` 增加
+  `cudagraph_runtime_mode`。
+- `minivllm/worker/gpu/spec_decode/__init__.py`：更新工厂注释（80B/80C）。
+- `tests/step80/test_multi_module_graph_state.py`：新增 9 项。
+- `tests/step80/test_multi_module_reprefill_alignment.py`：把旧的“图必须拒绝”断言
+  改成模式收敛断言。
+- `docs/step80_alignment.md`：本 §9；`docs/results.json` → `step80.subrequirements.80C`；
+  `docs/README.md` / `minivllm/README.md` 同步 80C。

@@ -3,7 +3,7 @@
 本文件的三层证据：
 
 1. **调用链**：工厂返回 `MultiModuleMTPSpeculator`；K=2/4、模块数=2；每个 propose
-   的 `spec_step_idx` 是 `0..K-1`；Graph 模式明确拒绝（80C 才做图）。
+   的 `spec_step_idx` 是 `0..K-1`；Graph 模式在 80C 接通（模式收敛表见 80C 测试）。
 2. **端到端**：tiny 多模块 MTP 的 greedy 输出与不投机逐 token 相同；mixed/重排/
    partial-prefill/prefix/抢占场景不崩。
 3. **逐模块 KV**：把生产 speculator 每轮的第一遍输入、每步输入、logits、每个模块的
@@ -138,17 +138,28 @@ def _run(engine, prompts=PROMPTS, *, max_tokens: int = 6):
     return outputs
 
 
-def _graph_rejects_eager_only():
-    """工厂 + 图模式拒绝的纯 CPU 用例（不加载模型）。"""
+def _factory_and_graph_modes():
+    """工厂 + 冻结图模式收敛的纯 CPU 用例（不加载模型）。
+
+    80C 之后 graph 不再被拒绝；这里只钉“请求模式 -> 实际 manager 模式”的表：
+    带 PIECEWISE 的配置降级，FULL / FULL_DECODE_ONLY / NONE 原样保留。
+    """
     cfg = _mtp_configs(k=2, device="cpu")
     speculator = init_speculator(cfg, torch.device("cpu"))
     assert type(speculator).__name__ == "MultiModuleMTPSpeculator"
     assert speculator.cached_draft_input_ids.shape == (2, 1)
     speculator.init_cudagraph_manager(CUDAGraphMode.NONE)
-    with pytest.raises(NotImplementedError, match="80C"):
-        speculator.init_cudagraph_manager(CUDAGraphMode.FULL)
-    with pytest.raises(NotImplementedError, match="80C"):
-        speculator.capture()
+    assert speculator.cudagraph_mode == CUDAGraphMode.NONE
+    speculator.init_cudagraph_manager(CUDAGraphMode.PIECEWISE)
+    assert speculator.cudagraph_mode == CUDAGraphMode.NONE
+    speculator.init_cudagraph_manager(CUDAGraphMode.FULL)
+    assert speculator.cudagraph_mode == CUDAGraphMode.FULL
+    speculator.init_cudagraph_manager(CUDAGraphMode.FULL_DECODE_ONLY)
+    assert speculator.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+    speculator.init_cudagraph_manager(CUDAGraphMode.FULL_AND_PIECEWISE)
+    assert speculator.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+    # 无捕获档位时 capture 是空操作，不应再抛“属 80C”的 NotImplementedError。
+    speculator.capture()
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +167,8 @@ def _graph_rejects_eager_only():
 # ---------------------------------------------------------------------------
 
 
-def test_factory_selects_multi_module_and_graph_is_rejected():
-    _graph_rejects_eager_only()
+def test_factory_selects_multi_module_and_graph_modes():
+    _factory_and_graph_modes()
 
 
 @requires_cuda
