@@ -873,7 +873,7 @@ python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 python -m pytest tests/step79 -q                     # 47 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + TRITON_ATTN ALWAYS）
-python -m pytest tests/step80 -q                     # 43 项：step80A（多模块输入布局：持久 slot / 短窗口 / overrides / padding / 与上游整缓冲差分）
+python -m pytest tests/step80 -q                     # 51 项：step80A/80B（输入布局差分 + 多模块 eager/逐模块 KV 独立重放）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

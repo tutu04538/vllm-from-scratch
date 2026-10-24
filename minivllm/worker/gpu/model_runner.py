@@ -135,6 +135,14 @@ class GPUModelRunner:
         # Draft tokens propagation - for spec-dec + struct outputs.
         self.draft_tokens_handler = DraftTokensHandler(self.device)
 
+        # 多模块 MTP 在 chunked prefill 时每个模块吃一枚 future prompt token，
+        # 所以 lookahead 要按 K 行准备；其它提议者只读紧邻的一枚（上游同款）。
+        num_prefill_lookahead = (
+            self.num_speculative_steps
+            if self.speculative_config is not None
+            and self.speculative_config.use_multi_module_mtp()
+            else 1
+        )
         self.req_states = RequestState(
             max_num_reqs=self.max_num_reqs,
             max_model_len=self.max_model_len,
@@ -142,6 +150,7 @@ class GPUModelRunner:
             num_speculative_steps=self.num_speculative_steps,
             vocab_size=self.vocab_size,
             device=self.device,
+            num_prefill_lookahead=num_prefill_lookahead,
         )
         self.input_buffers = InputBuffers(
             max_num_reqs=self.max_num_reqs,

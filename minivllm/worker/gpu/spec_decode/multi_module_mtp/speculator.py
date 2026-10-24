@@ -1,17 +1,25 @@
-"""多模块 MTP 的输入准备与跨轮缓存（需求 080A）。
+"""多模块 MTP 的输入布局、跨轮缓存与 eager 执行（需求 080A / 080B）。
 
-对应冻结上游 `v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py` 中
-**输入布局**这一层，逐函数移植：
+对应冻结上游 `v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py`。本文件分两层：
 
-    prepare_input_buffers / _prepare_input_buffers_kernel
-    prepare_input_hidden_states_and_embeddings / _prepare_input_hidden_states_and_embeddings_kernel
-    cache_inputs / _cache_inputs_kernel
-    pad_trailing_draft_slots / _pad_trailing_draft_slots_kernel
-    update_draft_inputs / _shift_input_ids_kernel / _shift_input_embeds_kernel
+    输入层（80A）
+        prepare_input_buffers / _prepare_input_buffers_kernel
+        prepare_input_hidden_states_and_embeddings / 对应 kernel
+        cache_inputs / _cache_inputs_kernel
+        pad_trailing_draft_slots / _pad_trailing_draft_slots_kernel
+        update_draft_inputs / _shift_input_ids_kernel / _shift_input_embeds_kernel
 
-本关**不实现** `MultiModuleMTPSpeculator` 类，也不接生产调用链：80B 才把这里
-的函数接进 `propose()`，并做“目标拒绝后重算后续模块 KV”的修复。这样安排是因为
-输入布局一旦错位，后面的模型计算与 KV 修复都会把错误带到更深处，而且不会报错。
+    执行层（80B）
+        MultiModuleMTPSpeculator：显式 propose → _prepare_inputs →
+        slots/pad/metadata → _generate_drafts → cache_inputs →
+        每个 module forward / sample / update_draft_inputs
+
+80B 只做**单卡、纯文本、eager**：没有 Gemma4、Step3p5、Q-only 共享 KV、稀疏索引
+或 CUDA Graph。图模式在 `init_cudagraph_manager()` 里明确拒绝（属 80C）；工厂仍会把
+`use_multi_module_mtp()` 分派到本类，其他专用模型分支保持原样。
+
+输入布局一旦错位，后面的模型计算与 KV 修复都会把错误带到更深处，而且不会报错；
+所以 80A 的逐值差分与 80B 的“逐模块 KV 对照”是两套独立证据。
 
 三个索引必须分开（本文件所有函数都按这条写）：
 
@@ -31,11 +39,18 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 
+from .....config import CUDAGraphMode, VllmConfig
+from .....forward_context import BatchDescriptor, set_forward_context
 from .....triton_utils import tl, triton
+from ....utils import AttentionGroup
 from ...block_table import PAD_SLOT_ID
 from ...input_batch import InputBatch, InputBuffers
+from ..eagle.utils import load_eagle_model
+from ..speculator import DraftModelSpeculator
 
 
 # ---------------------------------------------------------------------------
@@ -698,8 +713,8 @@ def update_draft_inputs(
 ) -> None:
     """把本步采样出的草稿 token/embedding 接到窗口右端。
 
-    “丢最左一行、右边追加新候选”只移动行，不改变绝对 position；positions
-    的推进由调用方按模型语义另行处理（80B 接线）。
+    “丢最左一行、右边追加新候选”只移动行，不改变绝对 position。多模块 MTP
+    的模块循环保持 positions 不变；采样用的位置由调用方单独推进。
     """
     if num_reqs == 0:
         return
@@ -731,3 +746,378 @@ def update_draft_inputs(
             BLOCK_SIZE_Q=16,
             BLOCK_SIZE_H=hidden_block_size,
         )
+
+
+# ---------------------------------------------------------------------------
+# 6. eager 执行层（80B）
+# ---------------------------------------------------------------------------
+
+
+class MultiModuleMTPSpeculator(DraftModelSpeculator):
+    """多模块 MTP 的 V2 提议者（对应上游 `MultiModuleMTPSpeculator`）。
+
+    本类只实现 **单卡、纯文本、eager** 的冻结调用链。与上游的差异都来自本仓库缺少的
+    组件（ModelState / kv_cache_config / DP / 多模态），逐条记在
+    `docs/step80_alignment.md`：
+
+    - 不接收 `num_tokens_across_dp` / `mm_inputs` / `skip_attn_for_dummy_run`；
+    - 不建 `SpeculatorCudaGraphManager`（80C 才做图）；`init_cudagraph_manager()` 对
+      非 NONE 模式明确抛 `NotImplementedError`；
+    - `inputs_embeds` 恒为 None（本关纯文本），只走 80A 的无 embedding 分支。
+    """
+
+    #: 80B 没有 adaptive verification；runner 用它决定是否建 79 关 manager。
+    enable_adaptive_verification = False
+
+    def __init__(self, vllm_config: VllmConfig, device: torch.device):
+        super().__init__(vllm_config, device)
+
+        self.hidden_states = torch.zeros(
+            self.max_num_tokens, self.hidden_size, dtype=self.dtype, device=device
+        )
+        self.current_draft_step = torch.tensor(0, dtype=torch.int64, device=device)
+        self.last_token_indices = torch.zeros(
+            self.max_num_reqs, dtype=torch.int64, device=device
+        )
+
+        # 本关纯文本：不走 80A 的 embedding 复制分支，但保留字段名，接线时不用改调用点。
+        self.inputs_embeds: torch.Tensor | None = None
+        self.cached_draft_input_embeds: torch.Tensor | None = None
+
+        # chunked prefill 的 future prompt token override；非 prefill 请求填 -1。
+        self.draft_input_id_overrides = torch.full(
+            (self.max_num_reqs, self.num_speculative_steps - 1),
+            -1,
+            dtype=torch.int64,
+            device=device,
+        )
+
+        # 上一轮窗口尾部的同源快照；80A 的 cache_inputs 写，prepare_input_buffers 读。
+        self.cached_draft_input_ids = torch.zeros(
+            self.max_num_reqs,
+            self.num_speculative_steps - 1,
+            dtype=torch.int64,
+            device=device,
+        )
+        self.cached_target_hidden_states = torch.zeros(
+            self.max_num_reqs,
+            self.num_speculative_steps - 1,
+            self.hidden_size,
+            dtype=self.dtype,
+            device=device,
+        )
+
+        self.attn_groups: list[list[AttentionGroup]] = []
+        self.block_tables = None
+        self.target_input_buffers: InputBuffers | None = None
+        self.target_build_attn_metadata = None
+
+        # 80C 的图管理器；80B 恒为空。runner 的 capture 统计读这个字段。
+        self.cudagraph_manager = None
+        self.cudagraph_managers: dict[str, Any] = {}
+        self.use_fused_multi_step_decode = False
+
+    # -------- 加载与注意力设施 --------
+
+    def load_draft_model(self, target_model: torch.nn.Module) -> torch.nn.Module:
+        """MTP 权重就在 target checkpoint 里，走与 EAGLE 相同的 draft 加载路径。"""
+        return load_eagle_model(target_model, self.vllm_config)
+
+    def set_attn(
+        self,
+        block_tables,
+        target_input_buffers: InputBuffers,
+        target_build_attn_metadata,
+    ) -> None:
+        """接上块表、target 输入缓冲与草稿自己的注意力元数据构造器。
+
+        本仓库只有一个注意力后端、一组层；这里建一个 `AttentionGroup`，层名就是
+        runner 在 `load_model()` 后填好的 `draft_attn_layer_names`（两个 MTP 模块的
+        Attention 层都在里面，共用同一份 metadata）。
+        """
+        super().set_attn(
+            block_tables, target_input_buffers, target_build_attn_metadata
+        )
+        if not self.draft_attn_layer_names:
+            raise ValueError(
+                "multi-module MTP 没有草稿注意力层名：runner 必须先 load_model() "
+                "再设置 draft_attn_layer_names，最后调 set_attn()"
+            )
+        from .....attention.backends.torch_sdpa import TorchAttentionBackend
+
+        builder = TorchAttentionBackend.get_builder_cls()(
+            self.vllm_config.cache_config.block_size
+        )
+        self.attn_groups = [[
+            AttentionGroup(
+                backend=TorchAttentionBackend,
+                layer_names=list(self.draft_attn_layer_names),
+                metadata_builders=[builder],
+            )
+        ]]
+
+    def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
+        """80B 只支持 eager；图模式明确拒绝，留到 80C。"""
+        if cudagraph_mode != CUDAGraphMode.NONE:
+            raise NotImplementedError(
+                "多模块 MTP 的 CUDA Graph 属 80C；80B 只支持 eager "
+                f"（cudagraph_mode=NONE），收到 {cudagraph_mode!r}"
+            )
+        self.cudagraph_manager = None
+        self.cudagraph_managers = {}
+
+    def capture(self) -> None:
+        raise NotImplementedError(
+            "多模块 MTP 的图捕获属 80C；80B 的 init_cudagraph_manager() 已拒绝非 NONE 模式"
+        )
+
+    # -------- 主流程 --------
+
+    @torch.inference_mode()
+    def propose(
+        self,
+        input_batch: InputBatch,
+        attn_metadata: dict[str, Any],
+        slot_mappings: dict[str, torch.Tensor],
+        # [num_tokens, hidden_size]
+        last_hidden_states: torch.Tensor,
+        # num_layers x [num_tokens, hidden_size]
+        aux_hidden_states: list[torch.Tensor] | None,
+        # [num_reqs]
+        num_sampled: torch.Tensor,
+        # [num_reqs]
+        num_rejected: torch.Tensor,
+        # [max_num_reqs]
+        last_sampled: torch.Tensor,
+        # [num_prefill_lookahead, max_num_reqs]
+        next_prefill_tokens: torch.Tensor,
+        # [max_num_reqs]
+        temperature: torch.Tensor,
+        # [max_num_reqs]
+        seeds: torch.Tensor,
+        dummy_run: bool = False,
+        is_profile: bool = False,
+    ) -> torch.Tensor:
+        num_reqs = input_batch.num_reqs
+        if num_reqs == 0:
+            return self.draft_tokens[:0]
+
+        num_tokens = input_batch.num_tokens
+        max_query_len = int(input_batch.num_scheduled_tokens.max())
+        max_seq_len = int(
+            input_batch.seq_lens_cpu_upper_bound[:num_reqs].max().item()
+        )
+        # 上游多模块版本不额外 +K：本轮 query 窗口本身已经包含 anchor + 候选。
+        self.draft_max_seq_len = min(max_seq_len, self.max_model_len)
+
+        self._copy_request_inputs(
+            num_reqs, input_batch.idx_mapping, temperature, seeds
+        )
+        self.input_buffers.query_start_loc[: num_reqs + 1].copy_(
+            input_batch.query_start_loc[: num_reqs + 1]
+        )
+
+        self._prepare_inputs(
+            last_hidden_states,
+            input_batch,
+            max_query_len,
+            num_sampled,
+            num_rejected,
+            last_sampled,
+            next_prefill_tokens,
+        )
+
+        # 槽位按“本轮 packed 窗口的位置”现算；尾部无效行必须打成 PAD。
+        slot_mappings_tensor = self.block_tables.compute_slot_mappings(
+            self.idx_mapping[:num_reqs],
+            self.input_buffers.query_start_loc,
+            self.input_buffers.positions,
+            num_tokens,
+        )
+        pad_trailing_draft_slots(
+            slot_mappings_tensor,
+            self.input_buffers.query_start_loc,
+            self.last_token_indices[:num_reqs],
+            num_reqs,
+        )
+        draft_attn_metadata = self._build_draft_attn_metadata(
+            num_reqs, num_tokens
+        )
+        slot_mappings_by_layer = {"slot_mapping": slot_mappings_tensor}
+
+        self._generate_drafts(
+            num_reqs,
+            num_tokens,
+            draft_attn_metadata,
+            slot_mappings_by_layer,
+        )
+        return self.draft_tokens[:num_reqs]
+
+    def _prepare_inputs(
+        self,
+        target_hidden_states: torch.Tensor,
+        input_batch: InputBatch,
+        max_query_len: int,
+        num_sampled: torch.Tensor,
+        num_rejected: torch.Tensor,
+        last_sampled: torch.Tensor,
+        next_prefill_tokens: torch.Tensor,
+    ) -> None:
+        """80A 的两个准备函数：第一遍 token/position + 同源的 hidden。"""
+        num_reqs = input_batch.num_reqs
+        prepare_input_buffers(
+            num_reqs,
+            input_batch,
+            self.cached_draft_input_ids,
+            num_sampled,
+            num_rejected,
+            last_sampled,
+            next_prefill_tokens,
+            self.draft_input_id_overrides,
+            self.input_buffers,
+            self.last_token_indices,
+            self.max_num_reqs,
+            self.num_speculative_steps,
+        )
+        prepare_input_hidden_states_and_embeddings(
+            num_reqs,
+            max_query_len,
+            self.hidden_states,
+            target_hidden_states,
+            self.cached_target_hidden_states,
+            None,
+            None,
+            input_batch,
+            self.input_buffers,
+            num_rejected,
+            self.num_speculative_steps,
+        )
+
+    def _build_draft_attn_metadata(
+        self, num_reqs: int, num_tokens: int
+    ) -> dict[str, Any] | None:
+        """为 packed query 建**一份**metadata（eager、非图、逐请求路径）。
+
+        本后端在 eager 下按 `query_start_loc`/`seq_lens` 走 `_forward_generic`；这里不传
+        `uniform_query_len`，因为多模块第一遍的 query 长度可以是变长/混合 prefill。
+        """
+        if not self.attn_groups:
+            return None
+        builder = self.attn_groups[0][0].get_metadata_builder()
+        block_table = self.block_tables.input_block_tables[0][:num_reqs]
+        metadata = builder.build(
+            query_start_loc=self.input_buffers.query_start_loc[: num_reqs + 1],
+            seq_lens=self.input_buffers.seq_lens[:num_reqs],
+            block_table=block_table,
+            slot_mapping=self.block_tables.slot_mappings[0][:num_tokens],
+            num_reqs=num_reqs,
+        )
+        return {name: metadata for name in self._draft_layer_names()}
+
+    def _draft_layer_names(self) -> list[str]:
+        if self.attn_groups:
+            return list(self.attn_groups[0][0].layer_names)
+        return list(self.draft_attn_layer_names)
+
+    @torch.inference_mode()
+    def _run_model(
+        self,
+        num_tokens: int,
+        attn_metadata: dict[str, Any] | None,
+        slot_mappings: dict[str, torch.Tensor] | None,
+        spec_module_idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """跑一个真实 MTP 模块；`spec_module_idx` 由模型自己的协议解释。"""
+        batch_descriptor = BatchDescriptor(num_tokens=num_tokens)
+        with set_forward_context(
+            attn_metadata,
+            num_tokens=num_tokens,
+            cudagraph_runtime_mode=CUDAGraphMode.NONE,
+            batch_descriptor=batch_descriptor,
+            slot_mapping=slot_mappings,
+        ):
+            ret_hidden_states = self.model(
+                input_ids=self.input_buffers.input_ids[:num_tokens],
+                positions=self.input_buffers.positions[:num_tokens],
+                hidden_states=self.hidden_states[:num_tokens],
+                spec_step_idx=spec_module_idx,
+            )
+        if isinstance(ret_hidden_states, tuple):
+            last_hidden_states, hidden_states = ret_hidden_states
+        else:
+            last_hidden_states = ret_hidden_states
+            hidden_states = ret_hidden_states
+        return last_hidden_states, hidden_states
+
+    def _generate_drafts(
+        self,
+        num_reqs: int,
+        num_tokens: int,
+        attn_metadata: dict[str, Any] | None,
+        slot_mappings: dict[str, torch.Tensor] | None,
+    ) -> None:
+        """整段 packed query 的模块循环（对应上游同名方法）。
+
+        关键时点（顺序不能改）：
+
+            1. `cache_inputs()` 在**第一个模块之前**快照窗口尾部；
+            2. 每个 step 用 `spec_module_idx=step` 跑模型；
+            3. 用 `last_token_indices` 选采样行；
+            4. 非最后一步：把反馈 hidden 写回，按 override 选下一枚输入 token，
+               `update_draft_inputs()` 丢最左一行、右边追加候选。
+        """
+        last_token_indices = self.last_token_indices[:num_reqs]
+        sample_positions = self.input_buffers.positions[last_token_indices]
+        idx_mapping = self.idx_mapping[:num_reqs]
+
+        cache_inputs(
+            self.input_buffers,
+            None,
+            self.hidden_states,
+            self.cached_draft_input_ids,
+            None,
+            self.cached_target_hidden_states,
+            last_token_indices,
+            idx_mapping,
+            num_reqs,
+            self.num_speculative_steps,
+            use_input_embeds=False,
+        )
+
+        for step in range(self.num_speculative_steps):
+            self.current_draft_step.fill_(step)
+
+            last_hidden_states, hidden_states = self._run_model(
+                num_tokens,
+                attn_metadata,
+                slot_mappings,
+                spec_module_idx=step,
+            )
+            sample_hidden_states = last_hidden_states[last_token_indices]
+            draft_tokens = self.sample_draft(
+                sample_hidden_states,
+                sample_positions,
+                idx_mapping,
+                self.temperature,
+                self.seeds,
+                self.current_draft_step,
+                self.draft_logits,
+            )
+            self.draft_tokens[:num_reqs, step] = draft_tokens
+
+            if step < self.num_speculative_steps - 1:
+                self.hidden_states[:num_tokens] = hidden_states
+                overrides = self.draft_input_id_overrides[:num_reqs, step]
+                next_input_tokens = torch.where(
+                    overrides >= 0, overrides, draft_tokens
+                )
+                update_draft_inputs(
+                    next_input_tokens,
+                    None,
+                    self.input_buffers,
+                    None,
+                    last_token_indices,
+                    idx_mapping,
+                    num_reqs,
+                )
+                sample_positions += 1

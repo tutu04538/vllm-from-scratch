@@ -5291,7 +5291,7 @@
       "没有性能测试（需求 80A 明确无需）",
       "没有真实多模态模型；cached_draft_input_embeds 只用人工 tensor 做差分",
       "Triton 输入 kernel 只在 CUDA 上跑；CPU 只覆盖 K-1 宽度协议，不提供 CPU 等价实现",
-      "生产工厂 init_speculator() 仍对 use_multi_module_mtp() 明确抛 NotImplementedError，直到 80B 接线"
+      "80B 已把 init_speculator() 的 use_multi_module_mtp() 分支接到 MultiModuleMTPSpeculator；80A 本身仍只负责输入协议"
      ]
     },
     "models": {
@@ -5301,11 +5301,96 @@
      },
      "draft": {
       "status": "不加载",
-      "note": "没有多模块 MTP 权重；真实集成属 80B/80E/80F"
+      "note": "80A 不加载；80B 用 tiny_mtp_dir(num_mtp_layers=2) 做 eager 验证"
      },
      "real_weights": {
       "status": "不涉及",
       "note": "本关没有模型前向；缺权重不作为本关失败"
+     }
+    }
+   },
+   "80B": {
+    "results": {
+     "step": "80B",
+     "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080B_多模块Eager执行与拒绝后KV修复.md",
+     "status": "implemented + self-verified（**单卡、纯文本、eager**；没有 Graph/专用模型/性能结论）。新增 MultiModuleMTPSpeculator(DraftModelSpeculator)，显式 propose → _copy_request_inputs → _prepare_inputs → slots/pad/metadata → _generate_drafts → cache_inputs → 每步 _run_model(spec_step_idx=step)/sample/update_draft_inputs。拒绝后的 gap 放进当前 packed query 窗口，同步更新 seq_lens/last_token_indices/pad slot；cache_inputs 在第一个模块之前快照。K=2/4、模块数=2；8 项 80B 测试通过，其中主证据是测试内 ReferenceReplay 跨轮维护自己的 KV 与 cache（不调用生产 _prepare_inputs/_generate_drafts/cache_inputs），逐轮比较 cached state、每步输入/logits、各模块有效 K/V 与草稿 token。负向控制（清零上一轮 cache / 用 step0 输入 hidden 冒充反馈）都会产生 mismatch。",
+     "recorded_at": "2026-10-24T16:05:00+08:00",
+     "git": {
+      "baseline_commit_at_record_time": "005e976",
+      "implementation_commit": "见本轮提交（step80B：多模块 eager 执行与拒绝后 KV 修复）"
+     },
+     "package": {
+      "root": "minivllm/",
+      "python_files": 159,
+      "sha256": "b05e374d48251904c0c430ad3a7f55cdc8dd98ab334e5ee4b0afcff711ae58ec",
+      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+     },
+     "environment": {
+      "python": "3.12.14",
+      "torch": "2.13.0+cu130",
+      "triton": "3.7.1",
+      "vllm": "0.28.0（只读源码对照；80B 生产路径不 import）",
+      "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+      "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+      "env": "VLLM_USE_V2_MODEL_RUNNER=1（80B 测试内 fixture 设置，测试结束恢复，避免污染 V1 用例）+ VLLM_WSL2_ENABLE_PIN_MEMORY=1；PATH 需包含 conda env 的 ninja"
+     },
+     "commands": [
+      {
+       "cmd": "python -m pytest tests/step80/test_multi_module_reprefill_alignment.py -q",
+       "result": "8 passed（1 个纯 CPU 工厂/Graph 边界 + 2 个 K=2/4 greedy + 2 个独立重放 + 2 个负向控制 + 1 个 mixed/prefix/抢占）"
+      },
+      {
+       "cmd": "python -m pytest tests/step80 -q",
+       "result": "51 passed（80A 43 + 80B 8）"
+      },
+      {
+       "cmd": "python -m pytest tests/step58 … tests/step79 tests/step80 -q",
+       "result": "1019 passed, 149 warnings in 94.38s（= 80A 后的 1011 + 80B 8；无回归）"
+      },
+      {
+       "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80 -q",
+       "result": "4 passed, 47 skipped（80A 的 3 个 K-1 宽度 + 80B 的 1 个纯 CPU 边界；Triton/CUDA 用例明确 skip）"
+      }
+     ],
+     "execution_trace": {
+      "调用链": "工厂 use_multi_module_mtp() → MultiModuleMTPSpeculator；propose 显式参数；不再继承 MTPSpeculator，不再用 _maybe_reprefill_stale_modules 旁路或 args[5]/args[6]/args[8] 猜参数",
+      "模块循环": "K=2/4、模块数=2：每轮 spec_step_idx 依次 0..K-1；Qwen3MTP 内部按 % num_mtp_layers 选层；proposer 不自己改 K/模块数算法",
+      "拒绝修复固定例": "K=4、query_len=5、num_rejected=3 → num_reprefill=2、num_input=2、packed 有效行=4、第 5 行 pad、seq_len 8→6；refill/valid/next/pad 都在当前 packed query 窗口里",
+      "cache 时点": "cache_inputs 在第一个模块之前；生产 cache 的 cached_ids/cached_hidden 与 ReferenceReplay 的独立 cache 逐轮相等；不保留 cached_positions 第二套权威",
+      "逐模块 KV": "ReferenceReplay 从不重置生产 kv_before：第一轮从零初始化，此后跨轮维护自己的 KV/cache；每轮开始前比较生产 cached_ids/cached_hidden + 完整模块 KV，每步比较输入 IDs/positions/hidden/slot mapping、logits、各模块有效 K/V，最后比较 K 枚草稿 token",
+      "拒绝形态": "记录同时覆盖 num_rejected=0（第一遍/全接受）、0<r<K（部分）、r=K（全拒）；K=2/4 都跑",
+      "负向控制 1": "捕获正确上一轮 cache 后把生产 cached_ids/cached_hidden 清零 → 生产 refill 输入与独立重放不同（断言 mismatch）",
+      "负向控制 2": "用 step0 的输入 hidden 冒充后续 step 的反馈 hidden → step1 输入 hidden 与正确重放不同（断言 mismatch）",
+      "Graph 边界": "init_cudagraph_manager(NONE) 通过；FULL 抛 NotImplementedError（80C）；capture() 同样明确抛错",
+      "mixed/prefix/抢占": "3 请求、budget=8、blocks=6、prefix cache 开：trace 断言有 partial prefill、prefix 命中、num_preemptions>0；投机输出 == 不投机",
+      "greedy 烟测": "K=2/4 与不投机逐 token 相同；仅作最后一项，不替代逐模块 KV 证据"
+     },
+     "known_gaps": [
+      "只支持 eager；CUDA Graph 与 q/RNG/slot 归属属 80C，非 NONE 模式明确拒绝",
+      "只支持单卡、纯文本；DP/EPLB/mm_inputs 未接，inputs_embeds 恒为 None",
+      "Gemma4、Step3p5 多 group、Q-only 共享 KV、稀疏索引复用分别属 80D–80G；本类不偷偷替换",
+      "本机没有真实多模块 MTP checkpoint；tiny_mtp_dir(num_mtp_layers=2) 的 Qwen3MTP 是测试材料，不声称支持任意真实 MTP（如 Qwen3-Next 混合注意力/MoE）",
+      "没有性能/加速比结论；80B 只验收 eager 执行协议与 KV 修复"
+     ]
+    },
+    "models": {
+     "target": {
+      "path": "minivllm/testing/tiny_models.py::tiny_mtp_dir('tiny_gqa', num_mtp_layers=2) 的 target 部分",
+      "architectures": ["Qwen3ForCausalLM"],
+      "dtype": "float32",
+      "max_model_len": 64,
+      "note": "MTP 权重与 target 在同一个 checkpoint；测试现场生成，不提交"
+     },
+     "draft": {
+      "path": "同一个 tiny_mtp_dir；派生 draft config（architectures=['Qwen3MTPModel'], n_predict=2）",
+      "architectures": ["Qwen3MTPModel"],
+      "dtype": "float32",
+      "num_mtp_layers": 2,
+      "note": "教学适配的稠密 Qwen3 MTP；不是真实 Qwen3-Next/Step3p5 checkpoint"
+     },
+     "real_weights": {
+      "status": "缺",
+      "note": "本机没有真实多模块 MTP 权重；草稿质量/加速比「集成待验」"
      }
     }
    }
