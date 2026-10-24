@@ -5231,5 +5231,84 @@
     "note": "本机无真实 DSpark 权重"
    }
   }
+ },
+ "step80": {
+  "subrequirements": {
+   "80A": {
+    "results": {
+     "step": "80A",
+     "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080A_多模块输入布局与跨轮缓存.md",
+     "status": "implemented + self-verified（**只完成输入布局与跨轮缓存**；没有生产接线、模型前向、KV 修复或 Graph）。按冻结上游 vLLM 0.28.0 的五个输入函数移植：prepare_input_buffers、prepare_input_hidden_states_and_embeddings、cache_inputs、pad_trailing_draft_slots、update_draft_inputs 及其 Triton kernel。三条不变量：缓存按持久 slot（I1）；缓存列保留未截断 window_start（I2，短窗口左侧留空列，不向 0 列挤）；token/hidden/embedding 同源（I3）。K=1 缓存宽度严格为 0，不用 max(1,K-1)。固定例子 B=1/K=3/idx_mapping=[2]/last=0 的 cache 写 [2,1]=42，不是 [0,0]。测试用整个缓冲与上游同名函数 torch.equal 差分；43 passed。80B 才接生产调用链与拒绝后 KV 修复。",
+     "recorded_at": "2026-10-24T15:12:00+08:00",
+     "git": {
+      "baseline_commit_at_record_time": "0ac41e1",
+      "implementation_commit": "见本轮提交（step80A：多模块输入布局与跨轮缓存）"
+     },
+     "package": {
+      "root": "minivllm/",
+      "python_files": 159,
+      "sha256": "8a524e18c299648ef0117c8de807a82de8bdb90ae3ffc08bf84e4b69571e2c28",
+      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+     },
+     "environment": {
+      "python": "3.12.14",
+      "torch": "2.13.0+cu130",
+      "triton": "3.7.1",
+      "vllm": "0.28.0（测试里 import 同名冻结 kernel 做差分；生产路径不 import）",
+      "device": "cuda:0（RTX 5090 Laptop / WSL2）",
+      "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+      "env": "VLLM_WSL2_ENABLE_PIN_MEMORY=1；PATH 需包含 conda env 的 ninja（否则 step73 的 UVA C++ 扩展构建报 Ninja is required）"
+     },
+     "commands": [
+      {
+       "cmd": "python -m pytest tests/step80 -q",
+       "result": "43 passed（含 40 个 CUDA kernel/差分用例；3 个纯 CPU 的 K-1 宽度断言在 CUDA 环境下也通过）"
+      },
+      {
+       "cmd": "python -m pytest tests/step58 … tests/step79 tests/step80 -q",
+       "result": "1011 passed, 149 warnings in 91.87s（= 既有 968 + 本关 43；无回归）"
+      },
+      {
+       "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80 -q",
+       "result": "3 passed, 40 skipped（CPU 只跑 K-1 宽度协议；Triton 差分用例明确 skip）"
+      }
+     ],
+     "execution_trace": {
+      "固定例子": "B=1、K=3、idx_mapping=[2]、query_start_loc=[0,1]、last=0、token=42、hidden=7、cache 初值 -9：window_start=-1，读只到行 0，cache_write_slot=1 → cached_ids[2,1]=42、cached_hidden[2,1]=7；其余保持 -9",
+      "持久 slot": "idx_mapping=[3,1] 时数据写缓存行 3/1，不写 batch 行 0/1；反转为 [1,3] 后同一 slot 被新数据覆盖，旧 batch 行不再拥有它；idx_mapping=-1 的补齐行不写 0 号 slot",
+      "num_rejected=0..K × K=1/2/3/4": "prepare_input_buffers 的整个 input_ids/positions/seq_lens/query_start_loc/last_token_indices/overrides 与上游同名函数 torch.equal；手算 num_repr=max(0,r-1)、num_input=query_len-r、last=qstart+num_repr+num_input-1、seq_len=target_seq_len-num_repr、gap 读列 K-1-num_repr+i",
+      "query 长度 < = > K-1": "K=3 的 1/2/4 行：target 第 1..query_len-1 行整块移入 draft 第 0..；last 写 last_sampled；positions 原样；尾部行保持哨兵",
+      "partial prefill overrides": "num_sampled=[0,1]、idx_mapping=[3,1]：req0 的 override 读 next_prefill_tokens[i,3]（不是 [i,0]），req1 的 override 全 -1；next token 分别取 next_prefill_tokens[0,slot] 与 last_sampled[slot]",
+      "hidden/embedding": "有 embeds 与无 embeds 两条分支都与上游整缓冲相等；gap 的 hidden 与 embedding 从同一缓存列读取；非 gap 的 embedding 不由本函数写，保持调用方原值",
+      "pad": "req0 last=2/query_end=4 时第 3 行槽位变 -1，0..2 不动；req1 last=7 是 query_end-1，整个请求原地不动；再显式对照“把 req0 last 传成 3”会得到空操作，不能冒充通过",
+      "update_draft_inputs": "两条请求各自丢最左一行、右端写草稿；token 与 embedding 同步；请求 2 的起点不被请求 1 覆盖，last 之后的行不动",
+      "K=1": "cache 宽度 0；prepare/cache/hidden 均不写 cache、不崩；纯 CPU 断言宽度 == K-1",
+      "环境": "首次全量回归因 PATH 没有 conda env 的 ninja，step73 UVA 扩展构建失败（1 failed）；把 env/bin 加入 PATH 后同一组测试 1011 passed。不是本关代码改动导致"
+     },
+     "known_gaps": [
+      "只完成 80A 输入协议；MultiModuleMTPSpeculator 类、propose() 接线、拒绝后模块 KV 修复属 80B；Graph/采样生命周期属 80C；Gemma4/Step3p5/稀疏索引/Q-only 属 80D–80G",
+      "没有加载 target/draft 模型，没有端到端多模块 MTP 输出；真实 MTP/Gemma4/Step3p5 权重支持不在本关",
+      "没有性能测试（需求 80A 明确无需）",
+      "没有真实多模态模型；cached_draft_input_embeds 只用人工 tensor 做差分",
+      "Triton 输入 kernel 只在 CUDA 上跑；CPU 只覆盖 K-1 宽度协议，不提供 CPU 等价实现",
+      "生产工厂 init_speculator() 仍对 use_multi_module_mtp() 明确抛 NotImplementedError，直到 80B 接线"
+     ]
+    },
+    "models": {
+     "target": {
+      "status": "不加载",
+      "note": "80A 只测输入 layout 与冻结 kernel 差分"
+     },
+     "draft": {
+      "status": "不加载",
+      "note": "没有多模块 MTP 权重；真实集成属 80B/80E/80F"
+     },
+     "real_weights": {
+      "status": "不涉及",
+      "note": "本关没有模型前向；缺权重不作为本关失败"
+     }
+    }
+   }
+  }
  }
 }
