@@ -2,7 +2,7 @@
 
 存在的理由：加载器要能"按 config 里的 architectures 选类"，而不该长出一串 if/elif。
 真实 vLLM 用 `_ModelRegistry` + `@register_model` 装饰器 + 惰性 import（避免一次导入所有模型）；
-本关只有一个模型族，用普通字典 + 显式注册，**不假装已有惰性加载机制**。
+本仓库模型族不多，用普通字典 + 显式注册，**不假装已有惰性加载机制**。
 """
 
 _REGISTRY: dict[str, object] = {}
@@ -27,6 +27,7 @@ from .qwen3 import Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dflash import DFlashForCausalLM  # noqa: E402
 from .qwen3_dflash2 import DFlash2Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dspark import Qwen3DSparkForCausalLM  # noqa: E402
+from .gemma4_mtp import Gemma4MTP  # noqa: E402  （80E.E1 注册）
 
 register_model("Qwen3ForCausalLM")(Qwen3ForCausalLM)
 # 66 关：Medusa head 的注册名（上游 `model_executor/models/registry.py:678`

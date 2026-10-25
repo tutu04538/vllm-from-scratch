@@ -5544,6 +5544,96 @@
       "note": "本机没有 Gemma4 assistant/target 权重；映射与只读机制已验，集成/质量/加速比「待验」"
      }
     }
+   },
+   "80E": {
+    "E1": {
+     "results": {
+      "step": "80E.E1",
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md",
+      "status": "implemented + self-verified（**只做 assistant 模型层与权重路由**；不接真实 target，E2 仍阻塞）。新增 `minivllm/models/gemma4_mtp.py`：Gemma4MTPMaskedEmbedder（centroid top-k 稀疏 logits/argmax）、Gemma4MTPAttention（Q-only、q_proj/o_proj/q_norm、scaling=1.0、sliding/full 按层 RoPE）、Gemma4MTPDecoderLayer（四个 RMSNorm、显式 residual、layer_scalar）、Gemma4MultiTokenPredictor（backbone=16/assistant=8 的 pre/post projection、normalizer）、Gemma4MTP（lm_head/softcap/权重路由）。与已安装 vLLM 0.28.0 的冻结模型用同一 tiny 配置与权重逐层比较 hidden、draft/backbone 两个返回值、logits；Q 投影+q_norm+RoPE（sliding 与 full proportional）与冻结模块逐值一致；masked 候选/argmax 一致。模型差分中 attention core 用identity 替换（真实 target cache 读取已由 80D 契约覆盖），E2 才接真实attention/KV group。新增 12 项测试；tests/step80 98 passed；全量 1066 passed。",
+      "recorded_at": "2026-10-25T12:21:00+08:00",
+      "git": {
+       "baseline_commit_at_record_time": "db58867",
+       "implementation_commit": "见本轮提交（step80E-E1：Gemma4 assistant 模型层差分）"
+      },
+      "package": {
+       "root": "minivllm/",
+       "python_files": 162,
+       "sha256": "f66af6fafc83941adb2fa88a53a8f6621041f98c61e07e658ebc8970f6d38108",
+       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+       "python": "3.12.14",
+       "torch": "2.13.0+cu130",
+       "triton": "3.7.1",
+       "vllm": "0.28.0（测试中实例化冻结 Gemma4MTP 做逐层差分；生产路径不 import）",
+       "device": "cpu（上游对照 + 本实现；CUDA 可用但 E1 不依赖）",
+       "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+       "env": "tests/step80 的 CUDA 用例仍需 conda ninja；E1 自身 CPU-only 可跑"
+      },
+      "commands": [{"cmd": "python -m pytest tests/step80/test_gemma4_model_alignment.py -q", "result": "12 passed（模型层/权重加载/masked/边界）"}, {"cmd": "python -m pytest tests/step80 -q", "result": "98 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12）"}, {"cmd": "python -m pytest tests/step58 … tests/step80 -q", "result": "1066 passed, 149 warnings in 96.87s（= 80D 后 1054 + 80E.E1 12；无回归）"}, {"cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_gemma4_model_alignment.py -q", "result": "12 passed（E1 的全部对照在 CPU 上完成）"}],
+      "execution_trace": {
+       "固定数据流": "backbone=16、assistant=8：token embedding 16 与 target feedback hidden 16 拼成 32，pre_projection 32→8；decoder 内全 8 宽；draft_hidden 8 给出 logits，post_projection 8→16 作为下一步反馈。",
+       "层结构": "Q-only attention 只建 q_proj/o_proj/q_norm/rotary_emb/attn，没有 k_proj/v_proj；q_norm 作用在 head_dim；scaling=1.0；full 层按 proportional RoPE（频率分母 head_dim，部分维零填充）；decoder 四 norm + 显式 residual + layer_scalar。",
+       "逐层差分": "同一 tiny 权重下，ours 与冻结 Gemma4MTP 的每层 hidden、draft_hidden、backbone_hidden 最大误差 0.0；logits 最大误差 0.0（identity attention core）。",
+       "q 流水线": "sliding 层（default RoPE）与 full 层（proportional、partial_rotary_factor=0.25）分别比较 q_proj→q_norm→RoPE，最大误差 0.0。",
+       "权重路由": "预检/覆盖检查打开：pre_projection/post_projection 顶层名映射到 model.*；gate/up 写进 gate_up_proj 的 [0:I]/[I:2I]；layer_scalar 与 token_ordering 作为 buffer 直接拷贝；tied lm_head 跳过检查点副本；缺参数/未知参数/缺 token_ordering 明确报错。",
+       "masked embedder": "vocab=32/num_centroids=4/top_k=2：完整 logits 的未选中列填 finfo.min，选中 16 列与冻结模块逐值相等；get_top_tokens 的 id 与冻结模块逐位相等。",
+       "宽度不混用": "把 8 宽 draft_hidden 当反馈喂回，入口明确 ValueError；16 宽 post_projection 输出可以继续下一步。",
+       "异构几何": "sliding head_dim=8/1 KV head；full head_dim=16/2 KV heads（attention_k_eq_v=True）分别建出正确 q_proj/q_norm 形状。"
+      },
+      "known_gaps": ["E2 未开始且阻塞：本机没有 Gemma4 target 架构/加载，也没有真实 assistant/target 权重；真实接入还依赖 81 的 KV group/SWA/full/异构 head_dim/backend。", "E1 的模型差分用 identity attention 替换 attention core；真实 Q-only cache 读取由 80D 契约测试覆盖，真实 target cache/group 接线属 E2。", "attn_logit_softcapping 未实现：配置出现时明确 NotImplementedError，不静默忽略；final_logit_softcapping 已实现并测试。", "只覆盖稠密 Gemma4MLP：enable_moe_block / use_double_wide_mlp / per-layer input embedding 明确拒绝。", "V1 Gemma4 proposer/per-group metadata/centroid graph 未改，属 E2。", "没有真实权重与性能结论；tiny 配置/权重是测试材料，不声称真实 assistant 质量或加速比。"]
+     },
+     "models": {
+      "target": {
+       "path": "无真实 Gemma4 target；测试用 transformers Gemma4AssistantConfig 现场生成 tiny 配置",
+       "architectures": ["Gemma4AssistantForCausalLM（仅配置）", "Gemma4MTPModel（draft）"],
+       "dtype": "float32",
+       "max_position_embeddings": 64,
+       "note": "不加载真实 target；E2 需要固定 revision 的真实 target 架构/权重"
+      },
+      "draft": {
+       "path": "tests/step80/test_gemma4_model_alignment.py 现场生成的 tiny Gemma4AssistantConfig（vocab=32, hidden=8, backbone=16, 2 层）",
+       "architectures": ["Gemma4MTPModel"],
+       "dtype": "float32",
+       "num_layers": 2,
+       "note": "与冻结上游 Gemma4MTP 同配置/同权重做 E1 差分；不是真实 assistant checkpoint"
+      },
+      "real_weights": {
+       "status": "缺",
+       "note": "本机没有真实 Gemma4 assistant/target 权重；E1 模型层已验，真实加载/集成/质量「待验」"
+      }
+     }
+    },
+    "E2": {
+     "results": {
+      "step": "80E.E2",
+      "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md",
+      "status": "blocked（E1 已完成；E2 不在本轮实现）",
+      "blocked_reason": "缺少 Gemma4 target 完整架构/加载与真实匹配的 target+assistant 权重；混合 sliding/full、异构 head_dim、KV group 与后端能力依赖 81 先行通过。下载权重不能解决缺失的 target 模型实现。",
+      "preconditions": ["固定 revision 的 Gemma4 target 架构/加载（当前投机源码归档不覆盖完整 target）", "81 的多 KV group、SWA/full、异构 head_dim、backend 能力通过", "真实匹配的 Gemma4 target + assistant checkpoint，固定 revision"],
+      "recorded_at": "2026-10-25T12:21:00+08:00",
+      "known_gaps": ["V2 `_create_draft_vllm_config`/`_share_embeddings`/`_setup_gemma4_kv_sharing` 的真实接线未做。", "V1 Gemma4 proposer 的 per-group metadata、centroid 图与采样分支未做。", "真实 source KV 只读、不同层类型读对 group、greedy/Graph/eager 对照均未跑。"]
+     },
+     "models": {
+      "target": {
+       "path": "无",
+       "architectures": ["Gemma4AssistantForCausalLM（待真实 target）"],
+       "dtype": "未运行",
+       "note": "E2 阻塞；不得用旧 tiny checkpoint 冒充真实 assistant"
+      },
+      "draft": {
+       "path": "无真实 assistant checkpoint",
+       "architectures": ["Gemma4MTPModel"],
+       "dtype": "未运行",
+       "note": "E2 阻塞；真实权重来源/revision 待定"
+      },
+      "real_weights": {
+       "status": "缺",
+       "note": "E2 集成/质量/加速比「待验」"
+      }
+     }
+    }
    }
   }
  }

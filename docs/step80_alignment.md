@@ -1,9 +1,10 @@
-# 第 80 关对齐记录（80A / 80B / 80C / 80D）
+# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1）
 
 > 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复**、
-> **80C 多模块整段 CUDA Graph/采样生命周期** 与 **80D Q-only 共享 KV 的映射与只读
-> 契约**；80E–80H 未开始。80D 只做机制（源层映射、只读、固定位置、所有权），不加载
-> 真实 Gemma4；真实 assistant 结构与端到端接入属 80E。
+> **80C 多模块整段 CUDA Graph/采样生命周期**、**80D Q-only 共享 KV 的映射与只读
+> 契约** 与 **80E.E1 Gemma4 assistant 模型层差分**；E2 仍阻塞，80F–80H 未开始。
+> E1 只做模型结构与权重路由，不加载真实 Gemma4 target；E2 的真实接入依赖 target
+> 架构与 81 的多 group/SWA/full/backend 前置。
 
 ## 0. 需求与边界
 
@@ -12,6 +13,7 @@
   - `投机解码完整需求/080B_多模块Eager执行与拒绝后KV修复.md`
   - `投机解码完整需求/080C_多模块Graph与采样生命周期.md`
   - `投机解码完整需求/080D_Q_only共享KV的映射与只读契约.md`
+  - `投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md`（E1；E2 阻塞）
 - 80A 做**输入准备和跨轮缓存布局**：把 target 本轮输入整理成 draft 的 packed 行，
   把窗口尾部 token/hidden/embedding 按持久 slot 缓存，定义窗口移动与尾部 padding。
 - 80B 把 80A 接成 V2 的 `MultiModuleMTPSpeculator`：显式 `propose()`、整段 packed
@@ -23,8 +25,15 @@
   `num_kv_shared_layers` 选同类型最后一个非共享源层；draft 层只绑 target 的 cache，
   不计算/不写 K/V、不分配/不释放第二份 cache；同轮草稿步 positions/seq_lens 固定。
   映射用冻结上游方法逐例差分，真实 Gemma4 assistant 仍明确拒绝（80E）。
-- 明确不做：Gemma4/Step3p5 模型结构、真实 MTP 权重、稀疏索引、性能矩阵。
-  生产工厂把 `use_multi_module_mtp()` 分派到多模块类；Gemma4 分支明确拒绝。
+- 80E.E1 做 **Gemma4 assistant 的模型层**：`Gemma4MTPAttention`（Q-only、q_norm、
+  sliding/full 与 proportional RoPE）、`Gemma4MTPDecoderLayer`、
+  `Gemma4MultiTokenPredictor`（`2*backbone → assistant` 与 `assistant → backbone`）、
+  `Gemma4MTP`（lm_head、softcap、可选 centroid masked embedder）与权重路由。
+  用冻结上游模型同 tiny 配置/权重做逐层 hidden、两个返回值与 logits 差分。
+- 80E.E2（阻塞）：真实 Gemma4 target 架构/加载 + 81 的 KV group/SWA/full/backend
+  就绪后，才接 V2 `_share_embeddings`/`_setup_gemma4_kv_sharing` 与 V1 proposer。
+- 明确不做：真实 Gemma4 target/权重、Step3p5 模型、混合 SWA/full 执行、稀疏索引、
+  性能矩阵。生产工厂仍明确拒绝 `gemma4_mtp`（E2 未完成）。
 
 ## 1. 路径映射
 
@@ -38,6 +47,8 @@
 | `minivllm/attention/layer.py::Attention.bind_shared_kv_cache` / `forward` 的 `q_only` 分支 | `model_executor/models/gemma4_mtp.py::Gemma4MTPAttention` + `Attention` 的共享读路径 |
 | `minivllm/attention/backends/torch_sdpa.py::forward_q_only` | 后端"只读 cache、不写 K/V"的读路径 |
 | `minivllm/worker/gpu/model_runner.py::_allocate_draft_kv_caches` 的共享分支 | Runner 把 target cache 绑给 draft、跳过分配 |
+| `minivllm/models/gemma4_mtp.py` | `model_executor/models/gemma4_mtp.py`（E1 模型层） |
+| `minivllm/layers/rotary_embedding.py` 的 `proportional`/`key=None` | `layers/rotary_embedding/gemma4_rope.py` + `base.py::forward_static` |
 
 本关实现的函数（均与上游同名）：
 
@@ -623,5 +634,123 @@ Q-only 测试为 **25 passed, 1 skipped**（Triton 位置用例明确 skip）。
   - `minivllm/config.py`：`use_gemma4_mtp()` 判据。
   - `minivllm/worker/gpu/spec_decode/__init__.py`：Gemma4 分支明确拒绝并指向 80E。
   - `tests/step80/test_q_only_contract.py`（新增，26 项）。
+  - `docs/step80_alignment.md`、`docs/results.json`、`docs/README.md`、
+    `minivllm/README.md`。
+
+## 11. 80E.E1：Gemma4 assistant 模型层差分
+
+### 11.1 范围
+
+80E 分两段：E1 只做 **assistant 模型结构 + 权重加载**，E2 才接真实 target 与提议者。
+本关不把完整 Gemma4 target 偷塞进来，也不下载/伪造真实权重。
+
+E1 的冻结参考：
+
+- `model_executor/models/gemma4_mtp.py` 的 `Gemma4MTPMaskedEmbedder`、
+  `Gemma4MTPAttention`、`Gemma4MTPDecoderLayer`、`Gemma4MultiTokenPredictor`、
+  `Gemma4MTP`；
+- `model_executor/models/gemma4.py::Gemma4MLP`；
+- `v1/worker/gpu/spec_decode/gemma4/speculator.py` 的 embedding 共享/归一化规则。
+
+### 11.2 固定数据流：backbone=16、assistant=8
+
+| 阶段 | 形状 | 说明 |
+|---|---|---|
+| token embedding | `[T, 16]` | 共享 target 的 backbone 宽 embedding，乘 `sqrt(16)` |
+| target feedback hidden | `[T, 16]` | 上一轮 target/assistant 交回的 backbone hidden |
+| concat | `[T, 32]` | `[embedding ‖ hidden]`，顺序不能反 |
+| `pre_projection` | `[T, 8]` | `ColumnParallelLinear(32, 8, bias=False)` |
+| decoder × N | `[T, 8]` | Q-only attention + Gemma4MLP + 四个 RMSNorm + `layer_scalar` |
+| `draft_hidden` | `[T, 8]` | 过 final norm，给 `lm_head` 出 logits |
+| `post_projection` | `[T, 16]` | 下一步反馈必须用它，不能把 8 宽的 draft hidden 喂回去 |
+
+模型入口对两条宽度做显式检查：反馈 hidden 不是 16、或 embedding 不是 16，都直接
+`ValueError`，不会让 `pre_projection` 去解释一个 24 宽的拼接。
+
+### 11.3 关键结构
+
+- `Gemma4MTPAttention`：只有 `q_proj`/`o_proj`/`q_norm`，没有 K/V 投影；`scaling=1.0`；
+  per-head q_norm；RoPE 按层类型选 sliding/full，full 层用 proportional（频率分母是
+  `head_dim`，未旋转维零填充），`key=None` 合法。
+- `Gemma4MTPDecoderLayer`：显式 residual 相加 + 四个 RMSNorm + `layer_scalar`。
+  这里**不能**复用 Qwen3 的 `RMSNorm(x, residual)` 融合顺序。
+- `Gemma4MultiTokenPredictor`：`embed_tokens`、`pre_projection`、全部 assistant 层、
+  `norm`、`post_projection`、`normalizer=sqrt(backbone)`。
+- `Gemma4MTP`：draft `lm_head`（`tie_word_embeddings=True` 时与 embed 共享 Parameter）、
+  `LogitsProcessor`（final softcap）、可选 `Gemma4MTPMaskedEmbedder`。
+- `Gemma4MTPMaskedEmbedder`：centroid top-k 选簇 + 只对选中列做点积；未选列填
+  `finfo.min`；`get_top_tokens` 不物化完整 `[T, V]`。
+
+### 11.4 权重路由
+
+检查点布局与模型的差异：
+
+| 检查点 | 模型 | 处理 |
+|---|---|---|
+| `pre_projection.*` / `post_projection.*` | `model.pre_projection.*` / `model.post_projection.*` | 前缀加 `model.` |
+| `*.mlp.gate_proj.*` / `*.mlp.up_proj.*` | `*.mlp.gate_up_proj.*` | 打包映射，shard 0/1 |
+| `*.layer_scalar` | 同名 buffer | 直接拷贝 buffer（不是 Parameter） |
+| `masked_embedding.token_ordering` | 同名 buffer | 直接拷贝；masked 模式缺它直接报错 |
+| `lm_head.weight`（tied） | 与 `model.embed_tokens.weight` 共享 | 跳过，覆盖检查仍通过 |
+| 其余未知名字 | — | `AutoWeightsLoader` 明确报错 |
+
+`use_ordered_embeddings=True` 时，`token_ordering` 不再是"可选 buffer"：缺了以后 centroid
+选簇会越界，所以加载阶段就拒绝。
+
+### 11.5 验证
+
+新增 `tests/step80/test_gemma4_model_alignment.py`，共 **12 passed**：
+
+1. 参数形状 / 无 K/V 投影 / `scaling=1.0` / full 层异构 head_dim；
+2. 权重路由：pre/post 前缀、gate/up 打包、norm/q_norm、`layer_scalar`、tied lm_head；
+3. 缺参数/未知参数/token_ordering 缺失均报错；
+4. `get_model()` 通过 registry 加载 `Gemma4MTPModel`；
+5. Q 投影 + q_norm + RoPE（sliding 与 full/proportional 两层）与冻结模块逐值一致；
+6. 全模型逐层 hidden、draft/backbone 两个返回值、logits 与冻结模型一致；
+7. backbone/draft 宽度不可互换；
+8. masked embedder 的稀疏 logits / 有限列 / argmax 与冻结模块一致；
+9. final logit softcap 与手算一致；
+10. 未适配的 RoPE 类型、centroid 配置、MoE/double-wide MLP、attention softcap 明确报错。
+
+```bash
+PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
+PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
+  tests/step80/test_gemma4_model_alignment.py -q   # 12 passed
+PATH=... $PY -m pytest tests/step80 -q              # 98 passed（60 + 26 + 12）
+CUDA_VISIBLE_DEVICES='' ...                          # 12 passed（CPU-only）
+```
+
+全量回归结果与包摘要见 §11.7。
+
+### 11.6 差异与边界
+
+1. **E1 不接真实 target**：没有 Gemma4 target 架构/权重，也没有 V2/V1 提议者接线；
+   `init_speculator()` 仍对 `gemma4_mtp` 明确拒绝。E2 需要真实 target + 81 的
+   KV group/SWA/full/异构 head_dim/backend。
+2. **attention core 在模型差分中被 identity 替换**：E1 比较的是 assistant 的胶水、q 投影/
+   q_norm/RoPE、层结构、宽度与 logits；Q-only 的真实 cache 读取已由 80D 契约覆盖。
+   E2 才把真实 target cache/attention group 接进来。
+3. **未实现 attention logit softcap**：配置出现 `attn_logit_softcapping` 时明确
+   `NotImplementedError`，不静默忽略；`final_logit_softcapping` 已实现并测试。
+4. **只覆盖稠密 MLP**：`enable_moe_block` / `use_double_wide_mlp` / per-layer input
+   embedding 明确拒绝；选中的 assistant 检查点必须走稠密结构。
+5. **真实 Gemma4 权重不在本机**：E1 的 tiny 配置/权重是现场生成的教学材料，不是
+   checkpoint 格式验证；真实权重加载覆盖率属 E2。
+6. **V1 未改**：本关是模型层，V1 Gemma4 proposer/per-group metadata 留到 E2。
+
+### 11.7 全量回归与改动文件
+
+- 全量回归（2026-10-25 本机）：**1066 passed, 149 warnings in 96.87s**
+  （80D 后 1054 + 80E.E1 12；无回归）；`tests/step80` **98 passed**；
+  E1 CPU-only **12 passed**。
+- 包摘要：`minivllm/` **162** 个 `.py`，sha256
+  `f66af6fafc83941adb2fa88a53a8f6621041f98c61e07e658ebc8970f6d38108`。
+- 改动文件：
+  - `minivllm/models/gemma4_mtp.py`（新增）：E1 模型、masked embedder、权重路由。
+  - `minivllm/models/__init__.py`、`minivllm/models/registry.py`：注册/导出。
+  - `minivllm/layers/rotary_embedding.py`：`proportional` RoPE、`key=None`、
+    `apply_to_query`；普通路径行为不变。
+  - `tests/step80/test_gemma4_model_alignment.py`（新增，12 项）。
   - `docs/step80_alignment.md`、`docs/results.json`、`docs/README.md`、
     `minivllm/README.md`。
