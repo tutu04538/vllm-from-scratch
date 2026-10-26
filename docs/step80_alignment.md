@@ -5,11 +5,17 @@
 > 契约**、**80E.E1 Gemma4 assistant 模型层** 与 **80E.E2 的 target 架构/多 group/
 > V1/V2 接线**；80F–80H 未开始。
 >
-> **E2 的证据边界**：本机有真实 assistant checkpoint，并已用它跑通 V2/V1；**没有真实
-> target 权重**，target 数值验证用同架构的合成权重（tiny 对 HF、full-width 对真实
-> assistant）。因此"真实 target + assistant 的完整 checkpoint 集成"仍标 **集成待验**，
-> 不能把合成 target 的生成结果说成真实模型质量。多 group/SWA/full/head_dim 的 81
-> 子集已独立通过（`tests/step81/`），Mamba/抢占矩阵等 81 其余项未完成。
+> **E2 已接真实权重**：本机从 HF 镜像下载并固定
+> `google/gemma-4-E2B-it`（target，revision
+> `3e22461f65e89153144f8adb70e3b8c2cc9845a7`，`model.safetensors` sha256
+> `2db5482b20d746879bb3ef79b5203e9075a2e2b98f54ec7c2f281c1477ddc550`）和
+> `google/gemma-4-E2B-it-assistant`（revision
+> `2d874ef7d29f9a30599a1e4b3c1cbc9595f005df`，sha256
+> `93682eb1c97639d18f007704dc880bd74cbe530adaf7b1bb561213863fdad2a6`）。
+> target 文本 4.63B 参数（文件 10.25GB，含 vision/audio）；实测 target-only eager 与
+> target+assistant 投机 graph 在 float32 下 8-token greedy 逐 token 相同。
+> 多 group/SWA/full/head_dim 的 81 子集已独立通过（`tests/step81/`），Mamba/
+> 抢占矩阵等 81 其余项未完成。
 
 ## 0. 需求与边界
 
@@ -18,7 +24,7 @@
   - `投机解码完整需求/080B_多模块Eager执行与拒绝后KV修复.md`
   - `投机解码完整需求/080C_多模块Graph与采样生命周期.md`
   - `投机解码完整需求/080D_Q_only共享KV的映射与只读契约.md`
-  - `投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md`（E1；E2 阻塞）
+  - `投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md`（E1/E2）
 - 80A 做**输入准备和跨轮缓存布局**：把 target 本轮输入整理成 draft 的 packed 行，
   把窗口尾部 token/hidden/embedding 按持久 slot 缓存，定义窗口移动与尾部 padding。
 - 80B 把 80A 接成 V2 的 `MultiModuleMTPSpeculator`：显式 `propose()`、整段 packed
@@ -35,10 +41,10 @@
   `Gemma4MultiTokenPredictor`（`2*backbone → assistant` 与 `assistant → backbone`）、
   `Gemma4MTP`（lm_head、softcap、可选 centroid masked embedder）与权重路由。
   用冻结上游模型同 tiny 配置/权重做逐层 hidden、两个返回值与 logits 差分。
-- 80E.E2（阻塞）：真实 Gemma4 target 架构/加载 + 81 的 KV group/SWA/full/backend
-  就绪后，才接 V2 `_share_embeddings`/`_setup_gemma4_kv_sharing` 与 V1 proposer。
-- 明确不做：真实 Gemma4 target/权重、Step3p5 模型、混合 SWA/full 执行、稀疏索引、
-  性能矩阵。生产工厂仍明确拒绝 `gemma4_mtp`（E2 未完成）。
+- 80E.E2：真实 Gemma4 target 架构/加载 + 多 KV group/SWA/full/backend；V2
+  `Gemma4Speculator` 与 V1 `Gemma4Proposer` 均已接。真实 target/assistant 权重已下载，
+  float32 下 8-token greedy 的 target-only eager == 投机 graph。
+- 明确不做：Step3p5 模型、Mamba/抢占生命周期、稀疏索引、性能矩阵。
 
 ## 1. 路径映射
 
@@ -778,13 +784,16 @@ E2 做四件事：
 
 **不冒充的部分**：
 
-- 本机没有真实 Gemma4 target 权重。`test_real_assistant_*` 用**同配置的合成
-  target**（vocab=262144、hidden=1536、2 个 KV group、head_dim 256/512、
-  double-wide/PLE）配**本机真实 assistant checkpoint**。它证明真实 assistant 的
-  加载/宽度/centroid/embedding 共享/Q-only 只读/组映射，但不能证明真实 target
-  权重下的文本质量。
-- 真实 target checkpoint 的包装命名（`model.language_model.*`）有独立加载测试；
-  但"真实 target + assistant 同时固定 revision 完整生成"仍缺权重，标 **集成待验**。
+- **真实 target 与 assistant 都已下载并固定 revision**：
+  - target 文件 10.25GB（文本 4.63B 参数 + vision/audio），本地
+    `models/gemma-4-E2B-it`，revision/sha 见文件头；
+  - assistant 77.7M，本地 `models/gemma-4-E2B-it-assistant`，sha 见文件头。
+  - 真实 target 测试检查 35 层、12 sliding + 3 full owner、20 个 Q-only 尾层、
+    assistant 3 层读 target 13、1 层读 target 14；target-only eager 与投机 graph
+    8-token greedy 相同。
+- 测试仍保留 tiny/full-width 合成 target：tiny 用于跨 block/window 的 HF 逐值差分，
+  full-width 用于不依赖大文件下载时也能覆盖真实 assistant 的加载/组映射。下载权重
+  不提交（`models/` gitignore），没有权重的机器该用例显式 skip。
 - 81 只完成 E2 所需子集；Mamba 混合状态回滚、抢占三时刻矩阵、KV transfer/PD、
   多模态 M-RoPE 不在 E2 声明内。
 
@@ -859,7 +868,7 @@ V1 的 `_set_autoregressive_inputs` 不再 `anchor + k`：Q-only 每步都读 ta
 
 ### 12.6 验证
 
-新增 `tests/step80/test_gemma4_real_integration.py`，共 **11 passed**：
+新增 `tests/step80/test_gemma4_real_integration.py`，共 **12 passed**：
 
 1. 真实 assistant 配置归一化，且不原地改用户对象；
 2. tiny target 跨 sliding window/block 边界的 logits 与 HF **逐值**比较：
@@ -875,7 +884,10 @@ V1 的 `_set_autoregressive_inputs` 不再 `anchor + k`：Q-only 每步都读 ta
 8. 真实 target 包装命名 `model.language_model.*` 可加载文本栈；
 9. request id 完成后复用，不继承旧 Gemma4 speculative 状态；
 10. Gemma4 + 非 Torch 后端明确拒绝（Q-only 只在 Torch 后端实现，不能静默换后端）；
-11. V1 真实 assistant 的 centroid greedy 小图真实捕获（1/2/4/.../64 档），并跑通生成。
+11. V1 真实 assistant 的 centroid greedy 小图真实捕获（1/2/4/.../64 档），并跑通生成；
+12. **真实 target + 真实 assistant**：35 层/2 组/20 个 Q-only 尾层、assistant 源层
+    13/14，float32 下 8-token target-only eager == 投机 `FULL_DECODE_ONLY` graph
+    （`[107, 1, 106, 1, 106, 106, 106, 107]`），target/prefill/decode 图都真实重放。
 
 另外 `tests/step81/test_spec_kv_groups.py` 4 项覆盖：
 
@@ -888,17 +900,19 @@ V1 的 `_set_autoregressive_inputs` 不再 `anchor + k`：Q-only 每步都读 ta
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
 PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
-  tests/step80/test_gemma4_real_integration.py -q     # 11 passed
+  tests/step80/test_gemma4_real_integration.py -q     # 12 passed
 PATH=... $PY -m pytest tests/step81/test_spec_kv_groups.py -q  # 4 passed
-PATH=... $PY -m pytest tests/step80 -q                      # 109 passed
-PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1081 passed, 114.16s
+PATH=... $PY -m pytest tests/step80 -q                      # 110 passed
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1082 passed, 172.33s
 ```
 
 ### 12.7 差异与边界
 
-1. **真实 target 权重缺失**：full-width target 是合成的同架构权重；真实
-   target+assistant 固定 revision 的完整生成未跑，状态是"代码/架构/真实 assistant
-   已接，真实 target 权重集成待验"。
+1. **真实权重已验，但 bf16 有 near-tie**：float32 下 graph/eager 8-token 完全相同；
+   bf16 真实权重在某个位置两个 token 的 logits 完全相等，graph/eager 的微小规约差
+   会把 greedy 翻一枚（106 vs 107）。这是 bf16 数值 tie，不是组/位置/缓存逻辑错；
+   生产若要"逐 token 与 target-only 完全一致"，需固定 precision/比较口径，不能拿
+   bf16 的 near-tie 当逻辑通过。
 2. **滑窗不回收窗口外块**：`SlidingWindowManager` 保留全历史、attention 按窗口掩码；
    正确但不省显存。上游 `remove_skipped_blocks` + null block 属 81 后续。
 3. **不同 group block_size 只到控制面**：manager/coordinator/块表支持 4+8 的分配与

@@ -49,10 +49,27 @@ class BaseModelLoader:
         return get_model_class(architectures[0])
 
     def _initialize_model(self, model_config, device) -> nn.Module:
-        """构造空模型（权重还是随机/未初始化的 `torch.empty`）。"""
+        """构造空模型（权重还是随机/未初始化的 `torch.empty`）。
+
+        大模型（Gemma4 E2B 约 5.1B 参数）不能先在 CPU 建 float32 再 `.to()`：那会临时
+        占约 20 GB 主机内存，本机 31 GB 总内存会进入 swap 甚至 OOM。非 CPU 设备上直接
+        在目标 device/默认 dtype 下构造，再 `.to()` 只是形状/设备校验。默认 dtype 是
+        进程级状态，必须用 try/finally 恢复。
+        """
         model_class = self._get_model_class(model_config)
-        model = model_class(model_config.hf_config)
-        return model.to(device=device, dtype=_dtype_of(model_config))
+        dtype = _dtype_of(model_config)
+        target_device = torch.device(device)
+        if target_device.type == "cpu":
+            model = model_class(model_config.hf_config)
+            return model.to(device=target_device, dtype=dtype)
+        old_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(dtype)
+        try:
+            with torch.device(target_device):
+                model = model_class(model_config.hf_config)
+        finally:
+            torch.set_default_dtype(old_dtype)
+        return model.to(device=target_device, dtype=dtype)
 
     def load_model(self, model_config, device) -> nn.Module:
         model = self._initialize_model(model_config, device)

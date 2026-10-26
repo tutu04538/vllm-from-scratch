@@ -5670,7 +5670,7 @@
      "results": {
       "step": "80E.E2",
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md",
-      "status": "implemented + self-verified（**代码/架构/V1/V2 接线完成**；本机真实 assistant 已加载并跑通，真实 target 权重缺失，完整真实 checkpoint 集成标「集成待验」）。新增 Gemma4 文本 target（YOCO Q-only 尾层、PLE、double-wide MLP、sliding/full 异构 head_dim 256/512、proportional RoPE、final softcap）；新增多 KV group 控制面/执行面（KVCacheSpec/Group/Config、Full+Sliding manager、Hybrid coordinator、V2 BlockTables 多组、V1 多组块表包装、逐组 metadata、滑窗掩码）；V2 `Gemma4Speculator` 接真实 assistant（embedding 共享、Q-only 源层、常量位置、centroid greedy、多组 metadata、融合多步图）；V1 `Gemma4Proposer` 独立接同一套语义（eager；多组图明确拒绝）。真实 assistant 77.7M 权重加载到 V2/V1，与 full-width 合成 target（457M）跑通生成；tiny target logits 对 HF max diff 2.98e-7。",
+      "status": "implemented + self-verified（**真实 target + 真实 assistant，固定 revision**）。本机从 HF 镜像下载 `google/gemma-4-E2B-it` revision 3e2246…（4.63B 文本参数 / 10.25GB）与 `google/gemma-4-E2B-it-assistant` revision 2d874e…（77.7M），target-only eager 与target+assistant 投机 FULL_DECODE_ONLY graph 在 float32 下 8-token greedy 逐 token 相同：`[107,1,106,1,106,106,106,107]`。真实 target 35 层、12 sliding + 3 full owner、20 个 Q-only 尾层，assistant 3 层读 target 13 / 1 层读 target 14 全部核对；propose 前后 target cache 不变。tiny target 跨 window/block 对 HF max diff 2.98e-7。",
       "recorded_at": "2026-10-26T15:35:00+08:00",
       "git": {
        "baseline_commit_at_record_time": "17a8dd6",
@@ -5679,7 +5679,7 @@
       "package": {
        "root": "minivllm/",
        "python_files": 166,
-       "sha256": "a3c6438f24b096088c8798e5cc44b72c942848a4f56d6b5ddea76942167356e0",
+       "sha256": "964e0e7b4ba6a188c1fecb321a6e79b364d0e6b92eee8c52ccf72b37a6c44630",
        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -5694,11 +5694,11 @@
       "commands": [
        {
         "cmd": "python -m pytest tests/step80/test_gemma4_real_integration.py -q",
-        "result": "11 passed（target/HF 差分、组/Q-only、真实 assistant、V1/V2、graph/eager、包装命名、backend 拒绝、V1 centroid 图）"
+        "result": "12 passed（含真实 target+assistant 8-token greedy graph/eager）"
        },
        {
         "cmd": "python -m pytest tests/step80 -q",
-        "result": "109 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 11）"
+        "result": "110 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12）"
        },
        {
         "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
@@ -5706,42 +5706,48 @@
        },
        {
         "cmd": "python -m pytest tests/step58 … tests/step81 -q",
-        "result": "1081 passed, 149 warnings in 114.16s（无 failed/skipped；2026-10-26 本机最终回归）"
+        "result": "1082 passed, 149 warnings in 172.33s（无 failed/skipped；2026-10-26 本机最终回归）"
        }
       ],
       "execution_trace": {
        "target结构": "Gemma4ForCausalLM 文本子集：embed*normalizer、PLE、35/4 层 decoder、num_kv_shared_layers 尾部 Q-only、double-wide MLP、q/k/v norm、sliding default RoPE + full proportional RoPE、final softcap。",
        "target数值": "tiny target（4 层 [S,F,S,F]、num_kv_shared_layers=2、window=4、block=4、vocab=128）在 11-token prompt 上跨 window/block 边界与 HF 比较：logits max diff 2.98e-7，argmax/top-5 相同。",
        "多group": "target 由真实 spec 推得 2 组：sliding（head_dim=256、window=512）与 full（head_dim=512、无窗口）；Q-only 尾层按 layer_types 映射到同类型最后一个非共享源层。V2 每层取自己组的 block table/slot mapping，V1 用逐组工作区块表。",
-       "真实assistant": "models/gemma-4-E2B-it-assistant 77.7M 参数：pre_projection 3072→256、post_projection 256→1536、lm_head 262144×256、2048 centroid/top-32 masked embedder；embedding 直接复用 target `model.embed_tokens`，lm_head 保持 draft 宽。",
+       "真实assistant": "google/gemma-4-E2B-it-assistant revision 2d874ef7d29f9a30599a1e4b3c1cbc9595f005df；model.safetensors sha256 93682eb1c97639d18f007704dc880bd74cbe530adaf7b1bb561213863fdad2a6，157,565,344 bytes；4 层、pre 3072→256、post 256→1536、lm_head 262144×256、2048 centroid/top-32。",
        "Q-only只读": "真实 assistant 的 4 层中 3 层读 target sliding 源、1 层读 full 源；在 propose() 前后逐字节比较 target cache，未发生写入。",
        "V1/V2": "同 tiny target+assistant、同 greedy workload：V1 与 V2 输出 token 完全一致；V2 FULL_DECODE_ONLY 与 eager 输出一致，prefill/decode/target 图都真实捕获并重放。",
        "真实target缺口": "本机没有真实 Gemma4 target 权重；full-width target 是按真实配置生成的合成权重，只证明架构/加载/多组/真实 assistant 接线，不证明真实文本质量。",
-       "V1 centroid": "真实 assistant 的 V1 greedy 走 get_top_tokens，并捕获 1/2/4/8/16/32/64 行的小 CUDA Graph；概率草稿仍回退完整 logits。"
+       "V1 centroid": "真实 assistant 的 V1 greedy 走 get_top_tokens，并捕获 1/2/4/8/16/32/64 行的小 CUDA Graph；概率草稿仍回退完整 logits。",
+       "真实target": "google/gemma-4-E2B-it revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7；model.safetensors sha256 2db5482b20d746879bb3ef79b5203e9075a2e2b98f54ec7c2f281c1477ddc550，10,246,621,918 bytes；文本 4.63B 参数，另有 vision/audio 权重（跳过不加载）。",
+       "真实生成": "prompt [2,818,5279,529,7001,13]，max_tokens=8：target-only eager 与投机 graph 均为 [107,1,106,1,106,106,106,107]；target/prefill/decode 图都真实捕获/重放。"
       },
       "known_gaps": [
-       "真实 Gemma4 target 权重缺失：完整真实 target+assistant 固定 revision 生成未跑，标「集成待验」；不能用合成 target 冒充真实 checkpoint。",
+       "bf16 真实权重存在 near-tie：某位置两个 token logits 完全相等，graph/eager 的微小规约差可翻一枚 greedy（实测 106 vs 107）；float32 下逐 token 完全相同。不是组/位置/缓存逻辑错。",
        "不同 group block_size 只到控制面；Runner 执行层仍要求所有组 block_size 相同（Gemma4 相同）。",
        "滑窗组保留全历史、仅 attention 掩码；没有 remove_skipped_blocks/null block 回收，显存不按窗口回收。",
        "V1 多 group CUDA Graph 明确拒绝；V1 Gemma4 的 target 图未接（V1 先 eager），V1 centroid 小图已接。",
-       "V2 centroid 未捕获上游那种 1/2/4/... 小图；greedy 用 get_top_tokens 不物化完整词表，但性能未验。",
+       "V2 centroid 未捕获上游那种 1/2/4/... 小图；性能未验。",
        "多模态/inputs_embeds/M-RoPE/XD-RoPE、Mamba 状态、抢占三时刻、KV transfer/PD 未接。",
-       "没有真实权重质量/加速比结论；无性能矩阵。"
+       "没有系统性质量/加速比矩阵；只做单 prompt 无损对照。"
       ]
      },
      "models": {
       "target": {
-       "path": "本机无真实 target 权重；测试用 /tmp 现场生成的 tiny（vocab=128）与 full-width（vocab=262144、hidden=1536、4 层）合成 target",
+       "path": "models/gemma-4-E2B-it（本地，gitignore）",
+       "repo": "google/gemma-4-E2B-it",
+       "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
        "architectures": [
-        "Gemma4ForCausalLM",
-        "Gemma4ForConditionalGeneration（包装命名加载测试）"
+        "Gemma4ForConditionalGeneration（文本栈由本项目 Gemma4ForCausalLM 加载）"
        ],
-       "dtype": "tiny float32；full-width bfloat16",
-       "revision": "N/A（合成权重，固定 seed）",
-       "note": "真实 target checkpoint 的包装命名有加载测试；真实权重集成待验"
+       "dtype": "bf16 checkpoint；测试 float32 做精确 greedy 对照",
+       "size_bytes": 10246621918,
+       "sha256": "2db5482b20d746879bb3ef79b5203e9075a2e2b98f54ec7c2f281c1477ddc550",
+       "tokenizer": "同目录 tokenizer.json"
       },
       "draft": {
-       "path": "models/gemma-4-E2B-it-assistant（本机真实 assistant，local snapshot）",
+       "path": "models/gemma-4-E2B-it-assistant（本地，gitignore）",
+       "repo": "google/gemma-4-E2B-it-assistant",
+       "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
        "architectures": [
         "Gemma4AssistantForCausalLM（配置归一为 Gemma4MTPModel）"
        ],
@@ -5752,11 +5758,12 @@
        "vocab_size": 262144,
        "num_centroids": 2048,
        "centroid_top_k": 32,
-       "note": "真实 assistant 权重加载/共享/Q-only 已实测；target 侧为合成权重"
+       "size_bytes": 157565344,
+       "sha256": "93682eb1c97639d18f007704dc880bd74cbe530adaf7b1bb561213863fdad2a6"
       },
       "real_weights": {
-       "status": "assistant 有；target 缺",
-       "note": "真实 assistant 77.7M 参数已用；真实 target E2B 权重不在本机，完整集成待验"
+       "status": "target 有；assistant 有",
+       "note": "两套真实权重固定 revision/hash；target 下载自 hf-mirror（huggingface.co 本机 DNS 不可达），权重 gitignore 不提交"
       }
      }
     }
@@ -5776,7 +5783,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 166,
-    "sha256": "a3c6438f24b096088c8798e5cc44b72c942848a4f56d6b5ddea76942167356e0",
+    "sha256": "964e0e7b4ba6a188c1fecb321a6e79b364d0e6b92eee8c52ccf72b37a6c44630",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {

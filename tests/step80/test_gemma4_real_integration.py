@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import copy
+import gc
 import json
 import os
 from pathlib import Path
@@ -33,11 +34,15 @@ from minivllm.models.gemma4_mtp import Gemma4MTP
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSISTANT = ROOT / "models" / "gemma-4-E2B-it-assistant"
+REAL_TARGET = ROOT / "models" / "gemma-4-E2B-it"
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Gemma4 E2 集成测试需要 CUDA")
 requires_assistant = pytest.mark.skipif(
     not (ASSISTANT / "model.safetensors").is_file(),
     reason="本机没有真实 Gemma4 assistant checkpoint")
+requires_real_target = pytest.mark.skipif(
+    not (REAL_TARGET / "model.safetensors").is_file(),
+    reason="本机没有真实 Gemma4 target checkpoint（models/gemma-4-E2B-it）")
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +176,12 @@ def fullwidth_models(tmp_path_factory):
 
 def _make_engine(target_dir, target_hf, draft_dir, draft_hf, *, v2: bool,
                  k: int = 2, mode: str = "none", capture_sizes=None,
-                 max_tokens: int = 4, attention_backend: str = "torch"):
+                 max_tokens: int = 4, attention_backend: str = "torch",
+                 dtype: str | None = None):
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1" if v2 else "0"
-    dtype = "bfloat16" if int(target_hf["text_config"]["hidden_size"]) == 1536 else "float32"
+    if dtype is None:
+        dtype = ("bfloat16"
+                 if int(target_hf["text_config"]["hidden_size"]) == 1536 else "float32")
     target = ModelConfig(model=str(target_dir), dtype=dtype,
                          max_model_len=64, hf_config=target_hf)
     draft = ModelConfig(model=str(draft_dir), dtype=dtype,
@@ -469,3 +477,76 @@ def test_v1_real_assistant_uses_centroid_greedy_graphs(fullwidth_models):
     assert 1 in proposer._centroid_graphs and 64 in proposer._centroid_graphs
     out = _run(engine, [("r", [1, 2, 3])], max_tokens=2)
     assert len(out["r"]) == 2
+
+
+@requires_cuda
+@requires_assistant
+@requires_real_target
+def test_real_target_and_assistant_greedy_graph_matches_target_only():
+    """真实 target + 真实 assistant 的最小完整生成对照。
+
+    target-only eager（无投机）与 target+assistant 的 speculative greedy **图**必须逐
+    token 相同；这一步同时验证真实 35 层 target 的 loading、sliding/full 两个 group、
+    YOCO 20 个 Q-only 尾层和 assistant 的源层映射。
+    """
+    target_hf = json.loads((REAL_TARGET / "config.json").read_text())
+    assistant_hf = json.loads((ASSISTANT / "config.json").read_text())
+    prompt = [2, 818, 5279, 529, 7001, 13]
+
+    # 真实权重是 bf16；这里用 float32 做"逐 token 完全相等"的 greedy 对照，避免 bf16
+    # 在 near-tie（实测两个 token 的 logits 完全相等）上把 graph/eager 的微小规约差
+    # 解释成逻辑错。bf16 的生成路径另有 `requires_assistant` 用例覆盖。
+    engine, _runner, _ = _make_engine(
+        REAL_TARGET, target_hf, ASSISTANT, assistant_hf, v2=True, k=0,
+        dtype="float32")
+    target_only = _run(engine, [("r", prompt)], max_tokens=8)
+    del engine, _runner
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    sizes = [1, 3, 6, 9, 12]
+    engine, runner, _ = _make_engine(
+        REAL_TARGET, target_hf, ASSISTANT, assistant_hf, v2=True, k=2,
+        mode="full_decode_only", capture_sizes=sizes, dtype="float32")
+    groups = runner.kv_cache_config.kv_cache_groups
+    assert [len(g.layer_names) for g in groups] == [12, 3]
+    assert groups[0].kv_cache_spec.head_size == 256
+    assert groups[1].kv_cache_spec.head_size == 512
+    assert groups[0].kv_cache_spec.sliding_window == 512
+    layers = runner._attention_layers()
+    assert len(layers) == 35
+    q_only = [name for name, layer in layers.items() if layer.q_only]
+    assert len(q_only) == 20
+    for idx in range(15, 35):
+        source_idx = 13 if idx % 5 != 4 else 14
+        layer = layers[f"model.layers.{idx}.self_attn.attn"]
+        source = layers[f"model.layers.{source_idx}.self_attn.attn"]
+        assert layer.kv_cache is source.kv_cache
+        assert layer.kv_cache_group_id == source.kv_cache_group_id
+    draft_layers = [layer.self_attn.attn for layer in runner.speculator.model.model.layers]
+    assert [layer.kv_sharing_target_layer_name for layer in draft_layers] == [
+        "model.layers.13.self_attn.attn",
+        "model.layers.13.self_attn.attn",
+        "model.layers.13.self_attn.attn",
+        "model.layers.14.self_attn.attn",
+    ]
+
+    called = {"n": 0}
+    original = runner.speculator.propose
+
+    def propose(*args, **kwargs):
+        called["n"] += 1
+        before = {name: cache.clone() for name, cache in runner.kv_caches.items()}
+        out = original(*args, **kwargs)
+        for name, expected in before.items():
+            assert torch.equal(runner.kv_caches[name], expected)
+        return out
+
+    runner.speculator.propose = propose
+    speculative = _run(engine, [("r", prompt)], max_tokens=8)
+    assert called["n"] > 0
+    assert speculative == target_only
+    stats = runner.cudagraph_capture_stats
+    assert stats["graphs"]["prefill"]["captured"] > 0
+    assert stats["graphs"]["decode"]["captured"] > 0
+    assert stats["target"]["captured"] > 0
