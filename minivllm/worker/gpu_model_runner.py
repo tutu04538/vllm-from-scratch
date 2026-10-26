@@ -592,18 +592,22 @@ class GPUModelRunner:
         self._attn_metadata_layer_groups = {}
         target_layers = self._attention_layers()
         dtype = next(self.model.parameters()).dtype
-        self.kv_caches = {}
+        from .kv_cache_alloc import (allocate_packed_target_caches,
+                                             allocate_per_layer_target_caches)
+
+        if kv_cache_config.num_kv_cache_groups > 1:
+            self.kv_caches, self.packed_backing, self.packed_block_stride = (
+                allocate_packed_target_caches(
+                    kv_cache_config, target_layers, self.device))
+        else:
+            self.packed_backing = None
+            self.packed_block_stride = 0
+            self.kv_caches = allocate_per_layer_target_caches(
+                kv_cache_config, target_layers, self.device)
         for gid, group in enumerate(kv_cache_config.kv_cache_groups):
-            spec = group.kv_cache_spec
             for layer_name in group.layer_names:
-                layer = target_layers[layer_name]
-                cache = torch.zeros(
-                    2, kv_cache_config.num_gpu_blocks, spec.block_size,
-                    spec.num_kv_heads, spec.head_size, dtype=dtype, device=self.device)
-                layer.kv_cache = cache
-                layer.kv_cache_group_id = gid
-                self.kv_caches[layer_name] = cache
                 self._attn_metadata_layer_groups[layer_name] = gid
+
         for layer_name, layer in target_layers.items():
             if not layer.q_only:
                 continue

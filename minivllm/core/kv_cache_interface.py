@@ -24,6 +24,7 @@ block_size 的 **min**（`KVCacheConfig.hash_block_size`）。每个组的块大
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import torch
@@ -97,12 +98,35 @@ class KVCacheGroup:
             raise ValueError(f"KVCacheGroup 里有重复层名：{self.layer_names}")
 
 
+@dataclass(frozen=True)
+class KVCacheTensor:
+    """packed 布局里的一段物理 backing（对应上游 `KVCacheTensor`）。
+
+    `size` 是整个 backing 的字节数；`offset` 是这一层在一个 block 行内的字节偏移；
+    `block_stride` 是一行的字节数（0 = 旧的非 packed 布局）。
+    """
+
+    size: int
+    shared_by: list[str]
+    offset: int = 0
+    block_stride: int = 0
+
+    def __post_init__(self) -> None:
+        if self.size <= 0:
+            raise ValueError(f"KVCacheTensor.size 必须为正，收到 {self.size}")
+        if not self.shared_by:
+            raise ValueError("KVCacheTensor.shared_by 不能为空")
+        if self.offset < 0 or self.block_stride < 0:
+            raise ValueError("KVCacheTensor 的 offset/block_stride 不能为负")
+
+
 @dataclass
 class KVCacheConfig:
     """一次运行的 KV 布局（对应上游 `KVCacheConfig` 的子集）。
 
-    `num_gpu_blocks` 是**每个 group 各自可用的物理块数上限**，group 之间共享同一份
-    block id 池：每组的物理 cache 是独立 tensor，但块号记账走同一个 BlockPool。
+    `num_gpu_blocks` 是**全局共享 block id 池**的块数；所有 group manager 从同一个
+    `BlockPool` 领块。packed 布局会把各层视图放进同一个 backing，但 block id 仍是全局
+    唯一、同一时刻只归一个 group。
     """
 
     num_gpu_blocks: int
@@ -152,6 +176,50 @@ class KVCacheConfig:
                 return group_id
         raise KeyError(f"层 {layer_name!r} 不在任何 KV group 里")
 
+    def packed_layout(self) -> tuple[int, dict[int, list[str]]]:
+        """返回 `(block_stride_bytes, offset -> layer_names)`（对应上游
+        `_get_packed_kv_cache_layout`）。
+
+        每组的层按顺序累加 `page_size_bytes`；不同组的 offset 可以重叠。
+        `block_stride` 取所有组 stack 的最大值，而不是各组之和。
+        """
+        layers_by_offset: dict[int, list[str]] = defaultdict(list)
+        block_stride = 0
+        for group in self.kv_cache_groups:
+            page_size = group.kv_cache_spec.page_size_bytes
+            byte_offset = 0
+            for layer_name in group.layer_names:
+                layers_by_offset[byte_offset].append(layer_name)
+                byte_offset += page_size
+            block_stride = max(block_stride, byte_offset)
+        if block_stride <= 0:
+            raise RuntimeError("packed layout 的 block_stride 必须为正")
+        return block_stride, dict(layers_by_offset)
+
+    def packed_tensors(self) -> tuple[int, list[KVCacheTensor]]:
+        """生成 packed 布局的 `KVCacheTensor` 描述（全部 aliasing 同一个 backing）。"""
+        block_stride, layers_by_offset = self.packed_layout()
+        total_size = block_stride * self.num_gpu_blocks
+        tensors = [
+            KVCacheTensor(
+                size=total_size,
+                shared_by=list(layers),
+                offset=offset,
+                block_stride=block_stride,
+            )
+            for offset, layers in sorted(layers_by_offset.items())
+        ]
+        return block_stride, tensors
+
+    def layer_offsets(self) -> tuple[int, dict[str, int]]:
+        """layer_name -> 它在 packed block 行内的字节 offset。"""
+        block_stride, layers_by_offset = self.packed_layout()
+        offsets = {}
+        for offset, layers in layers_by_offset.items():
+            for layer_name in layers:
+                offsets[layer_name] = offset
+        return block_stride, offsets
+
     def describe(self) -> list[dict]:
         """给 trace/测试用的稳定摘要。"""
         return [
@@ -186,3 +254,48 @@ def full_attention_config(cache_config) -> KVCacheConfig:
         num_gpu_blocks=cache_config.num_gpu_blocks,
         kv_cache_groups=[KVCacheGroup(spec, ["__default__"])],
     )
+
+
+def make_packed_kv_cache_view(backing: torch.Tensor,
+                              kv_cache_spec: KVCacheSpec,
+                              *,
+                              offset: int,
+                              block_stride: int,
+                              num_blocks: int) -> torch.Tensor:
+    """把 packed backing 的一段切成层 cache 的 `[2, B, block, kvh, head]` view。
+
+    布局与上游 `_reshape_attention_kv_cache` 一致：一个 block 行里 K 页和 V 页相邻，
+    下一块从 `block_stride` 开始；`offset` 是这一层在该行内的起始字节。
+    """
+    if backing.dtype != torch.int8:
+        raise TypeError(f"packed backing 必须是 int8，收到 {backing.dtype}")
+    if not backing.is_contiguous() or backing.ndim != 1:
+        raise ValueError("packed backing 必须是连续的一维 int8 tensor")
+    if offset < 0 or block_stride <= 0:
+        raise ValueError("offset/block_stride 非法")
+    itemsize = kv_cache_spec.dtype.itemsize
+    if offset % itemsize or block_stride % itemsize:
+        raise ValueError(
+            f"packed offset={offset}/block_stride={block_stride} 必须是 dtype "
+            f"itemsize={itemsize} 的整数倍")
+    page_elems = (2 * kv_cache_spec.block_size
+                  * kv_cache_spec.num_kv_heads * kv_cache_spec.head_size)
+    if offset + page_elems * itemsize > block_stride:
+        raise ValueError(
+            f"层 page {page_elems * itemsize} B 超出 block_stride={block_stride} B")
+    if block_stride * num_blocks > backing.numel():
+        raise ValueError(
+            f"packed backing 只有 {backing.numel()} B，需要 "
+            f"{block_stride * num_blocks} B")
+    shape = (2, num_blocks, kv_cache_spec.block_size,
+             kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
+    strides = (
+        page_elems // 2,                 # K -> V 在同一 block 内相邻
+        block_stride // itemsize,        # 下一块
+        kv_cache_spec.num_kv_heads * kv_cache_spec.head_size,
+        kv_cache_spec.head_size,
+        1,
+    )
+    return torch.as_strided(
+        backing.view(kv_cache_spec.dtype), shape, strides,
+        storage_offset=offset // itemsize)

@@ -826,6 +826,12 @@ E2 做四件事：
 真实的 35 层 target 会得到 13 个 sliding 拥有层 + 2 个 full 拥有层、20 个 Q-only
 尾部层；同一套映射代码按 `layer_types`/`num_kv_shared_layers` 计算。
 
+target 的物理 cache 使用 **packed shared slab**：两个 group 的层布局放进同一个 int8
+backing，`block_stride = max(12*16KB, 3*32KB) = 192KB`，`num_blocks` 仍由全局
+`BlockPool` 决定；每层是 `as_strided` 到自己的 offset 的 view，不是每层一份完整
+tensor。旧布局每 block id 需要 `(12*16 + 3*32)=288KB`，packed 只需要 192KB；代价是
+一个 block id 同一时刻仍只归一个 group，行内另一组那部分可能空闲。
+
 target 的关键执行顺序：
 
 1. 前 15 层正常写 K/V：sliding 组写 `[2, blocks, 16, 1, 256]`，full 组写
@@ -901,9 +907,9 @@ PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
 PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
   tests/step80/test_gemma4_real_integration.py -q     # 12 passed
-PATH=... $PY -m pytest tests/step81/test_spec_kv_groups.py -q  # 4 passed
+PATH=... $PY -m pytest tests/step81 -q  # 7 passed
 PATH=... $PY -m pytest tests/step80 -q                      # 110 passed
-PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1082 passed, 172.33s
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1085 passed, 217.51s
 ```
 
 ### 12.7 差异与边界
@@ -918,9 +924,12 @@ PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1082 passed, 172
 3. **不同 group block_size 只到控制面**：manager/coordinator/块表支持 4+8 的分配与
    命中；Runner 执行层仍要求所有组 block_size 相同（Gemma4 正好相同）。不同块大小的
    逐组 attention kernel 编译未接。
-4. **V1 图未按组捕获**：多 group 时 V1 `cudagraph_mode != NONE` 明确拒绝；V2 已支持。
-5. **V1 的 PLE/多模态**：V1 Gemma4 只走文本 target；多模态 inputs_embeds/M-RoPE 未接。
-6. **centroid CUDA Graph**：V2 greedy 用 `get_top_tokens`（不物化完整词表），但没有像
-   上游 `_setup_centroids_cuda_graphs` 那样为 1/2/4/... 捕获 centroid 小图；这是性能
-   项，不是正确性项。V1 仍走完整 logits 的 argmax。
-7. **未跑性能矩阵**：不声称任何加速比或真实草稿接受率。
+4. **packed 只省“每层完整 tensor”**：一个 block id 仍只归一个 group，行内另一组
+   的 offset 可能空闲；不是完全动态 page 分配。改 per-group BlockPool 也能消掉当前
+   互斥浪费，但会和全局容量/prefix 语义一起改。
+5. **V1 图未按组捕获**：多 group 时 V1 `cudagraph_mode != NONE` 明确拒绝；V1 centroid
+   greedy 小图已捕获；V2 支持多组 target/草稿图。
+6. **V1 的 PLE/多模态**：V1 Gemma4 只走文本 target；多模态 inputs_embeds/M-RoPE 未接。
+7. **centroid CUDA Graph**：V1 已捕获 1/2/4/.../64 行 `get_top_tokens` 小图；V2 仍直接
+   调用 `get_top_tokens`，没有捕获上游那种 centroid 小图。这是性能项，不是正确性项。
+8. **未跑性能矩阵**：不声称任何加速比或真实草稿接受率。

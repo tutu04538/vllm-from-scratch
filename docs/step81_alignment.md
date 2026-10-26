@@ -17,6 +17,7 @@
 | V1 执行 | `worker/block_table.py`、`worker/gpu_model_runner.py` | V1 `GPUModelRunner` | `BlockTable` 多组包装、逐组槽位/metadata；多组图明确拒绝 |
 | 滑窗执行 | `attention/backends/torch_sdpa.py` | 各后端 sliding mask | 绝对位置下界 `q - window + 1`；eager/固定形状/varlen 三条路径一致 |
 | Q-only | `attention/layer.py`、`core/...`、Runner | Gemma4 YOCO / assistant | 只读源层 cache；组 id 跟随源层 |
+| packed shared slab | `worker/kv_cache_alloc.py`、`core/kv_cache_interface.py`、V1/V2 Runner | `v1/core/kv_cache_utils.py::_get_packed_kv_cache_config` + `v1/worker/gpu/attn_utils.py::_reshape_attention_kv_cache` | 多 group target 只分配一个 int8 backing；`block_stride=max(每组层 stack)`；每层 `as_strided` 到自己的 offset；block id 仍只归一个 group |
 
 ## 2. 验收证据
 
@@ -26,6 +27,12 @@
 2. 删掉 sliding 组第一块 hash 后共同命中 0（无跨组误命中）；
 3. 容量不足时原子失败，两组块表都不留半块；
 4. 滑窗 spec 缺 window 明确报错。
+
+`tests/step81/test_packed_kv_layout.py`（3 passed）：
+
+1. G0 2 层 / G1 1 层、page size 不同：`block_stride=512B` 取 max，不是 `768B` sum；
+2. 三个 layer view 共用同一个 backing 的 storage ptr，`stride(1)=block_stride`；
+3. 写 view 后能在 backing 的对应 offset 看到数据；page 越界明确报错。
 
 `tests/step80/test_gemma4_real_integration.py` 的 target/组相关用例另外验证：
 真实 assistant 的 4 层分别映射到 sliding/full 源组、`head_size` 256/512、
@@ -47,13 +54,15 @@ target Q-only 层绑同一 cache 对象、`propose()` 前后 target cache 不变
 7. **多模态/inputs_embeds/M-RoPE/XD-RoPE**：Gemma4 文本路径已接；多模态未接。
 8. **生命周期矩阵**：EOS/stop/max_tokens/cancel/slot 复用只做了 E2 的 request-id
    复用用例，不是 81 要求的全矩阵。
+9. **packed 仍有局部空闲**：一个 block id 只归一个 group；G1 占用时，block 行里
+   G0 多出来的那部分仍空着。packed 省的是“每组各开一份完整 tensor”，不是完全动态
+   的 page 分配。
 
 ## 4. 命令
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
-  tests/step81/test_spec_kv_groups.py -q   # 4 passed
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest tests/step81 -q   # 7 passed
 ```
 
 全量回归与包摘要见 `docs/results.json` 的 `step81` 记录。

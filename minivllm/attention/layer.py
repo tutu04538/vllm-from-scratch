@@ -103,8 +103,17 @@ class Attention(nn.Module):
             raise ValueError(
                 f"KV cache 布局应为 [2, num_blocks, block_size, kv_heads, head_size]，"
                 f"收到 shape={tuple(cache.shape)}")
-        if not cache.is_contiguous():
-            raise ValueError("KV cache 必须连续；Q-only 读取按扁平槽位寻址，非连续布局会读错")
+        # packed 布局的 cache 在 block 维上是 stride 视图，整体 `is_contiguous()` 为
+        # False；但一个 block 内的 [block, kv_heads, head] 必须连续。旧布局与 packed
+        # 布局都满足“页内连续”，只是页之间 stride 不同。
+        page_elems = cache.shape[2] * cache.shape[3] * cache.shape[4]
+        if (cache.stride(2) != cache.shape[3] * cache.shape[4]
+                or cache.stride(3) != cache.shape[4]
+                or cache.stride(4) != 1
+                or cache.stride(1) < page_elems):
+            raise ValueError(
+                f"KV cache 的页内布局必须连续，且块 stride 不小于一页："
+                f"shape={tuple(cache.shape)} stride={cache.stride()}")
         if target.num_kv_heads != self.num_kv_heads:
             raise ValueError(
                 f"Q-only 共享要求 KV heads 一致：draft {self.layer_name!r}="

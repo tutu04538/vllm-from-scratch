@@ -5678,8 +5678,8 @@
       },
       "package": {
        "root": "minivllm/",
-       "python_files": 166,
-       "sha256": "964e0e7b4ba6a188c1fecb321a6e79b364d0e6b92eee8c52ccf72b37a6c44630",
+       "python_files": 167,
+       "sha256": "cc8ef330f7766b5529562bbdbbf7bdf1c4fd67ab7467c621ce8e3323b923033e",
        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -5706,7 +5706,7 @@
        },
        {
         "cmd": "python -m pytest tests/step58 … tests/step81 -q",
-        "result": "1082 passed, 149 warnings in 172.33s（无 failed/skipped；2026-10-26 本机最终回归）"
+        "result": "7 passed（多组控制面 4 + packed 布局 3）"
        }
       ],
       "execution_trace": {
@@ -5719,12 +5719,14 @@
        "真实target缺口": "本机没有真实 Gemma4 target 权重；full-width target 是按真实配置生成的合成权重，只证明架构/加载/多组/真实 assistant 接线，不证明真实文本质量。",
        "V1 centroid": "真实 assistant 的 V1 greedy 走 get_top_tokens，并捕获 1/2/4/8/16/32/64 行的小 CUDA Graph；概率草稿仍回退完整 logits。",
        "真实target": "google/gemma-4-E2B-it revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7；model.safetensors sha256 2db5482b20d746879bb3ef79b5203e9075a2e2b98f54ec7c2f281c1477ddc550，10,246,621,918 bytes；文本 4.63B 参数，另有 vision/audio 权重（跳过不加载）。",
-       "真实生成": "prompt [2,818,5279,529,7001,13]，max_tokens=8：target-only eager 与投机 graph 均为 [107,1,106,1,106,106,106,107]；target/prefill/decode 图都真实捕获/重放。"
+       "真实生成": "prompt [2,818,5279,529,7001,13]，max_tokens=8：target-only eager 与投机 graph 均为 [107,1,106,1,106,106,106,107]；target/prefill/decode 图都真实捕获/重放。",
+       "packed layout": "多 group target 使用一个 int8 backing：Gemma4 两组 block_stride=max(12*16KB,3*32KB)=192KB，num_blocks=32 时 backing=6.29MB；旧 per-layer 布局为 (12*16+3*32)KB*32=9.44MB。每层 as_strided 到 offset，所有 owner layer 共享同一 storage；block id 仍只归一个 group。"
       },
       "known_gaps": [
        "bf16 真实权重存在 near-tie：某位置两个 token logits 完全相等，graph/eager 的微小规约差可翻一枚 greedy（实测 106 vs 107）；float32 下逐 token 完全相同。不是组/位置/缓存逻辑错。",
        "不同 group block_size 只到控制面；Runner 执行层仍要求所有组 block_size 相同（Gemma4 相同）。",
        "滑窗组保留全历史、仅 attention 掩码；没有 remove_skipped_blocks/null block 回收，显存不按窗口回收。",
+       "packed 只把“每层完整 tensor”压成一个 block_stride 行；一个 block id 仍只归一个 group，行内另一组 offset 可能空闲，不是完全动态 page 分配。",
        "V1 多 group CUDA Graph 明确拒绝；V1 Gemma4 的 target 图未接（V1 先 eager），V1 centroid 小图已接。",
        "V2 centroid 未捕获上游那种 1/2/4/... 小图；性能未验。",
        "多模态/inputs_embeds/M-RoPE/XD-RoPE、Mamba 状态、抢占三时刻、KV transfer/PD 未接。",
@@ -5782,8 +5784,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 166,
-    "sha256": "964e0e7b4ba6a188c1fecb321a6e79b364d0e6b92eee8c52ccf72b37a6c44630",
+    "python_files": 167,
+    "sha256": "cc8ef330f7766b5529562bbdbbf7bdf1c4fd67ab7467c621ce8e3323b923033e",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5795,14 +5797,15 @@
    },
    "commands": [
     {
-     "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
-     "result": "4 passed"
+     "cmd": "python -m pytest tests/step81 -q",
+     "result": "7 passed（多组控制面 4 + packed 布局 3）"
     }
    ],
    "execution_trace": {
     "控制面": "KVCacheSpec/Group/Config + Full/Sliding manager + Hybrid coordinator；hash 粒度取组 block_size 最小值，大块用 stride 取链式 hash；命中长度逐组取 min 并按共同长度裁块。",
     "执行面": "V2 BlockTables 多组块表/槽位/逐组 metadata；V1 BlockTable 多组包装/逐组工作区；sliding mask 使用绝对位置 q-window+1；Q-only 层组跟随源层。",
-    "验收": "4+8 块组分配 [4,2]、共同命中 8；删 sliding 第一块 hash 后命中 0；容量不足原子失败；缺 window 报错。"
+    "验收": "4+8 块组分配 [4,2]、共同命中 8；删 sliding 第一块 hash 后命中 0；容量不足原子失败；缺 window 报错。",
+    "packed layout": "KVCacheConfig.packed_layout：block_stride=max(每组层 stack)，offset 累加 page_size；KVCacheTensor 全部 alias 同一 backing；make_packed_kv_cache_view 用 as_strided 切 [2,B,block,kvh,head]。"
    },
    "known_gaps": [
     "Mamba/混合状态 prepare/update/rollback 未实现，明确拒绝而不是错算。",

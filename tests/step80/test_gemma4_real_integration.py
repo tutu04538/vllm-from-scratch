@@ -336,6 +336,11 @@ def test_target_groups_and_q_only_sources(tiny_models):
     engine, runner, _ = _make_engine(target_dir, cfg, target_dir, cfg, v2=True, k=0)
     groups = runner.kv_cache_config.kv_cache_groups
     assert len(groups) == 2
+    assert runner.packed_backing is not None
+    assert runner.packed_backing.numel() == (
+        runner.packed_block_stride * runner.kv_cache_config.num_gpu_blocks)
+    assert len({cache.untyped_storage().data_ptr()
+                for cache in runner.kv_caches.values()}) == 1
     assert groups[0].kv_cache_spec.head_size == 8
     assert groups[0].kv_cache_spec.sliding_window == 4
     assert groups[1].kv_cache_spec.head_size == 16
@@ -374,6 +379,9 @@ def test_real_assistant_loads_shares_embedding_and_never_writes_source_kv(
     assert model.lm_head.weight is not model.model.embed_tokens.weight
 
     groups = runner.kv_cache_config.kv_cache_groups
+    assert runner.packed_backing is not None
+    assert len({cache.untyped_storage().data_ptr()
+                for cache in runner.kv_caches.values()}) == 1
     assert [g.kv_cache_spec.head_size for g in groups] == [256, 512]
     assert groups[0].kv_cache_spec.sliding_window == 512
     assert getattr(groups[1].kv_cache_spec, "sliding_window", None) is None

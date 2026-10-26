@@ -121,15 +121,40 @@ class TorchAttentionImpl:
                    代价是 0 号块必须留白（`KVCacheManager` 在图模式下不把它分给任何请求），
                    否则 padding 会覆盖真实数据——这一条 64 关就记下了，69 关才真的兑现。
         """
-        num_blocks, block_size = kv_cache.shape[1], kv_cache.shape[2]
-        flat = kv_cache.view(2, num_blocks * block_size, self.num_kv_heads, self.head_size)
+        block_size = kv_cache.shape[2]
         slots = attn_metadata.slot_mapping
         keys = key.view(-1, self.num_kv_heads, self.head_size)
         values = value.view(-1, self.num_kv_heads, self.head_size)
+
+        def write(slots_tensor, keys_tensor, values_tensor):
+            block_ids = slots_tensor // block_size
+            block_offsets = slots_tensor % block_size
+            kv_cache[0, block_ids, block_offsets] = keys_tensor
+            kv_cache[1, block_ids, block_offsets] = values_tensor
+
+        if kv_cache.is_contiguous():
+            # 旧布局的快速路径：block 维与 slot 维可以摊平成 index_copy_。
+            flat = kv_cache.view(
+                2, kv_cache.shape[1] * block_size,
+                self.num_kv_heads, self.head_size)
+            if self._graph_dispatched():
+                flat[0].index_copy_(0, slots.clamp_min(0), keys)
+                flat[1].index_copy_(0, slots.clamp_min(0), values)
+                return
+            valid = slots >= 0
+            if not bool(valid.all()):
+                slots = slots[valid]
+                keys = keys[valid]
+                values = values[valid]
+            if slots.numel():
+                flat[0].index_copy_(0, slots, keys)
+                flat[1].index_copy_(0, slots, values)
+            return
+
+        # packed shared slab 的 block 维有 stride，不能 view 成扁平槽位；用
+        # block_id/offset 两维索引写入。图内同样不做数据相关分支，padding 走 0 号块。
         if self._graph_dispatched():
-            # 图内路径：形状与索引全部是张量，不做任何数据相关的分支
-            flat[0].index_copy_(0, slots.clamp_min(0), keys)
-            flat[1].index_copy_(0, slots.clamp_min(0), values)
+            write(slots.clamp_min(0), keys, values)
             return
         valid = slots >= 0
         if not bool(valid.all()):
@@ -137,8 +162,7 @@ class TorchAttentionImpl:
             keys = keys[valid]
             values = values[valid]
         if slots.numel():
-            flat[0].index_copy_(0, slots, keys)
-            flat[1].index_copy_(0, slots, values)
+            write(slots, keys, values)
 
     @staticmethod
     def _graph_dispatched() -> bool:
@@ -201,8 +225,7 @@ class TorchAttentionImpl:
         "块表里是 0 号留白块"的位置都不能写。这一步一定在 eager 路径（图外）执行，
         所以可以用 `slots >= 0` 的数据相关掩码，不需要 `clamp_min(0)` 那条图内妥协。
         """
-        num_blocks, block_size = kv_cache.shape[1], kv_cache.shape[2]
-        flat = kv_cache.view(2, num_blocks * block_size, self.num_kv_heads, self.head_size)
+        block_size = kv_cache.shape[2]
         keys = key.view(-1, self.num_kv_heads, self.head_size)
         values = value.view(-1, self.num_kv_heads, self.head_size)
         valid = slot_mapping >= 0
@@ -210,9 +233,19 @@ class TorchAttentionImpl:
             slot_mapping = slot_mapping[valid]
             keys = keys[valid]
             values = values[valid]
-        if slot_mapping.numel():
+        if slot_mapping.numel() == 0:
+            return
+        if kv_cache.is_contiguous():
+            flat = kv_cache.view(
+                2, kv_cache.shape[1] * block_size,
+                self.num_kv_heads, self.head_size)
             flat[0].index_copy_(0, slot_mapping, keys)
             flat[1].index_copy_(0, slot_mapping, values)
+        else:
+            block_ids = slot_mapping // block_size
+            block_offsets = slot_mapping % block_size
+            kv_cache[0, block_ids, block_offsets] = keys
+            kv_cache[1, block_ids, block_offsets] = values
 
     def _forward_generic(self, query: torch.Tensor, kv_cache,
                          attn_metadata: AttentionMetadata) -> torch.Tensor:
@@ -266,8 +299,7 @@ class TorchAttentionImpl:
         类 kernel 不物化这份 gather——这是教学后端的能力边界，写在文档里。
         """
         kv_heads, head_size = self.num_kv_heads, self.head_size
-        num_blocks_total, block_size = kv_cache.shape[1], kv_cache.shape[2]
-        flat = kv_cache.view(2, num_blocks_total * block_size, kv_heads, head_size)
+        block_size = kv_cache.shape[2]
 
         num_reqs = attn_metadata.num_reqs
         q_len = int(attn_metadata.uniform_query_len)
@@ -277,12 +309,8 @@ class TorchAttentionImpl:
         # 每条请求的**全部**候选 key 槽位：[B, num_positions]
         # （越界位置也一并 gather：反正随后会被 mask 掉，而"先算后掩"才是固定形状的写法）
         key_pos = torch.arange(num_positions, device=device)
-        block_slots = attn_metadata.block_table * block_size          # [B, nb]
-        # slot = block_table[req, pos // bs] * bs + pos % bs（与 eager 路径同一条式子，
-        # 只是这里对 [0, num_positions) 一次算完，形状固定）
-        gather = block_slots[:, key_pos // block_size] + (key_pos % block_size)
-        keys = flat[0][gather]                                        # [B, P, Hk, D]
-        values = flat[1][gather]
+        keys, values = self._gather_positions(
+            kv_cache, attn_metadata.block_table, num_positions)
 
         heads = self.num_heads
         q = query.view(num_reqs, q_len, heads, head_size).transpose(1, 2).float()
@@ -335,8 +363,6 @@ class TorchAttentionImpl:
         heads, head_size = self.num_heads, self.head_size
         kv_heads = self.num_kv_heads
         num_blocks_total, block_size = kv_cache.shape[1], kv_cache.shape[2]
-        flat = kv_cache.view(2, num_blocks_total * block_size, kv_heads, head_size)
-
         num_reqs = attn_metadata.num_reqs
         max_q = int(attn_metadata.max_query_len)
         num_tokens = query.shape[0]
@@ -344,10 +370,8 @@ class TorchAttentionImpl:
         device = query.device
 
         key_pos = torch.arange(num_positions, device=device)
-        block_slots = attn_metadata.block_table * block_size
-        gather = block_slots[:, key_pos // block_size] + (key_pos % block_size)
-        keys = flat[0][gather]
-        values = flat[1][gather]
+        keys, values = self._gather_positions(
+            kv_cache, attn_metadata.block_table, num_positions)
 
         qsl = attn_metadata.query_start_loc[: num_reqs + 1]
         q_lens = qsl[1:] - qsl[:-1]
@@ -393,23 +417,35 @@ class TorchAttentionImpl:
         out_flat.index_copy_(0, idx, out.reshape(-1, heads * head_size))
         return out_flat[:num_tokens]
 
+    def _gather_positions(self, kv_cache, block_table: torch.Tensor,
+                          num_positions: int):
+        """按块表 gather [B, num_positions] 的 K/V。
+
+        contiguous 布局走扁平 slot 的快速路径；packed shared slab 的 block 维有 stride，
+        不能 view 成扁平槽位，改用 `(block_id, offset)` 两维索引。两条路径返回同一形状。
+        """
+        block_size = kv_cache.shape[2]
+        device = block_table.device
+        key_pos = torch.arange(num_positions, device=device)
+        block_ids = block_table[:, key_pos // block_size]
+        block_offsets = key_pos % block_size
+        if kv_cache.is_contiguous():
+            flat = kv_cache.view(
+                2, kv_cache.shape[1] * block_size,
+                self.num_kv_heads, self.head_size)
+            gather = block_ids * block_size + block_offsets
+            return flat[0][gather], flat[1][gather]
+        # [B, P, Hk, D]；advanced indexing 支持 block 维的非连续 stride。
+        return (kv_cache[0, block_ids, block_offsets],
+                kv_cache[1, block_ids, block_offsets])
+
     def _gather_kv(self, kv_cache, attn_metadata: AttentionMetadata, req_index: int,
                    seq_len: int):
         """按块表把这条请求**有效范围内**的 K/V 取出来，形状 [seq_len, kv_heads, head_size]。"""
         block_size = kv_cache.shape[2]
         num_blocks = (seq_len + block_size - 1) // block_size
         block_ids = attn_metadata.block_table[req_index, :num_blocks]
-        num_blocks_total = kv_cache.shape[1]
-        flat = kv_cache.view(2, num_blocks_total * block_size, self.num_kv_heads,
-                             self.head_size)
-        # [num_blocks, block_size, ...] → [num_blocks*block_size, ...] → 取前 seq_len 行
-        keys = flat[0][(block_ids[:, None] * block_size
-                        + torch.arange(block_size, device=block_ids.device)[None, :]
-                        ).reshape(-1)][:seq_len]
-        values = flat[1][(block_ids[:, None] * block_size
-                          + torch.arange(block_size, device=block_ids.device)[None, :]
-                          ).reshape(-1)][:seq_len]
-        return keys, values
+        return self._gather_positions(kv_cache, block_ids.unsqueeze(0), seq_len)
 
     def _attend(self, query: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
                 past_len: int, query_len: int, causal: bool = True,
