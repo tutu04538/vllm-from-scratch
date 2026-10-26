@@ -228,9 +228,9 @@ class TorchAttentionImpl:
             past_len = seq_len - query_len
             query_rows = query[start:start + query_len]
             keys, values = self._gather_kv(kv_cache, attn_metadata, req_index, seq_len)
-            out[start:start + query_len] = self._attend(query_rows, keys, values,
-                                                        past_len, query_len,
-                                                        attn_metadata.causal)
+            out[start:start + query_len] = self._attend(
+                query_rows, keys, values, past_len, query_len,
+                attn_metadata.causal, attn_metadata.sliding_window)
             start += query_len
         return out
 
@@ -302,6 +302,11 @@ class TorchAttentionImpl:
         mask = positions >= seq_lens.unsqueeze(-1)
         if attn_metadata.causal:
             mask = mask | (positions > query_pos.unsqueeze(-1))
+        if attn_metadata.sliding_window is not None:
+            # 绝对位置口径：位置 q 看 [q-window+1, q]。padding 行/越界行仍由上面的
+            # `positions >= seq_lens` 掩掉，不会因为滑窗下界为负而泄露。
+            mask = mask | (positions < (query_pos - attn_metadata.sliding_window + 1)
+                           .unsqueeze(-1))
         scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                  # [B, H, q, D]
@@ -367,6 +372,10 @@ class TorchAttentionImpl:
                 num_reqs, 1, 1) + q_idx.view(1, 1, max_q)
             mask = mask | (key_pos.view(1, 1, 1, num_positions)
                            > q_pos.unsqueeze(-1))
+            if attn_metadata.sliding_window is not None:
+                mask = mask | (key_pos.view(1, 1, 1, num_positions)
+                               < (q_pos - attn_metadata.sliding_window + 1)
+                               .unsqueeze(-1))
         # q 行本身越界（padding 请求或 i >= q_lens[b]）：整行掩掉。
         mask = mask | (q_idx.view(1, 1, max_q) >= q_lens.view(num_reqs, 1, 1)).unsqueeze(-1)
         scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
@@ -403,7 +412,8 @@ class TorchAttentionImpl:
         return keys, values
 
     def _attend(self, query: torch.Tensor, keys: torch.Tensor, values: torch.Tensor,
-                past_len: int, query_len: int, causal: bool = True) -> torch.Tensor:
+                past_len: int, query_len: int, causal: bool = True,
+                sliding_window: int | None = None) -> torch.Tensor:
         """单请求的 attention：**按绝对位置**加 mask。
 
         query [q_len, heads, head_size]、keys/values [seq_len, kv_heads, head_size]。
@@ -434,6 +444,9 @@ class TorchAttentionImpl:
             query_pos = torch.arange(past_len, past_len + query_len, device=q.device)
             key_pos = torch.arange(scores.shape[-1], device=q.device)
             mask = key_pos[None, :] > query_pos[:, None]
+            if sliding_window is not None:
+                mask = mask | (key_pos[None, :]
+                               < (query_pos - sliding_window + 1)[:, None])
             scores = scores.masked_fill(mask, torch.finfo(torch.float32).min)
         probs = torch.softmax(scores, dim=-1)
         out = torch.matmul(probs, v)                                            # [H, q, d]

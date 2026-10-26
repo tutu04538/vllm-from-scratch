@@ -36,13 +36,10 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
 
         return DSparkSpeculator(vllm_config, device)
     elif speculative_config.use_gemma4_mtp():
-        # 80D 只落地 Q-only 共享映射与只读契约；Gemma4 assistant 的模型结构、加载和
-        # 真实接入属 80E。这里明确拒绝，不能让它落到普通 mtp 分支——那条路会按 Qwen
-        # MTP 加载/对齐，KV 读错也不会报 shape 错。
-        raise NotImplementedError(
-            "Gemma4 MTP 的 Q-only KV 共享映射已在 80D 落地，但 assistant 模型结构与"
-            "真实接入属 80E；当前不能把它当普通 mtp 运行（会读错 KV）。"
-        )
+        # 80E.E2：assistant（Q-only、跨宽度投影）+ 常量位置 + 多 KV group 元数据。
+        from .gemma4.speculator import Gemma4Speculator
+
+        return Gemma4Speculator(vllm_config, device)
     elif speculative_config.use_multi_module_mtp():
         # 80B/80C：单卡、纯文本、支持整段 K 步循环 CUDA Graph 的
         # MultiModuleMTPSpeculator。Gemma4 已在上面明确拒绝；Step3p5、稀疏索引

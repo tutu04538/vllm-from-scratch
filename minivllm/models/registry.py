@@ -28,6 +28,7 @@ from .qwen3_dflash import DFlashForCausalLM  # noqa: E402
 from .qwen3_dflash2 import DFlash2Qwen3ForCausalLM  # noqa: E402
 from .qwen3_dspark import Qwen3DSparkForCausalLM  # noqa: E402
 from .gemma4_mtp import Gemma4MTP  # noqa: E402  （80E.E1 注册）
+from .gemma4 import Gemma4ForCausalLM  # noqa: E402  （80E.E2 target）
 
 register_model("Qwen3ForCausalLM")(Qwen3ForCausalLM)
 # 66 关：Medusa head 的注册名（上游 `model_executor/models/registry.py:678`

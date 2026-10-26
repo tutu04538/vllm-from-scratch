@@ -59,6 +59,10 @@ class Attention(nn.Module):
         #: Q-only 层的源层名（由 speculator 的映射建立，Runner 消费）。
         #: 非 None 表示"这一层的 KV 来自 target 的哪一层"；Runner 只绑 cache，不复制。
         self.kv_sharing_target_layer_name: str | None = None
+        #: 80E.E2/81：本层属于哪个 KV group（Runner 分配时写）。Q-only 层取源层的 group。
+        self.kv_cache_group_id: int | None = None
+        #: 滑窗大小（None = 全注意力）。模型构造时写入；Runner 用它给 group 建 spec。
+        self.per_layer_sliding_window: int | None = None
         #: breakable PIECEWISE 的固定输出缓冲（runner 在 KV 分配后设置）。
         #: 图段之间靠**同一地址**传递 attention 输出；返回新张量会让下一段读旧内存。
         self._output_buffer: torch.Tensor | None = None

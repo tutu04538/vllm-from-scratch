@@ -18,7 +18,7 @@ kernel 用。三种角色不能混（198 §2）：
 import torch
 
 
-class BlockTable:
+class _SingleGroupBlockTable:
     """一个 KV group 的块表镜像。行内容由协议决定，这里只负责存、拷、算。"""
 
     def __init__(self, block_size: int, max_num_reqs: int, max_num_blocks_per_req: int,
@@ -114,3 +114,101 @@ class BlockTable:
                 f"没有对应的物理槽位。块分配属于控制面，这里出现说明协议给少了块或 positions 算错了")
         physical = table[req_indices, block_index]
         return physical * self.block_size + block_offset
+
+
+class BlockTable:
+    """多 KV group 的块表镜像（80E.E2/81）。
+
+    每一组一份 `[max_num_reqs, max_blocks]`；`cpu`/`gpu` 保留为 **group 0** 的别名，
+    让旧代码（以及只关心第 0 组的调用点）一行不改。新代码用 `group_tables[gid]`
+    或 `compute_slot_mappings()` 拿全部组。
+    """
+
+    def __init__(self, block_size: int, max_num_reqs: int,
+                 max_num_blocks_per_req: int, device: str = "cpu",
+                 num_groups: int = 1) -> None:
+        if num_groups <= 0:
+            raise ValueError(f"num_groups 必须为正，收到 {num_groups}")
+        self.block_size = block_size
+        self.max_num_reqs = max_num_reqs
+        self.max_num_blocks_per_req = max_num_blocks_per_req
+        self.device = device
+        self.num_groups = int(num_groups)
+        self.group_tables = [
+            _SingleGroupBlockTable(
+                block_size, max_num_reqs, max_num_blocks_per_req, device)
+            for _ in range(self.num_groups)
+        ]
+
+    @property
+    def cpu(self):
+        return self.group_tables[0].cpu
+
+    @property
+    def gpu(self):
+        return self.group_tables[0].gpu
+
+    @property
+    def num_blocks_per_row(self):
+        return self.group_tables[0].num_blocks_per_row
+
+    def num_blocks(self, row_index: int, group_id: int = 0) -> int:
+        return self.group_tables[group_id].num_blocks(row_index)
+
+    def covers(self, row_index: int, position: int) -> bool:
+        # 只要有一组没覆盖到，这个位置就不能写/读（Q-only 的源层必须存在）。
+        return all(table.covers(row_index, position)
+                   for table in self.group_tables)
+
+    def _split(self, block_ids):
+        # 两种合法输入：
+        #   单组旧协议：[1, 2, 3]（或 (1,2,3)）
+        #   多组协议：([1,2], [3,4]) / ((1,2),(3,4))
+        is_grouped = (
+            isinstance(block_ids, (tuple, list))
+            and len(block_ids) == self.num_groups
+            and all(isinstance(item, (tuple, list)) for item in block_ids)
+        )
+        if is_grouped:
+            return tuple(list(item) for item in block_ids)
+        block_ids = list(block_ids)
+        if self.num_groups == 1:
+            return (block_ids,)
+        raise ValueError(
+            f"多 group 块表必须按组传 tuple，收到单个 list（{len(block_ids)} 块）")
+
+    def add_row(self, row_index: int, block_ids) -> None:
+        for table, ids in zip(self.group_tables, self._split(block_ids)):
+            table.add_row(row_index, ids)
+
+    def set_row(self, row_index: int, block_ids) -> None:
+        for table, ids in zip(self.group_tables, self._split(block_ids)):
+            table.set_row(row_index, ids)
+
+    def append_to_row(self, row_index: int, block_ids) -> None:
+        for table, ids in zip(self.group_tables, self._split(block_ids)):
+            table.append_to_row(row_index, ids)
+
+    def clear_row(self, row_index: int) -> None:
+        for table in self.group_tables:
+            table.clear_row(row_index)
+
+    def move_row(self, src: int, dst: int) -> None:
+        for table in self.group_tables:
+            table.move_row(src, dst)
+
+    def commit_block_table(self, num_reqs: int) -> None:
+        for table in self.group_tables:
+            table.commit_block_table(num_reqs)
+
+    def compute_slot_mapping(self, num_reqs: int, positions: torch.Tensor,
+                             req_indices: torch.Tensor) -> torch.Tensor:
+        return self.group_tables[0].compute_slot_mapping(
+            num_reqs, positions, req_indices)
+
+    def compute_slot_mappings(self, num_reqs: int, positions: torch.Tensor,
+                              req_indices: torch.Tensor) -> torch.Tensor:
+        return torch.stack([
+            table.compute_slot_mapping(num_reqs, positions, req_indices)
+            for table in self.group_tables
+        ], dim=0)

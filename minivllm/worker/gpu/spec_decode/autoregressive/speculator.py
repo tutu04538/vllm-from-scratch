@@ -149,17 +149,33 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         只是换了一份 capability 声明。
         """
         from .....attention.backends.torch_sdpa import TorchAttentionBackend
+        from .....attention.layer import Attention
 
-        builder = TorchAttentionBackend.get_builder_cls()(
-            self.vllm_config.cache_config.block_size
-        )
-        return [[
-            AttentionGroup(
+        by_group: dict[int, list[str]] = {}
+        self.draft_layer_modules: dict[str, Attention] = {}
+        for _, module in self.model.named_modules():
+            if not isinstance(module, Attention):
+                continue
+            if module.layer_name not in self.draft_attn_layer_names:
+                continue
+            self.draft_layer_modules[module.layer_name] = module
+            group_id = (0 if module.kv_cache_group_id is None
+                        else int(module.kv_cache_group_id))
+            by_group.setdefault(group_id, []).append(module.layer_name)
+        if not by_group:
+            raise ValueError(
+                "草稿模型里没有可建组的 Attention 层：draft_attn_layer_names 与模块层名不一致")
+        builder_cls = TorchAttentionBackend.get_builder_cls()
+        groups = []
+        for group_id in sorted(by_group):
+            groups.append(AttentionGroup(
                 backend=TorchAttentionBackend,
-                layer_names=list(self.draft_attn_layer_names),
-                metadata_builders=[builder],
-            )
-        ]]
+                layer_names=by_group[group_id],
+                metadata_builders=[
+                    builder_cls(self.vllm_config.cache_config.block_size)],
+                kv_cache_group_id=group_id,
+            ))
+        return [groups]
 
     def _configure_fused_multi_step_decode(self) -> None:
         """决定"K−1 个草稿步是逐步重建元数据，还是融进一张图"（上游同名方法，逐条对齐）。
@@ -747,17 +763,36 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         """
         if not self.attn_groups:
             return None
-        builder = self.attn_groups[0][0].get_metadata_builder()
-        block_table = self.block_tables.input_block_tables[0][:num_reqs_padded]
-        metadata = builder.build(
-            query_start_loc=self.input_buffers.query_start_loc[: num_reqs_padded + 1],
-            seq_lens=self.input_buffers.seq_lens[:num_reqs_padded],
-            block_table=block_table,
-            slot_mapping=self.block_tables.slot_mappings[0][:num_tokens_padded],
-            num_reqs=num_reqs_padded,
-            uniform_query_len=1,
-        )
-        return {name: metadata for name in self._draft_layer_names()}
+        if not hasattr(self, "draft_layer_modules"):
+            from .....attention.layer import Attention
+            self.draft_layer_modules = {
+                module.layer_name: module
+                for _, module in self.model.named_modules()
+                if isinstance(module, Attention)
+                and module.layer_name in self.draft_attn_layer_names
+            }
+        result: dict[str, Any] = {}
+        for groups in self.attn_groups:
+            for attn_group in groups:
+                group_id = (0 if attn_group.kv_cache_group_id is None
+                            else attn_group.kv_cache_group_id)
+                builder = attn_group.get_metadata_builder()
+                module = self.draft_layer_modules[attn_group.layer_names[0]]
+                metadata = builder.build(
+                    query_start_loc=self.input_buffers.query_start_loc[
+                        : num_reqs_padded + 1],
+                    seq_lens=self.input_buffers.seq_lens[:num_reqs_padded],
+                    block_table=self.block_tables.input_block_tables[group_id][
+                        :num_reqs_padded],
+                    slot_mapping=self.block_tables.slot_mappings[group_id][
+                        :num_tokens_padded],
+                    num_reqs=num_reqs_padded,
+                    uniform_query_len=1,
+                    sliding_window=module.per_layer_sliding_window,
+                )
+                for name in attn_group.layer_names:
+                    result[name] = metadata
+        return result
 
     def _draft_attn_metadata_for_capture(self, input_batch: InputBatch) -> dict[str, Any]:
         """捕获期用的元数据回调（喂给 `prepare_inputs_to_capture`）。
@@ -797,7 +832,8 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
     def _draft_layer_names(self) -> list[str]:
         if self.attn_groups:
-            return list(self.attn_groups[0][0].layer_names)
+            return [name for groups in self.attn_groups
+                    for group in groups for name in group.layer_names]
         return list(self.draft_attn_layer_names)
 
     @staticmethod

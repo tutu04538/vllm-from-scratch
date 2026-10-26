@@ -185,10 +185,12 @@ def _get_act_and_mul_fn(name: str) -> nn.Module:
 class Gemma4MLP(nn.Module):
     """Gemma4 的 gated MLP（对应冻结 `gemma4.py::Gemma4MLP`）。"""
 
-    def __init__(self, text_config: Any, prefix: str = "") -> None:
+    def __init__(self, text_config: Any, prefix: str = "",
+                 intermediate_size: int | None = None) -> None:
         super().__init__()
         hidden_size = _int(text_config, "hidden_size")
-        intermediate_size = _int(text_config, "intermediate_size")
+        if intermediate_size is None:
+            intermediate_size = _int(text_config, "intermediate_size")
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size, intermediate_size],
@@ -332,6 +334,7 @@ class Gemma4MTPAttention(nn.Module):
         # `kv_sharing_target_layer_name`，这里先把"不能写 KV"的行为定死。
         self.attn.q_only = True
         self.attn.kv_sharing_target_layer_name = None
+        self.attn.per_layer_sliding_window = self.per_layer_sliding_window
         self.is_kv_shared_layer = True
 
     def attention_pre(self, positions: torch.Tensor,

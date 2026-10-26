@@ -800,13 +800,13 @@ VLLM_USE_V2_MODEL_RUNNER=1 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 \
 
 ## 明确不做
 
-EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group。
+EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）。
 V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）+
 breakable PIECEWISE（Phase 3，混合批）+ 固定场景 Triton paged（target 混合批 FULL、adaptive 真正 ALWAYS）；
-多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 已接 Gemma4 assistant 模型层差分（E2 真实 target 接入仍阻塞，依赖 81；Step3p5/稀疏索引属 80F/80G）；adaptive verification 已在 79 关接上；Triton 后端需显式
+多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 接了 Gemma4 assistant 模型层，80E.E2 又接了 Gemma4 文本 target、多 KV group/SWA/full/异构 head_dim 与 V1/V2 提议者（真实 assistant 77.7M 已加载；本机无真实 target 权重，完整真实 checkpoint 集成待验）；81 仅完成 E2 所需多组子集，Mamba/抢占矩阵/KV transfer 未做；Step3p5/稀疏索引属 80F/80G；adaptive verification 已在 79 关接上；Triton 后端需显式
 `attention_backend="triton_attn"`（`"triton"` 别名），默认仍是 Torch。
 另外两条容易误以为已经具备的能力：
 
@@ -873,7 +873,8 @@ python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 python -m pytest tests/step79 -q                     # 47 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + TRITON_ATTN ALWAYS）
-python -m pytest tests/step80 -q                     # 98 项：step80A/80B/80C/80D/80E.E1（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4 assistant 模型层差分）
+python -m pytest tests/step80 -q                     # 109 项：step80A/80B/80C/80D/80E.E1/80E.E2（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4 assistant/target/多组/V1-V2 集成）
+python -m pytest tests/step81 -q                     # 4 项：E2 所需多 KV group 子集（分配/共同命中/部分组不误命中/原子失败）
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

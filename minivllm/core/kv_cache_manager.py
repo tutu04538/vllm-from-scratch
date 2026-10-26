@@ -34,7 +34,9 @@ Scheduler 在 `update_from_output` 里调 `cache_blocks(request, num_computed_to
 import math
 
 from .block_pool import BlockPool
-from .kv_cache_coordinator import UnitaryKVCacheCoordinator
+from .kv_cache_coordinator import (HybridKVCacheCoordinator,
+                                   UnitaryKVCacheCoordinator)
+from .kv_cache_interface import KVCacheConfig, full_attention_config
 
 
 class KVCacheBlocks:
@@ -77,20 +79,36 @@ class KVCacheManager:
         会被 `clamp_min(0)` 写进去。**必须与"这一轮真的会走图"同步**——留白了却不走图只是
         少一块容量，走了图却没留白则是静默的数据破坏。
         """
-        self.block_size = cache_config.block_size
-        self.num_gpu_blocks = cache_config.num_gpu_blocks
+        if isinstance(cache_config, KVCacheConfig):
+            self.kv_cache_config = cache_config
+            # scheduler/块 hash 的粒度：多组 block_size 的 min。每组 manager 自己用真实
+            # 物理块大小，二者通过 hash_block_size 换算（大块用 stride 取 hash）。
+            self.block_size = cache_config.hash_block_size
+            self.num_gpu_blocks = cache_config.num_gpu_blocks
+            enable_caching = bool(getattr(cache_config, "enable_prefix_caching", False))
+        else:
+            self.kv_cache_config = full_attention_config(cache_config)
+            self.block_size = cache_config.block_size
+            self.num_gpu_blocks = cache_config.num_gpu_blocks
+            enable_caching = bool(cache_config.enable_prefix_caching)
         self.max_model_len = max_model_len
-        self.enable_caching = bool(cache_config.enable_prefix_caching)
+        self.enable_caching = enable_caching
         self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching=self.enable_caching,
                                     reserve_null_block=reserve_null_block)
-        self.coordinator = UnitaryKVCacheCoordinator(self.block_pool, self.enable_caching,
-                                                     self.block_size)
+        if self.kv_cache_config.num_kv_cache_groups == 1:
+            self.coordinator = UnitaryKVCacheCoordinator(
+                self.block_pool, self.enable_caching, self.block_size,
+                kv_cache_config=self.kv_cache_config)
+        else:
+            self.coordinator = HybridKVCacheCoordinator(
+                self.block_pool, self.enable_caching, self.kv_cache_config)
 
     # -------- 观察 --------
 
     def get_blocks(self, request_id: str) -> KVCacheBlocks:
         """这条请求**当前**的整张块表（打包 `NewRequestData` 用）。"""
-        return KVCacheBlocks((list(self.coordinator.get_blocks(request_id)),))
+        return KVCacheBlocks(tuple(
+            list(blocks) for blocks in self.coordinator.get_blocks(request_id)))
 
     def num_free_blocks(self) -> int:
         return self.block_pool.get_num_free_blocks()
@@ -110,16 +128,7 @@ class KVCacheManager:
 
     def num_common_prefix_blocks(self) -> int:
         """所有活请求共同的前缀块数（trace/调试用；vLLM 用它做 cascade attention 与 P/D 传输）。"""
-        groups = [self.coordinator.get_blocks(request_id)
-                  for request_id in self.coordinator.manager.req_to_blocks]
-        if not groups:
-            return 0
-        common = 0
-        for blocks in zip(*groups):
-            if len({block.block_id for block in blocks}) != 1:
-                break
-            common += 1
-        return common
+        return max(self.coordinator.get_num_common_prefix_blocks(), default=0)
 
     # -------- 命中 --------
 
@@ -158,7 +167,9 @@ class KVCacheManager:
         """
         if num_new_tokens <= 0:
             raise ValueError(f"num_new_tokens 必须为正，收到 {num_new_tokens}")
-        computed_blocks = new_computed_blocks.blocks[0] if new_computed_blocks else ()
+        computed_blocks = (new_computed_blocks.blocks if new_computed_blocks
+                           else tuple(() for _ in range(
+                               self.kv_cache_config.num_kv_cache_groups)))
         num_local_computed_tokens = request.num_computed_tokens + num_new_computed_tokens
         # 申请范围**夹到 max_model_len**：多出来的 token 本来就跑不完（Scheduler 裁剪过），
         # 不夹的话会因为"申请超过上下文长度的槽位"而误判容量不足
@@ -173,12 +184,12 @@ class KVCacheManager:
         if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
             return None                                     # 原子失败：什么都没改
 
-        if computed_blocks:
+        if any(computed_blocks):
             self.coordinator.allocate_new_computed_blocks(
                 request.request_id, computed_blocks, num_local_computed_tokens)
         new_blocks = self.coordinator.allocate_new_blocks(request.request_id,
                                                           num_tokens_need_slot)
-        return KVCacheBlocks((list(new_blocks),))
+        return KVCacheBlocks(tuple(list(group) for group in new_blocks))
 
     # -------- 发布与释放 --------
 
@@ -211,5 +222,5 @@ class KVCacheManager:
             "free": self.num_free_blocks(),
             "allocated": self.num_allocated_blocks,
             "cached": self.num_cached_blocks(),
-            "reqs": self.coordinator.manager.num_reqs(),
+            "reqs": getattr(self.coordinator, "num_reqs", 0),
         }

@@ -347,8 +347,10 @@ def test_q_only_rejects_chained_source():
         leaf.bind_shared_kv_cache(middle, cache, draft_dtype=torch.float32)
 
 
-def test_gemma4_config_is_routed_away_from_generic_mtp():
+def test_gemma4_config_is_routed_to_dedicated_speculator(monkeypatch):
+    """80E.E2：工厂必须选 `Gemma4Speculator`，不能落到普通 MTP。"""
     from minivllm import ModelConfig, SpeculativeConfig
+    import minivllm.worker.gpu.spec_decode.gemma4.speculator as gemma4_module
     from minivllm.worker.gpu.spec_decode import init_speculator
 
     spec = SpeculativeConfig(
@@ -360,9 +362,17 @@ def test_gemma4_config_is_routed_away_from_generic_mtp():
         ),
     )
     assert spec.use_gemma4_mtp() is True
-    with pytest.raises(NotImplementedError, match="80E"):
-        init_speculator(
-            SimpleNamespace(speculative_config=spec), torch.device("cpu"))
+
+    class _FakeGemma4Speculator:
+        def __init__(self, vllm_config, device):
+            self.vllm_config = vllm_config
+            self.device = device
+
+    monkeypatch.setattr(
+        gemma4_module, "Gemma4Speculator", _FakeGemma4Speculator)
+    speculator = init_speculator(
+        SimpleNamespace(speculative_config=spec), torch.device("cpu"))
+    assert isinstance(speculator, _FakeGemma4Speculator)
 
 
 
@@ -432,7 +442,7 @@ def test_runner_binds_target_cache_without_allocation():
     assert draft_attn.kv_cache is cache
     assert draft_attn.q_only is True
     assert draft_attn.kv_sharing_target_layer_name == TARGET_NAME
-    assert runner.speculator.draft_attn_layer_names == {"attn"}
+    assert runner.speculator.draft_attn_layer_names == {DRAFT_NAME}
     assert runner.kv_caches == {TARGET_NAME: cache}
     assert target.kv_cache is cache
     assert torch.equal(cache, before)

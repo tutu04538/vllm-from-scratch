@@ -10,6 +10,7 @@ from .extract_hidden_states import (CacheOnlyAttentionBackend, CacheOnlyAttentio
 from .gemma4_mtp import (Gemma4MLP, Gemma4MTP, Gemma4MTPAttention,
                          Gemma4MTPDecoderLayer, Gemma4MTPMaskedEmbedder,
                          Gemma4MultiTokenPredictor)
+from .gemma4 import Gemma4Attention, Gemma4DecoderLayer, Gemma4ForCausalLM, Gemma4TextModel
 from .medusa import Medusa, ResidualBlock
 from .qwen3 import Qwen2MLP, Qwen3Attention, Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3Model
 from .qwen3_mtp import Qwen3MTP, Qwen3MultiTokenPredictor
@@ -23,5 +24,7 @@ __all__ = ["Qwen3ForCausalLM", "Qwen3Model", "Qwen3DecoderLayer", "Qwen3Attentio
            "Qwen3MTP", "Qwen3MultiTokenPredictor",
            "Gemma4MTP", "Gemma4MultiTokenPredictor", "Gemma4MTPDecoderLayer",
            "Gemma4MTPAttention", "Gemma4MTPMaskedEmbedder", "Gemma4MLP",
+           "Gemma4ForCausalLM", "Gemma4TextModel", "Gemma4DecoderLayer",
+           "Gemma4Attention",
            "Medusa", "ResidualBlock",
            "get_model_class", "register_model"]

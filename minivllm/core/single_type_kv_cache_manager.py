@@ -28,13 +28,31 @@ from .kv_cache_utils import KVCacheBlock
 
 class FullAttentionManager:
     def __init__(self, block_pool, enable_caching: bool, block_size: int,
-                 kv_cache_group_id: int = 0) -> None:
+                 kv_cache_group_id: int = 0,
+                 hash_block_size: int | None = None) -> None:
         self.block_pool = block_pool
         self.enable_caching = enable_caching
         self.block_size = block_size
+        # scheduler/BlockHasher 的粒度是各组块大小的 min；本组块大小必须是它的整数倍。
+        # 大块用 stride 取对应节点的 hash；否则块的边界不会落在 hash 边界上。
+        self.hash_block_size = hash_block_size or block_size
+        if self.block_size % self.hash_block_size != 0:
+            raise ValueError(
+                f"KV group 的 block_size={self.block_size} 必须是 hash_block_size="
+                f"{self.hash_block_size} 的整数倍：否则组块的边界不会落在 hash 边界上")
         self.kv_cache_group_id = kv_cache_group_id
         self.req_to_blocks: dict[str, list[KVCacheBlock]] = {}
         self.num_cached_block: dict[str, int] = {}
+
+    def _hashes_for_blocks(self, block_hashes) -> list:
+        """把 hash 粒度（scheduler）的链式 hash 折成本组块粒度。
+
+        `stride = block_size // hash_block_size`：本组第 i 个块的 hash 是
+        `block_hashes[(i+1)*stride - 1]`（最后一个子块的 hash 已经包含前面的父链）。
+        """
+        stride = self.block_size // self.hash_block_size
+        return [block_hashes[(i + 1) * stride - 1]
+                for i in range(len(block_hashes) // stride)]
 
     # -------- 观察 --------
 
@@ -120,7 +138,8 @@ class FullAttentionManager:
             num_cached_blocks=num_cached_blocks,
             num_full_blocks=num_full_blocks,
             block_size=self.block_size,
-            kv_cache_group_id=self.kv_cache_group_id)
+            kv_cache_group_id=self.kv_cache_group_id,
+            block_hashes=self._hashes_for_blocks(request.block_hashes))
         self.num_cached_block[request.request_id] = num_full_blocks
 
     # -------- 释放 --------
@@ -148,9 +167,35 @@ class FullAttentionManager:
         （那是稀疏保留的滑窗/混合模型才需要的交界点，差异账本里记着）。
         """
         hit_blocks: list[KVCacheBlock] = []
-        for block_hash in block_hashes[:max_length // self.block_size]:
+        hashes = self._hashes_for_blocks(block_hashes)
+        num_blocks = min(len(hashes), max_length // self.block_size)
+        for block_hash in hashes[:num_blocks]:
             block = self.block_pool.get_cached_block(block_hash, self.kv_cache_group_id)
             if block is None:
                 break
             hit_blocks.append(block)
         return hit_blocks, len(hit_blocks) * self.block_size
+
+
+class SlidingWindowManager(FullAttentionManager):
+    """滑窗组的块账本（对应冻结 `SlidingWindowManager` 的**保留策略子集**）。
+
+    本实现只做两件事：
+
+    * 块分配/发布与全注意力相同——窗口外的旧块**不释放**；
+    * 前缀命中要求整段前缀都在（不做"只保留最后 window 个块"的稀疏命中）。
+
+    因此它**正确但费显存**：attention 仍然按窗口掩码，读到旧块也不会看。真正按窗口
+    回收旧块（上游 `remove_skipped_blocks` + null block 占位）属于 81 关的后续收口；
+    在没有实现它之前，不能声称"滑窗显存已按窗口回收"。
+    """
+
+    def __init__(self, block_pool, enable_caching: bool, block_size: int,
+                 kv_cache_group_id: int = 0, sliding_window: int = 0,
+                 hash_block_size: int | None = None) -> None:
+        super().__init__(block_pool, enable_caching, block_size,
+                         kv_cache_group_id=kv_cache_group_id,
+                         hash_block_size=hash_block_size)
+        if sliding_window <= 0:
+            raise ValueError(f"sliding_window 必须为正，收到 {sliding_window}")
+        self.sliding_window = sliding_window

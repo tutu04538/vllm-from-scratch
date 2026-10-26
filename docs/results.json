@@ -5376,14 +5376,18 @@
     "models": {
      "target": {
       "path": "minivllm/testing/tiny_models.py::tiny_mtp_dir('tiny_gqa', num_mtp_layers=2) 的 target 部分",
-      "architectures": ["Qwen3ForCausalLM"],
+      "architectures": [
+       "Qwen3ForCausalLM"
+      ],
       "dtype": "float32",
       "max_model_len": 64,
       "note": "MTP 权重与 target 在同一个 checkpoint；测试现场生成，不提交"
      },
      "draft": {
       "path": "同一个 tiny_mtp_dir；派生 draft config（architectures=['Qwen3MTPModel'], n_predict=2）",
-      "architectures": ["Qwen3MTPModel"],
+      "architectures": [
+       "Qwen3MTPModel"
+      ],
       "dtype": "float32",
       "num_mtp_layers": 2,
       "note": "教学适配的稠密 Qwen3 MTP；不是真实 Qwen3-Next/Step3p5 checkpoint"
@@ -5512,7 +5516,24 @@
       "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
       "env": "PATH 需包含 conda env 的 ninja（全量回归的 UVA 扩展）；80D 本身不需要新模型权重"
      },
-     "commands": [{"cmd": "python -m pytest tests/step80/test_q_only_contract.py -q", "result": "26 passed（25 个 CPU 映射/只读/所有权用例 + 1 个 CUDA Triton 位置固定用例）"}, {"cmd": "python -m pytest tests/step80 -q", "result": "86 passed（80A 43 + 80B 8 + 80C 9 + 80D 26）"}, {"cmd": "python -m pytest tests/step58 … tests/step79 tests/step80 -q", "result": "1054 passed, 149 warnings in 136.04s（= 80C 后 1028 + 80D 26；无回归）"}, {"cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_q_only_contract.py -q", "result": "25 passed, 1 skipped（Triton 位置用例明确 skip；不是把未验项变 pass）"}],
+     "commands": [
+      {
+       "cmd": "python -m pytest tests/step80/test_q_only_contract.py -q",
+       "result": "26 passed（25 个 CPU 映射/只读/所有权用例 + 1 个 CUDA Triton 位置固定用例）"
+      },
+      {
+       "cmd": "python -m pytest tests/step80 -q",
+       "result": "86 passed（80A 43 + 80B 8 + 80C 9 + 80D 26）"
+      },
+      {
+       "cmd": "python -m pytest tests/step58 … tests/step79 tests/step80 -q",
+       "result": "1054 passed, 149 warnings in 136.04s（= 80C 后 1028 + 80D 26；无回归）"
+      },
+      {
+       "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_q_only_contract.py -q",
+       "result": "25 passed, 1 skipped（Triton 位置用例明确 skip；不是把未验项变 pass）"
+      }
+     ],
      "execution_trace": {
       "映射规则": "num_non_shared = len(target_layer_types) - num_kv_shared_layers；只在 target 前 num_non_shared 层按类型建候选；draft 类型缺失默认 full_attention；每层取 candidates[-1]；源层名用 target 真实前缀拼 `.idx.self_attn.attn`。",
       "固定例子": "target `[S,F,S,F,S]`、num_kv_shared_layers=1：可选源层 0..3；draft 第 0 层 S → 2，第 1 层 F → 3；第 4 层是消费者，不选。",
@@ -5524,18 +5545,29 @@
       "位置固定": "`update_draft_inputs(..., advance_draft_positions=False)` 实跑：positions `[7,11]`、seq_lens `[9,13]` 不变，input_ids 更新为草稿 token，hidden 反馈写入。",
       "重绑": "替换草稿模型后再次绑定，target cache 仍是同一对象、内容不变；没有 free/二次分配。"
      },
-     "known_gaps": ["真实 Gemma4 assistant 结构/加载/端到端接入未做（80E）；本关只有 Attention 级 Q-only 读路径与映射。工厂对 `model_type=gemma4_mtp` 明确拒绝，避免落到普通 mtp。", "混合 SWA/full 的真实执行未做：仅验证选源；不同窗口/不同 KV group 依赖 81 的多 group/backend。", "V1 的 Gemma4 proposer/per-group metadata 未改；本关是 V2 Attention/Runner 机制。", "非法 `num_kv_shared_layers`（负值或超过层数）在纯映射入口明确 ValueError；冻结方法会走负切片，这是有意的输入校验差异。合法配置逐例一致。", "dtype 严格要求与 target cache 相等；没有用读时转换掩盖不一致。", "没有真实权重，也没有性能矩阵；不声称 Q-only 的加速比或真实模型草稿质量。"]
+     "known_gaps": [
+      "真实 Gemma4 assistant 结构/加载/端到端接入未做（80E）；本关只有 Attention 级 Q-only 读路径与映射。工厂对 `model_type=gemma4_mtp` 明确拒绝，避免落到普通 mtp。",
+      "混合 SWA/full 的真实执行未做：仅验证选源；不同窗口/不同 KV group 依赖 81 的多 group/backend。",
+      "V1 的 Gemma4 proposer/per-group metadata 未改；本关是 V2 Attention/Runner 机制。",
+      "非法 `num_kv_shared_layers`（负值或超过层数）在纯映射入口明确 ValueError；冻结方法会走负切片，这是有意的输入校验差异。合法配置逐例一致。",
+      "dtype 严格要求与 target cache 相等；没有用读时转换掩盖不一致。",
+      "没有真实权重，也没有性能矩阵；不声称 Q-only 的加速比或真实模型草稿质量。"
+     ]
     },
     "models": {
      "target": {
       "path": "无真实 Gemma4 target；映射测试使用带 `layer_types`/`num_kv_shared_layers` 的结构接口对象",
-      "architectures": ["Gemma4AssistantForCausalLM（仅配置判据，不加载）"],
+      "architectures": [
+       "Gemma4AssistantForCausalLM（仅配置判据，不加载）"
+      ],
       "dtype": "未运行",
       "note": "80D 不加载模型；真实 target 架构/权重属 80E/81"
      },
      "draft": {
       "path": "无真实 Gemma4 assistant；Q-only 读路径用 `Attention` + target cache 的测试对象",
-      "architectures": ["Gemma4MTPModel（仅工厂拒绝分支判据）"],
+      "architectures": [
+       "Gemma4MTPModel（仅工厂拒绝分支判据）"
+      ],
       "dtype": "float32（契约测试 cache）",
       "note": "tiny Qwen 不冒充 Gemma4 assistant；真实结构属 80E.E1"
      },
@@ -5571,7 +5603,24 @@
        "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
        "env": "tests/step80 的 CUDA 用例仍需 conda ninja；E1 自身 CPU-only 可跑"
       },
-      "commands": [{"cmd": "python -m pytest tests/step80/test_gemma4_model_alignment.py -q", "result": "12 passed（模型层/权重加载/masked/边界）"}, {"cmd": "python -m pytest tests/step80 -q", "result": "98 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12）"}, {"cmd": "python -m pytest tests/step58 … tests/step80 -q", "result": "1066 passed, 149 warnings in 96.87s（= 80D 后 1054 + 80E.E1 12；无回归）"}, {"cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_gemma4_model_alignment.py -q", "result": "12 passed（E1 的全部对照在 CPU 上完成）"}],
+      "commands": [
+       {
+        "cmd": "python -m pytest tests/step80/test_gemma4_model_alignment.py -q",
+        "result": "12 passed（模型层/权重加载/masked/边界）"
+       },
+       {
+        "cmd": "python -m pytest tests/step80 -q",
+        "result": "98 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12）"
+       },
+       {
+        "cmd": "python -m pytest tests/step58 … tests/step80 -q",
+        "result": "1066 passed, 149 warnings in 96.87s（= 80D 后 1054 + 80E.E1 12；无回归）"
+       },
+       {
+        "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_gemma4_model_alignment.py -q",
+        "result": "12 passed（E1 的全部对照在 CPU 上完成）"
+       }
+      ],
       "execution_trace": {
        "固定数据流": "backbone=16、assistant=8：token embedding 16 与 target feedback hidden 16 拼成 32，pre_projection 32→8；decoder 内全 8 宽；draft_hidden 8 给出 logits，post_projection 8→16 作为下一步反馈。",
        "层结构": "Q-only attention 只建 q_proj/o_proj/q_norm/rotary_emb/attn，没有 k_proj/v_proj；q_norm 作用在 head_dim；scaling=1.0；full 层按 proportional RoPE（频率分母 head_dim，部分维零填充）；decoder 四 norm + 显式 residual + layer_scalar。",
@@ -5582,19 +5631,31 @@
        "宽度不混用": "把 8 宽 draft_hidden 当反馈喂回，入口明确 ValueError；16 宽 post_projection 输出可以继续下一步。",
        "异构几何": "sliding head_dim=8/1 KV head；full head_dim=16/2 KV heads（attention_k_eq_v=True）分别建出正确 q_proj/q_norm 形状。"
       },
-      "known_gaps": ["E2 未开始且阻塞：本机没有 Gemma4 target 架构/加载，也没有真实 assistant/target 权重；真实接入还依赖 81 的 KV group/SWA/full/异构 head_dim/backend。", "E1 的模型差分用 identity attention 替换 attention core；真实 Q-only cache 读取由 80D 契约测试覆盖，真实 target cache/group 接线属 E2。", "attn_logit_softcapping 未实现：配置出现时明确 NotImplementedError，不静默忽略；final_logit_softcapping 已实现并测试。", "只覆盖稠密 Gemma4MLP：enable_moe_block / use_double_wide_mlp / per-layer input embedding 明确拒绝。", "V1 Gemma4 proposer/per-group metadata/centroid graph 未改，属 E2。", "没有真实权重与性能结论；tiny 配置/权重是测试材料，不声称真实 assistant 质量或加速比。"]
+      "known_gaps": [
+       "E2 未开始且阻塞：本机没有 Gemma4 target 架构/加载，也没有真实 assistant/target 权重；真实接入还依赖 81 的 KV group/SWA/full/异构 head_dim/backend。",
+       "E1 的模型差分用 identity attention 替换 attention core；真实 Q-only cache 读取由 80D 契约测试覆盖，真实 target cache/group 接线属 E2。",
+       "attn_logit_softcapping 未实现：配置出现时明确 NotImplementedError，不静默忽略；final_logit_softcapping 已实现并测试。",
+       "只覆盖稠密 Gemma4MLP：enable_moe_block / use_double_wide_mlp / per-layer input embedding 明确拒绝。",
+       "V1 Gemma4 proposer/per-group metadata/centroid graph 未改，属 E2。",
+       "没有真实权重与性能结论；tiny 配置/权重是测试材料，不声称真实 assistant 质量或加速比。"
+      ]
      },
      "models": {
       "target": {
        "path": "无真实 Gemma4 target；测试用 transformers Gemma4AssistantConfig 现场生成 tiny 配置",
-       "architectures": ["Gemma4AssistantForCausalLM（仅配置）", "Gemma4MTPModel（draft）"],
+       "architectures": [
+        "Gemma4AssistantForCausalLM（仅配置）",
+        "Gemma4MTPModel（draft）"
+       ],
        "dtype": "float32",
        "max_position_embeddings": 64,
        "note": "不加载真实 target；E2 需要固定 revision 的真实 target 架构/权重"
       },
       "draft": {
        "path": "tests/step80/test_gemma4_model_alignment.py 现场生成的 tiny Gemma4AssistantConfig（vocab=32, hidden=8, backbone=16, 2 层）",
-       "architectures": ["Gemma4MTPModel"],
+       "architectures": [
+        "Gemma4MTPModel"
+       ],
        "dtype": "float32",
        "num_layers": 2,
        "note": "与冻结上游 Gemma4MTP 同配置/同权重做 E1 差分；不是真实 assistant checkpoint"
@@ -5609,31 +5670,148 @@
      "results": {
       "step": "80E.E2",
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md",
-      "status": "blocked（E1 已完成；E2 不在本轮实现）",
-      "blocked_reason": "缺少 Gemma4 target 完整架构/加载与真实匹配的 target+assistant 权重；混合 sliding/full、异构 head_dim、KV group 与后端能力依赖 81 先行通过。下载权重不能解决缺失的 target 模型实现。",
-      "preconditions": ["固定 revision 的 Gemma4 target 架构/加载（当前投机源码归档不覆盖完整 target）", "81 的多 KV group、SWA/full、异构 head_dim、backend 能力通过", "真实匹配的 Gemma4 target + assistant checkpoint，固定 revision"],
-      "recorded_at": "2026-10-25T12:21:00+08:00",
-      "known_gaps": ["V2 `_create_draft_vllm_config`/`_share_embeddings`/`_setup_gemma4_kv_sharing` 的真实接线未做。", "V1 Gemma4 proposer 的 per-group metadata、centroid 图与采样分支未做。", "真实 source KV 只读、不同层类型读对 group、greedy/Graph/eager 对照均未跑。"]
+      "status": "implemented + self-verified（**代码/架构/V1/V2 接线完成**；本机真实 assistant 已加载并跑通，真实 target 权重缺失，完整真实 checkpoint 集成标「集成待验」）。新增 Gemma4 文本 target（YOCO Q-only 尾层、PLE、double-wide MLP、sliding/full 异构 head_dim 256/512、proportional RoPE、final softcap）；新增多 KV group 控制面/执行面（KVCacheSpec/Group/Config、Full+Sliding manager、Hybrid coordinator、V2 BlockTables 多组、V1 多组块表包装、逐组 metadata、滑窗掩码）；V2 `Gemma4Speculator` 接真实 assistant（embedding 共享、Q-only 源层、常量位置、centroid greedy、多组 metadata、融合多步图）；V1 `Gemma4Proposer` 独立接同一套语义（eager；多组图明确拒绝）。真实 assistant 77.7M 权重加载到 V2/V1，与 full-width 合成 target（457M）跑通生成；tiny target logits 对 HF max diff 2.98e-7。",
+      "recorded_at": "2026-10-26T15:35:00+08:00",
+      "git": {
+       "baseline_commit_at_record_time": "17a8dd6",
+       "implementation_commit": "见本轮提交（step80E-E2：Gemma4 target 与多 KV group 真实接入）"
+      },
+      "package": {
+       "root": "minivllm/",
+       "python_files": 166,
+       "sha256": "a3c6438f24b096088c8798e5cc44b72c942848a4f56d6b5ddea76942167356e0",
+       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+      },
+      "environment": {
+       "python": "3.12.14",
+       "torch": "2.13.0+cu130",
+       "triton": "3.7.1",
+       "vllm": "0.28.0（仅作冻结参考；生产路径不 import Runner/proposer/kernel）",
+       "device": "RTX 5090 Laptop / CUDA；target 数值对照在 GPU+CPU",
+       "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+       "env": "VLLM_USE_V2_MODEL_RUNNER=1/0 分别覆盖 V2/V1；conda env ninja 需在 PATH"
+      },
+      "commands": [
+       {
+        "cmd": "python -m pytest tests/step80/test_gemma4_real_integration.py -q",
+        "result": "11 passed（target/HF 差分、组/Q-only、真实 assistant、V1/V2、graph/eager、包装命名、backend 拒绝、V1 centroid 图）"
+       },
+       {
+        "cmd": "python -m pytest tests/step80 -q",
+        "result": "109 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 11）"
+       },
+       {
+        "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
+        "result": "4 passed（多组分配/共同命中/部分组不误命中/原子失败）"
+       },
+       {
+        "cmd": "python -m pytest tests/step58 … tests/step81 -q",
+        "result": "1081 passed, 149 warnings in 114.16s（无 failed/skipped；2026-10-26 本机最终回归）"
+       }
+      ],
+      "execution_trace": {
+       "target结构": "Gemma4ForCausalLM 文本子集：embed*normalizer、PLE、35/4 层 decoder、num_kv_shared_layers 尾部 Q-only、double-wide MLP、q/k/v norm、sliding default RoPE + full proportional RoPE、final softcap。",
+       "target数值": "tiny target（4 层 [S,F,S,F]、num_kv_shared_layers=2、window=4、block=4、vocab=128）在 11-token prompt 上跨 window/block 边界与 HF 比较：logits max diff 2.98e-7，argmax/top-5 相同。",
+       "多group": "target 由真实 spec 推得 2 组：sliding（head_dim=256、window=512）与 full（head_dim=512、无窗口）；Q-only 尾层按 layer_types 映射到同类型最后一个非共享源层。V2 每层取自己组的 block table/slot mapping，V1 用逐组工作区块表。",
+       "真实assistant": "models/gemma-4-E2B-it-assistant 77.7M 参数：pre_projection 3072→256、post_projection 256→1536、lm_head 262144×256、2048 centroid/top-32 masked embedder；embedding 直接复用 target `model.embed_tokens`，lm_head 保持 draft 宽。",
+       "Q-only只读": "真实 assistant 的 4 层中 3 层读 target sliding 源、1 层读 full 源；在 propose() 前后逐字节比较 target cache，未发生写入。",
+       "V1/V2": "同 tiny target+assistant、同 greedy workload：V1 与 V2 输出 token 完全一致；V2 FULL_DECODE_ONLY 与 eager 输出一致，prefill/decode/target 图都真实捕获并重放。",
+       "真实target缺口": "本机没有真实 Gemma4 target 权重；full-width target 是按真实配置生成的合成权重，只证明架构/加载/多组/真实 assistant 接线，不证明真实文本质量。",
+       "V1 centroid": "真实 assistant 的 V1 greedy 走 get_top_tokens，并捕获 1/2/4/8/16/32/64 行的小 CUDA Graph；概率草稿仍回退完整 logits。"
+      },
+      "known_gaps": [
+       "真实 Gemma4 target 权重缺失：完整真实 target+assistant 固定 revision 生成未跑，标「集成待验」；不能用合成 target 冒充真实 checkpoint。",
+       "不同 group block_size 只到控制面；Runner 执行层仍要求所有组 block_size 相同（Gemma4 相同）。",
+       "滑窗组保留全历史、仅 attention 掩码；没有 remove_skipped_blocks/null block 回收，显存不按窗口回收。",
+       "V1 多 group CUDA Graph 明确拒绝；V1 Gemma4 的 target 图未接（V1 先 eager），V1 centroid 小图已接。",
+       "V2 centroid 未捕获上游那种 1/2/4/... 小图；greedy 用 get_top_tokens 不物化完整词表，但性能未验。",
+       "多模态/inputs_embeds/M-RoPE/XD-RoPE、Mamba 状态、抢占三时刻、KV transfer/PD 未接。",
+       "没有真实权重质量/加速比结论；无性能矩阵。"
+      ]
      },
      "models": {
       "target": {
-       "path": "无",
-       "architectures": ["Gemma4AssistantForCausalLM（待真实 target）"],
-       "dtype": "未运行",
-       "note": "E2 阻塞；不得用旧 tiny checkpoint 冒充真实 assistant"
+       "path": "本机无真实 target 权重；测试用 /tmp 现场生成的 tiny（vocab=128）与 full-width（vocab=262144、hidden=1536、4 层）合成 target",
+       "architectures": [
+        "Gemma4ForCausalLM",
+        "Gemma4ForConditionalGeneration（包装命名加载测试）"
+       ],
+       "dtype": "tiny float32；full-width bfloat16",
+       "revision": "N/A（合成权重，固定 seed）",
+       "note": "真实 target checkpoint 的包装命名有加载测试；真实权重集成待验"
       },
       "draft": {
-       "path": "无真实 assistant checkpoint",
-       "architectures": ["Gemma4MTPModel"],
-       "dtype": "未运行",
-       "note": "E2 阻塞；真实权重来源/revision 待定"
+       "path": "models/gemma-4-E2B-it-assistant（本机真实 assistant，local snapshot）",
+       "architectures": [
+        "Gemma4AssistantForCausalLM（配置归一为 Gemma4MTPModel）"
+       ],
+       "dtype": "bfloat16",
+       "num_layers": 4,
+       "backbone_hidden_size": 1536,
+       "hidden_size": 256,
+       "vocab_size": 262144,
+       "num_centroids": 2048,
+       "centroid_top_k": 32,
+       "note": "真实 assistant 权重加载/共享/Q-only 已实测；target 侧为合成权重"
       },
       "real_weights": {
-       "status": "缺",
-       "note": "E2 集成/质量/加速比「待验」"
+       "status": "assistant 有；target 缺",
+       "note": "真实 assistant 77.7M 参数已用；真实 target E2B 权重不在本机，完整集成待验"
       }
      }
     }
+   }
+  }
+ },
+ "step81": {
+  "results": {
+   "step": "81（E2 所需子集，未完成整关）",
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/081_投机与多KVGroup混合模型及生命周期.md",
+   "status": "partial（只为 80E.E2 打通多 KV group/SWA/full/异构 head_dim/Q-only 基础；Mamba/抢占/lifecycle 未做）",
+   "recorded_at": "2026-10-26T15:35:00+08:00",
+   "git": {
+    "baseline_commit_at_record_time": "17a8dd6",
+    "implementation_commit": "见本轮提交（step80E-E2 / 81 subset）"
+   },
+   "package": {
+    "root": "minivllm/",
+    "python_files": 166,
+    "sha256": "a3c6438f24b096088c8798e5cc44b72c942848a4f56d6b5ddea76942167356e0",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "CUDA（V2）与 CPU（控制面单测）",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
+     "result": "4 passed"
+    }
+   ],
+   "execution_trace": {
+    "控制面": "KVCacheSpec/Group/Config + Full/Sliding manager + Hybrid coordinator；hash 粒度取组 block_size 最小值，大块用 stride 取链式 hash；命中长度逐组取 min 并按共同长度裁块。",
+    "执行面": "V2 BlockTables 多组块表/槽位/逐组 metadata；V1 BlockTable 多组包装/逐组工作区；sliding mask 使用绝对位置 q-window+1；Q-only 层组跟随源层。",
+    "验收": "4+8 块组分配 [4,2]、共同命中 8；删 sliding 第一块 hash 后命中 0；容量不足原子失败；缺 window 报错。"
+   },
+   "known_gaps": [
+    "Mamba/混合状态 prepare/update/rollback 未实现，明确拒绝而不是错算。",
+    "滑窗块回收/remove_skipped_blocks/null block 未实现。",
+    "不同 group block_size 的执行层（逐组 kernel/图）未接。",
+    "抢占三时刻、stale output、共享块引用计数矩阵未做。",
+    "KV transfer/PD、多模态/M-RoPE/XD-RoPE 未接。",
+    "EOS/stop/max_tokens/cancel/slot 复用全矩阵未做（仅 E2 的 request-id 复用用例）。"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "无新增模型；Gemma4 E2 测试的合成 target/真实 assistant 见 step80.subrequirements.80E.models",
+    "architectures": [],
+    "dtype": "N/A",
+    "note": "81 子集不新增权重"
    }
   }
  }

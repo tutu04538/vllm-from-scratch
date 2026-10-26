@@ -1,10 +1,15 @@
-# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1）
+# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1 / 80E.E2）
 
 > 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复**、
 > **80C 多模块整段 CUDA Graph/采样生命周期**、**80D Q-only 共享 KV 的映射与只读
-> 契约** 与 **80E.E1 Gemma4 assistant 模型层差分**；E2 仍阻塞，80F–80H 未开始。
-> E1 只做模型结构与权重路由，不加载真实 Gemma4 target；E2 的真实接入依赖 target
-> 架构与 81 的多 group/SWA/full/backend 前置。
+> 契约**、**80E.E1 Gemma4 assistant 模型层** 与 **80E.E2 的 target 架构/多 group/
+> V1/V2 接线**；80F–80H 未开始。
+>
+> **E2 的证据边界**：本机有真实 assistant checkpoint，并已用它跑通 V2/V1；**没有真实
+> target 权重**，target 数值验证用同架构的合成权重（tiny 对 HF、full-width 对真实
+> assistant）。因此"真实 target + assistant 的完整 checkpoint 集成"仍标 **集成待验**，
+> 不能把合成 target 的生成结果说成真实模型质量。多 group/SWA/full/head_dim 的 81
+> 子集已独立通过（`tests/step81/`），Mamba/抢占矩阵等 81 其余项未完成。
 
 ## 0. 需求与边界
 
@@ -754,3 +759,154 @@ CUDA_VISIBLE_DEVICES='' ...                          # 12 passed（CPU-only）
   - `tests/step80/test_gemma4_model_alignment.py`（新增，12 项）。
   - `docs/step80_alignment.md`、`docs/results.json`、`docs/README.md`、
     `minivllm/README.md`。
+
+## 12. 80E.E2：Gemma4 target 架构、多 KV group 与 V1/V2 接线
+
+### 12.1 范围与证据边界
+
+E2 做四件事：
+
+1. **Gemma4 文本 target**：`Gemma4ForCausalLM`（注册名同时接受
+   `Gemma4ForConditionalGeneration` 的包装命名），包含 YOCO 跨层 KV 共享、PLE、
+   double-wide MLP、sliding/full 异构 head_dim、proportional RoPE、final softcap。
+2. **多 KV group 控制面/执行面**：真实 `KVCacheSpec`/`KVCacheGroup`/`KVCacheConfig`，
+   `FullAttentionManager` + `SlidingWindowManager`，组间共同前缀命中边界。
+3. **V2 Gemma4Speculator**：常量位置、真实 assistant 加载、embedding 共享、
+   Q-only 源层绑定、逐组 draft metadata、centroid greedy。
+4. **V1 Gemma4Proposer**：独立接入；逐组 target 块表工作区；Q-only 的常量位置
+   AR 步；V1 多 group 图明确拒绝（先走 eager）。
+
+**不冒充的部分**：
+
+- 本机没有真实 Gemma4 target 权重。`test_real_assistant_*` 用**同配置的合成
+  target**（vocab=262144、hidden=1536、2 个 KV group、head_dim 256/512、
+  double-wide/PLE）配**本机真实 assistant checkpoint**。它证明真实 assistant 的
+  加载/宽度/centroid/embedding 共享/Q-only 只读/组映射，但不能证明真实 target
+  权重下的文本质量。
+- 真实 target checkpoint 的包装命名（`model.language_model.*`）有独立加载测试；
+  但"真实 target + assistant 同时固定 revision 完整生成"仍缺权重，标 **集成待验**。
+- 81 只完成 E2 所需子集；Mamba 混合状态回滚、抢占三时刻矩阵、KV transfer/PD、
+  多模态 M-RoPE 不在 E2 声明内。
+
+### 12.2 路径映射
+
+| 本项目 | 冻结上游（vLLM 0.28.0 / 2026-10-03） |
+|---|---|
+| `minivllm/models/gemma4.py` | `model_executor/models/gemma4.py` 的文本子集 |
+| `minivllm/core/kv_cache_interface.py` | `v1/kv_cache_interface.py` 的 spec/group/config 子集 |
+| `minivllm/core/kv_cache_coordinator.py::HybridKVCacheCoordinator` | `v1/core/kv_cache_coordinator.py::HybridKVCacheCoordinator` 的共同命中边界 |
+| `minivllm/core/single_type_kv_cache_manager.py::SlidingWindowManager` | 同名 manager 的保留策略子集 |
+| `minivllm/worker/gpu/spec_decode/gemma4/speculator.py::Gemma4Speculator` | `v1/worker/gpu/spec_decode/gemma4/speculator.py` |
+| `minivllm/spec_decode/gemma4.py::Gemma4Proposer` | `v1/spec_decode/gemma4.py` |
+| `minivllm/worker/gpu/model_runner.py` 的 `get_kv_cache_spec` / 多组 metadata | V2 `GPUModelRunner` 的 `init_attn_backend` / `prepare_attn` |
+| `minivllm/worker/gpu_model_runner.py` 的 V1 多组块表/缓存 | V1 `GPUModelRunner` 的 `initialize_kv_cache` / `_build_attn_metadata` |
+
+### 12.3 target 的固定结构
+
+以真实 assistant 配置（`backbone=1536`、assistant hidden=256、4 层
+`[S,S,S,F]`）配本机生成的 full-width target（4 层 `[S,F,S,F]`、2 个共享尾层）为例：
+
+| 项 | sliding 组 | full 组 |
+|---|---|---|
+| 拥有 cache 的 target 层 | `model.layers.0` | `model.layers.1` |
+| Q-only target 层 | `layers.2`（读 0） | `layers.3`（读 1） |
+| head_dim / KV heads | 256 / 1 | 512 / 1 |
+| window | 512 | 无 |
+| assistant 层 | 0,1,2（读 target 0） | 3（读 target 1） |
+
+真实的 35 层 target 会得到 13 个 sliding 拥有层 + 2 个 full 拥有层、20 个 Q-only
+尾部层；同一套映射代码按 `layer_types`/`num_kv_shared_layers` 计算。
+
+target 的关键执行顺序：
+
+1. 前 15 层正常写 K/V：sliding 组写 `[2, blocks, 16, 1, 256]`，full 组写
+   `[2, blocks, 16, 1, 512]`；
+2. 后 20 层 `q_only=True`，只算 Q → q_norm → RoPE，读对应组源层的 paged cache；
+3. PLE 每层额外注入 `gate(hidden)` × per-layer embedding，再接
+   `per_layer_projection`/`post_per_layer_input_norm`；
+4. 共享层 MLP 宽度翻倍（`use_double_wide_mlp`），`layer_scalar` 最后乘；
+5. final norm 后走 tied `lm_head` + `final_logit_softcapping=30`。
+
+### 12.4 assistant 的固定数据流（真实宽度）
+
+| 阶段 | 形状 | 来源 |
+|---|---|---|
+| target embedding | `[T, 1536]` | 真实 `model.embed_tokens`（被 assistant 直接复用） |
+| target feedback hidden | `[T, 1536]` | target 最后一层 hidden / 上一步 `post_projection` |
+| concat | `[T, 3072]` | `[embedding ‖ hidden]` |
+| `pre_projection` | `[T, 256]` | 检查点顶层 `pre_projection.weight` |
+| assistant decoder ×4 | `[T, 256]` | Q-only + 稠密 MLP |
+| `draft_hidden` | `[T, 256]` | 过 final norm，喂 centroid/lm_head |
+| `lm_head` | `[T, 262144]` | assistant 自己的 256 宽 head（**不**共享 target head） |
+| `post_projection` | `[T, 1536]` | 下一步反馈；不能把 256 宽 draft hidden 喂回 |
+
+assistant 配置在 `SpeculativeConfig` 里归一化：`gemma4_assistant` /
+`gemma4_unified_assistant` → `model_type=gemma4_mtp`、
+`architectures=[Gemma4MTPModel]`、`n_predict=1`、嵌套
+`text_config.num_kv_shared_layers=0`。不归一化会让 assistant 自己的 4 层又去做
+跨层共享，读错源。
+
+### 12.5 V1/V2 分工
+
+| 路径 | 输入 | 元数据 | 图 |
+|---|---|---|---|
+| V2 | `InputBuffers` packed 行；常量位置 | 每 KV group 一张表；draft 层用 `draft::` 别名映射到源组 | target/草稿 prefill 图 + 融合多步 decode 图（`FULL_DECODE_ONLY` 实测） |
+| V1 | CPU 行块；`Gemma4Proposer` 独立循环 | 每组一张工作区块表；Q-only AR 步位置/seq_len 固定 | 多 group 图明确 `NotImplementedError`，E2 先 eager |
+
+V1 的 `_set_autoregressive_inputs` 不再 `anchor + k`：Q-only 每步都读 target 同一段
+上下文，位置必须停在采样锚点；seq_lens 停在 `plan.seq_lens - num_rejected`。V2 用
+`advance_draft_positions=False` + 融合多步图达到同一语义。
+
+### 12.6 验证
+
+新增 `tests/step80/test_gemma4_real_integration.py`，共 **11 passed**：
+
+1. 真实 assistant 配置归一化，且不原地改用户对象；
+2. tiny target 跨 sliding window/block 边界的 logits 与 HF **逐值**比较：
+   `max diff 2.98e-7`，argmax/top-5 相同；
+3. target 两个 group 的 spec（head_dim 256/512、window 512/None）与 Q-only 源层；
+4. 真实 assistant（77.7M）配 full-width 合成 target（457M）：
+   `pre_projection 3072→256`、`post_projection 256→1536`、
+   `lm_head 262144×256`、centroid 结构、embedding 共享对象同一、
+   assistant 三层读 sliding/一层读 full、`propose()` 前后 target cache 逐字节不变；
+5. V1 与 V2 同 tiny 模型/同 greedy workload 输出一致；
+6. V2 eager 与 `FULL_DECODE_ONLY` 图输出一致，prefill/decode/target 图都真实捕获；
+7. V1 多 group 图明确拒绝；
+8. 真实 target 包装命名 `model.language_model.*` 可加载文本栈；
+9. request id 完成后复用，不继承旧 Gemma4 speculative 状态；
+10. Gemma4 + 非 Torch 后端明确拒绝（Q-only 只在 Torch 后端实现，不能静默换后端）；
+11. V1 真实 assistant 的 centroid greedy 小图真实捕获（1/2/4/.../64 档），并跑通生成。
+
+另外 `tests/step81/test_spec_kv_groups.py` 4 项覆盖：
+
+- 组块大小 4/8、hash 粒度 min、分配/命中块数逐组正确；
+- 只删 sliding 组第一块 hash → 共同命中 0（不允许 full 组单独误命中）；
+- 容量不足时原子失败，两张组块表都不留半成品；
+- `SlidingWindowSpec` 缺 window 明确报错。
+
+```bash
+PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
+PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
+  tests/step80/test_gemma4_real_integration.py -q     # 11 passed
+PATH=... $PY -m pytest tests/step81/test_spec_kv_groups.py -q  # 4 passed
+PATH=... $PY -m pytest tests/step80 -q                      # 109 passed
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1081 passed, 114.16s
+```
+
+### 12.7 差异与边界
+
+1. **真实 target 权重缺失**：full-width target 是合成的同架构权重；真实
+   target+assistant 固定 revision 的完整生成未跑，状态是"代码/架构/真实 assistant
+   已接，真实 target 权重集成待验"。
+2. **滑窗不回收窗口外块**：`SlidingWindowManager` 保留全历史、attention 按窗口掩码；
+   正确但不省显存。上游 `remove_skipped_blocks` + null block 属 81 后续。
+3. **不同 group block_size 只到控制面**：manager/coordinator/块表支持 4+8 的分配与
+   命中；Runner 执行层仍要求所有组 block_size 相同（Gemma4 正好相同）。不同块大小的
+   逐组 attention kernel 编译未接。
+4. **V1 图未按组捕获**：多 group 时 V1 `cudagraph_mode != NONE` 明确拒绝；V2 已支持。
+5. **V1 的 PLE/多模态**：V1 Gemma4 只走文本 target；多模态 inputs_embeds/M-RoPE 未接。
+6. **centroid CUDA Graph**：V2 greedy 用 `get_top_tokens`（不物化完整词表），但没有像
+   上游 `_setup_centroids_cuda_graphs` 那样为 1/2/4/... 捕获 centroid 小图；这是性能
+   项，不是正确性项。V1 仍走完整 logits 的 argmax。
+7. **未跑性能矩阵**：不声称任何加速比或真实草稿接受率。

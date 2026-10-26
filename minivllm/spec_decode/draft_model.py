@@ -180,7 +180,7 @@ class SpecDecodeBaseProposer:
         self.block_table_cpu, self.block_table = _buffer(
             (self.max_num_reqs, self.max_blocks_per_req), torch.int64)
         # 63 关：EAGLE 的第一遍要带 target 的 hidden states（工作区定长、原位覆盖）
-        hidden_size = int((vllm_config.model_config.hf_config or {}).get("hidden_size", 0))
+        hidden_size = int(vllm_config.model_config.get_hidden_size())
         self.hidden_size = hidden_size
         # EAGLE3 收的是**多个辅助层拼接后**的特征（宽度 = hidden × 辅助层数），EAGLE-1 是 1 层
         draft_hf = (spec_config.draft_model_config.hf_config or {}) \

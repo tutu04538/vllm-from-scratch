@@ -26,6 +26,8 @@ import numpy as np
 import torch
 
 from ...config import CUDAGraphMode, VllmConfig
+from ...core.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
+                                        KVCacheGroup, SlidingWindowSpec)
 from ...outputs import ModelRunnerOutput
 from ..gpu.async_utils import AsyncOutput, StepTimingCollector
 from ..gpu.block_table import BlockTables, PAD_SLOT_ID
@@ -190,6 +192,9 @@ class GPUModelRunner:
         self.cudagraph_mode = CUDAGraphMode.NONE
         self.cudagraph_capture_stats: dict | None = None
         self._attn_metadata_layer_names: set[str] = set()
+        # 80E.E2/81：layer_name → KV group。target 的 Q-only 层与 assistant 的 Q-only 层
+        # 都取**源层**的 group；metadata 必须按这个映射逐层给，不能全批共用第 0 组。
+        self._attn_metadata_layer_groups: dict[str, int] = {}
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -249,9 +254,80 @@ class GPUModelRunner:
         )
 
     def get_kv_cache_spec(self):
-        raise NotImplementedError(
-            "本仓库的 KV 容量由配置给定（`CacheConfig`），不经 Runner 做显存 profiling"
+        """返回按 Attention 层推导的真实 `KVCacheConfig`（对应上游 `get_kv_cache_spec()`）。
+
+        容量仍由配置给定（本仓库不做显存 profiling）；这里只回答**分组与每组形状**。
+        分组键是 `(类型, head_size, num_kv_heads, sliding_window)`：同组层必须共用块表。
+        Q-only 层不拥有 cache，不进入 group；它们的层名在 `build_kv_cache_config()` 后
+        由 `_attn_metadata_layer_groups` 指向源层 group。
+        """
+        if self.model is None:
+            raise RuntimeError("先 load_model() 再推导 KV 规格")
+        from ...attention.layer import Attention
+
+        dtype = next(p.dtype for p in self.model.parameters() if p.is_floating_point())
+        groups: list[KVCacheGroup] = []
+        group_keys: dict[tuple, int] = {}
+        layer_to_group: dict[str, int] = {}
+        q_only_layers: list[tuple[str, Attention]] = []
+
+        for name, layer in self._attention_layers().items():
+            if layer.q_only:
+                q_only_layers.append((name, layer))
+                continue
+            sliding = layer.per_layer_sliding_window
+            key = (layer.head_size, layer.num_kv_heads, sliding)
+            if key not in group_keys:
+                spec = (SlidingWindowSpec(
+                            block_size=self.block_size,
+                            num_kv_heads=layer.num_kv_heads,
+                            head_size=layer.head_size,
+                            dtype=dtype,
+                            sliding_window=int(sliding),
+                        ) if sliding is not None else FullAttentionSpec(
+                            block_size=self.block_size,
+                            num_kv_heads=layer.num_kv_heads,
+                            head_size=layer.head_size,
+                            dtype=dtype,
+                        ))
+                group_keys[key] = len(groups)
+                groups.append(KVCacheGroup(spec, [name]))
+            else:
+                groups[group_keys[key]].layer_names.append(name)
+            group_id = group_keys[key]
+            layer_to_group[name] = group_id
+            layer.kv_cache_group_id = group_id
+
+        for name, layer in q_only_layers:
+            source = layer.kv_sharing_target_layer_name
+            if source is None:
+                raise ValueError(
+                    f"Q-only 层 {name!r} 没有 kv_sharing_target_layer_name："
+                    f"不能为它单独建一份 KV（会静默读错上下文）")
+            if source not in layer_to_group:
+                raise KeyError(
+                    f"Q-only 层 {name!r} 的源层 {source!r} 不存在或本身也是 Q-only")
+            group_id = layer_to_group[source]
+            layer_to_group[name] = group_id
+            layer.kv_cache_group_id = group_id
+            source_layer = self._attention_layers()[source]
+            if (layer.num_kv_heads, layer.head_size) != (
+                    source_layer.num_kv_heads, source_layer.head_size):
+                raise ValueError(
+                    f"Q-only 层 {name!r} 与源层 {source!r} 的 KV 形状不一致："
+                    f"{(layer.num_kv_heads, layer.head_size)} vs "
+                    f"{(source_layer.num_kv_heads, source_layer.head_size)}")
+
+        self._attn_metadata_layer_groups = layer_to_group
+        return KVCacheConfig(
+            num_gpu_blocks=self.cache_config.num_gpu_blocks,
+            kv_cache_groups=groups,
+            enable_prefix_caching=bool(self.cache_config.enable_prefix_caching),
         )
+
+    def build_kv_cache_config(self) -> KVCacheConfig:
+        """Executor/Engine 拿容量前调用的入口（上游 `get_kv_cache_spec()` 的别名包装）。"""
+        return self.get_kv_cache_spec()
 
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并绑定到 Attention 层，同时建 V2 的块表集合。
@@ -261,62 +337,94 @@ class GPUModelRunner:
         """
         if self.model is None:
             raise RuntimeError("先 load_model() 再初始化 KV 缓存（需要模型的 dtype/qk 头数）")
-        if kv_cache_config.block_size != self.block_size:
-            raise ValueError(
-                f"KV 规格里的 block_size={kv_cache_config.block_size} 与 Runner 的 "
-                f"{self.block_size} 不一致：块大小决定 slot 怎么算，两边不同会出现"
-                f"'写进去的和读出来的不是同一块'这种最难查的错"
-            )
+        if not isinstance(kv_cache_config, KVCacheConfig):
+            raise TypeError(
+                "V2 的 initialize_kv_cache 需要 KVCacheConfig（含 KV group）；"
+                f"收到 {type(kv_cache_config).__name__}")
+        for spec in kv_cache_config.block_sizes:
+            if spec != self.block_size:
+                raise NotImplementedError(
+                    f"本阶段的多 group 执行仍要求所有组 block_size 相同："
+                    f"Runner={self.block_size}，group={spec}。不同块大小的 manager 已在控制面"
+                    f"支持，但 BlockTables/attention metadata 的逐组 kernel 编译属下一阶段，"
+                    f"不能在这里静默按同一块大小跑")
         self.kv_cache_config = kv_cache_config
 
-        max_num_blocks_per_req = -(-self.max_model_len // self.block_size)
+        group_block_sizes = kv_cache_config.block_sizes
+        max_num_blocks_per_group = [
+            -(-self.max_model_len // size) for size in group_block_sizes]
         self.block_tables = BlockTables(
-            block_sizes=[self.block_size],
+            block_sizes=list(group_block_sizes),
             max_num_reqs=self.max_num_reqs,
             max_num_batched_tokens=self.max_num_tokens,
-            max_num_blocks_per_group=[max_num_blocks_per_req],
+            max_num_blocks_per_group=max_num_blocks_per_group,
             device=self.device,
-            kernel_block_sizes=[self.block_size],
+            kernel_block_sizes=list(group_block_sizes),
         )
-        if isinstance(self.speculator, DraftModelSpeculator):
-            self.speculator.set_attn(
-                self.block_tables, self.input_buffers, self._build_capture_attn_metadata
-            )
-        # 74 关：图模式必须在 `init_cudagraph_manager()` **之前**定下来（上游同序：
-        # "After set_attn, so the speculator can size its cudagraph mode to its own attention
-        # support"）。
+        dtype = next(self.model.parameters()).dtype
+        target_layers = self._attention_layers()
+        self.kv_caches = {}
+        self._attn_metadata_layer_groups = {}
+        for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
+            spec = group.kv_cache_spec
+            for layer_name in group.layer_names:
+                layer = target_layers[layer_name]
+                if layer.q_only:
+                    raise ValueError(
+                        f"KV group {group_id} 的拥有层 {layer_name!r} 是 Q-only："
+                        f"Q-only 层不能拥有物理 cache")
+                cache = torch.zeros(
+                    2,
+                    kv_cache_config.num_gpu_blocks,
+                    spec.block_size,
+                    spec.num_kv_heads,
+                    spec.head_size,
+                    dtype=dtype,
+                    device=self.device,
+                )
+                layer.kv_cache = cache
+                layer.kv_cache_group_id = group_id
+                layer.set_output_buffer(
+                    self.max_num_tokens, dtype=dtype, device=self.device)
+                self.kv_caches[layer_name] = cache
+                self._attn_metadata_layer_groups[layer_name] = group_id
+
+        # Q-only 的 target 层（YOCO 后半段）：只绑源层 cache，不分配第二份。
+        for layer_name, layer in target_layers.items():
+            if not layer.q_only:
+                continue
+            source = layer.kv_sharing_target_layer_name
+            if source is None or source not in self.kv_caches:
+                raise KeyError(
+                    f"target Q-only 层 {layer_name!r} 的源层 {source!r} 没有物理 cache"
+                    f"（可用源层：{sorted(self.kv_caches)}）")
+            source_layer = target_layers[source]
+            layer.bind_shared_kv_cache(
+                source_layer, self.kv_caches[source], draft_dtype=dtype)
+            layer.kv_cache_group_id = source_layer.kv_cache_group_id
+            layer.set_output_buffer(
+                self.max_num_tokens, dtype=dtype, device=self.device)
+            self._attn_metadata_layer_groups[layer_name] = source_layer.kv_cache_group_id
+
+        if self.speculator is not None:
+            self._allocate_draft_kv_caches(kv_cache_config)
+            # set_attn 必须在草稿层完成 group 绑定之后：它按 `kv_cache_group_id`
+            # 建草稿的注意力组。物理 cache 已就绪，元数据构造器只是引用块表。
+            if isinstance(self.speculator, DraftModelSpeculator):
+                self.speculator.set_attn(
+                    self.block_tables, self.input_buffers,
+                    self._build_capture_attn_metadata)
+        # 74 关：图模式必须在 `init_cudagraph_manager()` **之前**定下来（上游同序）。
         self.initialize_cudagraph_capture()
         if self.speculator is not None:
             self.speculator.init_cudagraph_manager(self.cudagraph_mode)
-
-        dtype = next(self.model.parameters()).dtype
-        self.kv_caches = {}
-        for layer_name, layer in self._attention_layers().items():
-            cache = torch.zeros(
-                2,
-                kv_cache_config.num_gpu_blocks,
-                self.block_size,
-                layer.num_kv_heads,
-                layer.head_size,
-                dtype=dtype,
-                device=self.device,
-            )
-            layer.kv_cache = cache
-            # Phase 3：breakable PIECEWISE 的 attention 输出必须落在固定地址。
-            layer.set_output_buffer(
-                self.max_num_tokens, dtype=dtype, device=self.device)
-            self.kv_caches[layer_name] = cache
+        self._attn_metadata_layer_names = set(self._attn_metadata_layer_groups)
         if self.speculator is not None:
-            # 草稿层的物理缓存：与 target **同形同块数**（块号在两边代表同一段位置），
-            # 但 K/V 各写各的（与 V1 提议者的 `_allocate_kv_caches()` 同一套做法）。
-            self._allocate_draft_kv_caches(kv_cache_config)
-        # 注意力元数据的**键集合** = target 的层 ∪ 草稿的层。上游 runner 建注意力组时不带
-        # `active_layer_names`，所以它的 metadata 字典天然包含草稿层；草稿 prefill 复用 target
-        # 那份 metadata 时，草稿层就是靠这些键找到自己的元数据（键少了会在 forward 里 KeyError，
-        # 键多了没有害处）。
-        self._attn_metadata_layer_names = set(self.kv_caches)
-        if self.speculator is not None:
-            self._attn_metadata_layer_names |= set(self.speculator.draft_attn_layer_names)
+            for name in self.speculator.draft_attn_layer_names:
+                if name not in self._attn_metadata_layer_groups:
+                    raise KeyError(
+                        f"草稿层 {name!r} 没有 KV group 映射；Q-only 草稿的源层映射"
+                        f"必须先于 metadata 键集合建立")
         # 79 关：能力检查 + manager（必须在 KV 缓存与注意力层名都就绪之后；但要在
         # `capture_model()` 之前，后者会用它来做成本 profiling）。
         self.adaptive_verification = self._create_adaptive_verification_manager()
@@ -431,14 +539,29 @@ class GPUModelRunner:
         """草稿模型里所有 `Attention` 层的模块路径（= metadata 的键）。"""
         from ...attention.layer import Attention
 
-        return {
-            name for name, module in self.speculator.model.named_modules()
-            if isinstance(module, Attention)
-        }
+        # Gemma4 assistant 与 target 都从 `model.layers.0...` 起名，且 Gemma4 有多个
+        # KV group / target 自身 Q-only 层。如果直接拿模块路径当 metadata 键，assistant
+        # 的层会读到 target 同号层的组（这一层 source 可能不是它）。只对 Gemma4 加别名，
+        # 不改变其它草稿（EAGLE/MTP）的既有键名。
+        needs_alias = getattr(
+            getattr(self.speculator.model, "model", None),
+            "backbone_hidden_size", None) is not None
+        names: set[str] = set()
+        for name, module in self.speculator.model.named_modules():
+            if not isinstance(module, Attention):
+                continue
+            alias = module.layer_name
+            if needs_alias and not alias.startswith("draft::"):
+                alias = "draft::" + name
+                module.layer_name = alias
+            names.add(alias)
+        return names
 
     def _allocate_draft_kv_caches(self, kv_cache_config) -> None:
         from ...attention.layer import Attention
 
+        if not hasattr(self, "_attn_metadata_layer_groups"):
+            self._attn_metadata_layer_groups = {}
         draft_model = self.speculator.model
         # **必须取浮点参数**：缩小词表的草稿（EAGLE3 / DFlash / DSpark）把 `d2t` 注册成
         # int64 的 `nn.Parameter`，而它（顶层参数）在 `named_parameters()` 里排在子模块**之前**
@@ -477,7 +600,10 @@ class GPUModelRunner:
                     )
                 module.bind_shared_kv_cache(
                     target_layer, cache, draft_dtype=draft_dtype)
-                names.add(name)
+                module.kv_cache_group_id = target_layer.kv_cache_group_id
+                self._attn_metadata_layer_groups[module.layer_name] = (
+                    target_layer.kv_cache_group_id)
+                names.add(module.layer_name)
                 continue
             if module.q_only:
                 raise NotImplementedError(
@@ -485,6 +611,10 @@ class GPUModelRunner:
                     f"Q-only 共享映射未接线时不能给它分配独立 KV：那会静默读错上下文。"
                     f"先由 speculator 的映射建立源层，再初始化 KV cache。"
                 )
+            if len(kv_cache_config.kv_cache_groups) != 1:
+                raise NotImplementedError(
+                    f"非 Q-only 草稿层 {name!r} 在多个 target KV group 下没有明确的归属："
+                    f"本仓库只允许 Q-only 草稿（读取 target 源层）或单组 target 的普通草稿")
             cache = torch.zeros(
                 2,
                 kv_cache_config.num_gpu_blocks,
@@ -495,7 +625,9 @@ class GPUModelRunner:
                 device=self.device,
             )
             module.kv_cache = cache
-            names.add(name)
+            module.kv_cache_group_id = 0
+            self._attn_metadata_layer_groups[module.layer_name] = 0
+            names.add(module.layer_name)
         if not names:
             raise ValueError(
                 f"{type(draft_model).__name__} 里没有 Attention 层，无法绑定草稿的 KV 缓存"
@@ -1138,16 +1270,35 @@ class GPUModelRunner:
         靠 target 这份元数据里的这个 Python int 走 `_forward_padded()`。
         """
         builder = self.attn_metadata_builder
-        metadata = builder.build(
-            query_start_loc=input_batch.query_start_loc,
-            seq_lens=input_batch.seq_lens,
-            block_table=block_tables[0],
-            slot_mapping=slot_mappings[0][: input_batch.num_tokens_after_padding],
-            num_reqs=input_batch.num_reqs_after_padding,
-            uniform_query_len=input_batch.uniform_query_len,
-            max_query_len=input_batch.max_query_len,
-        )
-        return {name: metadata for name in self._attn_metadata_layer_names}
+        group_metadata: dict[int, Any] = {}
+        for group_id, group in enumerate(
+                getattr(self.kv_cache_config, "kv_cache_groups", [])):
+            spec = group.kv_cache_spec
+            group_metadata[group_id] = builder.build(
+                query_start_loc=input_batch.query_start_loc,
+                seq_lens=input_batch.seq_lens,
+                block_table=block_tables[group_id],
+                slot_mapping=slot_mappings[group_id][
+                    : input_batch.num_tokens_after_padding],
+                num_reqs=input_batch.num_reqs_after_padding,
+                uniform_query_len=input_batch.uniform_query_len,
+                max_query_len=input_batch.max_query_len,
+                sliding_window=getattr(spec, "sliding_window", None),
+            )
+        if not group_metadata:
+            raise RuntimeError("KV cache 还没有初始化：先 initialize_kv_cache()")
+        result = {}
+        for name in self._attn_metadata_layer_names:
+            group_id = self._attn_metadata_layer_groups.get(name)
+            if group_id is None:
+                # 兼容旧路径：没有显式映射时，单组模型的全部层都属于 group 0。
+                if len(group_metadata) != 1:
+                    raise KeyError(
+                        f"注意力层 {name!r} 没有 KV group 映射，但模型有 "
+                        f"{len(group_metadata)} 个 group：不能默认读到第 0 组")
+                group_id = 0
+            result[name] = group_metadata[group_id]
+        return result
 
     def _build_capture_attn_metadata(self, input_batch: InputBatch) -> dict[str, Any]:
         """74 关：捕获草稿 prefill 图时造 target 那份"假"元数据（下游是

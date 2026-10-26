@@ -63,6 +63,10 @@ class AttentionGroup:
     backend: type
     layer_names: list[str]
     metadata_builders: list[AttentionMetadataBuilder] = field(default_factory=list)
+    #: 80E.E2/81：这个组对应哪个 KV group（None = 旧单组调用点）。
+    kv_cache_group_id: int | None = None
+    #: 组的 KV spec（滑窗掩码/形状检查用；None = 未知，按全注意力处理）。
+    kv_cache_spec: object | None = None
 
     def get_metadata_builder(self, ubatch_id: int = 0) -> AttentionMetadataBuilder:
         assert len(self.metadata_builders) > ubatch_id, (

@@ -18,11 +18,16 @@ from torch.nn.parameter import Parameter
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
+    def __init__(self, hidden_size: int, eps: float = 1e-6,
+                 has_weight: bool = True) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.variance_epsilon = eps
-        self.weight = Parameter(torch.ones(hidden_size))
+        self.has_weight = has_weight
+        if has_weight:
+            self.weight = Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
 
     def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
         if residual is not None:
@@ -33,7 +38,9 @@ class RMSNorm(nn.Module):
         x32 = x.to(torch.float32)
         variance = x32.pow(2).mean(-1, keepdim=True)
         out = x32 * torch.rsqrt(variance + self.variance_epsilon)
-        out = out.to(input_dtype) * self.weight
+        out = out.to(input_dtype)
+        if self.weight is not None:
+            out = out * self.weight
         if residual is None:
             return out
         return out, residual

@@ -164,17 +164,24 @@ class ModelConfig:
         """去哪读 tokenizer（没单独指定就是模型目录，与上游默认一致）。"""
         return self.tokenizer or self.model
 
+    def _text_hf_config(self) -> dict:
+        """Gemma4 这类条件生成配置把文本字段藏在 `text_config` 下。"""
+        hf = self.hf_config or {}
+        nested = hf.get("text_config") if isinstance(hf, dict) else None
+        return nested if isinstance(nested, dict) and nested else hf
+
     def get_vocab_size(self) -> int:
         """词表大小（从 HF config 的 `vocab_size` 取；上游同名的取值口径）。
 
         结构化输出的掩码宽度、`logprobs=-1` 的"全词表"、TLI 的两边宽度都要它。
         没有 `hf_config` 时报错而不是猜一个值：宽度猜错不会报错，只会让掩码打到别的列上。
         """
-        if not self.hf_config or "vocab_size" not in self.hf_config:
+        hf = self._text_hf_config()
+        if "vocab_size" not in hf:
             raise ValueError(
                 "模型配置里没有 vocab_size，无法确定词表宽度（结构化输出掩码 / logprobs=-1 "
                 "都要它）。请先把 hf_config 读进来（模型目录里的 config.json）")
-        return int(self.hf_config["vocab_size"])
+        return int(hf["vocab_size"])
 
     def get_hidden_size(self) -> int:
         """hidden 宽度（对应上游 `ModelConfig.get_hidden_size()`）。
@@ -183,11 +190,18 @@ class ModelConfig:
         （上游注释点名 Llama 3.3 70B），所以取的是 **draft 这份 config** 的值。
         缺字段时报错而不是猜：宽度猜错只会让特征缓冲与模型对不上（不报错的静默错）。
         """
-        if not self.hf_config or "hidden_size" not in self.hf_config:
+        # Gemma4 assistant 的“喂进 assistant 的特征宽度”是 backbone_hidden_size，
+        # 不是 assistant 自己的 text hidden_size（例如 1536 vs 256）。上游的
+        # `model_arch_config.hidden_size` 也按这个字段覆盖。
+        raw = self.hf_config or {}
+        if isinstance(raw, dict) and raw.get("backbone_hidden_size"):
+            return int(raw["backbone_hidden_size"])
+        hf = self._text_hf_config()
+        if "hidden_size" not in hf:
             raise ValueError(
                 "模型配置里没有 hidden_size，无法确定特征宽度（V2 提议者的特征缓冲要它）。"
                 "请先把 hf_config 读进来（模型目录里的 config.json）")
-        return int(self.hf_config["hidden_size"])
+        return int(hf["hidden_size"])
 
 
 #: 上游 `config/model.py` 的 `LogprobsMode`（四种模式）。前两种是"概率"、后两种是"logits"本身
@@ -525,10 +539,16 @@ class SpeculativeConfig:
             elif self.model and "eagle-" in self.model.lower():
                 object.__setattr__(self, "method", "eagle")
             elif (draft_model_type := self._draft_model_type(self.draft_model_config)) \
-                    in ("medusa", MLP_SPECULATOR_MODEL_TYPE):
+                    in ("medusa", MLP_SPECULATOR_MODEL_TYPE,
+                        "gemma4_assistant", "gemma4_unified_assistant"):
                 # 上游 `:958-961`：draft 配置自己声明了 model_type 时按它认（旧 FasterDecoding
-                # checkpoint 没有 model_type，所以那条路要求用户显式给 method="medusa"）
-                object.__setattr__(self, "method", draft_model_type)
+                # checkpoint 没有 model_type，所以那条路要求用户显式给 method="medusa"）。
+                # Gemma4 assistant 在上游随后被归一成 `gemma4_mtp`（method 仍是 mtp）。
+                object.__setattr__(
+                    self, "method",
+                    "mtp" if draft_model_type in (
+                        "gemma4_assistant", "gemma4_unified_assistant")
+                    else draft_model_type)
             else:
                 object.__setattr__(self, "method", "draft_model")
 
@@ -670,8 +690,46 @@ class SpeculativeConfig:
                 "MTP 的 num_speculative_tokens 必须 > 0：上游在没给时会取 target 的 "
                 "num_nextn_predict_layers 当默认值，本仓库的配置拿不到 target（见 "
                 "derive_mtp_draft_config），所以必须显式给")
+        self._normalize_gemma4_assistant_config()
         object.__setattr__(self, "prompt_lookup_max", 0)
         object.__setattr__(self, "prompt_lookup_min", 0)
+
+    def _normalize_gemma4_assistant_config(self) -> None:
+        """把真实 Gemma4 assistant 配置归一成 MTP 配置（对应上游 `hf_config_override`）。
+
+        assistant 检查点写的是 `model_type="gemma4_assistant"`、
+        `architectures=["Gemma4AssistantForCausalLM"]`；上游在配置期改成：
+
+            model_type     = "gemma4_mtp"
+            architectures  = ["Gemma4MTPModel"]
+            n_predict      = 1
+            text_config.num_kv_shared_layers = 0
+
+        最后一条很关键：assistant 的 4 层都靠**跨模型** KV 共享读 target，不能把
+        `num_kv_shared_layers` 留在 4（那会让 assistant 自己的层又去做跨层共享）。
+        修改的是 draft_model_config 的副本，不改用户传进来的对象。
+        """
+        if self.draft_model_config is None:
+            return
+        hf = dict(self.draft_model_config.hf_config or {})
+        if str(hf.get("model_type", "")) not in (
+                "gemma4_assistant", "gemma4_unified_assistant"):
+            return
+        import copy
+
+        text_config = copy.deepcopy(hf.get("text_config") or {})
+        if not isinstance(text_config, dict):
+            raise ValueError(
+                "Gemma4 assistant 的 text_config 必须是 dict；"
+                f"收到 {type(text_config).__name__}")
+        text_config["num_kv_shared_layers"] = 0
+        hf["text_config"] = text_config
+        hf["model_type"] = "gemma4_mtp"
+        hf["n_predict"] = 1
+        hf["architectures"] = ["Gemma4MTPModel"]
+        object.__setattr__(
+            self, "draft_model_config",
+            replace(self.draft_model_config, hf_config=hf))
 
     def derive_mtp_draft_config(self, target_model_config: "ModelConfig") -> "ModelConfig":
         """从 **target 配置**派生 MTP 的 draft 配置（上游 `hf_config_override` + `ModelConfig(...)`）。
@@ -2099,6 +2157,14 @@ class VllmConfig:
             )
         if not self.use_v2_model_runner:
             return
+        if (spec is not None and spec.use_gemma4_mtp()
+                and str(self.attention_backend).lower() != "torch"):
+            raise NotImplementedError(
+                "Gemma4 assistant 的 Q-only 读路径目前只有 Torch 后端实现"
+                "（`forward_q_only`）。上游用 TRITON_ATTN 是因为它的 FlashAttention "
+                "不能读共享 cache；本仓库不能把 Torch Q-only 静默换成别的后端，"
+                f"收到 attention_backend={self.attention_backend!r}。"
+                "E2 要求 target/draft 都保留同一后端；当前唯一可保留的是 torch。")
         if spec is not None and spec.method not in ("eagle", "eagle3", "mtp", "dflash",
                                                     "dspark"):
             raise NotImplementedError(

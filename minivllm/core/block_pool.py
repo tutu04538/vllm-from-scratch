@@ -137,7 +137,8 @@ class BlockPool:
     # -------- 发布 --------
 
     def cache_full_blocks(self, request, blocks, num_cached_blocks: int, num_full_blocks: int,
-                          block_size: int, kv_cache_group_id: int = 0) -> None:
+                          block_size: int, kv_cache_group_id: int = 0,
+                          block_hashes=None) -> None:
         """把 `blocks[num_cached_blocks:num_full_blocks]` 这批**完整块**打上 hash 并登记。
 
         只处理"新变成完整"的那些块：`num_cached_blocks` 之前的已经登记过（可能是自己发布的，
@@ -148,7 +149,7 @@ class BlockPool:
             return
         if num_cached_blocks >= num_full_blocks:
             return
-        hashes = request.block_hashes
+        hashes = request.block_hashes if block_hashes is None else block_hashes
         if len(hashes) < num_full_blocks:
             raise RuntimeError(
                 f"{request.request_id!r} 只有 {len(hashes)} 个块 hash，却要发布前 "

@@ -39,6 +39,9 @@ class AttentionMetadata:
     #: varlen decode 图的上界：每请求 query 行数可以不同，但必须 <= 这个 Python int。
     #: 它只给图内固定形状路径用；eager 的逐请求路径不看它。
     max_query_len: int | None = None
+    #: 滑窗大小（80E/81）：`None` = 全注意力；正整数 = 每个 query 只能看
+    #: `q - sliding_window + 1 .. q`。按 **group** 决定，因此同一份 metadata 只服务同组层。
+    sliding_window: int | None = None
     #: 这一份元数据的注意力是不是**因果**的（76 关 DFlash 的 query 层可以是非因果）。
     #: 两种掩码都会保留"只能看 `[0, seq_len)`"这条边界，区别只在"能不能看自己之后的行"。
     #: 默认 True：除 DFlash 外的所有路径（target 的 prefill/decode 与草稿的自回归步）
@@ -75,7 +78,8 @@ class AttentionMetadataBuilder:
     def build(self, query_start_loc: torch.Tensor, seq_lens: torch.Tensor,
               block_table: torch.Tensor, slot_mapping: torch.Tensor,
               num_reqs: int, uniform_query_len: int | None = None,
-              causal: bool = True, max_query_len: int | None = None) -> AttentionMetadata:
+              causal: bool = True, max_query_len: int | None = None,
+              sliding_window: int | None = None) -> AttentionMetadata:
         return AttentionMetadata(
             query_start_loc=query_start_loc,
             seq_lens=seq_lens,
@@ -86,6 +90,7 @@ class AttentionMetadataBuilder:
             uniform_query_len=uniform_query_len,
             causal=causal,
             max_query_len=max_query_len,
+            sliding_window=sliding_window,
         )
 
     def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:

@@ -33,7 +33,8 @@ from .block_table import BlockTable
 
 class InputBatch:
     def __init__(self, max_num_reqs: int, max_model_len: int, device: str,
-                 block_size: int, vocab_size: int | None = None) -> None:
+                 block_size: int, vocab_size: int | None = None,
+                 num_kv_cache_groups: int = 1) -> None:
         # 词表大小只用于一件事：判断 top_k 是不是"等于不筛"（见 _write_sampling_params）。
         # None = 不知道（假执行路径不采样）；此时任何 top_k > 0 都按"要筛"处理。
         self.vocab_size = vocab_size
@@ -66,9 +67,25 @@ class InputBatch:
         self.frequency_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
         self.repetition_penalties_cpu = torch.zeros(max_num_reqs, dtype=torch.float32)
 
-        # 本关只有一个 KV group，所以只有一张块表（vLLM 是每个 group 一张的列表）
+        # 80E.E2/81：每个 KV group 一张块表。`block_table` 的 group 0 仍是旧别名。
+        self.block_size = block_size
         max_num_blocks_per_req = (max_model_len + block_size - 1) // block_size
-        self.block_table = BlockTable(block_size, max_num_reqs, max_num_blocks_per_req, device)
+        self.block_table = BlockTable(
+            block_size, max_num_reqs, max_num_blocks_per_req, device,
+            num_groups=num_kv_cache_groups)
+
+    def set_num_kv_cache_groups(self, num_groups: int) -> None:
+        """KV 规格确定后重建块表（必须在任何请求入批之前）。
+
+        InputBatch 的构造发生在模型加载之前，那时还不知道 sliding/full 有几组。
+        """
+        if self.req_id_to_index:
+            raise RuntimeError("有请求在批里时不能改 KV group 数量")
+        if num_groups == self.block_table.num_groups:
+            return
+        self.block_table = BlockTable(
+            self.block_size, self.max_num_reqs, self.block_table.max_num_blocks_per_req,
+            self.device, num_groups=num_groups)
 
     # -------- 视图 --------
 
@@ -165,7 +182,7 @@ class InputBatch:
         # **引用**请求镜像的输出列表（不复制）：append 之后采样侧立刻可见
         self.req_output_token_ids[row_index] = request.output_token_ids
         self._write_sampling_params(row_index, request.sampling_params)
-        self.block_table.add_row(row_index, request.block_ids[0])
+        self.block_table.add_row(row_index, request.block_ids)
         return row_index
 
     def remove_request(self, req_id: str) -> None:

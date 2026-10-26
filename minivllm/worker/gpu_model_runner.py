@@ -40,6 +40,8 @@ from ..attention.backends.torch_sdpa import TorchAttentionBackend
 from ..compilation import (CUDAGraphLogging, CUDAGraphStat, CUDAGraphWrapper, graph_capture,
                            set_cudagraph_capturing_enabled)
 from ..config import CUDAGraphMode
+from ..core.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
+                                       KVCacheGroup, SlidingWindowSpec)
 from ..cudagraph_dispatcher import CudagraphDispatcher
 from ..forward_context import BatchDescriptor, set_forward_context
 from ..outputs import AsyncModelRunnerOutput, ModelRunnerOutput
@@ -235,8 +237,10 @@ class PreparedInputs:
     positions: torch.Tensor                 # [num_tokens]       绝对位置
     query_start_loc: torch.Tensor           # [num_reqs + 1]     每请求的 query 起止（前缀和）
     seq_lens: torch.Tensor                  # [num_reqs]         本轮之后每请求的上下文长度
-    slot_mapping: torch.Tensor              # [num_tokens]       KV 写到哪个物理槽位
+    slot_mapping: torch.Tensor              # [num_tokens]       group 0 的槽位（旧别名）
     logits_indices: torch.Tensor            # [num_reqs]         每请求最后一个 query 行
+    #: 80E.E2/81：全部 KV group 的槽位 `[num_groups, num_tokens]`；多组时必须用它。
+    slot_mappings: torch.Tensor | None = None
     sample_rows: list[int] = field(default_factory=list)   # 其中"可以采样"的 batch 行
     num_scheduled_tokens: list[int] = field(default_factory=list)
     # 投机批的形状（没有草稿时是 None）：行号怎么切、哪几行要 logits，都在它里面
@@ -264,7 +268,8 @@ class GPUModelRunner:
             block_size=self.block_size,
             # 词表大小来自 **config**（不是等模型加载完再问）：InputBatch 在 __init__ 就要建，
             # 而 top_k 的归一化规则要用它。假执行路径的 config 没有 hf_config → None
-            vocab_size=(vllm_config.model_config.hf_config or {}).get("vocab_size"))
+            vocab_size=(vllm_config.model_config.get_vocab_size()
+                        if vllm_config.model_config.hf_config else None))
         # 用**后端自己的** builder（而不是基类）：71 关的能力协商要读它声明的图能力档位
         # （`get_cudagraph_support()`），基类的档位是 NEVER（= 不能进图）。
         self.attn_metadata_builder = TorchAttentionBackend.get_builder_cls()(self.block_size)
@@ -301,6 +306,7 @@ class GPUModelRunner:
         # 本轮那份 attention 元数据（`_build_attn_metadata()` 每轮重设）。64 关的 cache-only
         # 提议者要用它的 `slot_mapping`（与 target 的 KV 同一份槽位），所以留一个引用。
         self.attn_metadata = None
+        self._attn_metadata_layer_groups: dict[str, int] = {}
         self.num_tokens_no_spec_gpu: torch.Tensor | None = None
         self.token_ids_gpu_tensor: torch.Tensor | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
@@ -420,6 +426,16 @@ class GPUModelRunner:
             proposer = DFlashProposer(config, self.vllm_config, self.device)
             proposer.load_model()
             return proposer
+        if config.use_gemma4_mtp():
+            # 80E.E2：Gemma4 assistant 有独立的加载/常量位置/Q-only 读路径，不能复用
+            # Qwen MTP 的 `EagleProposer`（那条会按同宽 embedding 与递增位置跑）。
+            from ..spec_decode.gemma4 import Gemma4Proposer
+
+            proposer = Gemma4Proposer(config, self.vllm_config, self.device)
+            proposer.load_model()
+            if self.model is not None:
+                proposer.setup_shared(self.model)
+            return proposer
         if config.use_eagle():
             # 63/65 关：EAGLE3 与 MTP 都走 `EagleProposer`（上游 `use_eagle()` 就把 mtp 算进来，
             # Runner 同样建 EagleProposer）——它们都是"吃 target hidden 的迭代提议"，
@@ -489,6 +505,70 @@ class GPUModelRunner:
                          f"'custom_class' / 'eagle' / 'eagle3' / 'extract_hidden_states' / "
                          f"'mtp' / 'medusa'）")
 
+    def get_kv_cache_spec(self) -> KVCacheConfig:
+        """V1 的 KV 分组推导（与 V2 `get_kv_cache_spec` 同口径）。
+
+        这里只推导 **target** 的组；Q-only 的 assistant 层在 `bind_kv_caches` 里映射到
+        源层 group，不拥有物理 cache。
+        """
+        if self.model is None:
+            raise RuntimeError("先 load_model() 再推导 KV 规格")
+        dtype = next(p.dtype for p in self.model.parameters() if p.is_floating_point())
+        groups: list[KVCacheGroup] = []
+        keys: dict[tuple, int] = {}
+        layer_to_group: dict[str, int] = {}
+        q_only: list[tuple[str, Attention]] = []
+        for name, layer in self._attention_layers().items():
+            if layer.q_only:
+                q_only.append((name, layer))
+                continue
+            sliding = layer.per_layer_sliding_window
+            key = (layer.head_size, layer.num_kv_heads, sliding)
+            if key not in keys:
+                spec = (SlidingWindowSpec(
+                            block_size=self.block_size,
+                            num_kv_heads=layer.num_kv_heads,
+                            head_size=layer.head_size,
+                            dtype=dtype,
+                            sliding_window=int(sliding),
+                        ) if sliding is not None else FullAttentionSpec(
+                            block_size=self.block_size,
+                            num_kv_heads=layer.num_kv_heads,
+                            head_size=layer.head_size,
+                            dtype=dtype,
+                        ))
+                keys[key] = len(groups)
+                groups.append(KVCacheGroup(spec, [name]))
+            else:
+                groups[keys[key]].layer_names.append(name)
+            gid = keys[key]
+            layer.kv_cache_group_id = gid
+            layer_to_group[name] = gid
+        target_layers = self._attention_layers()
+        for name, layer in q_only:
+            source = layer.kv_sharing_target_layer_name
+            if source is None or source not in layer_to_group:
+                raise KeyError(
+                    f"V1 target Q-only 层 {name!r} 的源层 {source!r} 不是非共享注意力层")
+            gid = layer_to_group[source]
+            layer.kv_cache_group_id = gid
+            layer_to_group[name] = gid
+            source_layer = target_layers[source]
+            if (layer.num_kv_heads, layer.head_size) != (
+                    source_layer.num_kv_heads, source_layer.head_size):
+                raise ValueError(
+                    f"V1 Q-only 层 {name!r} 与源层 {source!r} 的 KV 形状不一致")
+        self._attn_metadata_layer_groups = layer_to_group
+        return KVCacheConfig(
+            num_gpu_blocks=self.vllm_config.cache_config.num_gpu_blocks,
+            kv_cache_groups=groups,
+            enable_prefix_caching=bool(
+                self.vllm_config.cache_config.enable_prefix_caching),
+        )
+
+    def build_kv_cache_config(self) -> KVCacheConfig:
+        return self.get_kv_cache_spec()
+
     def initialize_kv_cache(self, kv_cache_config) -> dict[str, torch.Tensor]:
         """按 KV 规格分配物理缓存并**绑定到每个 Attention 层**。
 
@@ -498,19 +578,56 @@ class GPUModelRunner:
         """
         if self.model is None:
             raise RuntimeError("先 load_model() 再初始化 KV 缓存（需要模型的 dtype/qk 头数）")
-        if kv_cache_config.block_size != self.block_size:
-            raise ValueError(
-                f"KV 规格里的 block_size={kv_cache_config.block_size} 与 Runner 的 "
-                f"{self.block_size} 不一致：块大小决定 slot 怎么算，两边不同会出现"
-                f"'写进去的和读出来的不是同一块'这种最难查的错")
+        if not isinstance(kv_cache_config, KVCacheConfig):
+            raise TypeError(
+                "V1 的 initialize_kv_cache 需要 KVCacheConfig（含 KV group）；"
+                f"收到 {type(kv_cache_config).__name__}")
+        if any(size != self.block_size for size in kv_cache_config.block_sizes):
+            raise NotImplementedError(
+                f"V1 多 group 执行仍要求所有组 block_size 相同（Runner={self.block_size}，"
+                f"groups={kv_cache_config.block_sizes}）")
+        self.kv_cache_config = kv_cache_config
+        self.input_batch.set_num_kv_cache_groups(
+            kv_cache_config.num_kv_cache_groups)
+        self._attn_metadata_layer_groups = {}
+        target_layers = self._attention_layers()
         dtype = next(self.model.parameters()).dtype
         self.kv_caches = {}
-        for layer_name, layer in self._attention_layers().items():
-            cache = torch.zeros(2, kv_cache_config.num_gpu_blocks, self.block_size,
-                                layer.num_kv_heads, layer.head_size,
-                                dtype=dtype, device=self.device)
-            layer.kv_cache = cache
-            self.kv_caches[layer_name] = cache
+        for gid, group in enumerate(kv_cache_config.kv_cache_groups):
+            spec = group.kv_cache_spec
+            for layer_name in group.layer_names:
+                layer = target_layers[layer_name]
+                cache = torch.zeros(
+                    2, kv_cache_config.num_gpu_blocks, spec.block_size,
+                    spec.num_kv_heads, spec.head_size, dtype=dtype, device=self.device)
+                layer.kv_cache = cache
+                layer.kv_cache_group_id = gid
+                self.kv_caches[layer_name] = cache
+                self._attn_metadata_layer_groups[layer_name] = gid
+        for layer_name, layer in target_layers.items():
+            if not layer.q_only:
+                continue
+            source = layer.kv_sharing_target_layer_name
+            if source is None or source not in self.kv_caches:
+                raise KeyError(
+                    f"V1 target Q-only 层 {layer_name!r} 的源层 {source!r} 没有物理 cache")
+            source_layer = target_layers[source]
+            layer.bind_shared_kv_cache(
+                source_layer, self.kv_caches[source], draft_dtype=dtype)
+            layer.kv_cache_group_id = source_layer.kv_cache_group_id
+            self._attn_metadata_layer_groups[layer_name] = (
+                source_layer.kv_cache_group_id)
+        if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE and \
+                kv_cache_config.num_kv_cache_groups > 1:
+            raise NotImplementedError(
+                "V1 的 CUDA Graph 尚未按多 KV group 分区捕获；Gemma4 的 V1 接入先走 eager。"
+                "V2 已支持多组图，V1 图属后续收口，不能在这里静默用第 0 组块表捕获")
+        if self.speculative_config is not None and \
+                self.speculative_config.use_gemma4_mtp():
+            self.proposer.set_kv_config(kv_cache_config)
+            self.proposer.bind_kv_caches(target_layers, self.kv_caches)
+            for name, gid in self.proposer._draft_layer_groups.items():
+                self._attn_metadata_layer_groups[name] = gid
         # 64 关：cache-only 层的缓存是提议者自己分配的（与 draft 的 KV 同一套做法），但它必须
         # 与本轮的块规格一致——上游在 `initialize_kv_cache_tensors()` 之后调
         # `validate_same_kv_cache_group()`，本仓库在这里做对应的校验。
@@ -651,11 +768,12 @@ class GPUModelRunner:
                 self.input_batch.num_computed_tokens_cpu[row_index] = state.num_computed_tokens
                 # 块表也要改（只改 CachedRequestState 是不够的，模型读的是镜像）：不做的话，
                 # 请求长到新块之后 slot_mapping 会算出一个镜像里不存在的块号，
-                # `BlockTable.compute_slot_mapping` 当场报越界。本关只有一个 KV group，取第 0 组。
+                # `BlockTable.compute_slot_mapping` 当场报越界。多 KV group 时协议给的是
+                # 逐组 tuple，不能只取第 0 组。
                 if resumed:
-                    self.input_batch.block_table.set_row(row_index, state.block_ids[0])
+                    self.input_batch.block_table.set_row(row_index, state.block_ids)
                 elif new_block_ids is not None:
-                    self.input_batch.block_table.append_to_row(row_index, new_block_ids[0])
+                    self.input_batch.block_table.append_to_row(row_index, new_block_ids)
 
             if row_index is None:
                 # 6) 它不在批里（上一轮没被调度 / 刚从抢占恢复）：镜像要重建。
@@ -756,8 +874,9 @@ class GPUModelRunner:
         # 本轮之后每请求的上下文长度：进度快照 + 本轮算的
         seq_lens = (self.input_batch.num_computed_tokens_cpu[:num_reqs]
                     + torch.tensor(num_scheduled, dtype=torch.int64))
-        slot_mapping = self.input_batch.block_table.compute_slot_mapping(
+        slot_mappings = self.input_batch.block_table.compute_slot_mappings(
             num_reqs, positions, req_indices)
+        slot_mapping = slot_mappings[0]
         # 每请求最后一个 query 行：它的 hidden 才需要过 LM head
         logits_indices = query_start_loc[1:] - 1
         # 投机批：带草稿的请求要的是**它那 K+1 行**的 logits（b 一行 + K 枚草稿），
@@ -790,7 +909,9 @@ class GPUModelRunner:
 
         return PreparedInputs(input_ids=input_ids, positions=positions,
                               query_start_loc=query_start_loc, seq_lens=seq_lens,
-                              slot_mapping=slot_mapping, logits_indices=logits_indices,
+                              slot_mapping=slot_mapping,
+                              slot_mappings=slot_mappings,
+                              logits_indices=logits_indices,
                               sample_rows=sample_rows, num_scheduled_tokens=num_scheduled,
                               spec_metadata=spec_metadata)
 
@@ -1420,23 +1541,40 @@ class GPUModelRunner:
         return hidden_states
 
     def _build_attn_metadata(self, inputs: PreparedInputs) -> dict:
-        """一个 KV group 一份 metadata，同 group 的层**共用同一个对象**（vLLM 也这么分）。
-
-        层 → metadata 的对应关系全靠层名：模型层不知道块表怎么排，Runner 也不知道某一层
-        "特殊在哪"。
-        """
+        """每个 KV group 一份 metadata；Q-only/草稿层按映射取自己源组的对象。"""
         num_reqs = int(inputs.query_start_loc.shape[0]) - 1
         self.input_batch.block_table.commit_block_table(num_reqs)
-        metadata = self.attn_metadata_builder.build(
-            query_start_loc=inputs.query_start_loc.to(self.device),
-            seq_lens=inputs.seq_lens.to(self.device),
-            block_table=self.input_batch.block_table.gpu[:num_reqs],
-            slot_mapping=inputs.slot_mapping.to(self.device),
-            num_reqs=num_reqs)
-        # 64 关：本轮这份元数据留一个引用给 cache-only 提议者（它要的就是里面的 `slot_mapping`：
-        # 特征必须写进**与 target KV 相同的槽位**，"同源"是这一关的正确性前提）。
-        self.attn_metadata = metadata
-        return {layer_name: metadata for layer_name in self._attention_layers()}
+        slot_mappings = inputs.slot_mappings
+        if slot_mappings is None:
+            slot_mappings = inputs.slot_mapping.unsqueeze(0)
+        group_metadata: dict[int, object] = {}
+        for gid, group in enumerate(getattr(
+                self.kv_cache_config, "kv_cache_groups", [])):
+            spec = group.kv_cache_spec
+            table = self.input_batch.block_table.group_tables[gid]
+            group_metadata[gid] = self.attn_metadata_builder.build(
+                query_start_loc=inputs.query_start_loc.to(self.device),
+                seq_lens=inputs.seq_lens.to(self.device),
+                block_table=table.gpu[:num_reqs],
+                slot_mapping=slot_mappings[gid].to(self.device),
+                num_reqs=num_reqs,
+                sliding_window=getattr(spec, "sliding_window", None),
+            )
+        if not group_metadata:
+            raise RuntimeError("KV cache 未初始化：先 initialize_kv_cache()")
+        result = {}
+        for layer_name in self._attn_metadata_layer_groups:
+            gid = self._attn_metadata_layer_groups[layer_name]
+            if gid not in group_metadata:
+                raise KeyError(
+                    f"层 {layer_name!r} 映射到不存在的 KV group {gid}")
+            result[layer_name] = group_metadata[gid]
+        # 兼容不经过 initialize_kv_cache 的旧单测：没有映射时全部层用第 0 组。
+        if not result:
+            metadata = group_metadata[0]
+            result = {name: metadata for name in self._attention_layers()}
+        self.attn_metadata = group_metadata[0]
+        return result
 
     # -------- 执行侧的两步协议 --------
 

@@ -41,7 +41,15 @@ class UniProcExecutor:
     # -------- 上层要的 --------
 
     def get_cache_config(self):
-        """KV 池规格。57B 会由 Runner 实测/配置后报回；57A 直接用配置里的值。"""
+        """KV 池规格。57B 会由 Runner 实测/配置后报回；57A 直接用配置里的值。
+
+        80E.E2/81：模型加载后，Runner 才能按 Attention 层推导 KV group（sliding/full、
+        Q-only 源层）。有该入口时必须用它——拿 `CacheConfig` 会把多组压回单组。
+        """
+        runner = getattr(self.driver_worker, "model_runner", None)
+        build = getattr(runner, "build_kv_cache_config", None)
+        if build is not None:
+            return build()
         return self.vllm_config.cache_config
 
     def initialize_kv_cache(self, kv_cache_config) -> None:
