@@ -14,6 +14,9 @@ from .gemma4 import Gemma4Attention, Gemma4DecoderLayer, Gemma4ForCausalLM, Gemm
 from .medusa import Medusa, ResidualBlock
 from .qwen3 import Qwen2MLP, Qwen3Attention, Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3Model
 from .qwen3_mtp import Qwen3MTP, Qwen3MultiTokenPredictor
+from .step3p5 import (Step3p5Attention, Step3p5DecoderLayer, Step3p5ForCausalLM,
+                      Step3p5MLP, Step3p5MoE, Step3p5Model, Step3p5MTP,
+                      Step3p5MTPLayer, Step3p5MultiTokenPredictor, Step3p5SharedHead)
 from .qwen3_eagle3 import Eagle3Attention, Eagle3DecoderLayer, Eagle3ForCausalLM, Eagle3Model
 from .registry import get_model_class, register_model
 
@@ -22,6 +25,9 @@ __all__ = ["Qwen3ForCausalLM", "Qwen3Model", "Qwen3DecoderLayer", "Qwen3Attentio
            "ExtractHiddenStatesModel", "CacheOnlyAttentionLayer", "CacheOnlyAttentionBackend",
            "CacheOnlyAttentionMetadata",
            "Qwen3MTP", "Qwen3MultiTokenPredictor",
+           "Step3p5ForCausalLM", "Step3p5Model", "Step3p5DecoderLayer", "Step3p5Attention",
+           "Step3p5MLP", "Step3p5MoE", "Step3p5MTP", "Step3p5MTPLayer",
+           "Step3p5MultiTokenPredictor", "Step3p5SharedHead",
            "Gemma4MTP", "Gemma4MultiTokenPredictor", "Gemma4MTPDecoderLayer",
            "Gemma4MTPAttention", "Gemma4MTPMaskedEmbedder", "Gemma4MLP",
            "Gemma4ForCausalLM", "Gemma4TextModel", "Gemma4DecoderLayer",

@@ -40,6 +40,14 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
         from .gemma4.speculator import Gemma4Speculator
 
         return Gemma4Speculator(vllm_config, device)
+    elif speculative_config.use_step3p5_mtp():
+        # 80F 先接 V1（冻结 `Step3p5MTPProposer` 的优先路径）。V2 的 Step3p5
+        # 专用 speculator 还没有实现；不能落到下面的通用 multi-module 分支——
+        # 那条按 Qwen3 MTP 的假设建 metadata，不会按 group 读块表，也不会传
+        # `spec_step_idx`，会静默产出错误草稿。
+        raise NotImplementedError(
+            "V2 的 Step3p5 MTP 尚未实现（80F 先接 V1 的 Step3p5MTPProposer）；"
+            "请用 VLLM_USE_V2_MODEL_RUNNER=0 走 V1，不能落到通用 multi-module MTP 路径")
     elif speculative_config.use_multi_module_mtp():
         # 80B/80C：单卡、纯文本、支持整段 K 步循环 CUDA Graph 的
         # MultiModuleMTPSpeculator。Gemma4 已在上面明确拒绝；Step3p5、稀疏索引

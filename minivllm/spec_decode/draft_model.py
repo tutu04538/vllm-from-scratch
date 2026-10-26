@@ -1038,6 +1038,10 @@ class SpecDecodeBaseProposer:
 
     # -------- 采样草稿 --------
 
+    def _compute_draft_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        """把选中的 hidden 行过 LM head；Step3p5 覆盖它来传 `spec_step_idx`。"""
+        return self.model.compute_logits(hidden)
+
     def _sample_draft_tokens(self, hidden: torch.Tensor, row_refs: list[tuple[str, int]],
                              input_batch, drafts: dict, probs: dict) -> None:
         """对给定行各采一枚草稿，同时记下它来自的分布（q）。
@@ -1048,7 +1052,7 @@ class SpecDecodeBaseProposer:
         """
         # **先过 LM head**：hidden 是隐藏态，采样要的是词表上的 logits（与 Runner 同一条路：
         # `compute_logits` 只对需要的行做词表 GEMM）
-        logits = self.model.compute_logits(
+        logits = self._compute_draft_logits(
             hidden[torch.tensor([row for _, row in row_refs],
                                 dtype=torch.int64, device=hidden.device)]).to(torch.float32)
         if self.vocab_mapping is not None:

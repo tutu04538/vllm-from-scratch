@@ -9,8 +9,8 @@
     logits_processor.py   词表 GEMM 的收尾：截断词表切片 + logit 缩放（66 关的 Medusa 用）
 """
 
-from .activation import SiluAndMul
-from .layernorm import RMSNorm
+from .activation import SiluAndMul, SwigluStepAndMul
+from .layernorm import GemmaRMSNorm, RMSNorm
 from .linear import (ColumnParallelLinear, MergedColumnParallelLinear, ParallelLMHead,
                      QKVParallelLinear, RowParallelLinear, VocabParallelEmbedding)
 from .logits_processor import LogitsProcessor
@@ -18,4 +18,4 @@ from .rotary_embedding import RotaryEmbedding
 
 __all__ = ["QKVParallelLinear", "MergedColumnParallelLinear", "ColumnParallelLinear",
            "RowParallelLinear", "VocabParallelEmbedding", "ParallelLMHead", "RMSNorm",
-           "RotaryEmbedding", "SiluAndMul", "LogitsProcessor"]
+           "RotaryEmbedding", "SiluAndMul", "LogitsProcessor", "GemmaRMSNorm", "SwigluStepAndMul"]

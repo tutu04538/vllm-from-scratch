@@ -646,6 +646,15 @@ class SpeculativeConfig:
         """是否为原生 MTP（权重在 target checkpoint 里）。"""
         return self.method == "mtp"
 
+    def use_step3p5_mtp(self) -> bool:
+        """是否为 Step3p5 的原生 MTP（80F；权重在 target checkpoint 里）。"""
+        return (
+            self.method == "mtp"
+            and self.draft_model_config is not None
+            and str((self.draft_model_config.hf_config or {}).get(
+                "model_type", "")) == "step3p5_mtp"
+        )
+
     def use_gemma4_mtp(self) -> bool:
         """是否为 Gemma4 assistant 的 Q-only MTP（80D 只做映射，80E 才接模型结构）。
 
@@ -761,9 +770,23 @@ class SpeculativeConfig:
             raise ValueError(
                 f"num_speculative_tokens:{num_drafts} 必须能被 n_predict={n_predict} 整除"
                 f"（MTP 模块复用：每枚草稿都要落到某一个 MTP 层上）")
-        hf_config = {**target_hf,
-                     "n_predict": n_predict,
-                     "architectures": ["Qwen3MTPModel"]}
+        target_type = str(target_hf.get("model_type", ""))
+        target_arch = (target_hf.get("architectures") or [""])[0]
+        is_step3p5 = (target_type in ("step3p5", "step3p7")
+                      or target_arch in ("Step3p5ForCausalLM",
+                                         "Step3p7ForConditionalGeneration"))
+        if is_step3p5:
+            # 上游 `hf_config_override` 把 Step3p5 target 的 model_type 改成
+            # `step3p5_mtp`、architectures 改成 `Step3p5MTP`。模型目录仍是 target
+            # checkpoint（MTP 权重就在里面）。
+            hf_config = {**target_hf,
+                         "model_type": "step3p5_mtp",
+                         "n_predict": n_predict,
+                         "architectures": ["Step3p5MTP"]}
+        else:
+            hf_config = {**target_hf,
+                         "n_predict": n_predict,
+                         "architectures": ["Qwen3MTPModel"]}
         if self.parallel_drafting:
             # 72 关：MTP 的 draft 配置是**从 target 派生**的（没有用户给的 draft 目录），
             # 所以并行开关要在这里补进 hf 配置，模型才会注册 `mask_hidden` buffer

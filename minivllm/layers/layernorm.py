@@ -44,3 +44,32 @@ class RMSNorm(nn.Module):
         if residual is None:
             return out
         return out, residual
+
+
+class GemmaRMSNorm(RMSNorm):
+    """Gemma 系 RMSNorm：`x * (1 + w)`，权重零初始化（对应上游 `GemmaRMSNorm`）。
+
+    与 `RMSNorm` 的 `x * w` 差一个 1。Step3p5 的 checkpoint（含 MTP 的 enorm/hnorm/
+    shared_head.norm）按零中心存权重，用普通 `RMSNorm` 会把整层乘成 0——不会报错，只会
+    让输出全错。这里把差异做成一个明确的类，不靠调用方记得传参数。
+    """
+
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
+        super().__init__(hidden_size, eps=eps, has_weight=True)
+        with torch.no_grad():
+            self.weight.zero_()
+
+    def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
+        if residual is not None:
+            x = x + residual
+            residual = x
+        input_dtype = x.dtype
+        x32 = x.to(torch.float32)
+        variance = x32.pow(2).mean(-1, keepdim=True)
+        out = x32 * torch.rsqrt(variance + self.variance_epsilon)
+        # 上游先把 x 乘上 (1+w) 再回原 dtype；这里保持 fp32 乘法后再 cast。
+        out = out * (self.weight.float() + 1.0)
+        out = out.to(input_dtype)
+        if residual is None:
+            return out
+        return out, residual

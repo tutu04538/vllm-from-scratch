@@ -436,6 +436,22 @@ class GPUModelRunner:
             if self.model is not None:
                 proposer.setup_shared(self.model)
             return proposer
+        if config.uses_mtp() and config.draft_model_config is None:
+            # MTP 的权重在 target 的 checkpoint 里；先派生 draft 配置，按 model_type
+            # 区分 Step3p5 / Qwen3 两条真实路径。
+            config = replace(
+                config,
+                draft_model_config=config.derive_mtp_draft_config(
+                    self.vllm_config.model_config))
+            self.speculative_config = config
+        if config.use_step3p5_mtp():
+            # 80F：Step3p5 MTP 有 per-group block table / slot mapping 和分步 head，
+            # 不能走通用 `EagleProposer` 的单 metadata 路径。
+            from ..spec_decode.step3p5 import Step3p5MTPProposer
+
+            proposer = Step3p5MTPProposer(config, self.vllm_config, self.device)
+            proposer.load_model()
+            return proposer
         if config.use_eagle():
             # 63/65 关：EAGLE3 与 MTP 都走 `EagleProposer`（上游 `use_eagle()` 就把 mtp 算进来，
             # Runner 同样建 EagleProposer）——它们都是"吃 target hidden 的迭代提议"，
@@ -626,6 +642,12 @@ class GPUModelRunner:
             raise NotImplementedError(
                 "V1 的 CUDA Graph 尚未按多 KV group 分区捕获；Gemma4 的 V1 接入先走 eager。"
                 "V2 已支持多组图，V1 图属后续收口，不能在这里静默用第 0 组块表捕获")
+        if self.speculative_config is not None and \
+                self.speculative_config.use_step3p5_mtp():
+            self.proposer.set_kv_config(kv_cache_config)
+            self.proposer.bind_kv_caches(target_layers, self.kv_caches)
+            for name, gid in self.proposer._draft_layer_groups.items():
+                self._attn_metadata_layer_groups[name] = gid
         if self.speculative_config is not None and \
                 self.speculative_config.use_gemma4_mtp():
             self.proposer.set_kv_config(kv_cache_config)

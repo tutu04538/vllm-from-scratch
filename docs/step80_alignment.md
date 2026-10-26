@@ -1,8 +1,8 @@
-# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1 / 80E.E2）
+# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1 / 80E.E2 / 80F）
 
 > 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复**、
 > **80C 多模块整段 CUDA Graph/采样生命周期**、**80D Q-only 共享 KV 的映射与只读
-> 契约**、**80E.E1 Gemma4 assistant 模型层** 与 **80E.E2 的 target 架构/多 group/
+> 契约**、**80E.E1 Gemma4 assistant 模型层**、**80E.E2 的 target 架构/多 group/
 > V1/V2 接线**；80F–80H 未开始。
 >
 > **E2 已接真实权重**：本机从 HF 镜像下载并固定
@@ -908,8 +908,8 @@ PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
   tests/step80/test_gemma4_real_integration.py -q     # 12 passed
 PATH=... $PY -m pytest tests/step81 -q  # 7 passed
-PATH=... $PY -m pytest tests/step80 -q                      # 110 passed
-PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1085 passed, 217.51s
+PATH=... $PY -m pytest tests/step80 -q                      # 121 passed
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1096 passed, 161.34s
 ```
 
 ### 12.7 差异与边界
@@ -933,3 +933,108 @@ PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1085 passed, 217
 7. **centroid CUDA Graph**：V1 已捕获 1/2/4/.../64 行 `get_top_tokens` 小图；V2 仍直接
    调用 `get_top_tokens`，没有捕获上游那种 centroid 小图。这是性能项，不是正确性项。
 8. **未跑性能矩阵**：不声称任何加速比或真实草稿接受率。
+
+---
+
+## 13. 80F：Step3p5 多 group MTP 提议与真实模型边界
+
+80F 只做 Step3p5 的 **MTP 提议路径**，不是把 196B target 塞进本机。冻结上游入口：
+
+- `vllm/v1/spec_decode/step3p5.py::Step3p5MTPProposer(EagleProposer)`
+- `vllm/model_executor/models/step3p5_mtp.py::Step3p5MTP`
+- `vllm/model_executor/models/step3p5.py::Step3p5DecoderLayer`
+
+### 13.1 实现的文件与职责
+
+| 本项目 | 冻结上游 | 状态 |
+|---|---|---|
+| `minivllm/models/step3p5.py::Step3p5Attention` | `Step3p5Attention` | GQA、qk-norm、partial RoPE、逐层 sliding/full、head-wise gate、`attention_other_setting` |
+| `...::Step3p5DecoderLayer` | `Step3p5DecoderLayer` | 显式 residual、GemmaRMSNorm、dense MLP / MoE 分支 |
+| `...::Step3p5ForCausalLM` | `Step3p5ForCausalLM` | 文本 target 子集；真实 196B 权重不加载 |
+| `...::Step3p5MTP` | `Step3p5MTP` | 3 个 MTP 层（绝对层号 45–47）、每层自己的 `shared_head`、`spec_step_idx % num_mtp_layers` 选层 |
+| `minivllm/spec_decode/step3p5.py::Step3p5MTPProposer` | `Step3p5MTPProposer` | V1 per-group block table / slot mapping / metadata，分步 head |
+| `minivllm/layers/layernorm.py::GemmaRMSNorm` | `GemmaRMSNorm` | `x*(1+w)`、零中心权重；Step3p5 checkpoint 必需 |
+| `minivllm/layers/activation.py::SwigluStepAndMul` | `SwigluStepAndMul` | MoE 的 `silu(gate).clamp(max=limit) * up.clamp(-limit,limit)` |
+| `minivllm/models/step3p5.py::Step3p5MoE` | `FusedMoE` 的语义子集 | router + top-k + shared expert；**Python 教学实现，不是 fused kernel** |
+
+### 13.2 小例子（需求 80F §3）
+
+block_size=4、position=5：
+
+| group | 逻辑第 1 块的物理块号 | slot |
+|---|---:|---:|
+| 0 | 7 | `7*4 + 5%4 = 29` |
+| 1 | 11 | `11*4 + 5%4 = 45` |
+
+`Step3p5MTPProposer._prepare_group_slot_mappings()` 对每组用自己的块表算，测试
+`test_proposer_group_slot_mapping_uses_each_table` 直接钉住 29/45。
+`test_proposer_forward_maps_each_group_metadata_separately` 用两个不同块表的 fake
+builder 证明两层拿到的是不同 metadata，不是 group0 广播。
+
+### 13.3 分步 head
+
+`num_mtp_layers=2`、K=4 时：
+
+```text
+step 0 -> model.layers.45 / shared_head 45
+step 1 -> model.layers.46 / shared_head 46
+step 2 -> model.layers.45
+step 3 -> model.layers.46
+```
+
+`Step3p5MTP.compute_logits(hidden, spec_step_idx)` 选层；`Step3p5MTPProposer`
+的第一遍传 0，自回归第 k 步传 k。`test_v1_step3p5_spec_matches_plain_on_tiny_checkpoint`
+覆盖 K=1/2/4（K=4 即跨模块复用），投机 greedy 与非投机逐 token 相同。
+
+### 13.4 测试
+
+新增 4 个文件：
+
+```text
+tests/step80/test_step3p5_model_alignment.py   4 passed
+tests/step80/test_step3p5_group_metadata.py    3 passed
+tests/step80/test_step3p5_moe.py               3 passed
+tests/step80/test_step3p5_real_weights.py      1 passed
+```
+
+模型对齐用同一份 tiny state：
+
+- 本实现与冻结 `Step3p5MTP` 的 hidden/logits **逐值相等**（rtol=0, atol=0），
+  step 0/1 都相同；
+- 权重名路由：`q_proj/k_proj/v_proj → qkv_proj`、`gate/up → gate_up_proj`、
+  `transformer.shared_head.output → shared_head.head`；
+- attention core 在差分中替换为 identity；真实 cache 读取由 V1 端到端覆盖。
+
+真实 MTP 子集（权重不入库）：
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com python benchmarks/download_step3p5_mtp.py   --output models/Step-3.5-Flash-MTP
+```
+
+```text
+models/Step-3.5-Flash-MTP/model.safetensors   5.6 GB（5,912,264,080 B）
+Step3p5 MTP 层 45–47 + embed_tokens，共 52 tensors
+sha256 febb01166743cd069245632892b8c74ea47579a27fe8b6bf53690bd28531239e
+```
+
+下载器只发 HTTP Range 取 52 个 tensor；服务器不支持 206 时明确失败，不会退化成
+344GB 全量。
+
+加载后核对真实结构：96 Q heads / 8 KV heads / head_dim 128、
+`qkv_proj=(14336,4096)`、`shared_head=(128896,4096)`，2-token bf16 前向 hidden/logits
+全部 finite。
+
+### 13.5 明确边界
+
+1. **没有真实 target 端到端**：官方 target 196B/344GB，本机 25GB GPU 装不下；
+   80F 只做 MTP 子集的加载/前向与 tiny target 端到端。
+2. **MoE 不是 kernel 级对齐**：`Step3p5MoE` 是 Python 逐 expert 教学实现；
+   真实 196B target 的 fused expert 权重名没有映射，不声称已支持真实 target。
+3. **full-attention 的 llama3 RoPE scaling 未实现**：真实 MTP 三层都是 sliding，
+   `yarn_only_types=["full_attention"]` 使 scaling 不进 MTP；真实 target 的 full 层
+   会在初始化时明确报错，不静默用错 RoPE。
+4. **V2 明确拒绝**：80F 先接 V1；V2 落到通用 multi-module 会按 Qwen3 MTP 假设建
+   metadata、不传 `spec_step_idx`，所以 `init_speculator` 直接
+   `NotImplementedError`，不静默降级。
+5. **MoE target / Mamba / 多模态**不在 80F；`Step3p5ForCausalLM` 只是 tiny 测试与
+   结构对齐用。
