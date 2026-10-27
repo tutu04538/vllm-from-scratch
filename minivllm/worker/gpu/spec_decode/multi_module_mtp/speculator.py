@@ -842,11 +842,11 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         target_input_buffers: InputBuffers,
         target_build_attn_metadata,
     ) -> None:
-        """接上块表、target 输入缓冲与草稿自己的注意力元数据构造器。
+        """接上块表、target 输入缓冲与草稿自己的注意力组。
 
-        本仓库只有一个注意力后端、一组层；这里建一个 `AttentionGroup`，层名就是
-        runner 在 `load_model()` 后填好的 `draft_attn_layer_names`（两个 MTP 模块的
-        Attention 层都在里面，共用同一份 metadata）。
+        与 80A–C 的单组版本不同：Step3p5/多 KV group 的草稿层会按
+        `module.kv_cache_group_id` 分组，每个 target group 建一个 `AttentionGroup`。
+        这与上游 `init_attn_backend(... active_layer_names=...)` 的职责一致。
         """
         super().set_attn(
             block_tables, target_input_buffers, target_build_attn_metadata
@@ -857,17 +857,39 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
                 "再设置 draft_attn_layer_names，最后调 set_attn()"
             )
         from .....attention.backends.torch_sdpa import TorchAttentionBackend
+        from .....attention.layer import Attention
 
-        builder = TorchAttentionBackend.get_builder_cls()(
-            self.vllm_config.cache_config.block_size
-        )
-        self.attn_groups = [[
-            AttentionGroup(
+        kv_config = getattr(self, "kv_cache_config", None)
+        by_group: dict[int, list[str]] = {}
+        self.draft_layer_modules: dict[str, Attention] = {}
+        for _, module in self.model.named_modules():
+            if not isinstance(module, Attention):
+                continue
+            if module.layer_name not in self.draft_attn_layer_names:
+                continue
+            self.draft_layer_modules[module.layer_name] = module
+            group_id = (0 if module.kv_cache_group_id is None
+                        else int(module.kv_cache_group_id))
+            by_group.setdefault(group_id, []).append(module.layer_name)
+        if not by_group:
+            raise ValueError(
+                "草稿模型里没有可建组的 Attention 层：draft_attn_layer_names "
+                "与模块层名不一致")
+        builder_cls = TorchAttentionBackend.get_builder_cls()
+        groups = []
+        for group_id in sorted(by_group):
+            spec = None
+            if kv_config is not None and group_id < len(kv_config.kv_cache_groups):
+                spec = kv_config.kv_cache_groups[group_id].kv_cache_spec
+            groups.append(AttentionGroup(
                 backend=TorchAttentionBackend,
-                layer_names=list(self.draft_attn_layer_names),
-                metadata_builders=[builder],
-            )
-        ]]
+                layer_names=by_group[group_id],
+                metadata_builders=[
+                    builder_cls(self.vllm_config.cache_config.block_size)],
+                kv_cache_group_id=group_id,
+                kv_cache_spec=spec,
+            ))
+        self.attn_groups = [groups]
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         """建多模块草稿的图管理器（对应冻结 `init_cudagraph_manager()`）。
@@ -1141,46 +1163,60 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         block_table: torch.Tensor | None = None,
         slot_mapping: torch.Tensor | None = None,
     ) -> dict[str, Any] | None:
-        """为 packed query 建**一份**metadata。
+        """为 packed query 建**按 KV group 分组**的 metadata。
 
-        eager 路径传 `uniform_query_len=None`，让 Torch 后端走逐请求 `_forward_generic`；
-        图捕获路径必须把图的形状固定成 Python int（统一 decode 时是 K+1，混合 FULL
-        桶则用 `max_query_len`），否则捕获窗口里会落到数据相关路径。
-
-        `num_reqs_padded` / `num_tokens_padded` 只在图桶比真实批大时传入；对应的
-        padding 行由调用方写 `seq_lens=0`、slot=-1 和块表 0。
+        `block_table` / `slot_mapping` 参数只保留给单组调用点/测试做显式覆盖；
+        正常路径按 `attn_group.kv_cache_group_id` 从常驻块表和槽位里取对应组。
         """
         if not self.attn_groups:
             return None
         reqs = num_reqs if num_reqs_padded is None else num_reqs_padded
         tokens = num_tokens if num_tokens_padded is None else num_tokens_padded
-        builder = self.attn_groups[0][0].get_metadata_builder()
-        if block_table is None:
-            block_table = self.block_tables.input_block_tables[0][:reqs]
-        if slot_mapping is None:
-            slot_mapping = self.block_tables.slot_mappings[0][:tokens]
-        metadata = builder.build(
-            query_start_loc=self.input_buffers.query_start_loc[: reqs + 1],
-            seq_lens=self.input_buffers.seq_lens[:reqs],
-            block_table=block_table,
-            slot_mapping=slot_mapping,
-            num_reqs=reqs,
-            uniform_query_len=uniform_query_len,
-            max_query_len=max_query_len,
-        )
-        return {name: metadata for name in self._draft_layer_names()}
+        if not hasattr(self, "draft_layer_modules"):
+            self.draft_layer_modules = {
+                module.layer_name: module
+                for _, module in self.model.named_modules()
+                if hasattr(module, "layer_name")
+                and module.layer_name in self.draft_attn_layer_names
+            }
+        result: dict[str, Any] = {}
+        for groups in self.attn_groups:
+            for attn_group in groups:
+                group_id = (0 if attn_group.kv_cache_group_id is None
+                            else int(attn_group.kv_cache_group_id))
+                builder = attn_group.get_metadata_builder()
+                group_block_table = (
+                    block_table if block_table is not None and group_id == 0
+                    else self.block_tables.input_block_tables[group_id][:reqs]
+                )
+                group_slot_mapping = (
+                    slot_mapping if slot_mapping is not None and group_id == 0
+                    else self.block_tables.slot_mappings[group_id][:tokens]
+                )
+                spec = attn_group.kv_cache_spec
+                sliding = getattr(spec, "sliding_window", None)
+                if sliding is None and attn_group.layer_names:
+                    module = self.draft_layer_modules.get(attn_group.layer_names[0])
+                    if module is not None:
+                        sliding = module.per_layer_sliding_window
+                metadata = builder.build(
+                    query_start_loc=self.input_buffers.query_start_loc[: reqs + 1],
+                    seq_lens=self.input_buffers.seq_lens[:reqs],
+                    block_table=group_block_table,
+                    slot_mapping=group_slot_mapping,
+                    num_reqs=reqs,
+                    uniform_query_len=uniform_query_len,
+                    max_query_len=max_query_len,
+                    sliding_window=sliding,
+                )
+                for name in attn_group.layer_names:
+                    result[name] = metadata
+        return result
 
     def _draft_attn_metadata_for_capture(
         self, input_batch: InputBatch
     ) -> dict[str, Any]:
-        """捕获期 metadata：dummy 输入由 `prepare_inputs_to_capture()` 写进常驻缓冲。
-
-        统一 decode 桶的每请求行数就是 `input_batch.uniform_query_len`（K+1）；
-        混合 FULL 桶的 dummy 批可能不整齐，用 `max_query_len` 让 Torch 后端的
-        `_forward_varlen_padded` 仍然有固定上界。两种情况都不调用
-        `build_for_cudagraph_capture()`：本仓库的 Torch 图路径按 forward context 的
-        runtime mode 分流，不靠把 seq_lens 填 1 来选 kernel。
-        """
+        """捕获期 metadata：dummy 输入已写进常驻缓冲，按每个 group 分别建。"""
         uniform = input_batch.uniform_query_len
         max_query = None if uniform is not None else int(input_batch.max_query_len)
         metadata = self._build_draft_attn_metadata(
@@ -1188,17 +1224,14 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
             input_batch.num_tokens,
             uniform_query_len=uniform,
             max_query_len=max_query,
-            block_table=self.block_tables.input_block_tables[0][
-                : input_batch.num_reqs
-            ],
-            slot_mapping=self.block_tables.slot_mappings[0][: input_batch.num_tokens],
         )
         assert metadata is not None
         return metadata
 
     def _draft_layer_names(self) -> list[str]:
         if self.attn_groups:
-            return list(self.attn_groups[0][0].layer_names)
+            return [name for groups in self.attn_groups
+                    for group in groups for name in group.layer_names]
         return list(self.draft_attn_layer_names)
 
     @torch.inference_mode()
@@ -1301,6 +1334,7 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
                 self.seeds,
                 self.current_draft_step,
                 self.draft_logits,
+                spec_step_idx=step,
             )
             self.draft_tokens[:num_reqs, step] = draft_tokens
 

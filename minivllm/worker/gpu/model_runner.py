@@ -403,6 +403,9 @@ class GPUModelRunner:
 
         if self.speculator is not None:
             self._allocate_draft_kv_caches(kv_cache_config)
+            # 多 group 的草稿注意力组需要知道 target 组的 spec（滑窗/形状）；
+            # EAGLE/MTP 单组路径不用它，但统一挂上是无副作用的。
+            self.speculator.kv_cache_config = kv_cache_config
             # set_attn 必须在草稿层完成 group 绑定之后：它按 `kv_cache_group_id`
             # 建草稿的注意力组。物理 cache 已就绪，元数据构造器只是引用块表。
             if isinstance(self.speculator, DraftModelSpeculator):
@@ -606,10 +609,23 @@ class GPUModelRunner:
                     f"Q-only 共享映射未接线时不能给它分配独立 KV：那会静默读错上下文。"
                     f"先由 speculator 的映射建立源层，再初始化 KV cache。"
                 )
-            if len(kv_cache_config.kv_cache_groups) != 1:
-                raise NotImplementedError(
-                    f"非 Q-only 草稿层 {name!r} 在多个 target KV group 下没有明确的归属："
-                    f"本仓库只允许 Q-only 草稿（读取 target 源层）或单组 target 的普通草稿")
+            # 非 Q-only 草稿层：按 (head_size, kv_heads, sliding_window) 匹配 target
+            # 的 KV group。Step3p5 的 MTP 层可能落在 sliding group 而不是 group0；
+            # 不能像单组 Qwen 那样直接写死 0。
+            key = (module.head_size, module.num_kv_heads,
+                   module.per_layer_sliding_window)
+            matches = [
+                gid for gid, group in enumerate(kv_cache_config.kv_cache_groups)
+                if (group.kv_cache_spec.head_size == key[0]
+                    and group.kv_cache_spec.num_kv_heads == key[1]
+                    and getattr(group.kv_cache_spec, "sliding_window", None) == key[2])
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"非 Q-only 草稿层 {name!r} 的 KV 形状 {key} 在 target 的 "
+                    f"{len(kv_cache_config.kv_cache_groups)} 个 group 中匹配到 "
+                    f"{matches}：必须恰好匹配一个 group（否则 metadata 会用错块表）")
+            gid = matches[0]
             cache = torch.zeros(
                 2,
                 kv_cache_config.num_gpu_blocks,
@@ -620,8 +636,8 @@ class GPUModelRunner:
                 device=self.device,
             )
             module.kv_cache = cache
-            module.kv_cache_group_id = 0
-            self._attn_metadata_layer_groups[module.layer_name] = 0
+            module.kv_cache_group_id = gid
+            self._attn_metadata_layer_groups[module.layer_name] = gid
             names.add(module.layer_name)
         if not names:
             raise ValueError(

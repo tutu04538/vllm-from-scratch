@@ -201,8 +201,13 @@ class DraftModelSpeculator(BaseSpeculator):
         # during sampling to prevent writing stale values to draft logits.
         self.idx_mapping[num_reqs:].fill_(-1)
 
-    def _greedy_sample_draft(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        logits = self.model.compute_logits(hidden_states)
+    def _greedy_sample_draft(self, hidden_states: torch.Tensor,
+                             spec_step_idx: int = 0) -> torch.Tensor:
+        if getattr(self.model, "supports_spec_step_logits", False):
+            logits = self.model.compute_logits(
+                hidden_states, spec_step_idx=spec_step_idx)
+        else:
+            logits = self.model.compute_logits(hidden_states)
         return logits.argmax(dim=-1)
 
     def sample_draft(
@@ -214,11 +219,16 @@ class DraftModelSpeculator(BaseSpeculator):
         seeds: torch.Tensor,
         draft_step: torch.Tensor,
         draft_logits: torch.Tensor | None,
+        spec_step_idx: int = 0,
     ) -> torch.Tensor:
         if draft_logits is not None:
             from ..sample.gumbel import gumbel_sample
 
-            logits = self.model.compute_logits(hidden_states)
+            if getattr(self.model, "supports_spec_step_logits", False):
+                logits = self.model.compute_logits(
+                    hidden_states, spec_step_idx=spec_step_idx)
+            else:
+                logits = self.model.compute_logits(hidden_states)
             # NOTE(woosuk): We must add 1 to the positions to match the Gumbel noise
             # used for draft and target sampling.
             return gumbel_sample(
@@ -232,4 +242,4 @@ class DraftModelSpeculator(BaseSpeculator):
                 logits_cache_col=draft_step,
                 use_fp64=self.use_fp64_gumbel,
             )
-        return self._greedy_sample_draft(hidden_states)
+        return self._greedy_sample_draft(hidden_states, spec_step_idx=spec_step_idx)

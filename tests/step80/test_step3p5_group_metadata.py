@@ -122,9 +122,16 @@ def test_step3p5_draft_config_and_v2_boundary():
         speculative_config=SpeculativeConfig(
             method="mtp", num_speculative_tokens=2, draft_model_config=draft),
         compilation_config=CompilationConfig(cudagraph_mode="none"))
-    try:
-        init_speculator(vc, torch.device("cpu"))
-    except NotImplementedError as exc:
-        assert "Step3p5" in str(exc) and "V1" in str(exc)
-    else:
-        raise AssertionError("V2 Step3p5 必须明确拒绝，不能落到通用 multi-module 路径")
+    speculator = init_speculator(vc, torch.device("cpu"))
+    assert type(speculator).__name__ == "MultiModuleMTPSpeculator"
+    # K=1 时工厂按通用 MTP 路径选 MTPSpeculator（不是 multi-module）。
+    k1 = SpeculativeConfig(
+        method="mtp", num_speculative_tokens=1, draft_model_config=draft)
+    vc1 = VllmConfig(
+        model_config=target,
+        cache_config=CacheConfig(block_size=4, num_gpu_blocks=16),
+        scheduler_config=SchedulerConfig(max_num_seqs=1, max_num_batched_tokens=16),
+        device_config=DeviceConfig(device="cpu"),
+        speculative_config=k1,
+        compilation_config=CompilationConfig(cudagraph_mode="none"))
+    assert type(init_speculator(vc1, torch.device("cpu"))).__name__ == "MTPSpeculator"

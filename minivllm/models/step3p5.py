@@ -432,6 +432,8 @@ class Step3p5MultiTokenPredictor(nn.Module):
 
 @register_model("Step3p5MTP")
 class Step3p5MTP(nn.Module):
+    supports_spec_step_logits = True
+
     packed_modules_mapping = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
         "gate_up_proj": ["gate_proj", "up_proj"],

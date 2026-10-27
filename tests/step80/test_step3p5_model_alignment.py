@@ -288,3 +288,63 @@ def test_v1_step3p5_spec_matches_plain_on_tiny_checkpoint(tmp_path, monkeypatch)
         assert runner.proposer.num_drafts_proposed > 0
         # MTP 层 4=sliding、5=full，必须映射到两个不同的 target group。
         assert set(runner.proposer._draft_layer_groups.values()) == {0, 1}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="V2 需要 CUDA + UVA")
+def test_v2_step3p5_spec_matches_plain_and_graph(tmp_path, monkeypatch):
+    """V2：K=1 走 MTPSpeculator，K=2/4 走 MultiModuleMTPSpeculator；eager/graph 均无损。"""
+    import json
+    from minivllm import (CacheConfig, DeviceConfig, LLMEngine, ModelConfig,
+                          SamplingParams, SchedulerConfig, SpeculativeConfig,
+                          UniProcExecutor, VllmConfig, Worker)
+    from minivllm.config import CompilationConfig
+
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
+    monkeypatch.setenv("VLLM_WSL2_ENABLE_PIN_MEMORY", "1")
+    state = _make_state()
+    save_file(state, str(tmp_path / "model.safetensors"))
+    (tmp_path / "config.json").write_text(json.dumps(CFG, indent=2))
+
+    def run(k: int, graph: bool):
+        target = ModelConfig(model=str(tmp_path), dtype="float32",
+                             max_model_len=64, hf_config=CFG)
+        if k == 0:
+            spec = None
+        else:
+            draft = SpeculativeConfig(
+                method="mtp", num_speculative_tokens=k,
+                draft_model_config=None).derive_mtp_draft_config(target)
+            spec = SpeculativeConfig(
+                method="mtp", num_speculative_tokens=k, draft_model_config=draft)
+        config = VllmConfig(
+            model_config=target,
+            cache_config=CacheConfig(block_size=4, num_gpu_blocks=32),
+            scheduler_config=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=64),
+            device_config=DeviceConfig(device="cuda"),
+            speculative_config=spec,
+            compilation_config=CompilationConfig(
+                cudagraph_mode="full_decode_only" if graph else "none"))
+        engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
+        runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+        engine.add_request("a", [1, 2, 3, 4, 5],
+                           SamplingParams(max_tokens=8, temperature=0.0,
+                                          eos_token_id=999))
+        tokens = []
+        for _ in range(30):
+            if not engine.has_unfinished_requests():
+                break
+            output = engine.step()
+            if output:
+                tokens = output[0].token_ids
+        return tokens, runner
+
+    plain, _ = run(0, graph=False)
+    for k, expected_type in ((1, "MTPSpeculator"),
+                             (2, "MultiModuleMTPSpeculator"),
+                             (4, "MultiModuleMTPSpeculator")):
+        tokens, runner = run(k, graph=False)
+        assert tokens == plain, f"V2 K={k} eager 偏离 plain"
+        assert type(runner.speculator).__name__ == expected_type
+    graph_tokens, graph_runner = run(2, graph=True)
+    assert graph_tokens == plain, "V2 K=2 graph 偏离 plain"
+    assert graph_runner.speculator.cudagraph_mode.name == "FULL_DECODE_ONLY"

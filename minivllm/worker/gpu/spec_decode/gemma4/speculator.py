@@ -80,7 +80,8 @@ class Gemma4Speculator(AutoRegressiveSpeculator):
 
     # -------- 采样 --------
 
-    def _greedy_sample_draft(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def _greedy_sample_draft(self, hidden_states: torch.Tensor,
+                             spec_step_idx: int = 0) -> torch.Tensor:
         """centroid 路径优先用 `get_top_tokens`（不物化完整词表）。
 
         对纯 greedy 来说，sparse 选簇后的 argmax 与完整 logits 的 argmax 相同；用
@@ -90,7 +91,8 @@ class Gemma4Speculator(AutoRegressiveSpeculator):
         masked = getattr(self.model, "masked_embedding", None)
         if masked is not None and self.model.use_ordered_embeddings:
             return self.model.get_top_tokens(hidden_states)
-        return super()._greedy_sample_draft(hidden_states)
+        return super()._greedy_sample_draft(
+            hidden_states, spec_step_idx=spec_step_idx)
 
 
 __all__ = ["Gemma4Speculator"]

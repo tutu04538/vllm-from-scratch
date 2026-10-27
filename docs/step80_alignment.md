@@ -908,8 +908,8 @@ PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
   tests/step80/test_gemma4_real_integration.py -q     # 12 passed
 PATH=... $PY -m pytest tests/step81 -q  # 7 passed
-PATH=... $PY -m pytest tests/step80 -q                      # 121 passed
-PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1096 passed, 161.34s
+PATH=... $PY -m pytest tests/step80 -q                      # 122 passed
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1097 passed, 180.43s
 ```
 
 ### 12.7 差异与边界
@@ -991,7 +991,7 @@ step 3 -> model.layers.46
 新增 4 个文件：
 
 ```text
-tests/step80/test_step3p5_model_alignment.py   4 passed
+tests/step80/test_step3p5_model_alignment.py   5 passed
 tests/step80/test_step3p5_group_metadata.py    3 passed
 tests/step80/test_step3p5_moe.py               3 passed
 tests/step80/test_step3p5_real_weights.py      1 passed
@@ -1003,7 +1003,7 @@ tests/step80/test_step3p5_real_weights.py      1 passed
   step 0/1 都相同；
 - 权重名路由：`q_proj/k_proj/v_proj → qkv_proj`、`gate/up → gate_up_proj`、
   `transformer.shared_head.output → shared_head.head`；
-- attention core 在差分中替换为 identity；真实 cache 读取由 V1 端到端覆盖。
+- attention core 在差分中替换为 identity；真实 cache 读取由 V1/V2 端到端覆盖。
 
 真实 MTP 子集（权重不入库）：
 
@@ -1024,7 +1024,34 @@ sha256 febb01166743cd069245632892b8c74ea47579a27fe8b6bf53690bd28531239e
 `qkv_proj=(14336,4096)`、`shared_head=(128896,4096)`，2-token bf16 前向 hidden/logits
 全部 finite。
 
-### 13.5 明确边界
+### 13.5 V2：通用 multi-module 的 per-group 扩展
+
+V2 没有新增“Step3p5 专用类”，而是把上游通用路径缺的能力补进本地
+`MultiModuleMTPSpeculator`：
+
+- `_allocate_draft_kv_caches()`：非 Q-only 草稿层按
+  `(head_size, num_kv_heads, sliding_window)` 匹配 target KV group，不再写死 group0；
+- `set_attn()`：按 `module.kv_cache_group_id` 建多个 `AttentionGroup`；
+- `_build_draft_attn_metadata()`：逐组取自己的 block table / slot mapping，
+  返回 `layer_name -> 本组 metadata`；
+- `_draft_attn_metadata_for_capture()`：捕获期同样逐组建，不广播 group0；
+- `sample_draft(..., spec_step_idx=step)`：采样 logits 也按 step 选 `shared_head`，
+  不只 forward 选层。
+
+V2 分派：
+
+```text
+K=1 -> MTPSpeculator（AutoRegressive 基类，已按 module.kv_cache_group_id 分组）
+K>=2 -> MultiModuleMTPSpeculator（多模块整段循环）
+```
+
+测试 `test_v2_step3p5_spec_matches_plain_and_graph` 覆盖：
+
+- V2 plain vs K=1/2/4 投机 greedy 逐 token 相同；
+- K=1 走 `MTPSpeculator`，K=2/4 走 `MultiModuleMTPSpeculator`；
+- K=2 `FULL_DECODE_ONLY` 图重放与 plain 相同。
+
+### 13.6 明确边界
 
 1. **没有真实 target 端到端**：官方 target 196B/344GB，本机 25GB GPU 装不下；
    80F 只做 MTP 子集的加载/前向与 tiny target 端到端。
@@ -1033,8 +1060,7 @@ sha256 febb01166743cd069245632892b8c74ea47579a27fe8b6bf53690bd28531239e
 3. **full-attention 的 llama3 RoPE scaling 未实现**：真实 MTP 三层都是 sliding，
    `yarn_only_types=["full_attention"]` 使 scaling 不进 MTP；真实 target 的 full 层
    会在初始化时明确报错，不静默用错 RoPE。
-4. **V2 明确拒绝**：80F 先接 V1；V2 落到通用 multi-module 会按 Qwen3 MTP 假设建
-   metadata、不传 `spec_step_idx`，所以 `init_speculator` 直接
-   `NotImplementedError`，不静默降级。
+4. **V2 只做通用 per-group 扩展**：没有真实 Step3p5 target 的 V2 端到端；tiny
+   target + K=1/2/4 eager、K=2 图已验证。V2 的 MoE target/UVA 大模型路径未验。
 5. **MoE target / Mamba / 多模态**不在 80F；`Step3p5ForCausalLM` 只是 tiny 测试与
    结构对齐用。
