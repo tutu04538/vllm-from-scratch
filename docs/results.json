@@ -6007,11 +6007,11 @@
     "commands": [
      {
       "cmd": "python -m pytest tests/step81 -q",
-      "result": "23 passed, 14 warnings（旧多组子集 7 + 生命周期 8 + 统计 5 + 边界 3）"
+      "result": "27 passed, 14 warnings（旧多组子集 7 + 生命周期 12 + 统计 5 + 边界 3）"
      },
      {
       "cmd": "python -m pytest tests/step58 … tests/step81 -q",
-      "result": "1128 passed, 149 warnings in 203.95s（无 failed/skipped；2026-10-28 本机最终回归）"
+      "result": "1132 passed, 149 warnings in 177.30s（无 failed/skipped；2026-10-28 本机最终回归）"
      }
     ],
     "execution_trace": {

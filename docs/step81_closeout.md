@@ -21,7 +21,7 @@
 
 ## 2. A：生命周期闭环
 
-新增 `tests/step81/test_spec_lifecycle_closeout.py`，8 passed：
+新增 `tests/step81/test_spec_lifecycle_closeout.py`，12 passed：
 
 1. **拒绝 + max_tokens 截断**：K=3 验证接受 3，`max_tokens=2` 只交付 2；
    统计仍是截断前口径；
@@ -33,7 +33,9 @@
    `blocks=64` 冷算逐 token 相同；
 6. **取消 + 同 ID 复用**：取消后清理轮结束，新请求不继承旧草稿/输出；
 7. **失败即停摆**：execute 注入异常后，下一次 step 在 schedule 前拒绝；
-8. 停止模式参数化（EOS / stop_token_ids）各一条。
+8. 停止模式参数化（EOS / stop_token_ids）各一条；
+9. 直接驱动 Scheduler 的 accepted=0/1/2/3 参数化：首拒/中拒/全接受
+   的统计分母、位置数组与交付长度逐值一致。
 
 代表选择：
 
@@ -130,10 +132,10 @@ BF16 near-tie 是风险，不是忽略错误的许可证
 PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 PYTHONPATH=. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python -m pytest tests/step81 -q
-# 23 passed, 14 warnings
+# 27 passed, 14 warnings
 
 PATH=... python -m pytest tests/step58 … tests/step81 -q
-# 1128 passed, 149 warnings in 203.95s
+# 1132 passed, 149 warnings in 177.30s
 ```
 
 ## 6. 明确移出本关

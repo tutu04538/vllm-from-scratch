@@ -206,3 +206,42 @@ def test_failure_stops_before_next_schedule():
     finally:
         runner.execute_model = original
         engine.shutdown()
+
+
+@pytest.mark.parametrize("accepted", [0, 1, 2, 3])
+def test_scheduler_first_mid_full_accept_stats(accepted):
+    """直接驱动 Scheduler：首拒/中拒/全接受都按“本轮真验证的 K 枚”记统计。"""
+    from minivllm import Request, SpeculativeConfig
+    from minivllm.config import SchedulerConfig
+    from minivllm.core.sched.scheduler import Scheduler
+    from minivllm.outputs import ModelRunnerOutput
+
+    manager = KVCacheManager(
+        CacheConfig(block_size=4, num_gpu_blocks=32), max_model_len=64)
+    scheduler = Scheduler(
+        SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=16), manager,
+        max_model_len=64,
+        speculative_config=SpeculativeConfig(method="ngram",
+                                             num_speculative_tokens=3))
+    request = Request("r", [1, 2, 3, 4],
+                      SamplingParams(max_tokens=10, eos_token_id=999),
+                      arrival_time=1.0)
+    scheduler.add_request(request)
+    packet = scheduler.schedule()
+    scheduler.update_from_output(
+        packet, ModelRunnerOutput(req_ids=["r"], req_id_to_index={"r": 0},
+                                  sampled_token_ids=[[5]]))
+    request.spec_token_ids = [6, 7, 8]
+    packet = scheduler.schedule()
+    assert packet.scheduled_spec_decode_tokens["r"] == [6, 7, 8]
+    sampled = [6, 7, 8, 9][:accepted] + [9]
+    result = scheduler.update_from_output(
+        packet, ModelRunnerOutput(req_ids=["r"], req_id_to_index={"r": 0},
+                                  sampled_token_ids=[sampled]))
+    stats = result.scheduler_stats.spec_decoding_stats
+    assert stats.num_drafts == 1
+    assert stats.num_draft_tokens == 3
+    assert stats.num_accepted_tokens == accepted
+    assert stats.num_accepted_tokens_per_pos == [1] * accepted + [0] * (3 - accepted)
+    assert stats.num_draft_tokens_per_pos == [1, 1, 1]
+    assert len(result.outputs[0].new_token_ids) == accepted + 1
