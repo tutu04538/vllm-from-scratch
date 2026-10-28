@@ -5,9 +5,9 @@
 了它的前缀（预算截断），甚至一枚都没采用；拿提议数记进来会把接受率算高，进而把"第 j 枚草稿
 还值不值得提"判断错。
 
-上游把它按 `SchedulerStats` 汇总后送到前端（`SpecDecodingLogging` 打印日志 + prometheus 指标）；
-本项目没有指标前端，所以 Scheduler 只保留**每一步的这一份**（`Scheduler.spec_decoding_stats`），
-测试与 demo 直接读它。
+81 关起按上游方向接到 `SchedulerStats → EngineCoreOutputs → LLMEngine`，
+由 `SpecDecodingLogging.observe` 聚合并可 `log/reset`（Prometheus 服务化不在本关范围）。
+Scheduler 仍保留**每一步的这一份**（`Scheduler.spec_decoding_stats`）方便旧测试读取。
 
 各字段的含义（与上游逐字一致）：
 
@@ -22,6 +22,8 @@
 它随 j 快速衰减——这个数决定 K 该取多大（每关只做小规模测量，性能矩阵在 84 关）。
 """
 
+import logging
+import time
 from dataclasses import dataclass, field
 
 
@@ -59,3 +61,86 @@ class SpecDecodingStats:
             self.num_accepted_tokens_per_pos[i] += 1
         for i in range(num_draft_tokens):
             self.num_draft_tokens_per_pos[i] += 1
+
+
+class SpecDecodingLogging:
+    """81：把每步 `SpecDecodingStats` 聚合成可日志/可检查的快照（AR 子集）。
+
+    上游还接 Prometheus；本关只保留 `observe/log/reset`。
+    `observe` 必须复制 per-position 列表：Scheduler 下一步会新建 stats，但调用方可能
+    保留旧 dict 做快照，不能让它被原地改写。
+    """
+
+    def __init__(self, log_fn=logging.getLogger(__name__).info) -> None:
+        self._log_fn = log_fn
+        self.reset()
+
+    def reset(self) -> None:
+        self.num_drafts: list[int] = []
+        self.num_draft_tokens: list[int] = []
+        self.num_accepted_tokens: list[int] = []
+        self.accepted_tokens_per_pos_lists: list[list[int]] = []
+        self.draft_tokens_per_pos_lists: list[list[int]] = []
+        self.last_log_time = time.monotonic()
+
+    def observe(self, stats: SpecDecodingStats) -> None:
+        self.num_drafts.append(stats.num_drafts)
+        self.num_draft_tokens.append(stats.num_draft_tokens)
+        self.num_accepted_tokens.append(stats.num_accepted_tokens)
+        self.accepted_tokens_per_pos_lists.append(
+            list(stats.num_accepted_tokens_per_pos))
+        # 记住位置分母快照，便于实验统计 accepted[j]/draft_per_pos[j]；
+        # 不改变上游 accepted[j]/num_drafts 的日志口径。
+        self.draft_tokens_per_pos_lists.append(
+            list(stats.num_draft_tokens_per_pos))
+
+    def __len__(self) -> int:
+        return len(self.num_drafts)
+
+    def log(self) -> dict:
+        """记录聚合值并 reset；返回同一份值，测试/benchmark 不需要解析日志文本。"""
+        if not self.num_drafts:
+            return {
+                "num_drafts": 0,
+                "num_draft_tokens": 0,
+                "num_accepted_tokens": 0,
+                "accepted_tokens_per_pos": [],
+                "draft_tokens_per_pos": [],
+                "acceptance_rate": None,
+                "mean_acceptance_length": None,
+            }
+        num_drafts = sum(self.num_drafts)
+        num_draft_tokens = sum(self.num_draft_tokens)
+        num_accepted = sum(self.num_accepted_tokens)
+        max_pos = max((len(row) for row in self.accepted_tokens_per_pos_lists),
+                      default=0)
+        accepted_per_pos = [
+            sum(row[j] for row in self.accepted_tokens_per_pos_lists if j < len(row))
+            for j in range(max_pos)]
+        draft_per_pos = [
+            sum(row[j] for row in self.draft_tokens_per_pos_lists if j < len(row))
+            for j in range(max_pos)]
+        elapsed = max(time.monotonic() - self.last_log_time, 1e-12)
+        rate = (num_accepted / num_draft_tokens) if num_draft_tokens else None
+        mean_len = (1 + num_accepted / num_drafts) if num_drafts else None
+        result = {
+            "num_drafts": num_drafts,
+            "num_draft_tokens": num_draft_tokens,
+            "num_accepted_tokens": num_accepted,
+            "accepted_tokens_per_pos": accepted_per_pos,
+            "draft_tokens_per_pos": draft_per_pos,
+            "acceptance_rate": rate,
+            "mean_acceptance_length": mean_len,
+            "draft_throughput": num_draft_tokens / elapsed,
+            "accepted_throughput": num_accepted / elapsed,
+        }
+        self._log_fn(
+            "SpecDecoding metrics: Mean acceptance length: %.2f, "
+            "Accepted throughput: %.2f tokens/s, Drafted throughput: %.2f tokens/s, "
+            "Accepted: %d tokens, Drafted: %d tokens, Avg Draft acceptance rate: %s",
+            mean_len if mean_len is not None else float("nan"),
+            result["accepted_throughput"], result["draft_throughput"],
+            num_accepted, num_draft_tokens,
+            f"{rate * 100:.1f}%" if rate is not None else "N/A")
+        self.reset()
+        return result

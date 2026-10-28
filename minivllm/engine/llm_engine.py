@@ -15,6 +15,7 @@
 import time
 
 from ..outputs import EngineCoreRequest
+from ..spec_decode.metrics import SpecDecodingLogging
 from .core import EngineCore
 from .core_client import InprocClient
 from .output_processor import OutputProcessor
@@ -25,6 +26,9 @@ class LLMEngine:
         self.vllm_config = vllm_config
         self.engine_core = InprocClient(EngineCore(vllm_config, executor))
         self.output_processor = OutputProcessor(tokenizer=tokenizer)
+        # 81：正式统计记录点。这里只 observe；由调用方决定何时 log/reset。
+        self.spec_decoding_logging = SpecDecodingLogging()
+        self.last_scheduler_stats = None
 
     # -------- 请求 --------
 
@@ -70,6 +74,11 @@ class LLMEngine:
     def step(self):
         """跑一轮，返回本轮的用户可见输出（可能是空的：中间 prefill 块不产出）。"""
         outputs = self.engine_core.get_output()
+        self.last_scheduler_stats = outputs.scheduler_stats
+        if outputs.scheduler_stats is not None \
+                and outputs.scheduler_stats.spec_decoding_stats is not None:
+            self.spec_decoding_logging.observe(
+                outputs.scheduler_stats.spec_decoding_stats)
         processed = self.output_processor.process_outputs(outputs)
         if processed.reqs_to_abort:
             self.abort_request(processed.reqs_to_abort)

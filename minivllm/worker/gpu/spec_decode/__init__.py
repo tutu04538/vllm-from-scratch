@@ -6,7 +6,7 @@ EAGLE 系），最后 `else: raise NotImplementedError(f"{method} is not support
 本仓库 73 关实现 EAGLE 系（`use_eagle()`：eagle / eagle3 / mtp）里的 **EAGLE3 与 EAGLE-1**、
 76 关加 **DFlash**、77 关加 **DSpark**、80B 加 **多模块 MTP**（`use_multi_module_mtp()`）、
 80D 加 **Gemma4 Q-only 共享映射**（映射本身在 `gemma4/kv_sharing.py`；这里只明确拒绝，
-把模型结构与真实接入留给 80E）；其余分支保持"明确拒绝"——**不把普通 draft/ngram 等自动
+模型结构/真实接入已由 80E 完成）；其余分支保持"明确拒绝"——**不把普通 draft/ngram 等自动
 转接到别的算法上**（那会让配置说一套、跑的是另一套）。每个未实现分支都写明归属关卡。
 """
 

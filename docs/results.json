@@ -5993,6 +5993,54 @@
     "dtype": "N/A",
     "note": "81 子集不新增权重"
    }
+  },
+  "closeout": {
+   "status": "完成 + self-verified（单卡/同步/纯文本；生命周期 8 项、统计链 5 项、边界 3 项）",
+   "results": {
+    "package": {
+     "root": "minivllm/",
+     "python_files": 173,
+     "sha256": "ffa7f33caefc428c151e2e87ef34b516ccd1d9a5cbe95598e1d7dee95c2806f0",
+     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+    },
+    "base_commit": "ef55797（81 收口前）",
+    "commands": [
+     {
+      "cmd": "python -m pytest tests/step81 -q",
+      "result": "23 passed, 14 warnings（旧多组子集 7 + 生命周期 8 + 统计 5 + 边界 3）"
+     },
+     {
+      "cmd": "python -m pytest tests/step58 … tests/step81 -q",
+      "result": "1128 passed, 149 warnings in 203.95s（无 failed/skipped；2026-10-28 本机最终回归）"
+     }
+    ],
+    "execution_trace": {
+     "lifecycle": "拒绝/max_tokens/EOS/stop 截断后统计仍按截断前；部分 prefill 不输出；两组 prefix 全有或全无；V2 tiny MTP blocks=4 真抢占并与 blocks=64 冷算逐 token 相同；取消后同 ID 复用不继承旧状态；execute 异常后下一 step 在 schedule 前拒绝。",
+     "metrics": "Scheduler.update_from_output -> SchedulerStats -> EngineCoreOutputs.scheduler_stats -> LLMEngine.step -> SpecDecodingLogging.observe/log/reset；固定例子 K=[3,1], a=[2,0] 得 2/4/2、[1,1,0]、[2,1,1]。",
+     "boundaries": "async=True 明确拒绝；V1 不同 group block_size 执行拒绝；manifest 固定 V2/同步/Torch/BF16/纯文本/单卡，列出移出项。",
+     "historical_hash": "80H 的 package 保留为历史证据，只校验摘要形状；当前 hash 由 81 closeout 校验。"
+    },
+    "known_gaps": [
+     "不覆盖 Mamba/混合状态、多模态、PD/KV transfer、量化、TP/DP/PP/CP/EP、异步端到端。",
+     "滑窗掩码已实现但历史块不回收；packed 不是全动态 page 分配。",
+     "执行侧仍要求所有 group 同 block_size；不同块大小只到控制面。",
+     "bf16 near-tie 只记录为数值风险，不能作为忽略错误的许可证。",
+     "81 完成只代表已声明单卡文本投机主线收口，不代表全部 vLLM 投机/部署组合完成。"
+    ],
+    "step": "81（新：投机解码单卡主线收尾）",
+    "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/081_投机解码单卡主线收尾.md",
+    "environment": {
+     "python": "3.12.14",
+     "torch": "2.13.0+cu130",
+     "triton": "3.7.1",
+     "device": "RTX 5090 Laptop（CUDA）",
+     "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+    }
+   },
+   "models": {
+    "new_weights": "无；复用 Gemma4 与 81 子集既有权重",
+    "manifest": "docs/step81_experiment_manifest.json"
+   }
   }
  }
 }

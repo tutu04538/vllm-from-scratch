@@ -21,7 +21,10 @@
 
 import enum
 from dataclasses import dataclass, field
-from typing import NamedTuple, Sequence
+from typing import TYPE_CHECKING, NamedTuple, Sequence
+
+if TYPE_CHECKING:
+    from .metrics.stats import SchedulerStats
 
 import numpy as np
 import torch
@@ -87,6 +90,8 @@ class EngineCoreOutputs:
 
     outputs: list[EngineCoreOutput] = field(default_factory=list)
     finished_requests: set[str] = field(default_factory=set)
+    # 81：即使本轮没有用户可见输出（中间 prefill/清理轮），scheduler 也可以带统计。
+    scheduler_stats: "SchedulerStats | None" = None
 
 
 @dataclass

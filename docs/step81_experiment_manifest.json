@@ -1,0 +1,40 @@
+{
+  "schema": "minivllm-step82-manifest-v1",
+  "purpose": "81 收口交给 82 的配置模板；只描述已声明支持的单卡文本路径",
+  "model": {
+    "target_repo": "google/gemma-4-E2B-it",
+    "target_revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "target_path": "models/gemma-4-E2B-it",
+    "assistant_repo": "google/gemma-4-E2B-it-assistant",
+    "assistant_revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "assistant_path": "models/gemma-4-E2B-it-assistant",
+    "text_only": true
+  },
+  "runtime": {
+    "runner": "v2",
+    "scheduling": "sync",
+    "attention_backend": "torch",
+    "dtype": "bfloat16",
+    "device": "single_gpu",
+    "tensor_parallel": 1
+  },
+  "speculative": {
+    "method": "mtp",
+    "num_speculative_tokens": [2, 4],
+    "verification": "standard",
+    "graph": "FULL_DECODE_ONLY",
+    "prefix_caching": false
+  },
+  "unsupported_in_this_round": [
+    "async_scheduling",
+    "v1_multi_group_graph",
+    "gemma4_q_only_non_torch_backend",
+    "different_group_block_size_execution",
+    "quantization",
+    "tensor_parallel",
+    "multimodal",
+    "pd_kv_transfer",
+    "mamba_hybrid_state",
+    "sliding_block_reclaim"
+  ]
+}

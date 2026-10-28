@@ -723,7 +723,20 @@ class Scheduler:
                     self.waiting.remove_request(request)
 
         self.spec_decoding_stats = spec_decoding_stats
-        return EngineCoreOutputs(outputs=outputs, finished_requests=finished_now)
+        # 81：即使本轮没有用户输出（中间 prefill/清理轮），也要把统计交给前端。
+        scheduler_stats = self.make_stats(spec_decoding_stats)
+        return EngineCoreOutputs(outputs=outputs, finished_requests=finished_now,
+                                 scheduler_stats=scheduler_stats)
+
+    def make_stats(self, spec_decoding_stats=None):
+        """构造本步 `SchedulerStats`；真实字段只保留运行/等待计数与投机统计。"""
+        from ...metrics.stats import SchedulerStats
+
+        return SchedulerStats(
+            num_running_reqs=len(self.running),
+            num_waiting_reqs=len(self.waiting),
+            spec_decoding_stats=spec_decoding_stats,
+        )
 
     def make_spec_decoding_stats(self, spec_decoding_stats, num_draft_tokens: int,
                                  num_accepted_tokens: int):

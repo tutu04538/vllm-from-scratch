@@ -656,7 +656,7 @@ class SpeculativeConfig:
         )
 
     def use_gemma4_mtp(self) -> bool:
-        """是否为 Gemma4 assistant 的 Q-only MTP（80D 只做映射，80E 才接模型结构）。
+        """是否为 Gemma4 assistant 的 Q-only MTP（80D 映射，80E 已接模型/真实权重）。
 
         判据与冻结配置一致：方法仍是 `mtp`，靠 draft 配置的 `model_type` 区分
         `gemma4_mtp`。不能用 `num_nextn_predict_layers` 判——那是多模块 MTP 的判据，
