@@ -268,6 +268,15 @@ def test_v1_step3p5_spec_matches_plain_on_tiny_checkpoint(tmp_path, monkeypatch)
             compilation_config=CompilationConfig(cudagraph_mode="none"))
         engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
         runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+        seen_steps = []
+        if spec is not None:
+            original_logits = runner.speculator.model.compute_logits
+
+            def logits_spy(hidden_states, *args, **kwargs):
+                seen_steps.append(int(kwargs.get("spec_step_idx", 0)))
+                return original_logits(hidden_states, *args, **kwargs)
+
+            runner.speculator.model.compute_logits = logits_spy
         engine.add_request("a", [1, 2, 3, 4, 5],
                            SamplingParams(max_tokens=8, temperature=0.0,
                                           eos_token_id=999))
@@ -326,6 +335,15 @@ def test_v2_step3p5_spec_matches_plain_and_graph(tmp_path, monkeypatch):
                 cudagraph_mode="full_decode_only" if graph else "none"))
         engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
         runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+        seen_steps = []
+        if spec is not None:
+            original_logits = runner.speculator.model.compute_logits
+
+            def logits_spy(hidden_states, *args, **kwargs):
+                seen_steps.append(int(kwargs.get("spec_step_idx", 0)))
+                return original_logits(hidden_states, *args, **kwargs)
+
+            runner.speculator.model.compute_logits = logits_spy
         engine.add_request("a", [1, 2, 3, 4, 5],
                            SamplingParams(max_tokens=8, temperature=0.0,
                                           eos_token_id=999))
@@ -336,15 +354,17 @@ def test_v2_step3p5_spec_matches_plain_and_graph(tmp_path, monkeypatch):
             output = engine.step()
             if output:
                 tokens = output[0].token_ids
-        return tokens, runner
+        return tokens, runner, seen_steps
 
-    plain, _ = run(0, graph=False)
+    plain, _, _ = run(0, graph=False)
     for k, expected_type in ((1, "MTPSpeculator"),
                              (2, "MultiModuleMTPSpeculator"),
                              (4, "MultiModuleMTPSpeculator")):
-        tokens, runner = run(k, graph=False)
+        tokens, runner, seen = run(k, graph=False)
         assert tokens == plain, f"V2 K={k} eager 偏离 plain"
         assert type(runner.speculator).__name__ == expected_type
-    graph_tokens, graph_runner = run(2, graph=True)
+        assert set(range(k)) <= set(seen), (
+            f"V2 K={k} 采样没有按 spec_step_idx 选 head：seen={sorted(set(seen))}")
+    graph_tokens, graph_runner, _ = run(2, graph=True)
     assert graph_tokens == plain, "V2 K=2 graph 偏离 plain"
     assert graph_runner.speculator.cudagraph_mode.name == "FULL_DECODE_ONLY"

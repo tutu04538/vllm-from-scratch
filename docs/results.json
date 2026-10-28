@@ -5813,7 +5813,8 @@
        "model.safetensors": "febb01166743cd069245632892b8c74ea47579a27fe8b6bf53690bd28531239e",
        "config.json": "3af39cdf3ac1aa3e36e28a6b4f97e46315de475acea988cc306075bb3e6e2fe5"
       },
-      "v2_per_group": "V2 走通用 MultiModuleMTPSpeculator（K>=2）/ MTPSpeculator（K=1）；草稿层按 module.kv_cache_group_id 建 attn_groups，每组自己的 block table/slot/metadata；K=2 FULL_DECODE_ONLY 图与 plain 相同。"
+      "v2_per_group": "V2 走通用 MultiModuleMTPSpeculator（K>=2）/ MTPSpeculator（K=1）；草稿层按 module.kv_cache_group_id 建 attn_groups，每组自己的 block table/slot/metadata；K=2 FULL_DECODE_ONLY 图与 plain 相同。",
+      "v2_step_head": "V2 sample_draft 传 spec_step_idx：测试 spy 记录 K=1/2/4 采样分别看到 step 0 / 0..1 / 0..3；冻结 V2 sample_draft 未传 step，Qwen 共享 lm_head 无影响，Step3p5 每层 shared_head 需要它。"
      },
      "known_gaps": [
       "真实 target 196B/344GB 未下载、未端到端：本机 25GB GPU 装不下；80F 只做 MTP 子集与 tiny target。",

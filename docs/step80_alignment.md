@@ -1038,6 +1038,14 @@ V2 没有新增“Step3p5 专用类”，而是把上游通用路径缺的能力
 - `sample_draft(..., spec_step_idx=step)`：采样 logits 也按 step 选 `shared_head`，
   不只 forward 选层。
 
+这里有一条**与冻结 V2 的差异**：冻结 `MultiModuleMTPSpeculator.sample_draft()` 只调
+`model.compute_logits(hidden_states)`，没有把 `spec_step_idx` 传进采样 logits。Qwen3 MTP
+所有模块共用一个 `lm_head`，所以没有影响；Step3p5 每层有自己的 `shared_head`，K>1 时
+forward 已按 step 选层、采样却仍用 head0，hidden 与 head 会错配。上游模型卡也说明
+vLLM 完整 MTP3 支持尚未打开（recipe 用 `n_predict=1`），因此冻结 K=1 路径不会触发。
+本仓库为 Step3p5 K>1 的正确性加了 `spec_step_idx`（默认 0，`supports_spec_step_logits`
+控制），并测试 V2 K=1/2/4 采样真的看到 step 0..K-1。
+
 V2 分派：
 
 ```text
