@@ -5897,6 +5897,48 @@
      "draft": "无",
      "weights": "未使用；80G 不依赖真实权重"
     }
+   },
+   "80H": {
+    "status": "完成 + self-verified（文档/测试收口；能力矩阵已建立；真实模型缺口逐项拆开）",
+    "results": {
+     "package": {
+      "root": "minivllm/",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+     },
+     "base_commit": "289d415（80H 提交前）",
+     "commands": [
+      {
+       "cmd": "python -m pytest tests/step80/test_step80_capability_matrix.py -q",
+       "result": "4 passed（矩阵列/行、真实状态不混淆、80A–80H 结果、文档索引）"
+      },
+      {
+       "cmd": "python -m pytest tests/step80 -q",
+       "result": "137 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5 + 80H 4）"
+      },
+      {
+       "cmd": "python -m pytest tests/step58 … tests/step81 -q",
+       "result": "1112 passed, 149 warnings in 208.66s（无 failed/skipped；2026-10-28 本机最终回归）"
+      }
+     ],
+     "execution_trace": {
+      "matrix": "docs/step80_model_matrix.md：8 固定列 × 7 必需行；Qwen3、Gemma4 E1/E2、Step3p5 V1/V2、DeepSeek 80G 契约、DeepSeek 真实模型分开。",
+      "evidence_levels": "L1 契约、L2 输入布局、L3 模块/KV、L4 图、L5 真实权重、L6 真实端到端；L1–L4 通过不等于 L6。",
+      "status_fix": "alignment 顶部不再保留旧的 80F–80H 未开始；补充 §16 80H；README 索引矩阵。",
+      "test": "tests/step80/test_step80_capability_matrix.py 校验矩阵列/行、tiny/契约/真实权重不混淆、80A–80H 存在、包 hash。"
+     },
+     "known_gaps": [
+      "80H 不新增 kernel/模型/权重；只做文档和测试收口。",
+      "真实 Step3p5 196B target、真实 Qwen3 MTP、真实 DeepSeek DSA/CSA2 仍未接入。",
+      "80G 只证明复用契约，不能写成 DeepSeek 稀疏模型已支持。",
+      "80H 完成代表执行机制收口，不代表 80 全部模型适配完成；进入 81 不等于所有模型已验。"
+     ]
+    },
+    "models": {
+     "new_weights": "无；80H 不下载权重",
+     "matrix": "docs/step80_model_matrix.md"
+    }
    }
   }
  },

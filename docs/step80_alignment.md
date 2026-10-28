@@ -1,9 +1,11 @@
-# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1 / 80E.E2 / 80F）
+# 第 80 关对齐记录（80A / 80B / 80C / 80D / 80E.E1 / 80E.E2 / 80F / 80G / 80H）
 
 > 本文件按子需求追加。当前完成 **80A 输入层**、**80B eager 执行/拒绝后 KV 修复**、
 > **80C 多模块整段 CUDA Graph/采样生命周期**、**80D Q-only 共享 KV 的映射与只读
 > 契约**、**80E.E1 Gemma4 assistant 模型层**、**80E.E2 的 target 架构/多 group/
-> V1/V2 接线**；80F–80H 未开始。
+> V1/V2 接线**、**80F Step3p5 MTP V1/V2**、**80G MTP 稀疏索引复用契约** 和
+> **80H 阶段收口/能力矩阵**。80H 不新增 kernel 或模型，只把证据分层、真实模型
+> 状态与下一任务钉住；矩阵见 `docs/step80_model_matrix.md`。
 >
 > **E2 已接真实权重**：本机从 HF 镜像下载并固定
 > `google/gemma-4-E2B-it`（target，revision
@@ -44,7 +46,9 @@
 - 80E.E2：真实 Gemma4 target 架构/加载 + 多 KV group/SWA/full/backend；V2
   `Gemma4Speculator` 与 V1 `Gemma4Proposer` 均已接。真实 target/assistant 权重已下载，
   float32 下 8-token greedy 的 target-only eager == 投机 graph。
-- 明确不做：Step3p5 模型、Mamba/抢占生命周期、稀疏索引、性能矩阵。
+- 80H 明确不做：新增 kernel/模型、真实 DeepSeek 稀疏模型、Step3p5 196B target
+  端到端、性能矩阵。Step3p5 MTP（80F）与 sparse index 契约（80G）已经实现；
+  它们在真实 target/真实 indexer 上的缺口写入能力矩阵，不在此关补。
 
 ## 1. 路径映射
 
@@ -1185,3 +1189,93 @@ DeepSeek DSA/MLA 的逐位复刻；只是无真实权重、随机初始化即可
 - padding key 永不被选中；
 - 稀疏选择改变输出且无 NaN；
 - 随机权重 greedy 生成可复现。
+
+---
+
+## 16. 80H：阶段收口与模型能力矩阵
+
+80H 不新增 kernel/模型。它做三件事：
+
+1. 新建 `docs/step80_model_matrix.md`，用固定 8 列记录每个模型/配置的
+   工厂分支、结构对齐、输入/KV、tiny 差分、真实 checkpoint、后端/group 前置、
+   下一任务；
+2. 把 80A–80G 的证据按 L1–L6 分层，明确“契约/tiny/真实权重/真实端到端”不能互相替代；
+3. 新增 `tests/step80/test_step80_capability_matrix.py`，防止矩阵漏项、状态互相矛盾
+   或把 80H 记录写成“80 全部模型已支持”。
+
+### 16.1 矩阵行
+
+| 行 | 当前结论 |
+|---|---|
+| Qwen3 MTP tiny | 80A/B/C 对齐；真实 Qwen3 MTP checkpoint 未下载 |
+| Gemma4 assistant tiny | 80E.E1 模型层/Q-only 差分；attention core 在差分中为 identity |
+| Gemma4 target+assistant 真实 | 80E.E2 真实权重；float32 8-token graph == eager；bf16 near-tie 保留 |
+| Step3p5 MTP V1 | 80F per-group + 分步 head；真实 MTP 5.9GB 子集加载；196B target 未跑 |
+| Step3p5 MTP V2 | 通用 multi-module per-group；tiny K=1/2/4 eager、K=2 图；真实 target V2 未跑 |
+| DeepSeek 稀疏索引契约 | 80G 四 hook + 压紧；`TopKIndexBuffer` 是教学对象，不是真实 indexer |
+| DeepSeek V3.2/V4.1 真实 | **未实现**；需要 MLA/indexer/sparse MLA；不能拿 80G 契约替代 |
+
+非生产教学材料不进入矩阵：
+
+- `minivllm/testing/sparse_attention.py`；
+- `minivllm/testing/mtp_sparse_index.py`。
+
+### 16.2 证据分层
+
+```text
+L1 接口/契约      80G 四 hook / TopKIndexBuffer
+L2 输入布局       80A 43 项逐缓冲差分
+L3 模块/KV        80B 独立重放、80D Q-only、80F per-group
+L4 图/生命周期    80C 整段图、80E.E2 graph/eager
+L5 真实权重       80E.E2 Gemma4、80F Step3p5 MTP 子集
+L6 真实端到端     仅 Gemma4 E2；Step3p5 196B / DeepSeek 未完成
+```
+
+结论：
+
+```text
+执行机制收口 -> 80A/B/C + 80D + 80G + 80H 记录，可进入 81
+80 全部模型适配 -> 仍缺 Step3p5 196B、真实 Qwen3 MTP、DeepSeek DSA/CSA2
+```
+
+### 16.3 测试
+
+新增：
+
+```text
+tests/step80/test_step80_capability_matrix.py   4 passed
+```
+
+覆盖：
+
+- 矩阵 8 个固定列、7 个必需行、每行 8 个非空单元；
+- 真实 checkpoint 列与结构状态不矛盾：
+  Qwen3 未下载、Step3p5 只有 MTP 子集、DeepSeek 真实模型未接；
+- `docs/results.json` 含 80A–80H，且 80H 的包 hash 与当前 `minivllm/` 一致；
+- `docs/step80_alignment.md` 不再保留旧的未开始状态，并链接矩阵；
+- `docs/README.md` 索引包含矩阵。
+
+### 16.4 命令与结果
+
+```bash
+PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
+PYTHONPATH=. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest tests/step80/test_step80_capability_matrix.py -q
+# 4 passed
+
+PATH=... python -m pytest tests/step80 -q
+# 137 passed
+
+PATH=... python -m pytest tests/step58 … tests/step81 -q
+# 1112 passed, 149 warnings in 208.66s
+```
+
+（全量时间以最终实测回显为准；`docs/results.json` 记实际数字。）
+
+### 16.5 80H 已知边界
+
+1. 本关只做文档/测试收口，不新增 kernel、模型或真实权重；
+2. 真实 Step3p5 target、真实 Qwen3 MTP、真实 DeepSeek DSA 仍未接；
+3. 80G 只证明复用契约，不能据此说“DeepSeek 稀疏模型已支持”；
+4. 进入 81 的是**执行机制收口**，不是“80 全部模型适配完成”；
+5. 矩阵中的“部分/契约/待验”不是通过，只是当前证据等级。
