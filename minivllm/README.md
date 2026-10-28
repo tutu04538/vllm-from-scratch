@@ -873,7 +873,7 @@ python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 python -m pytest tests/step79 -q                     # 47 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + TRITON_ATTN ALWAYS）
-python -m pytest tests/step80 -q                     # 133 项：step80A/80B/80C/80D/80E.E1/80E.E2（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4 assistant/target/多组/V1-V2 集成）
+python -m pytest tests/step80 -q                     # 137 项：step80A/80B/80C/80D/80E.E1/80E.E2/80F/80G/80H（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4/Step3p5 多组/V1-V2 集成 + 稀疏索引契约 + 能力矩阵收口）
 python -m pytest tests/step81 -q                     # 7 项：E2 所需多 KV group 子集（分配/共同命中/部分组不误命中/原子失败）
 ```
 
