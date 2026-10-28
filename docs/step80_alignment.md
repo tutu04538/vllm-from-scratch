@@ -908,8 +908,8 @@ PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
   tests/step80/test_gemma4_real_integration.py -q     # 12 passed
 PATH=... $PY -m pytest tests/step81 -q  # 7 passed
-PATH=... $PY -m pytest tests/step80 -q                      # 122 passed
-PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1097 passed, 180.43s
+PATH=... $PY -m pytest tests/step80 -q                      # 133 passed
+PATH=... $PY -m pytest tests/step58 … tests/step81 -q       # 1108 passed, 179.48s
 ```
 
 ### 12.7 差异与边界
@@ -1072,3 +1072,116 @@ K>=2 -> MultiModuleMTPSpeculator（多模块整段循环）
    target + K=1/2/4 eager、K=2 图已验证。V2 的 MoE target/UVA 大模型路径未验。
 5. **MoE target / Mamba / 多模态**不在 80F；`Step3p5ForCausalLM` 只是 tiny 测试与
    结构对齐用。
+
+---
+
+## 14. 80G：MTP 稀疏索引复用契约
+
+80G **不是**真实 DeepSeek 稀疏模型接入，也不是 Step3p5 的一部分。它只钉住：
+
+> 一个 draft 轮里，稀疏注意力的 top-k 历史位置索引什么时候算、什么时候压紧、
+> 什么时候复用、什么时候复位。
+
+### 14.1 固定小例子
+
+B=2，采样行 `last_token_indices = [2, 5]`，step 0 产生 6 行索引：
+
+```text
+压紧前:
+row 0 ...
+row 1 ...
+row 2 ...   <- 请求 A 的采样行
+row 3 ...
+row 4 ...
+row 5 ...   <- 请求 B 的采样行
+
+compact 后:
+cache row 0 <- 压紧前 row 2
+cache row 1 <- 压紧前 row 5
+```
+
+必须先读 RHS 快照再写目标行；否则 `row 0 <- row 2` 可能污染后续还要读的源行。
+上游 `DeepSeekMultiTokenPredictor.compact_topk_indices` 本身就是
+`buffer[:n] = buffer[slot_ids]`，PyTorch 的 advanced indexing 会先做拷贝。
+
+### 14.2 四个 hook
+
+| 时点 | `skip_topk` | 行为 |
+|---|---:|---|
+| `on_prefill_begin` | False | **无条件复位**，step 0 重算 indexer |
+| `on_prefill_end` | False | K>1 时按 `last_token_indices` 压紧 |
+| `on_multi_step_decode_begin` | True | step 1+ 读本轮缓存 |
+| `on_multi_step_decode_end` | False | 恢复开关 |
+
+K=1 不压紧；`skip_topk=False` 时一个模型方法都不调用；上一轮异常残留 True 时，
+下一次 `on_prefill_begin` 必须清掉。
+
+### 14.3 模型接口定位
+
+统一只认 `model.model`：
+
+```text
+MTPSpeculator.model          # proposer 持有的 draft 模型
+  └── .model                 # 真正拥有索引缓存的内层（DeepSeekMTP 同构）
+        ├── set_skip_topk(bool)
+        └── compact_topk_indices(slot_ids)
+```
+
+`_supports_index_sharing()` 同时检查：
+
+1. `draft_hf_config["index_share_for_mtp_iteration"]`；
+2. `model.model.set_skip_topk` 存在；
+3. `model.model.compact_topk_indices` 存在。
+
+缺任一项就关闭复用，不猜别的属性路径，也不静默假支持。
+
+### 14.4 交付与测试
+
+新增：
+
+```text
+minivllm/testing/mtp_sparse_index.py
+  TopKIndexBuffer
+  TeachingSparseMTPInner
+  TeachingSparseMTPOuter
+
+tests/step80/test_mtp_index_reuse_contract.py   6 passed
+```
+
+覆盖：
+
+1. 四 hook 顺序与 K=1 不压紧；
+2. prefill begin 无条件清除 stale `skip_topk`；
+3. 缺配置/缺任一方法时检测为不支持；
+4. 两请求、重排行 `[5,2]` 的压紧结果；
+5. 与冻结 `DeepSeekMultiTokenPredictor.compact_topk_indices` 同一 buffer 逐值相等；
+6. 越界 slot 明确拒绝；旧尾部不被改写。
+
+### 14.5 边界
+
+- `TopKIndexBuffer` 是**教学对象**，不是真实 DeepSeek indexer/MLA；
+- 不实现稀疏注意力的数学正确性，只验证复用契约；
+- 真实 DeepSeek 稀疏模型接入仍缺 checkpoint、MLA/indexer、paged sparse attention；
+- 80G 通过不代表真实稀疏模型已接通。
+
+## 15. 教学版 learned top-k 稀疏注意力（额外学习材料）
+
+为了直观学习“indexer 选位置 → 只在这些位置做 attention”，额外新增：
+
+```text
+minivllm/testing/sparse_attention.py
+tests/step80/test_sparse_attention_teaching.py   5 passed
+docs/sparse_attention_teaching.md
+```
+
+它不是 Step3p5（Step3p5 是固定 sliding/full，没有 learned indexer），也不是
+DeepSeek DSA/MLA 的逐位复刻；只是无真实权重、随机初始化即可前向/生成的教学模型，
+支持返回每层 `selected` mask，用来观察因果性/top-k/稀疏输出。
+
+测试覆盖：
+
+- `top_k >= seq_len` 退化为 dense，logits 逐值相同；
+- selected 只含因果左侧、数量 `min(k, i+1)`；
+- padding key 永不被选中；
+- 稀疏选择改变输出且无 NaN；
+- 随机权重 greedy 生成可复现。

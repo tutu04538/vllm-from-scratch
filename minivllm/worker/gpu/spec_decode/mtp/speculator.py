@@ -31,37 +31,56 @@ class MTPSpeculator(AutoRegressiveSpeculator):
     #: 类属性给默认值，实例属性在加载后覆盖（上游同款写法）。
     share_mtp_topk_indices: bool = False
 
+    @staticmethod
+    def _supports_index_sharing(hf_config, draft_model) -> bool:
+        """只认 **`model.model`** 这一层接口（与冻结 `DeepSeekMTP` 同构）。
+
+        配置声明 `index_share_for_mtp_iteration=True`，且内层真的实现了
+        `set_skip_topk` / `compact_topk_indices`，才启用复用。缺任一项就当不支持，
+        不去猜别的属性路径。
+        """
+        inner = getattr(draft_model, "model", None)
+        return bool(
+            (hf_config or {}).get("index_share_for_mtp_iteration", False)
+            and inner is not None
+            and hasattr(inner, "set_skip_topk")
+            and hasattr(inner, "compact_topk_indices")
+        )
+
+    def _index_model(self):
+        """`model.model`：索引缓存/开关的拥有者；缺失时明确报错。"""
+        inner = getattr(self.model, "model", None)
+        if inner is None:
+            raise AttributeError(
+                "MTPSpeculator 期望 `model.model` 提供 set_skip_topk/"
+                "compact_topk_indices（与冻结 DeepSeekMTP 同构）")
+        return inner
+
     def load_draft_model(self, target_model: nn.Module) -> nn.Module:
         draft_model = load_eagle_model(target_model, self.vllm_config)
         spec_config = self.vllm_config.speculative_config
         draft_hf_config = (
             spec_config.draft_model_config.hf_config if spec_config is not None else None
         )
-        # `index_share_for_mtp_iteration` 是"这层权重是按索引复用训练的"的 checkpoint 声明；
-        # 两个方法都要在——只声明不支持方法就是在撒谎（那种 checkpoint 我们跑不了）。
-        # 本仓库的 `ModelConfig.hf_config` 是 **dict**（上游是配置对象），所以用 get 取值。
-        self.share_mtp_topk_indices = bool(
-            (draft_hf_config or {}).get("index_share_for_mtp_iteration", False)
-            and hasattr(draft_model.model, "set_skip_topk")
-            and hasattr(draft_model.model, "compact_topk_indices")
-        )
+        self.share_mtp_topk_indices = self._supports_index_sharing(
+            draft_hf_config, draft_model)
         return draft_model
 
     def on_prefill_begin(self, num_reqs: int) -> None:
         """Step 0 自己算 top-k。**无条件**执行，所以中途死掉的一步不会留下复用状态。"""
         if self.share_mtp_topk_indices:
-            self.model.model.set_skip_topk(False)
+            self._index_model().set_skip_topk(False)
 
     def on_prefill_end(self, num_reqs: int) -> None:
         """把 step 0 写下的 top-k 索引压到"每条请求的最后一枚 token"上，供 step 1+ 复用。"""
         if self.share_mtp_topk_indices and self.num_speculative_steps > 1:
-            self.model.model.compact_topk_indices(self.last_token_indices[:num_reqs])
+            self._index_model().compact_topk_indices(self.last_token_indices[:num_reqs])
 
     def on_multi_step_decode_begin(self, num_reqs: int) -> None:
         """切到复用模式：step 1+ 跳过索引算子，直接读共享缓冲里那份。"""
         if self.share_mtp_topk_indices:
-            self.model.model.set_skip_topk(True)
+            self._index_model().set_skip_topk(True)
 
     def on_multi_step_decode_end(self, num_reqs: int) -> None:
         if self.share_mtp_topk_indices:
-            self.model.model.set_skip_topk(False)
+            self._index_model().set_skip_topk(False)

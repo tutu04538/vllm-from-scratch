@@ -46,9 +46,9 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
-    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57 口径）"
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
     "python": "3.12.14",
@@ -285,9 +285,9 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
-    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58 口径）"
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
     "python": "3.12.14",
@@ -850,9 +850,9 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
-    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59 口径）"
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
     "python": "3.12.14",
@@ -1195,9 +1195,9 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
-    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57/58/59/60 口径）"
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
     "python": "3.12.14",
@@ -1829,9 +1829,9 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
-    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256（沿用 step57-61 口径）"
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
     "python": "3.12.14",
@@ -2090,8 +2090,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -2416,8 +2416,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -2625,8 +2625,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -2736,8 +2736,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -2892,8 +2892,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3007,8 +3007,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3198,8 +3198,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3364,8 +3364,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3441,8 +3441,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3520,8 +3520,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3585,8 +3585,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3655,8 +3655,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3721,8 +3721,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3792,8 +3792,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -3978,8 +3978,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4127,8 +4127,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4303,8 +4303,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4409,8 +4409,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4516,8 +4516,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4602,8 +4602,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4763,8 +4763,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4843,8 +4843,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -4924,8 +4924,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5007,8 +5007,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5085,8 +5085,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5163,8 +5163,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -5246,8 +5246,8 @@
      },
      "package": {
       "root": "minivllm/",
-      "python_files": 169,
-      "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
      },
      "environment": {
@@ -5321,8 +5321,8 @@
      },
      "package": {
       "root": "minivllm/",
-      "python_files": 169,
-      "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
      },
      "environment": {
@@ -5410,8 +5410,8 @@
      },
      "package": {
       "root": "minivllm/",
-      "python_files": 169,
-      "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
      },
      "environment": {
@@ -5503,8 +5503,8 @@
      },
      "package": {
       "root": "minivllm/",
-      "python_files": 169,
-      "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
      },
      "environment": {
@@ -5590,8 +5590,8 @@
       },
       "package": {
        "root": "minivllm/",
-       "python_files": 169,
-       "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+       "python_files": 171,
+       "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -5678,8 +5678,8 @@
       },
       "package": {
        "root": "minivllm/",
-       "python_files": 169,
-       "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+       "python_files": 171,
+       "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
        "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
       },
       "environment": {
@@ -5698,7 +5698,7 @@
        },
        {
         "cmd": "python -m pytest tests/step80 -q",
-        "result": "122 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12）"
+        "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5）"
        },
        {
         "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
@@ -5706,7 +5706,7 @@
        },
        {
         "cmd": "python -m pytest tests/step58 … tests/step81 -q",
-        "result": "1097 passed, 149 warnings in 180.43s（无 failed/skipped；2026-10-27 本机最终回归）"
+        "result": "1108 passed, 149 warnings in 179.48s（无 failed/skipped；2026-10-28 本机最终回归）"
        }
       ],
       "execution_trace": {
@@ -5775,8 +5775,8 @@
     "results": {
      "package": {
       "root": "minivllm/",
-      "python_files": 169,
-      "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
       "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
      },
      "commands": [
@@ -5798,11 +5798,11 @@
       },
       {
        "cmd": "python -m pytest tests/step80 -q",
-       "result": "122 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12）"
+       "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5）"
       },
       {
        "cmd": "python -m pytest tests/step58 … tests/step81 -q",
-       "result": "1097 passed, 149 warnings in 180.43s（无 failed/skipped）"
+       "result": "1108 passed, 149 warnings in 179.48s（无 failed/skipped）"
       }
      ],
      "execution_trace": {
@@ -5852,6 +5852,51 @@
       "note": "52 tensors / 5.6GB，只够 Step3p5MTP 加载/前向；target 未下载；权重 gitignore 不提交"
      }
     }
+   },
+   "80G": {
+    "status": "契约完成 + self-verified（真实 DeepSeek 稀疏模型/MLA/indexer 未接）",
+    "results": {
+     "package": {
+      "root": "minivllm/",
+      "python_files": 171,
+      "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
+      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+     },
+     "commands": [
+      {
+       "cmd": "python -m pytest tests/step80/test_mtp_index_reuse_contract.py -q",
+       "result": "6 passed（四 hook、K=1 不压紧、缺接口、stale 复位、重排行与冻结 DeepSeek compact 差分）"
+      },
+      {
+       "cmd": "python -m pytest tests/step80/test_sparse_attention_teaching.py -q",
+       "result": "5 passed（dense 退化、因果/top-k、padding、生成）"
+      },
+      {
+       "cmd": "python -m pytest tests/step80 -q",
+       "result": "133 passed"
+      },
+      {
+       "cmd": "python -m pytest tests/step58 … tests/step81 -q",
+       "result": "1108 passed, 149 warnings in 179.48s"
+      }
+     ],
+     "execution_trace": {
+      "contract": "MTPSpeculator 四 hook：prefill begin 无条件 set_skip_topk(False)；prefill end K>1 compact(last_token_indices)；decode begin True；decode end False。",
+      "interface": "只认 model.model.set_skip_topk / compact_topk_indices；缺配置或任一方法即关闭复用。",
+      "compact_diff": "两请求重排行 [5,2] 的压紧结果与 vllm DeepSeekMultiTokenPredictor.compact_topk_indices 同一 buffer 逐值相等；尾部旧行不变。",
+      "teaching": "TopKIndexBuffer 教学对象（非真实 indexer）；learned top-k 教学模型 5 项测试。"
+     },
+     "known_gaps": [
+      "没有真实 DeepSeek checkpoint/MLA/indexer/paged sparse attention；只验证复用契约与教学 mask。",
+      "没有真实稀疏注意力数学正确性/质量/加速比结论。",
+      "TopKIndexBuffer 是教学对象，不是生产 indexer。"
+     ]
+    },
+    "models": {
+     "target": "无（本关不加载真实稀疏模型）",
+     "draft": "无",
+     "weights": "未使用；80G 不依赖真实权重"
+    }
    }
   }
  },
@@ -5867,8 +5912,8 @@
    },
    "package": {
     "root": "minivllm/",
-    "python_files": 169,
-    "sha256": "ba3c4c2ba0b527778a750285e7f21421bcd00f5b0a8934922e6eb63ac5555414",
+    "python_files": 171,
+    "sha256": "630dad4adaf308aee06324ac38d5f94bf3f3e1693d26e65dae6d2ece2a667400",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {

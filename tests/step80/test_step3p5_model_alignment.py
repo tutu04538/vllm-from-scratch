@@ -268,15 +268,6 @@ def test_v1_step3p5_spec_matches_plain_on_tiny_checkpoint(tmp_path, monkeypatch)
             compilation_config=CompilationConfig(cudagraph_mode="none"))
         engine = LLMEngine(config, UniProcExecutor(config, Worker(config)))
         runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
-        seen_steps = []
-        if spec is not None:
-            original_logits = runner.speculator.model.compute_logits
-
-            def logits_spy(hidden_states, *args, **kwargs):
-                seen_steps.append(int(kwargs.get("spec_step_idx", 0)))
-                return original_logits(hidden_states, *args, **kwargs)
-
-            runner.speculator.model.compute_logits = logits_spy
         engine.add_request("a", [1, 2, 3, 4, 5],
                            SamplingParams(max_tokens=8, temperature=0.0,
                                           eos_token_id=999))

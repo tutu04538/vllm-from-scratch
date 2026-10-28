@@ -806,7 +806,7 @@ DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DF
 + standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）+
 breakable PIECEWISE（Phase 3，混合批）+ 固定场景 Triton paged（target 混合批 FULL、adaptive 真正 ALWAYS）；
-多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 接了 Gemma4 assistant 模型层，80E.E2 又接了 Gemma4 文本 target、多 KV group/SWA/full/异构 head_dim、packed shared slab 与 V1/V2 提议者（真实 target 4.63B + assistant 77.7M 已下载；float32 下 8-token target-only eager == 投机 graph；bf16 near-tie 见 docs）；81 仅完成 E2 所需多组子集，Mamba/抢占矩阵/KV transfer 未做；Step3p5 MTP 已在 80F 接 V1（per-group block table + 分步 head；V1+V2 per-group（V2 K=1/2/4 eager、K=2 图）），稀疏索引属 80G；adaptive verification 已在 79 关接上；Triton 后端需显式
+多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 接了 Gemma4 assistant 模型层，80E.E2 又接了 Gemma4 文本 target、多 KV group/SWA/full/异构 head_dim、packed shared slab 与 V1/V2 提议者（真实 target 4.63B + assistant 77.7M 已下载；float32 下 8-token target-only eager == 投机 graph；bf16 near-tie 见 docs）；81 仅完成 E2 所需多组子集，Mamba/抢占矩阵/KV transfer 未做；Step3p5 MTP 已在 80F 接 V1（per-group block table + 分步 head；V1+V2 per-group（V2 K=1/2/4 eager、K=2 图）），80G MTP top-k 索引复用契约已完成（教学 TopKIndexBuffer + 冻结 DeepSeek compact 差分；真实稀疏模型未接）；另有 `testing/sparse_attention.py` 教学版 learned top-k 稀疏注意力（随机权重，不是生产模型）；adaptive verification 已在 79 关接上；Triton 后端需显式
 `attention_backend="triton_attn"`（`"triton"` 别名），默认仍是 Torch。
 另外两条容易误以为已经具备的能力：
 
@@ -873,7 +873,7 @@ python -m pytest tests/step76 -q                     # 24 项：step76（DFlash 
 python -m pytest tests/step77 -q                     # 40 项：step77（DSpark 两种布局/条件采样与 q/缩减词表与 top-k/边界与加载）
 python -m pytest tests/step78 -q                     # 65 项：step78（DFlash2 候选 walk/realized q/模型四层/边界/端到端与图）
 python -m pytest tests/step79 -q                     # 47 项：step79（成本表/预算/GPU top-k/compact/reallocate/双缓冲/能力 + 端到端布局 + TRITON_ATTN ALWAYS）
-python -m pytest tests/step80 -q                     # 122 项：step80A/80B/80C/80D/80E.E1/80E.E2（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4 assistant/target/多组/V1-V2 集成）
+python -m pytest tests/step80 -q                     # 133 项：step80A/80B/80C/80D/80E.E1/80E.E2（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4 assistant/target/多组/V1-V2 集成）
 python -m pytest tests/step81 -q                     # 7 项：E2 所需多 KV group 子集（分配/共同命中/部分组不误命中/原子失败）
 ```
 
