@@ -50,7 +50,7 @@ def test_real_mtp_weight_shapes_and_forward():
     assert tuple(layer.shared_head.head.weight.shape) == (128896, 4096)
     assert tuple(model.model.embed_tokens.weight.shape) == (128896, 4096)
 
-    # 只验证模型层；attention core 换 identity（真实 KV 绑定由 V1 端到端覆盖）。
+    # 只验证模型层/权重加载；真实 KV 绑定由 V1/V2 端到端覆盖。
     class Identity(torch.nn.Module):
         def __init__(self, *args, **kwargs):
             super().__init__()

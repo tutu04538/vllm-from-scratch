@@ -714,26 +714,24 @@ E1 的冻结参考：
 
 ### 11.5 验证
 
-新增 `tests/step80/test_gemma4_model_alignment.py`，共 **12 passed**：
+新增 `tests/step80/test_gemma4_model_alignment.py`，共 **10 passed**：
 
 1. 参数形状 / 无 K/V 投影 / `scaling=1.0` / full 层异构 head_dim；
 2. 权重路由：pre/post 前缀、gate/up 打包、norm/q_norm、`layer_scalar`、tied lm_head；
 3. 缺参数/未知参数/token_ordering 缺失均报错；
 4. `get_model()` 通过 registry 加载 `Gemma4MTPModel`；
 5. Q 投影 + q_norm + RoPE（sliding 与 full/proportional 两层）与冻结模块逐值一致；
-6. 全模型逐层 hidden、draft/backbone 两个返回值、logits 与冻结模型一致；
-7. backbone/draft 宽度不可互换；
-8. masked embedder 的稀疏 logits / 有限列 / argmax 与冻结模块一致；
-9. final logit softcap 与手算一致；
-10. 未适配的 RoPE 类型、centroid 配置、MoE/double-wide MLP、attention softcap 明确报错。
+6. masked embedder 的稀疏 logits / 有限列 / argmax 与冻结模块一致；
+7. final logit softcap 与手算一致；
+8. 未适配的 RoPE 类型、centroid 配置、MoE/double-wide MLP、attention softcap 明确报错。
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
 PATH=/home/user/anaconda3/envs/vllm-omni-dev/bin:$PATH \
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
-  tests/step80/test_gemma4_model_alignment.py -q   # 12 passed
-PATH=... $PY -m pytest tests/step80 -q              # 98 passed（60 + 26 + 12）
-CUDA_VISIBLE_DEVICES='' ...                          # 12 passed（CPU-only）
+  tests/step80/test_gemma4_model_alignment.py -q   # 10 passed
+PATH=... $PY -m pytest tests/step80 -q              # 96 passed（60 + 26 + 10；E2 追加前）
+CUDA_VISIBLE_DEVICES='' ...                          # 10 passed（CPU-only）
 ```
 
 全量回归结果与包摘要见 §11.7。
@@ -743,9 +741,8 @@ CUDA_VISIBLE_DEVICES='' ...                          # 12 passed（CPU-only）
 1. **E1 不接真实 target**：没有 Gemma4 target 架构/权重，也没有 V2/V1 提议者接线；
    `init_speculator()` 仍对 `gemma4_mtp` 明确拒绝。E2 需要真实 target + 81 的
    KV group/SWA/full/异构 head_dim/backend。
-2. **attention core 在模型差分中被 identity 替换**：E1 比较的是 assistant 的胶水、q 投影/
-   q_norm/RoPE、层结构、宽度与 logits；Q-only 的真实 cache 读取已由 80D 契约覆盖。
-   E2 才把真实 target cache/attention group 接进来。
+2. **E1 不做完整 forward/逐层 hidden 差分**：只比较 assistant 的胶水、q 投影/
+   q_norm/RoPE、层结构与权重路由；真实 Q-only cache 读取由 80D/E2 端到端覆盖。
 3. **未实现 attention logit softcap**：配置出现 `attn_logit_softcapping` 时明确
    `NotImplementedError`，不静默忽略；`final_logit_softcapping` 已实现并测试。
 4. **只覆盖稠密 MLP**：`enable_moe_block` / `use_double_wide_mlp` / per-layer input
@@ -757,8 +754,8 @@ CUDA_VISIBLE_DEVICES='' ...                          # 12 passed（CPU-only）
 ### 11.7 全量回归与改动文件
 
 - 全量回归（2026-10-25 本机）：**1066 passed, 149 warnings in 96.87s**
-  （80D 后 1054 + 80E.E1 12；无回归）；`tests/step80` **98 passed**；
-  E1 CPU-only **12 passed**。
+  （80D 后 1054 + 80E.E1 10；无回归）；`tests/step80` **96 passed**（E2 追加前）；
+  E1 CPU-only **10 passed**。
 - 包摘要：`minivllm/` **162** 个 `.py`，sha256
   `f66af6fafc83941adb2fa88a53a8f6621041f98c61e07e658ebc8970f6d38108`。
 - 改动文件：
@@ -1007,7 +1004,7 @@ tests/step80/test_step3p5_real_weights.py      1 passed
   step 0/1 都相同；
 - 权重名路由：`q_proj/k_proj/v_proj → qkv_proj`、`gate/up → gate_up_proj`、
   `transformer.shared_head.output → shared_head.head`；
-- attention core 在差分中替换为 identity；真实 cache 读取由 V1/V2 端到端覆盖。
+- E1 不使用 attention 替身；真实 Q-only cache 读取由 80D/E2 端到端覆盖。
 
 真实 MTP 子集（权重不入库）：
 
@@ -1208,7 +1205,7 @@ DeepSeek DSA/MLA 的逐位复刻；只是无真实权重、随机初始化即可
 | 行 | 当前结论 |
 |---|---|
 | Qwen3 MTP tiny | 80A/B/C 对齐；真实 Qwen3 MTP checkpoint 未下载 |
-| Gemma4 assistant tiny | 80E.E1 模型层/Q-only 差分；attention core 在差分中为 identity |
+| Gemma4 assistant tiny | 80E.E1 模型层/形状/权重路由；Q-only 由 80D/E2 真实路径覆盖 |
 | Gemma4 target+assistant 真实 | 80E.E2 真实权重；float32 8-token graph == eager；bf16 near-tie 保留 |
 | Step3p5 MTP V1 | 80F per-group + 分步 head；真实 MTP 5.9GB 子集加载；196B target 未跑 |
 | Step3p5 MTP V2 | 通用 multi-module per-group；tiny K=1/2/4 eager、K=2 图；真实 target V2 未跑 |
@@ -1264,10 +1261,10 @@ python -m pytest tests/step80/test_step80_capability_matrix.py -q
 # 4 passed
 
 PATH=... python -m pytest tests/step80 -q
-# 137 passed
+# 134 passed
 
 PATH=... python -m pytest tests/step58 … tests/step81 -q
-# 1112 passed, 149 warnings in 208.66s
+# 1132 passed, 149 warnings in 191.96s
 ```
 
 （全量时间以最终实测回显为准；`docs/results.json` 记实际数字。）

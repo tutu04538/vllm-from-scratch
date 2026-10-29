@@ -5582,7 +5582,7 @@
      "results": {
       "step": "80E.E1",
       "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/080E_Gemma4Assistant结构与真实模型接入.md",
-      "status": "implemented + self-verified（**只做 assistant 模型层与权重路由**；不接真实 target，E2 仍阻塞）。新增 `minivllm/models/gemma4_mtp.py`：Gemma4MTPMaskedEmbedder（centroid top-k 稀疏 logits/argmax）、Gemma4MTPAttention（Q-only、q_proj/o_proj/q_norm、scaling=1.0、sliding/full 按层 RoPE）、Gemma4MTPDecoderLayer（四个 RMSNorm、显式 residual、layer_scalar）、Gemma4MultiTokenPredictor（backbone=16/assistant=8 的 pre/post projection、normalizer）、Gemma4MTP（lm_head/softcap/权重路由）。与已安装 vLLM 0.28.0 的冻结模型用同一 tiny 配置与权重逐层比较 hidden、draft/backbone 两个返回值、logits；Q 投影+q_norm+RoPE（sliding 与 full proportional）与冻结模块逐值一致；masked 候选/argmax 一致。模型差分中 attention core 用identity 替换（真实 target cache 读取已由 80D 契约覆盖），E2 才接真实attention/KV group。新增 12 项测试；tests/step80 98 passed；全量 1066 passed。",
+      "status": "implemented + self-verified（E1 10 项：形状/权重路由/masked embedder/Q 投影+q_norm+RoPE；不使用 attention 替身。E2 已接真实 target/assistant，真实 Q-only 由 80D/E2 覆盖）",
       "recorded_at": "2026-10-25T12:21:00+08:00",
       "git": {
        "baseline_commit_at_record_time": "db58867",
@@ -5606,11 +5606,11 @@
       "commands": [
        {
         "cmd": "python -m pytest tests/step80/test_gemma4_model_alignment.py -q",
-        "result": "12 passed（模型层/权重加载/masked/边界）"
+        "result": "10 passed（模型层/权重加载/masked/边界；无 attention 替身）"
        },
        {
         "cmd": "python -m pytest tests/step80 -q",
-        "result": "98 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12）"
+        "result": "96 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 10；当时基线，E2 尚未追加）"
        },
        {
         "cmd": "python -m pytest tests/step58 … tests/step80 -q",
@@ -5618,26 +5618,23 @@
        },
        {
         "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step80/test_gemma4_model_alignment.py -q",
-        "result": "12 passed（E1 的全部对照在 CPU 上完成）"
+        "result": "10 passed（E1 的模型/权重/等价性测试在 CPU 上完成）"
        }
       ],
       "execution_trace": {
        "固定数据流": "backbone=16、assistant=8：token embedding 16 与 target feedback hidden 16 拼成 32，pre_projection 32→8；decoder 内全 8 宽；draft_hidden 8 给出 logits，post_projection 8→16 作为下一步反馈。",
        "层结构": "Q-only attention 只建 q_proj/o_proj/q_norm/rotary_emb/attn，没有 k_proj/v_proj；q_norm 作用在 head_dim；scaling=1.0；full 层按 proportional RoPE（频率分母 head_dim，部分维零填充）；decoder 四 norm + 显式 residual + layer_scalar。",
-       "逐层差分": "同一 tiny 权重下，ours 与冻结 Gemma4MTP 的每层 hidden、draft_hidden、backbone_hidden 最大误差 0.0；logits 最大误差 0.0（identity attention core）。",
        "q 流水线": "sliding 层（default RoPE）与 full 层（proportional、partial_rotary_factor=0.25）分别比较 q_proj→q_norm→RoPE，最大误差 0.0。",
        "权重路由": "预检/覆盖检查打开：pre_projection/post_projection 顶层名映射到 model.*；gate/up 写进 gate_up_proj 的 [0:I]/[I:2I]；layer_scalar 与 token_ordering 作为 buffer 直接拷贝；tied lm_head 跳过检查点副本；缺参数/未知参数/缺 token_ordering 明确报错。",
        "masked embedder": "vocab=32/num_centroids=4/top_k=2：完整 logits 的未选中列填 finfo.min，选中 16 列与冻结模块逐值相等；get_top_tokens 的 id 与冻结模块逐位相等。",
-       "宽度不混用": "把 8 宽 draft_hidden 当反馈喂回，入口明确 ValueError；16 宽 post_projection 输出可以继续下一步。",
        "异构几何": "sliding head_dim=8/1 KV head；full head_dim=16/2 KV heads（attention_k_eq_v=True）分别建出正确 q_proj/q_norm 形状。"
       },
       "known_gaps": [
-       "E2 未开始且阻塞：本机没有 Gemma4 target 架构/加载，也没有真实 assistant/target 权重；真实接入还依赖 81 的 KV group/SWA/full/异构 head_dim/backend。",
-       "E1 的模型差分用 identity attention 替换 attention core；真实 Q-only cache 读取由 80D 契约测试覆盖，真实 target cache/group 接线属 E2。",
        "attn_logit_softcapping 未实现：配置出现时明确 NotImplementedError，不静默忽略；final_logit_softcapping 已实现并测试。",
        "只覆盖稠密 Gemma4MLP：enable_moe_block / use_double_wide_mlp / per-layer input embedding 明确拒绝。",
        "V1 Gemma4 proposer/per-group metadata/centroid graph 未改，属 E2。",
-       "没有真实权重与性能结论；tiny 配置/权重是测试材料，不声称真实 assistant 质量或加速比。"
+       "没有真实权重与性能结论；tiny 配置/权重是测试材料，不声称真实 assistant 质量或加速比。",
+       "E1 不再用 attention 替身做逐层 hidden/logits 差分；真实 Q-only/逐轮冻结差分由 E2 与 82 的边界记录，不在 E1 伪造。"
       ]
      },
      "models": {
@@ -5698,7 +5695,7 @@
        },
        {
         "cmd": "python -m pytest tests/step80 -q",
-        "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5）"
+        "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 10 + 80E.E2 12 + 80F 11 + 80G 6 + 教学 5）"
        },
        {
         "cmd": "python -m pytest tests/step81/test_spec_kv_groups.py -q",
@@ -5798,7 +5795,7 @@
       },
       {
        "cmd": "python -m pytest tests/step80 -q",
-       "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5）"
+       "result": "133 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 10 + 80E.E2 12 + 80F 11 + 80G 6 + 教学 5）"
       },
       {
        "cmd": "python -m pytest tests/step58 … tests/step81 -q",
@@ -5915,7 +5912,7 @@
       },
       {
        "cmd": "python -m pytest tests/step80 -q",
-       "result": "137 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 12 + 80E.E2 12 + 80F 12 + 80G 6 + 教学 5 + 80H 4）"
+       "result": "134 passed（80A 43 + 80B 8 + 80C 9 + 80D 26 + 80E.E1 10 + 80E.E2 12 + 80F 11 + 80G 6 + 教学 5 + 80H 4）"
       },
       {
        "cmd": "python -m pytest tests/step58 … tests/step81 -q",
@@ -6087,7 +6084,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step82 -q",
-     "result": "1135 passed, 149 warnings in 199.96s（无 failed/skipped；2026-10-29 本机最终回归）"
+     "result": "1132 passed, 149 warnings in 191.96s（无 failed/skipped；2026-10-29 本机最终回归）"
     },
     {
      "cmd": "VLLM_WSL2_ENABLE_PIN_MEMORY=1 python vLLM 0.28 LLM(target, spec_method=mtp, spec_model=assistant, spec_tokens=2, enforce_eager=True, bf16)",

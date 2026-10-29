@@ -5,8 +5,8 @@
   MTP 2 层（绝对层号 4/5）
   hidden=32, heads=4/2, head_dim=8, partial RoPE 0.5/1.0, head-wise gate
 
-上游/本实现都把 attention core 换成 identity（模型层差分只看 qkv/qk-norm/RoPE/
-eh_proj/enorm/hnorm/shared_head），真实 cache 读取由 V1 端到端和 80D 契约覆盖。
+本文件的模型层测试只检查形状/权重路由与真实端到端；真实 cache 读取由 V1/V2
+端到端和 80D 契约覆盖。冻结逐层 hidden/logits 差分不在本文件用替身伪造。
 """
 
 from __future__ import annotations
@@ -41,14 +41,6 @@ CFG = {
     "num_nextn_predict_layers": 2, "tie_word_embeddings": False,
     "use_qk_norm": True,
 }
-
-
-class _IdentityAttention(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def forward(self, *args, **kwargs):
-        return args[0]
 
 
 def _split_qkv(name, weight):
@@ -101,97 +93,16 @@ def _make_state() -> dict[str, torch.Tensor]:
     return state
 
 
-def _build_upstream(state: dict[str, torch.Tensor], model_dir: Path):
-    from vllm.config import (CacheConfig, DeviceConfig, ModelConfig as UpModelConfig,
-                             ParallelConfig, SpeculativeConfig, VllmConfig,
-                             set_current_vllm_config)
-    from vllm.config.compilation import CompilationConfig, CompilationMode
-    from vllm.config.scheduler import SchedulerConfig as UpSchedulerConfig
-    from vllm.distributed import init_distributed_environment, initialize_model_parallel
-    from vllm.distributed.parallel_state import model_parallel_is_initialized
-    from vllm.model_executor.layers.activation import SiluAndMul as UpSilu
-    from vllm.model_executor.layers.rotary_embedding.base import (
-        RotaryEmbedding as UpRotary,
-    )
-    from vllm.transformers_utils.configs.step3p5 import Step3p5Config
-    import vllm.model_executor.models.step3p5 as upstream_module
-    import vllm.model_executor.models.step3p5_mtp as upstream_mtp
-
-    up_cfg = {**CFG, "moe_layers_enum": None, "layer_types": CFG["layer_types"][:4]}
-    Step3p5Config(**up_cfg).save_pretrained(model_dir)
-    save_file({"dummy": torch.zeros(1)}, str(model_dir / "model.safetensors"))
-
-    target = UpModelConfig(model=str(model_dir), dtype="float32", max_model_len=64)
-    draft = UpModelConfig(model=str(model_dir), dtype="float32", max_model_len=64)
-    parallel = ParallelConfig()
-    spec = SpeculativeConfig(
-        model=str(model_dir), method="mtp", num_speculative_tokens=1,
-        target_model_config=target, draft_model_config=draft,
-        target_parallel_config=parallel)
-    vc = VllmConfig(
-        model_config=target, speculative_config=spec,
-        cache_config=CacheConfig(block_size=4, gpu_memory_utilization=0.1),
-        parallel_config=parallel, device_config=DeviceConfig("cpu"),
-        scheduler_config=UpSchedulerConfig(
-            max_num_seqs=1, max_num_batched_tokens=64, max_model_len=64,
-            is_encoder_decoder=False),
-        compilation_config=CompilationConfig(mode=CompilationMode.NONE))
-    # Step3p5Config 会把 layer_types 截到 num_hidden_layers；MTP 的绝对层号 4/5
-    # 需要 extra 项。这里在 attention 构造前补足，不修改上游源码。
-    original_attn_init = upstream_module.Step3p5Attention.__init__
-
-    def patched_attn_init(self, *args, **kwargs):
-        layer_types = kwargs.get("layer_types")
-        if layer_types:
-            prefix = kwargs.get("prefix", "")
-            index = int(prefix.split("layers.")[1].split(".")[0])
-            if index >= len(layer_types):
-                kwargs["layer_types"] = list(layer_types) + [
-                    "sliding_attention"] * (index - len(layer_types) + 1)
-        original_attn_init(self, *args, **kwargs)
-
-    upstream_module.Step3p5Attention.__init__ = patched_attn_init
-    upstream_module.Attention = _IdentityAttention
-    upstream_mtp.Attention = _IdentityAttention
-    UpRotary.forward = UpRotary.forward_native
-    UpSilu.forward = staticmethod(UpSilu.forward_native)
-    with set_current_vllm_config(vc):
-        if not model_parallel_is_initialized():
-            init_distributed_environment(
-                world_size=1, rank=0, local_rank=0,
-                distributed_init_method="tcp://127.0.0.1:29913", backend="gloo")
-            initialize_model_parallel(
-                tensor_model_parallel_size=1, pipeline_model_parallel_size=1)
-        model = upstream_mtp.Step3p5MTP(vllm_config=vc, prefix="")
-    model.load_weights(iter(state.items()))
-    return model
-
-
-def _make_pair(tmp_path: Path):
+def _make_ours() -> Step3p5MTP:
     state = _make_state()
-    upstream = _build_upstream(state, tmp_path)
     ours = Step3p5MTP(CFG)
     ours.load_weights(iter(state.items()))
-    for model in (upstream, ours):
-        for module in model.modules():
-            if hasattr(module, "attn") and type(module).__name__.endswith("Attention"):
-                module.attn = _IdentityAttention()
-        model.eval()
-    return ours, upstream, state
+    ours.eval()
+    return ours
 
 
-@pytest.fixture(scope="module")
-def model_pair(tmp_path_factory):
-    mp = pytest.MonkeyPatch()
-    try:
-        ours, upstream, state = _make_pair(tmp_path_factory.mktemp("tiny_step3p5"))
-        yield ours, upstream, state
-    finally:
-        mp.undo()
-
-
-def test_parameter_shapes_and_step_heads(model_pair):
-    ours, _upstream, _state = model_pair
+def test_parameter_shapes_and_step_heads():
+    ours = _make_ours()
     assert list(ours.model.layers.keys()) == ["4", "5"]
     layer = ours.model.layers["4"]
     assert layer.mtp_block.self_attn.num_heads == 4
@@ -205,22 +116,9 @@ def test_parameter_shapes_and_step_heads(model_pair):
     assert not torch.allclose(logits0, logits1)
 
 
-def test_forward_matches_frozen_upstream(model_pair):
-    ours, upstream, _state = model_pair
-    ids = torch.tensor([1, 2, 3])
-    positions = torch.tensor([0, 1, 2])
-    hidden = torch.randn(3, 32, generator=torch.Generator().manual_seed(3))
-    for step in (0, 1):
-        ours_hidden = ours(ids, positions, hidden, spec_step_idx=step)
-        up_hidden = upstream(ids, positions, hidden, spec_step_idx=step)
-        torch.testing.assert_close(ours_hidden, up_hidden, rtol=0, atol=0)
-        ours_logits = ours.compute_logits(ours_hidden, spec_step_idx=step)
-        up_logits = upstream.compute_logits(up_hidden, spec_step_idx=step)
-        torch.testing.assert_close(ours_logits, up_logits, rtol=0, atol=0)
-
-
-def test_weight_loader_routes_real_checkpoint_names(model_pair):
-    ours, _upstream, state = model_pair
+def test_weight_loader_routes_real_checkpoint_names():
+    state = _make_state()
+    ours = _make_ours()
     layer = ours.model.layers["4"]
     # q/k/v 打包进 qkv_proj 的三段
     torch.testing.assert_close(

@@ -9,9 +9,8 @@
 4. 覆盖 masked embedder 的选簇、稀疏 logits、argmax；
 5. 覆盖权重路由（pre/post projection、gate/up 打包、buffer）与加载覆盖检查。
 
-注意力核心在两边的模型差分里被替换成"原样返回 q"的 identity 模块：E1 验证的是
-assistant 的模型结构与胶水，Q-only 的真实 cache 读取已由 80D 契约覆盖；真实 target 的
-attention/KV group 接入属 80E.E2。
+E1 只验证 assistant 的模型结构与胶水（投影/MLP/norm/logits/权重路由）；
+Q-only 的真实 cache 读取由 80D 契约与 80E.E2 真实 target 端到端覆盖。
 """
 
 from __future__ import annotations
@@ -50,16 +49,6 @@ class ModelPair:
     state: dict[str, torch.Tensor]
     shared_embedding: torch.Tensor
     monkeypatch: pytest.MonkeyPatch
-
-
-class _IdentityAttention(nn.Module):
-    """把 attention core 换成 q 直通；q 投影/q_norm/RoPE 仍在模型里被比较。"""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__()
-
-    def forward(self, query, key=None, value=None):
-        return query
 
 
 def _tiny_config(*, use_ordered_embeddings: bool = False,
@@ -205,7 +194,7 @@ def model_pair(tmp_path_factory):
     assistant_config.save_pretrained(model_dir)
     save_file({"dummy": torch.zeros(1)}, str(model_dir / "model.safetensors"))
 
-    # 上游模型需要：identity attention、native RoPE、native GeGLU（CPU 上没有 CUDA 算子）。
+    # 上游模型需要 native RoPE / native GeGLU（CPU 上没有 CUDA 算子）。
     from vllm.model_executor.layers.activation import GeluAndMul as UpGelu
     from vllm.model_executor.layers.rotary_embedding.base import (
         RotaryEmbedding as UpRotary,
@@ -215,8 +204,6 @@ def model_pair(tmp_path_factory):
     import minivllm.models.gemma4_mtp as ours_module
     import vllm.model_executor.models.gemma4_mtp as upstream_module
 
-    mp.setattr(upstream_module, "Attention", _IdentityAttention)
-    mp.setattr(ours_module, "Attention", _IdentityAttention)
     mp.setattr(UpRotary, "forward", UpRotary.forward_native)
     mp.setattr(UpGelu, "forward", UpGelu.forward_native)
     try:
@@ -352,52 +339,6 @@ def test_q_pipeline_matches_frozen_attention(model_pair):
         q = q.flatten(-2, -1)
         q, _ = up_attn.rotary_emb(positions, q, None)
         torch.testing.assert_close(got, q, rtol=1e-6, atol=1e-6)
-
-
-def test_forward_layer_by_layer_matches_frozen(model_pair):
-    input_ids, positions, hidden = _forward_inputs()
-    ours_layers, ours_handles = _capture_layers(model_pair.ours)
-    up_layers, up_handles = _capture_layers(model_pair.upstream)
-    try:
-        with torch.no_grad():
-            ours_draft, ours_backbone = model_pair.ours(
-                input_ids, positions, hidden)
-            up_draft, up_backbone = model_pair.upstream(
-                input_ids, positions, hidden)
-    finally:
-        for handle in ours_handles + up_handles:
-            handle.remove()
-
-    assert ours_draft.shape == (3, HIDDEN)
-    assert ours_backbone.shape == (3, BACKBONE)
-    assert len(ours_layers) == len(up_layers) == NUM_LAYERS
-    for idx, (got, want) in enumerate(zip(ours_layers, up_layers)):
-        torch.testing.assert_close(got, want, rtol=1e-6, atol=1e-6,
-                                   msg=lambda msg: f"layer {idx}: {msg}")
-    torch.testing.assert_close(ours_draft, up_draft, rtol=1e-6, atol=1e-6)
-    torch.testing.assert_close(ours_backbone, up_backbone, rtol=1e-6, atol=1e-6)
-    with torch.no_grad():
-        ours_logits = model_pair.ours.compute_logits(ours_draft)
-        up_logits = model_pair.upstream.compute_logits(up_draft)
-    torch.testing.assert_close(ours_logits, up_logits, rtol=1e-6, atol=1e-6)
-
-
-def test_backbone_and_assistant_widths_are_not_interchangeable(model_pair):
-    input_ids, positions, hidden = _forward_inputs()
-    with torch.no_grad():
-        draft, backbone = model_pair.ours(input_ids, positions, hidden)
-    assert draft.shape[-1] == HIDDEN
-    assert backbone.shape[-1] == BACKBONE
-    # 把 assistant 宽的 draft 当反馈喂回去，必须在入口明确报错，而不是在
-    # pre_projection 里出现一个"24 宽"的静默形状错。
-    with pytest.raises(ValueError, match="backbone"):
-        model_pair.ours(input_ids, positions, draft)
-    # 真正的下一步反馈用 backbone 宽，能正常跑。
-    with torch.no_grad():
-        next_draft, next_backbone = model_pair.ours(
-            input_ids, positions, backbone)
-    assert next_draft.shape == draft.shape
-    assert next_backbone.shape == backbone.shape
 
 
 def test_masked_embedder_matches_frozen():

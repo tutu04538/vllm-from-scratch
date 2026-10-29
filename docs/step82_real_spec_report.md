@@ -172,8 +172,7 @@ batch 4->3->4 发生 = True
   80E.E1 的 tiny 模块差分、80E.E2 的真实 cache/源层/生成对照；本报告只记录真实候选/接受率。
   这是 82 要求里唯一没有在本轮补齐的诊断项。
   原因不是“做不到”，而是需要把 target paged KV、Q-only 源层和 assistant 输入序列从
-  minivllm 捕获后，注入冻结 vLLM `Gemma4MTP` 的同一缓存布局；现有 E1 的 identity attention
-  差分不能替代真实 Q-only 读路径。没有用同一实现自比或 identity 代替来伪造通过。
+  minivllm 捕获后，注入冻结 vLLM `Gemma4MTP` 的同一缓存布局；E1 的模型层差分不接真实 attention，不能替代真实 Q-only 读路径。
 - vLLM 对照只做了 B=1/K=2 一个场景；vLLM 的 target/spec 输出在第 90 token 分歧，
   未进一步定位（可能是 backend/精度/调度差异），不声称两者数值等价。
 - 没有量化、TP/DP/PP/CP/EP、多模态、PD、Mamba、torch.compile、异步端到端。
