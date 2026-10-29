@@ -6042,5 +6042,90 @@
     "manifest": "docs/step81_experiment_manifest.json"
    }
   }
+ },
+ "step82": {
+  "results": {
+   "step": "82（真实 Gemma4 单卡验收与测量）",
+   "requirement": "learning_notes/14_vllm_from_scratch/投机解码完整需求/082_真实Gemma4单卡验收与性能测量.md",
+   "status": "主实验/正确性/性能/补充完成；真实 assistant 逐轮 hidden/logits 对冻结 assistant 的差分未新增",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 173,
+    "sha256": "ffa7f33caefc428c151e2e87ef34b516ccd1d9a5cbe95598e1d7dee95c2806f0",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "dtype": "bfloat16",
+    "runner": "V2",
+    "scheduling": "sync",
+    "attention_backend": "torch"
+   },
+   "commands": [
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --preflight",
+     "result": "target 10,246,357,958 B sha256 2db548…; assistant 157,559,816 B sha256 93682e…; GPU free ~24.2 GiB"
+    },
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --correctness --max-new-tokens 8",
+     "result": "4 prompts; target-only eager == spec K=2 eager == spec K=2 graph; mismatches={}"
+    },
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --perf --max-new-tokens 128 --repeats 3 --batch-sizes 1 4 --ks 0 2 4",
+     "result": "B1 K0/K2/K4=12.07/6.79/5.21 tok/s，接受率 35.33%/21.69%；B4 K0/K2/K4=6.93/13.30/11.52 tok/s，接受率 59.40%/44.57%；B4 K2 加速 1.92×、K4 1.66×"
+    },
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --supplement --max-new-tokens 16",
+     "result": "graph K0/K2 eager 11.88/14.30 vs graph 8.44/12.57 tok/s（capture 成功但未加速）；prefix 热命中 704 token；dynamic 4→3→4 交付 68 token，14.29 tok/s"
+    },
+    {
+     "cmd": "python -m pytest tests/step82 -q",
+     "result": "3 passed（累计增量和接受率/零分母/中位数）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step82 -q",
+     "result": "1135 passed, 149 warnings in 199.96s（无 failed/skipped；2026-10-29 本机最终回归）"
+    }
+   ],
+   "execution_trace": {
+    "correctness": "四个固定 prompt 的 8-token greedy 在 target-only eager、K=2 eager、K=2 graph 逐 token 相同；zh/en/code/long token 序列见 report。",
+    "main": "B1 投机更慢（0.56×/0.43×）；B4 投机更快（K2 1.92×、K4 1.66×）；位置接受率随 j 衰减。",
+    "graph": "FULL_DECODE_ONLY capture 发生，但小规模下 eager 更快；不声称 graph 加速。",
+    "prefix": "662-token 公共前缀（> window 512）冷 0 命中、热 704 命中；K0 TTFT 0.898→0.233s，K2 3.309→0.690s。",
+    "dynamic": "K2 起始 B4，第一条短请求完成后补第五条，batch 4→3→4 真实发生；交付 68 token，14.29 tok/s，接受率 62.9%。",
+    "memory": "peak allocated 约 14.0–14.8 GiB；reserved 计数跨顺序引擎累计，不作为预算。"
+   },
+   "known_gaps": [
+    "未新增真实 assistant 每轮 hidden/logits 对冻结 assistant 的逐值差分；现有证据是 80E.E1 tiny 模块差分 + 80E.E2 真实 cache/源层/生成对照。",
+    "未跑 vLLM 0.28.0 真实端到端对照；主表只用本项目 K=0 配对基线，未编造上游数字。",
+    "graph/prefix/dynamic 是定点补充，不是全排列或生产压测。",
+    "不做量化、TP/DP/PP/CP/EP、多模态、PD、Mamba、torch.compile、异步端到端。"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "repo": "google/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "dtype": "bfloat16 checkpoint / BF16 experiment",
+    "size_bytes": 10246357958,
+    "sha256": "2db5482b20d746879bb3ef79b5203e9075a2e2b98f54ec7c2f281c1477ddc550",
+    "text_only": true
+   },
+   "draft": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "repo": "google/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM → Gemma4MTPModel"
+    ],
+    "size_bytes": 157559816,
+    "sha256": "93682eb1c97639d18f007704dc880bd74cbe530adaf7b1bb561213863fdad2a6"
+   },
+   "real_weights": "target/assistant 均已下载，固定 revision/hash；权重不提交"
+  }
  }
 }
