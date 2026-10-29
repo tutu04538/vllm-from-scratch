@@ -267,6 +267,17 @@ class CudaGraphManager:
         """已经捕获了哪些 token 数（上游同名方法；观测 + 测试用）。"""
         return sorted({desc.num_tokens for desc in self.graphs})
 
+    def shutdown(self) -> None:
+        """丢弃本管理器持有的图；不触碰别的引擎/管理器。
+
+        先清引用再清候选表：图对象由 PyTorch 在引用归零时释放。调用方（Runner）
+        负责先同步设备，确保没有正在重放的图。
+        """
+        self.graphs.clear()
+        self._candidates.clear()
+        self._capture_descs.clear()
+        self.selections.clear()
+
     # -------- 捕获 --------
 
     @torch.inference_mode()
@@ -521,6 +532,15 @@ class ModelCudaGraphManager(CudaGraphManager):
         """PIECEWISE 重放：wrapper 从当前 forward context 取图键，再重放段序列。"""
         assert self.pw_model is not None, "先 capture()"
         return self.pw_model(input_ids=input_ids, positions=positions)
+
+    def shutdown(self) -> None:
+        """释放 target 图与 PIECEWISE 段图；不影响其他 manager。"""
+        super().shutdown()
+        if self.pw_model is not None:
+            self.pw_model.clear_graphs()
+        self.pw_model = None
+        self.hidden_states = None
+        self.aux_hidden_states = []
 
 
 def prepare_inputs_to_capture(

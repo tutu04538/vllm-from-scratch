@@ -798,9 +798,40 @@ VLLM_USE_V2_MODEL_RUNNER=1 VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN=8 \
 变长批共存；取消/复用不残留。差异账本 8 条见 [`docs/step79_alignment.md`](../docs/step79_alignment.md) §5，
 实测曲线见 [`docs/step79_cost_curves.json`](../docs/step79_cost_curves.json)。
 
+## 第八十三关：基准隔离、关闭所有权与第一分歧
+
+正式多配置测量改为**一个 case 一个子进程**：父进程只写 JSON、启动新解释器、收结果；
+子进程建一个引擎、预热、测量、`shutdown()`、退出。`benchmarks/benchmark_runner.py`
+负责失败传播（非零退出/超时/缺结果/status=failed 都不算成功），GPU case 串行。
+
+`LLMEngine → EngineCore → UniProcExecutor → Worker → GPUModelRunner` 的关闭链现在幂等且
+有所有权语义：Runner 释放自己的模型/KV/图/输入/workspace；`CUDAGraphWrapper` 用 WeakSet
+注册并按实例 `close()`，不调用 `clear_all_graphs()` 去误清另一个活引擎的图。关闭后再
+`add_request`/`step`/`execute_model`/`sample_tokens` 明确报错。
+
+指标口径：`output_tokens_per_s = committed_output_tokens / wall_time_s`；旧 `tpot_s`
+改名为 `inter_burst_latency_s`，新 `tpot_s` 只按首个 burst 之后的实际输出 token 数算，
+单 burst 为 `None`。显存分加载/捕获与预热后测量两个阶段记录。
+
+第一分歧用固定历史 teacher forcing 诊断（`benchmarks/check_step83_numerics.py`）：
+64-token 中文 prompt 的 K=0/K=2 在第 45 个 token 分叉；绝对 position 70 上 BF16 target
+top1 为 57208（margin 0.0625）vs 25352（0.25），完整 FP32 下两边 64-token 相同且该位置
+均为 25352。归因是 target 布局相关的 BF16 near-tie，不是 assistant/拒绝采样状态错误；
+BF16 边界未修，交给 84/85 的算子/RoPE 工作，不承诺逐 token 等价。
+
+```bash
+python benchmarks/check_step82_real_spec.py --perf --batch-sizes 1 --ks 0 2 \
+    --max-new-tokens 64 --repeats 1 --output-dir benchmarks/results/step83/order_forward
+python benchmarks/check_step83_numerics.py --max-new-tokens 64 \
+    --output-dir benchmarks/results/step83/bf16 --fp32-final-control
+python benchmarks/check_step83_numerics.py --max-new-tokens 64 --dtype float32 --blocks 64 \
+    --output-dir benchmarks/results/step83/fp32
+python -m pytest tests/step83 -q
+```
+
 ## 明确不做
 
-EAGLE/MTP、异步与多进程、指标、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）。
+异步与多进程端到端、正式生产指标上报、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）；EAGLE/MTP 本身已在 63/65 关接入。
 V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（MTP 要显式给派生好的 draft 配置，
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证

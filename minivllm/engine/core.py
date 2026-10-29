@@ -31,6 +31,8 @@ class EngineCore:
         # 半轮状态（镜像已更新、权威输出未提交）不可能靠重试自愈，所以下一轮必须在
         # **调度之前**拒绝，而不是返回空输出假装这一轮正常。
         self.failure: str | None = None
+        # 83 关：关闭态。shutdown 幂等；关闭后任何调度/执行入口在动手前拒绝。
+        self._shutdown = False
         # Scheduler 与 KVCacheManager 由执行侧交回容量之后一起创建：容量来自执行侧，
         # 不能先建调度器再问容量（初始化顺序见 195 §8）。
         from ..core.kv_cache_manager import KVCacheManager
@@ -92,6 +94,7 @@ class EngineCore:
         - `max_tokens` 超出剩余上下文 → **截到装得下的量**（vLLM 同样这么做），不是拒绝：
           "生成 100 个"但只剩 20 个位置时，合理的语义是尽力生成。
         """
+        self._check_alive()
         import dataclasses
 
         from ..request import Request
@@ -148,6 +151,7 @@ class EngineCore:
                                        tokenizer=None)
 
     def add_request(self, request) -> None:
+        self._check_alive()
         # 68 关：结构化输出的 grammar 在这里编译（上游也在 `EngineCore.add_request` 里调
         # `grammar_init`，不在 Scheduler 里）。**同步编译**，所以语法错的请求在提交处就失败，
         # 不会先排队再挂掉（异步编译属"本项目尚未接入"，见三态矩阵）。
@@ -155,11 +159,13 @@ class EngineCore:
         self.scheduler.add_request(request)
 
     def abort_requests(self, request_ids: list[str]) -> None:
+        self._check_alive()
         from ..request import RequestStatus
 
         self.scheduler.finish_requests(request_ids, RequestStatus.FINISHED_ABORTED)
 
     def has_requests(self) -> bool:
+        self._check_alive()
         return self.scheduler.has_requests()
 
     # -------- 一轮 --------
@@ -179,6 +185,7 @@ class EngineCore:
         算，而那一刻草稿还没回来，所以这一轮的**采样**推迟到上一轮结果处理完之后（上游同一
         分支，连处理顺序都一致）。
         """
+        self._check_alive()
         try:
             return self._step_with_batch_queue()
         except Exception as exc:                     # noqa: BLE001 —— 半轮状态不可重试
@@ -264,7 +271,9 @@ class EngineCore:
         return outputs, scheduler_output.total_num_scheduled_tokens > 0
 
     def _check_alive(self) -> None:
-        """下一轮开始前先看失败标记：**在调度之前**拒绝，别让 Scheduler 的状态再往前走。"""
+        """下一轮开始前先看关闭/失败标记：**在调度之前**拒绝，别让状态再往前走。"""
+        if self._shutdown:
+            raise RuntimeError("EngineCore 已经 shutdown，不再接受请求/step/执行调用")
         if self.failure is not None:
             raise RuntimeError(
                 f"EngineCore 已经失败，不再接受新的 step()：{self.failure}。"
@@ -278,6 +287,7 @@ class EngineCore:
         can't get draft token ids in advance, so we update draft token ids in the worker
         process"。异步下 Scheduler 只按占位宽度排计划，真实草稿留在执行侧。
         """
+        self._check_alive()
         if self.async_scheduling:
             return
         if model_executed and self.speculative_config is not None:
@@ -285,4 +295,17 @@ class EngineCore:
             self.scheduler.update_draft_token_ids(draft_token_ids)
 
     def shutdown(self) -> None:
-        self.model_executor.shutdown()
+        """关闭本引擎的执行端；重复调用幂等（83 关）。
+
+        只关闭自己的 executor；Scheduler/KV 控制面保留为 Python 对象，避免“关闭后访问”
+        变成 AttributeError——公开入口统一报“已经 shutdown”。
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+        executor = self.model_executor
+        try:
+            if executor is not None:
+                executor.shutdown()
+        finally:
+            self.model_executor = None

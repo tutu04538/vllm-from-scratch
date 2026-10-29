@@ -178,14 +178,17 @@ def test_v2_graph_and_eager_agree():
     eager = run_prompts(eager_engine, prompts, max_tokens=8)
     graph_engine, _, graph_runner = make_v2_engine(
         capture_sizes=[8, 16], mode="full_decode_only")
-    graph = run_prompts(graph_engine, prompts, max_tokens=8)
-    assert eager == graph
-    stats = graph_runner.cudagraph_capture_stats or {}
-    assert stats.get("captured", 0) >= 1, stats
-    selections = graph_runner.speculator.query_cudagraph_manager.selections
-    assert selections, "图管理器没有记录任何一次分派"
-    assert any(entry["desc_num_tokens"] > entry["num_tokens"] for entry in selections), \
-        "补齐到图档位这条路径没有被触发（测试没有覆盖到 padding 重放）"
+    graph = run_prompts(graph_engine, prompts, max_tokens=8, shutdown=False)
+    try:
+        assert eager == graph
+        stats = graph_runner.cudagraph_capture_stats or {}
+        assert stats.get("captured", 0) >= 1, stats
+        selections = graph_runner.speculator.query_cudagraph_manager.selections
+        assert selections, "图管理器没有记录任何一次分派"
+        assert any(entry["desc_num_tokens"] > entry["num_tokens"] for entry in selections), \
+            "补齐到图档位这条路径没有被触发（测试没有覆盖到 padding 重放）"
+    finally:
+        graph_engine.shutdown()
 
 
 # ---------------- K4：边界 ----------------

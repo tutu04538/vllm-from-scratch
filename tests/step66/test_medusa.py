@@ -656,6 +656,8 @@ def test_drafts_are_k_wide_per_request_and_prob_free():
     engine, _, runner = make_engine()
     drafts_log = install_draft_spy(runner)
     calls = install_propose_spy(runner)
+    # 关闭引擎会释放 runner；这里只留下测试要复算 logits 的那份模型引用。
+    proposer_model = runner.proposer.model
     try:
         outputs = run(engine, PROMPTS)
     finally:
@@ -676,8 +678,8 @@ def test_drafts_are_k_wide_per_request_and_prob_free():
         with torch.inference_mode():
             recomputed = torch.stack(
                 [row.argmax(dim=-1) for row in
-                 runner.proposer.model.compute_logits(
-                     runner.proposer.model(call["hidden"]))], dim=1)
+                 proposer_model.compute_logits(
+                     proposer_model(call["hidden"]))], dim=1)
         assert torch.equal(call["tokens"].cpu(), recomputed.cpu())
 
 

@@ -364,7 +364,8 @@ def _generate(*, chunk_limit, monkeypatch, logprobs=2, max_tokens=8):
             for out in engine.step():
                 outputs[out.request_id] = (list(out.token_ids),
                                            getattr(out, "logprobs", None))
-        return outputs, runner
+        num_speculative_steps = runner.rejection_sampler.num_speculative_steps
+        return outputs, num_speculative_steps
     finally:
         engine.shutdown()
 
@@ -384,10 +385,10 @@ def test_engine_chunked_generation_matches_unchunked(monkeypatch) -> None:
             yield chunk
 
     monkeypatch.setattr(mv_rs, "_iter_request_chunks", spy)
-    reference, _runner = _generate(chunk_limit=None, monkeypatch=monkeypatch)
+    reference, _sampler_steps = _generate(chunk_limit=None, monkeypatch=monkeypatch)
     assert chunks == [], "不切块时不该调用切块器"
 
-    chunked, runner = _generate(chunk_limit=K, monkeypatch=monkeypatch)
+    chunked, sampler_steps = _generate(chunk_limit=K, monkeypatch=monkeypatch)
     assert chunks, "上限压到 K 之后仍然没切块"
     assert len(chunks) > 1
 
@@ -405,4 +406,4 @@ def test_engine_chunked_generation_matches_unchunked(monkeypatch) -> None:
                 assert got_entry.rank == ref_entry.rank, (req_id, pos, token_id)
                 assert got_entry.logprob == pytest.approx(ref_entry.logprob, abs=1e-6)
     # 采样器确实按小上限工作（证明上面用的是同一条 `_verify_in_chunks`）
-    assert runner.rejection_sampler.num_speculative_steps == K
+    assert sampler_steps == K

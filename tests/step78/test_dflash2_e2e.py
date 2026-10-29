@@ -50,14 +50,16 @@ def test_graph_and_eager_produce_the_same_drafts():
                 for out in engine.step():
                     final[out.request_id] = list(out.token_ids)
                 snapshot.append(runner.req_states.draft_tokens[:2].clone())
+            if mode == "full_decode_only":
+                stats = runner.cudagraph_capture_stats
+                selections = list(runner.speculator.query_cudagraph_manager.selections)
         finally:
             engine.shutdown()
         rounds[mode] = snapshot
         finals[mode] = final
         if mode == "full_decode_only":
-            stats = runner.cudagraph_capture_stats or {}
-            assert stats.get("captured", 0) >= 1, stats
-            assert runner.speculator.query_cudagraph_manager.selections
+            assert stats and stats.get("captured", 0) >= 1, stats
+            assert selections
 
     assert finals["none"] == finals["full_decode_only"]
     assert len(rounds["none"]) == len(rounds["full_decode_only"]) > 1
@@ -95,7 +97,11 @@ def test_slot_reuse_keeps_the_output_identical():
 
     engine, _core, runner = make_engine(k=2, draft_sample_method="probabilistic",
                                         max_num_seqs=1)
-    speculative = run_prompts(engine, prompts, max_tokens=5, temperature=0.0)
-    assert speculative == baseline, (speculative, baseline)
-    # slot 0 的缓存候选 id 必须在最后一轮之后仍然只有 k 列非哨兵值
-    assert runner.speculator._cached_candidate_ids[0].numel() == 2 * 3
+    speculative = run_prompts(engine, prompts, max_tokens=5, temperature=0.0,
+                              shutdown=False)
+    try:
+        assert speculative == baseline, (speculative, baseline)
+        # slot 0 的缓存候选 id 必须在最后一轮之后仍然只有 k 列非哨兵值
+        assert runner.speculator._cached_candidate_ids[0].numel() == 2 * 3
+    finally:
+        engine.shutdown()

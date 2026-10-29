@@ -386,6 +386,8 @@ def test_graph_and_eager_produce_the_same_drafts(anchor):
         engine, _core, runner = make_engine(
             k=3, draft_sample_method="probabilistic", mode=mode,
             capture_sizes=[6, 12], anchor=anchor)
+        graph_stats = None
+        graph_selections = None
         try:
             for req_id, prompt in prompts:
                 engine.add_request(req_id, list(prompt),
@@ -398,15 +400,17 @@ def test_graph_and_eager_produce_the_same_drafts(anchor):
                 for out in engine.step():
                     final[out.request_id] = list(out.token_ids)
                 snapshot.append(runner.req_states.draft_tokens[:2].clone())
+            if mode == "full_decode_only":
+                graph_stats = runner.cudagraph_capture_stats
+                graph_selections = list(
+                    runner.speculator.query_cudagraph_manager.selections)
         finally:
             engine.shutdown()
         rounds[mode] = snapshot
         finals[mode] = final
         if mode == "full_decode_only":
-            stats = runner.cudagraph_capture_stats or {}
-            assert stats.get("captured", 0) >= 1, stats
-            selections = runner.speculator.query_cudagraph_manager.selections
-            assert selections, "图管理器没有记录任何一次分派"
+            assert graph_stats and graph_stats.get("captured", 0) >= 1, graph_stats
+            assert graph_selections, "图管理器没有记录任何一次分派"
 
     assert finals["none"] == finals["full_decode_only"]
     assert len(rounds["none"]) == len(rounds["full_decode_only"]) > 1

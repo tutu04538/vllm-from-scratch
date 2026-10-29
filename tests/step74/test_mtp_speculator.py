@@ -74,7 +74,17 @@ def run_mtp(*, v2: bool, mode: str, k: int, max_tokens: int = 8, explicit_draft:
                 break
             for out in engine.step():
                 final[out.request_id] = list(out.token_ids)
-        return final, runner
+        speculator = getattr(runner, "speculator", None)
+        diagnostics = None
+        if speculator is not None:
+            manager = speculator.decode_cudagraph_manager
+            diagnostics = {
+                "speculator_type": type(speculator).__name__,
+                "fused": bool(speculator.use_fused_multi_step_decode),
+                "decode_graphs": bool(manager.graphs) if manager is not None else False,
+                "decode_replays": manager.num_replays if manager is not None else 0,
+            }
+        return final, diagnostics
     finally:
         engine.shutdown()
 
@@ -89,14 +99,14 @@ def test_mtp_v2_matches_v1_end_to_end(k):
     assert v1 == v2_eager == v2_graph
     assert all(len(tokens) == 8 for tokens in v1.values())
 
-    assert type(runner_graph.speculator).__name__ == "MTPSpeculator"
-    for runner in (runner_eager, runner_graph):
-        assert runner.speculator.use_fused_multi_step_decode is (k > 1)
+    assert runner_graph["speculator_type"] == "MTPSpeculator"
+    for diagnostics in (runner_eager, runner_graph):
+        assert diagnostics["fused"] is (k > 1)
     if k > 1:
-        assert runner_graph.speculator.decode_cudagraph_manager.graphs, "K>1 必须捕获 decode 图"
-        assert runner_graph.speculator.decode_cudagraph_manager.num_replays > 0
+        assert runner_graph["decode_graphs"], "K>1 必须捕获 decode 图"
+        assert runner_graph["decode_replays"] > 0
     else:
-        assert runner_graph.speculator.decode_cudagraph_manager.graphs == {}
+        assert runner_graph["decode_graphs"] is False
 
 
 @requires_cuda

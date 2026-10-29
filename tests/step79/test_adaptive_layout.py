@@ -324,20 +324,22 @@ def test_adaptive_target_varlen_graph_matches_eager():
     _set_intermediate_budget(graph_runner)
     rec = RecordBatch(graph_runner)
     try:
-        graph_out = run_adaptive(graph_engine, prompts, max_tokens=4)
+        graph_out = run_adaptive(graph_engine, prompts, max_tokens=4,
+                                 shutdown=False)
+        manager = graph_runner.target_cudagraph_manager
+        assert manager is not None and manager.varlen_decode is True
+        assert graph_out == eager_out
+        full = [s for s in manager.selections if s["mode"] == "FULL"]
+        assert full
+        assert all(s["desc_num_tokens"] >= s["num_tokens"] for s in full)
+        assert all(s["desc_num_reqs"] == 2 for s in full)
+        assert graph_runner.adaptive_verification._cudagraph_limit == 8
+        # 真实 5 行命中捕获 8 行；图内 varlen 不按补齐后的 4 行/请求算。
+        assert any(r["num_reqs"] == 2 and r["num_tokens"] == 5
+                   for r in rec.rows if r["num_draft_tokens"] == 3)
     finally:
         rec.stop()
-    manager = graph_runner.target_cudagraph_manager
-    assert manager is not None and manager.varlen_decode is True
-    assert graph_out == eager_out
-    full = [s for s in manager.selections if s["mode"] == "FULL"]
-    assert full
-    assert all(s["desc_num_tokens"] >= s["num_tokens"] for s in full)
-    assert all(s["desc_num_reqs"] == 2 for s in full)
-    assert graph_runner.adaptive_verification._cudagraph_limit == 8
-    # 真实 5 行命中捕获 8 行；图内 varlen 不按补齐后的 4 行/请求算。
-    assert any(r["num_reqs"] == 2 and r["num_tokens"] == 5
-               for r in rec.rows if r["num_draft_tokens"] == 3)
+        graph_engine.shutdown()
 
 
 @requires_cuda
@@ -357,15 +359,18 @@ def test_adaptive_triton_backend_is_really_always():
     assert graph_runner.attention_backend_name == "triton"
     assert graph_runner.cudagraph_mode == CUDAGraphMode.FULL
     assert graph_runner._target_varlen_cudagraphs_enabled() is True
-    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4)
-
-    assert graph_out == eager_out
-    assert graph_runner.adaptive_verification._cudagraph_limit == 8
-    manager = graph_runner.target_cudagraph_manager
-    assert manager is not None and manager.graphs
-    assert manager.varlen_decode is True
-    assert any(s["mode"] == "FULL" and s["replayed"]
-               for s in manager.selections)
+    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4,
+                             shutdown=False)
+    try:
+        assert graph_out == eager_out
+        assert graph_runner.adaptive_verification._cudagraph_limit == 8
+        manager = graph_runner.target_cudagraph_manager
+        assert manager is not None and manager.graphs
+        assert manager.varlen_decode is True
+        assert any(s["mode"] == "FULL" and s["replayed"]
+                   for s in manager.selections)
+    finally:
+        graph_engine.shutdown()
 
 
 @requires_cuda
@@ -386,6 +391,10 @@ def test_adaptive_triton_attn_unified_block16_matches_eager():
     assert graph_runner.attention_backend.get_name() == "TRITON_ATTN_FIXED"
     assert graph_runner.cudagraph_mode == CUDAGraphMode.FULL
     assert graph_runner._target_varlen_cudagraphs_enabled() is True
-    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4)
-    assert graph_out == eager_out
-    assert graph_runner.adaptive_verification._cudagraph_limit == 8
+    graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4,
+                             shutdown=False)
+    try:
+        assert graph_out == eager_out
+        assert graph_runner.adaptive_verification._cudagraph_limit == 8
+    finally:
+        graph_engine.shutdown()

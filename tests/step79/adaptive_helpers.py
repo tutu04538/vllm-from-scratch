@@ -159,5 +159,6 @@ class RecordBatch:
         self.runner.prepare_inputs = self._orig
 
 
-def run_adaptive(engine, prompts, *, max_tokens=4):
-    return run_prompts(engine, prompts, max_tokens=max_tokens)
+def run_adaptive(engine, prompts, *, max_tokens=4, shutdown=True):
+    return run_prompts(engine, prompts, max_tokens=max_tokens,
+                       shutdown=shutdown)

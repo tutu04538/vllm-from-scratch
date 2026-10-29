@@ -31,7 +31,8 @@
   "step74_target_graph_breakable": "implemented + self-verified（Phase 3：breakable PIECEWISE；混合 prefill/decode 批与 eager 逐 token 相同；956 回归）",
   "step74_triton_paged_backend": "implemented + self-verified（Triton paged 后端，AttentionCGSupport.ALWAYS；target 混合批 FULL；DSpark adaptive 真 ALWAYS；965 回归）",
   "step74_triton_attn_upstream": "implemented + self-verified（上游 TRITON_ATTN 核心子集：2D unified_attention、block16/head16、paged/GQA/varlen；967 回归）",
-  "step74_triton_fixed_attention": "implemented + self-verified（固定场景 query-tiled Triton；block16 混合批 + adaptive；968 回归）"
+  "step74_triton_fixed_attention": "implemented + self-verified（固定场景 query-tiled Triton；block16 混合批 + adaptive；968 回归）",
+  "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）"
  },
  "step58": {
   "results": {
@@ -5997,7 +5998,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 173,
-     "sha256": "ffa7f33caefc428c151e2e87ef34b516ccd1d9a5cbe95598e1d7dee95c2806f0",
+     "sha256": "783284d479565090dbf887a02cde0d7495f59eafbf8df0ddcd92c69b5431fe2e",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -6128,6 +6129,96 @@
     "sha256": "93682eb1c97639d18f007704dc880bd74cbe530adaf7b1bb561213863fdad2a6"
    },
    "real_weights": "target/assistant 均已下载，固定 revision/hash；权重不提交"
+  }
+ },
+ "step83": {
+  "results": {
+   "step": "83（基准隔离、资源释放与第一分歧诊断）",
+   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/083_基准隔离与引擎生命周期.md",
+   "status": "完成 A/B/C/D：一配置一子进程、幂等 shutdown、指标口径、第一分歧可重放；BF16 near-tie 定位，算子未优化",
+   "recorded_at": "2026-10-29T16:45:00+08:00",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 173,
+    "sha256": "783284d479565090dbf887a02cde0d7495f59eafbf8df0ddcd92c69b5431fe2e",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "cuda_extension_path": "conda env bin 补进 PATH（ninja）"
+   },
+   "commands": [
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --perf --batch-sizes 1 --ks 0 2 --max-new-tokens 64 --repeats 1 --output-dir benchmarks/results/step83/order_forward",
+     "result": "K0 12.31 tok/s / K2 18.46 tok/s；64-token K0/K2 第 45 token 分歧；加载 allocated 13.989/14.762 GiB、reserved 20.959/20.967 GiB"
+    },
+    {
+     "cmd": "python benchmarks/check_step82_real_spec.py --perf --batch-sizes 1 --ks 2 0 --max-new-tokens 64 --repeats 1 --output-dir benchmarks/results/step83/order_reverse",
+     "result": "K2 17.77 tok/s / K0 13.00 tok/s；仍第 45 token 分歧；同一配置加载 allocated/reserved 与正序逐字节同值"
+    },
+    {
+     "cmd": "python benchmarks/check_step83_numerics.py --max-new-tokens 64 --output-dir benchmarks/results/step83/bf16 --fp32-final-control",
+     "result": "first_diff=45；绝对 position 70；k0 top1 57208 margin 0.0625，k2 top1 25352 margin 0.25；两侧 input token=237075；第一个 hidden 相对差>1e-3 的层为 model.layers.1；FP32 最终投影仍 top1 不同"
+    },
+    {
+     "cmd": "python benchmarks/check_step83_numerics.py --max-new-tokens 64 --dtype float32 --blocks 64 --output-dir benchmarks/results/step83/fp32",
+     "result": "K0/K2 64-token 输出完全相同；共同 position top1 64/64；position 70 两边 top1=25352、margin=0.065395；final hidden 最大相对 L2=1.87e-6"
+    },
+    {
+     "cmd": "python benchmarks/compare_step82_vllm.py",
+     "result": "两个独立子进程，128 token；隔离后两次单样本：target-only 28.08/31.33 tok/s、K=2 45.44/44.32 tok/s（1.62×/1.41×）；不替换 82 历史 28.53/37.36，不归因算法"
+    },
+    {
+     "cmd": "python -m pytest tests/step83 -q",
+     "result": "22 passed（指标 4 + 子进程隔离 6 + shutdown 6 + GPU 生命周期 3 + 数值比较器 3）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step83 -q",
+     "result": "1154 passed, 149 warnings in 161.01s（无 failed/skipped；退出码 0）"
+    }
+   ],
+   "execution_trace": {
+    "isolation": "父进程只写 case JSON、启动新解释器、收 result JSON；子进程建一个引擎、warmup、measure、shutdown、退出；exit!=0/超时/缺结果/status=failed 都是失败；父进程不 import torch/minivllm，GPU manifest 用 nvidia-smi。",
+    "lifecycle": "LLMEngine→EngineCore→UniProcExecutor→Worker→Runner 全链幂等关闭；Runner 释放模型/KV/图/输入/状态；CUDAGraphWrapper._all_instances 改 WeakSet 并 close() 注销；每个 graph manager 只清自己的图；活引擎隔离、三次建销毁 allocated 不增长。",
+    "metrics": "output_tokens_per_s=committed/wall；旧 tpot_s 改名 inter_burst_latency_s；新 tpot_s 按首 burst 后实际输出 token 数，单 burst=None；TTFT/接受率/逐位置单独记录；显存分 load_capture/measure_start/measure_end/measure_peak。",
+    "numerics": "固定历史 teacher forcing；BF16 首分歧 45、position 70；target top1 已被布局相关的 BF16 归约翻掉；完整 FP32 下 64-token 相同且 position 70 两边均 25352；assistant 首轮/首拒后输入与 draft 层源层映射已保存。",
+    "verdict": "BF16 near-tie 数值边界；不是 assistant/拒绝采样/KV 路由/权重加载状态错误；该 case 不进入严格等价性能表，84/85 不承诺逐 token 等价。"
+   },
+   "known_gaps": [
+    "只测一个中文 prompt、64 token；不同 prompt/长度可能有不同首分歧位置。",
+    "BF16 target hidden/logits 差异未消除；83 只定位。",
+    "不跑 B=1/4 × K=0/2/4 完整矩阵；公平对照属 88。",
+    "vLLM 最新对照只有单样本，隔离后两次 target-only 28.08/31.33 tok/s 已有约 11% 波动，且 prefix cache 条件仍不同，不作算法归因。",
+    "FP32 对照用 blocks=64，是数值控制不是性能配置。",
+    "诊断 hook 只在 check_step83_numerics.py 安装，正式计时路径无 hook。",
+    "外部调用方继续持有 Runner/tensor 时显存不会严格归 0；判据是 owner 引用断开、幂等关闭、三次循环不增长。",
+    "历史 step82 结果保留旧 tpot_s 语义，不能与 step83 新 tpot_s 混用。"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "architectures": [
+     "Gemma4ForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 对照单列）",
+    "text_only": true,
+    "note": "视觉/音频塔未加载；固定 revision 与 82 相同"
+   },
+   "assistant": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 对照单列）",
+    "note": "Q-only 共享 KV；draft 层 0/1/2→target 13，层 3→target 14"
+   }
   }
  }
 }

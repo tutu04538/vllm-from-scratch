@@ -172,6 +172,8 @@ class GPUModelRunner:
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.model = None
         self.failure: str | None = None
+        # 83 关：shutdown 后不得再执行；重复 shutdown 幂等。
+        self._shutdown = False
         # 79 关：自适应验证 manager 在 `initialize_kv_cache()` 里按实际注意力后端能力建；
         # 成本曲线由 `capture_model()` 里的 eager dummy step 实测生成。
         self.adaptive_verification = None
@@ -1345,6 +1347,8 @@ class GPUModelRunner:
     # -------- 一轮 --------
 
     def _check_usable(self) -> None:
+        if self._shutdown:
+            raise RuntimeError("这个 Runner 已经 shutdown，不再接受新的执行/采样调用")
         if self.failure is not None:
             raise RuntimeError(f"这个 Runner 已经失败，不再接受新的一轮：{self.failure}")
 
@@ -1542,6 +1546,7 @@ class GPUModelRunner:
 
     @torch.inference_mode()
     def sample_tokens(self, grammar_output, non_block: bool = False):
+        self._check_usable()
         if self.execute_model_state is None:
             # The prior execute_model call must have failed.
             return None
@@ -1629,4 +1634,81 @@ class GPUModelRunner:
         return None
 
     def take_draft_token_ids(self):
+        if self._shutdown:
+            raise RuntimeError("这个 Runner 已经 shutdown，不能取草稿")
         return self.draft_tokens_handler.get_draft_tokens()
+
+    # -------- 生命周期 --------
+
+    def shutdown(self) -> None:
+        """释放本 Runner 持有的资源（83 关；对应上游 `GPUModelRunner.shutdown`）。
+
+        顺序：阻止后续执行 → 等本引擎已提交的 GPU 工作完成 → 丢弃图/回调 → 断开模型与
+        KV/workspace 引用。**只清自己的对象**：图管理器、CUDAGraphWrapper 的全局注册都
+        按实例清理，不调用 `clear_all_graphs()` 去碰别的引擎。
+
+        CUDA context 与 allocator 缓存可以保留；这里的判据是"对象可回收、可重复关闭、
+        关闭后调用明确报错"，不是"显存归零"。
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+        # 先同步再丢图：重放可能还在 GPU 上跑，图对象不能在半途释放。
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(self.device)
+        finally:
+            self._release_owned_resources()
+
+    def _release_owned_resources(self) -> None:
+        # 1) 图：target 与 speculator 的 manager 各清各的。
+        if self.target_cudagraph_manager is not None:
+            self.target_cudagraph_manager.shutdown()
+        self.target_cudagraph_manager = None
+        speculator = self.speculator
+        if speculator is not None:
+            managers = []
+            for name in ("prefill_cudagraph_manager", "decode_cudagraph_manager",
+                         "cudagraph_manager", "query_cudagraph_manager"):
+                manager = getattr(speculator, name, None)
+                if manager is not None:
+                    managers.append(manager)
+            for manager in getattr(speculator, "cudagraph_managers", {}).values():
+                if manager is not None:
+                    managers.append(manager)
+            seen = set()
+            for manager in managers:
+                if id(manager) in seen:
+                    continue
+                seen.add(id(manager))
+                shutdown = getattr(manager, "shutdown", None)
+                if shutdown is not None:
+                    shutdown()
+        self.speculator = None
+
+        # 2) 模型：若被 V1/V2 图包装器包过，显式注销全局注册。
+        from ...compilation import CUDAGraphWrapper
+
+        if self.model is not None:
+            close = self.model.close if isinstance(self.model, CUDAGraphWrapper) else None
+            if close is not None:
+                close()
+        self.model = None
+
+        # 3) 采样器/输入/KV/状态：断开引用，让 Python 回收。
+        self.sampler = None
+        self.rejection_sampler = None
+        self.structured_outputs_worker = None
+        self.adaptive_verification = None
+        self.execute_model_state = None
+        self.draft_tokens_handler = None
+        self.kv_caches = {}
+        self.packed_backing = None
+        self.block_tables = None
+        self.input_buffers = None
+        self.req_states = None
+        self.step_timing = None
+        self.output_copy_stream = None
+        self._attn_metadata_layer_names = set()
+        self._attn_metadata_layer_groups = {}
+        self.kv_cache_config = None

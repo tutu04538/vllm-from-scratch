@@ -56,7 +56,9 @@ def test_summarize_run_and_median_range():
     assert summary["committed_output_tokens"] == 5
     assert summary["output_tokens_per_s"] == 5.0
     assert summary["ttft_s"]["mean"] == pytest.approx(0.3)
-    assert summary["tpot_s"]["mean"] == pytest.approx(0.4)
+    assert summary["inter_burst_latency_s"]["mean"] == pytest.approx(0.4)
+    # 83 口径：首 burst 之后两个 token，时间差 0.4s -> 0.2 s/token。
+    assert summary["tpot_s"]["mean"] == pytest.approx(0.2)
     assert summary["burst_tokens"]["max"] == 2
     assert summary["acceptance"]["acceptance_rate"] == 0.5
     assert summary["preemptions"] == 1

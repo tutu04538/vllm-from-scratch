@@ -294,13 +294,14 @@ def test_graph_replay_matches_eager_q_and_module_kv():
     graph_trace = StateTrace(graph_runner)
     try:
         got = _run(graph, max_tokens=8)
+        graph_mode = graph_runner.speculator.cudagraph_mode
     finally:
         graph_trace.close()
         graph.shutdown()
 
     assert got == want
     assert len(graph_trace.rounds) == len(eager_trace.rounds)
-    assert graph_runner.speculator.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+    assert graph_mode == CUDAGraphMode.FULL_DECODE_ONLY
 
     replayed = [
         r for r in graph_trace.rounds
@@ -352,22 +353,22 @@ def test_multi_module_mtp_full_graph_matches_eager():
     stats = runner.cudagraph_capture_stats
     try:
         got = _run(graph, max_tokens=6)
+        mode = speculator.cudagraph_mode
+        manager = speculator.cudagraph_manager
+        graph_count = len(manager.graphs) if manager is not None else 0
+        token_counts = manager.captured_token_counts() if manager is not None else []
+        selections = list(speculator.cudagraph_selections)
     finally:
         graph.shutdown()
 
     assert got == want
-    assert speculator.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
-    assert speculator.cudagraph_manager is not None
-    assert len(speculator.cudagraph_manager.graphs) == 2
+    assert mode == CUDAGraphMode.FULL_DECODE_ONLY
+    assert manager is not None
+    assert graph_count == 2
     assert stats is not None
     assert stats["graphs"]["multi_module"]["captured"] == 2
-    assert {k + 1, 2 * (k + 1)} <= set(
-        speculator.cudagraph_manager.captured_token_counts()
-    )
-    assert any(
-        s["mode"] == "FULL" and s["replayed"]
-        for s in speculator.cudagraph_selections
-    )
+    assert {k + 1, 2 * (k + 1)} <= set(token_counts)
+    assert any(s["mode"] == "FULL" and s["replayed"] for s in selections)
 
 
 @requires_cuda
@@ -391,21 +392,23 @@ def test_graph_padding_bucket_with_one_real_request_is_safe():
     speculator = runner.speculator
     try:
         got = _run(graph, prompts=PROMPTS[:1], max_tokens=6)
+        padded = [
+            s for s in speculator.cudagraph_selections
+            if s["mode"] == "FULL" and s["num_reqs"] == 1
+        ]
+        block_first = [int(row[0].item())
+                       for row in runner.block_tables.input_block_tables[0]]
     finally:
         graph.shutdown()
 
     assert got == want
-    padded = [
-        s for s in speculator.cudagraph_selections
-        if s["mode"] == "FULL" and s["num_reqs"] == 1
-    ]
     assert padded, "1 请求没有命中补齐过的图桶"
     assert all(s["desc_num_reqs"] == 2 for s in padded)
     assert all(s["desc_num_tokens"] == 2 * (k + 1) for s in padded)
     # 0 号块必须留白；真实请求的块首不能是 0。
-    for row in runner.block_tables.input_block_tables[0]:
-        if int(row[0].item()) != 0:
-            assert int(row[0].item()) > 0
+    for value in block_first:
+        if value != 0:
+            assert value > 0
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +453,12 @@ def test_graph_bucket_reuse_1_2_1_and_padding_safety():
             if not engine.has_unfinished_requests():
                 break
             engine.step()
+        selections = list(manager.selections)
+        after_graph_ids = {
+            desc: id(graph) for desc, graph in manager.graphs.items()}
+        graph_count = len(manager.graphs)
+        block_first = [int(row[0].item())
+                       for row in runner.block_tables.input_block_tables[0]]
     finally:
         speculator.propose = original_propose
         engine.shutdown()
@@ -461,21 +470,21 @@ def test_graph_bucket_reuse_1_2_1_and_padding_safety():
     assert seen_reqs.index(2) < len(seen_reqs) - 1
     assert any(
         s["mode"] == "FULL" and s["num_reqs"] == 1
-        for s in manager.selections
+        for s in selections
     )
     assert any(
         s["mode"] == "FULL" and s["num_reqs"] == 2
-        for s in manager.selections
+        for s in selections
     )
 
     # 同一个桶只捕获一次：descriptor / graph 对象都不应因为批顺序改变而重建。
-    assert {desc: id(graph) for desc, graph in manager.graphs.items()} == graph_ids
-    assert len(manager.graphs) == 2
+    assert after_graph_ids == graph_ids
+    assert graph_count == 2
 
     # graph 模式必须留白 0 号块；真实请求的块号不能是 0。
-    for row in runner.block_tables.input_block_tables[0]:
-        if int(row[0].item()) != 0:
-            assert int(row[0].item()) > 0
+    for value in block_first:
+        if value != 0:
+            assert value > 0
 
 
 @requires_cuda

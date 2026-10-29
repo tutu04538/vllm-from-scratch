@@ -24,6 +24,7 @@
 """
 
 import gc
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -104,13 +105,20 @@ class CUDAGraphOptions:
 class CUDAGraphWrapper:
     """给一个可调用对象加上"捕获一次、之后重放"的能力（上游同名类）。"""
 
-    #: 所有实例（上游用它做 `clear_all_graphs()`，测试里换权重/换配置时要把图丢掉）
-    _all_instances: ClassVar[set["CUDAGraphWrapper"]] = set()
+    #: 所有**仍存活**的实例。这里用 WeakSet 而不是上游的 set：强引用会让一个已经
+    #: shutdown 的引擎的模型/图无法被回收，正是 83 关查到的生命周期问题。WeakSet 不延长
+    #: 实例寿命；`close()` 还会显式注销，`clear_all_graphs()` 只影响仍存活的实例。
+    _all_instances: ClassVar["weakref.WeakSet[CUDAGraphWrapper]"] = weakref.WeakSet()
 
     @classmethod
     def clear_all_graphs(cls) -> None:
         for instance in list(cls._all_instances):
             instance.clear_graphs()
+
+    @classmethod
+    def live_instance_count(cls) -> int:
+        """诊断用：当前仍被其他地方持有的包装器数量。"""
+        return len(cls._all_instances)
 
     def __init__(self, runnable, vllm_config, runtime_mode: CUDAGraphMode,
                  cudagraph_options: CUDAGraphOptions | None = None) -> None:
@@ -144,7 +152,17 @@ class CUDAGraphWrapper:
         return self
 
     def clear_graphs(self) -> None:
+        """丢弃本实例的图缓存；不碰其他引擎的图。"""
         self.concrete_cudagraph_entries.clear()
+
+    def close(self) -> None:
+        """本引擎的图释放：清缓存并注销全局注册。
+
+        `clear_graphs()` 只清本实例的图；`close()` 额外从 `_all_instances` 移除，避免
+        "已经关闭的引擎仍被全局注册表列出"。重复调用是幂等的。
+        """
+        self.clear_graphs()
+        CUDAGraphWrapper._all_instances.discard(self)
 
     # -------- 一次调用 --------
 

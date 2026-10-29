@@ -461,14 +461,17 @@ def test_buffers_are_fixed_size_and_only_front_rows_are_valid(tiny):
                                      model="test_custom_proposer.BufferShapeProposer",
                                      num_speculative_tokens=2),
         max_num_seqs=1)
+    # shutdown 会释放 runner 的输入缓冲；测试自己先留下只读的尺寸快照。
+    max_num_reqs = runner.input_batch.max_num_reqs
+    token_ids_shape = tuple(runner.input_batch.token_ids_cpu.shape)
     try:
         run(engine, core, [("a", [1, 2, 3, 4])], max_tokens=3)
     finally:
         engine.shutdown()
     assert BufferShapeProposer.seen
     for seen in BufferShapeProposer.seen:
-        assert seen["num_tokens_len"] == runner.input_batch.max_num_reqs
-        assert seen["token_ids_shape"] == (runner.input_batch.max_num_reqs, 64)
+        assert seen["num_tokens_len"] == max_num_reqs
+        assert seen["token_ids_shape"] == token_ids_shape
         assert seen["rows"] <= seen["num_tokens_len"]
         assert all(value > 0 for value in seen["valid_prefix"]), seen
 

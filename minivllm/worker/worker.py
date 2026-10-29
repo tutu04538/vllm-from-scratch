@@ -30,12 +30,14 @@ class Worker:
         # 注入的 Runner（测试用）。None 表示走真实路径，在 load_model() 里建。
         self.model_runner = model_runner
         self.kv_cache_config = None
+        self._shutdown = False
 
     # -------- 初始化 --------
 
     def init_device(self) -> None:
         """准备设备。本关只记下 device：显存 profiling、分布式、CUDA Graph 捕获都不在这里
         （57D 及以后）。"""
+        self._check_open()
         return None
 
     def load_model(self) -> None:
@@ -46,6 +48,7 @@ class Worker:
         否则建 V1 的 `worker/gpu_model_runner.py::GPUModelRunner`。两条路径共用
         Engine/Scheduler 协议，但**不互相调用对方的输入准备**（需求 073 §2）。
         """
+        self._check_open()
         if self.model_runner is not None:
             return
         if self.vllm_config.use_v2_model_runner:
@@ -71,6 +74,7 @@ class Worker:
         再回报给引擎；本关按配置写死，所以顺序反过来也不影响——但"容量由执行侧决定"这条
         设计意图保留在这里（`Executor.get_cache_config()` 问的就是 Worker 这边）。
         """
+        self._check_open()
         self.kv_cache_config = kv_cache_config
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
@@ -81,6 +85,7 @@ class Worker:
         所以只剩捕获这一步：`GPUModelRunner.capture_model()` 按 `CudagraphDispatcher`
         列出的档位逐个热身 + 捕获。模式为 NONE（eager）时它是空操作。
         """
+        self._check_open()
         if self.model_runner is None:
             return
         capture_model = getattr(self.model_runner, "capture_model", None)
@@ -99,19 +104,42 @@ class Worker:
         return True
 
     def execute_model(self, scheduler_output, non_block: bool = False):
+        self._check_open()
         if self.model_runner is None:
             raise RuntimeError("Worker 没有 model_runner：先 load_model()")
         return self.model_runner.execute_model(scheduler_output, non_block=non_block)
 
     def sample_tokens(self, grammar_output, non_block: bool = False):
+        self._check_open()
         if self.model_runner is None:
             raise RuntimeError("Worker 没有 model_runner，无法采样（见 execute_model 的说明）")
         return self.model_runner.sample_tokens(grammar_output, non_block=non_block)
 
     def take_draft_token_ids(self):
+        self._check_open()
         if self.model_runner is None:
             return None
         return self.model_runner.take_draft_token_ids()
 
+    def _check_open(self) -> None:
+        if self._shutdown:
+            raise RuntimeError("Worker 已经 shutdown，不再接受初始化/执行/采样调用")
+
     def shutdown(self) -> None:
-        return None
+        """关闭本 Worker 持有的执行端资源；重复调用幂等（83 关）。
+
+        资源所有权在 Worker：`model_runner` 是它建的（或测试注入的），关闭时由 Worker
+        负责转交 `shutdown()`，再把引用断开。不在引擎 A 的关闭里清引擎 B 的 Runner。
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+        runner = self.model_runner
+        try:
+            if runner is not None:
+                shutdown = getattr(runner, "shutdown", None)
+                if shutdown is not None:
+                    shutdown()
+        finally:
+            self.model_runner = None
+            self.kv_cache_config = None

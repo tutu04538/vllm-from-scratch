@@ -24,7 +24,16 @@ from .output_processor import OutputProcessor
 class LLMEngine:
     def __init__(self, vllm_config, executor, tokenizer=None) -> None:
         self.vllm_config = vllm_config
-        self.engine_core = InprocClient(EngineCore(vllm_config, executor))
+        self._shutdown = False
+        try:
+            core = EngineCore(vllm_config, executor)
+        except Exception:
+            # EngineCore 可能已经在执行侧装好模型/KV，构造失败时没有别的 owner 能清理。
+            shutdown = getattr(executor, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
+            raise
+        self.engine_core = InprocClient(core)
         self.output_processor = OutputProcessor(tokenizer=tokenizer)
         # 81：正式统计记录点。这里只 observe；由调用方决定何时 log/reset。
         self.spec_decoding_logging = SpecDecodingLogging()
@@ -35,6 +44,7 @@ class LLMEngine:
     def add_request(self, request_id: str, prompt_token_ids: list[int], sampling_params,
                     arrival_time: float | None = None, priority: int = 0) -> str:
         """提交一条请求。**在这里就做重复 ID 校验**（用户侧状态还在就直接报错）。"""
+        self._check_open()
         if not isinstance(request_id, str):
             raise TypeError(f"request_id 必须是字符串，收到 {type(request_id)}")
 
@@ -59,13 +69,16 @@ class LLMEngine:
         return request_id
 
     def abort_request(self, request_ids: list[str]) -> None:
+        self._check_open()
         self.output_processor.abort_requests(request_ids)
         self.engine_core.abort_requests(request_ids)
 
     def has_unfinished_requests(self) -> bool:
+        self._check_open()
         return self.engine_core.engine_core.has_requests()
 
     def get_num_unfinished_requests(self) -> int:
+        self._check_open()
         running, waiting = self.engine_core.engine_core.scheduler.get_request_counts()
         return running + waiting
 
@@ -73,6 +86,7 @@ class LLMEngine:
 
     def step(self):
         """跑一轮，返回本轮的用户可见输出（可能是空的：中间 prefill 块不产出）。"""
+        self._check_open()
         outputs = self.engine_core.get_output()
         self.last_scheduler_stats = outputs.scheduler_stats
         if outputs.scheduler_stats is not None \
@@ -84,5 +98,18 @@ class LLMEngine:
             self.abort_request(processed.reqs_to_abort)
         return processed.request_outputs
 
+    def _check_open(self) -> None:
+        if self._shutdown:
+            raise RuntimeError("LLMEngine 已经 shutdown，不再接受请求/step 调用")
+
     def shutdown(self) -> None:
-        self.engine_core.shutdown()
+        """关闭引擎；重复调用幂等（83 关）。"""
+        if self._shutdown:
+            return
+        self._shutdown = True
+        try:
+            self.engine_core.shutdown()
+        finally:
+            # 用户侧状态也随引擎关闭；不保留“看起来还能继续”的空壳。
+            self.output_processor.abort_requests(
+                list(getattr(self.output_processor, "request_states", {})))

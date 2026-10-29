@@ -185,11 +185,13 @@ def test_padded_indices_match_scheduler_facts(tiny_dir, hf_config):
     engine.add_request("r", [1, 2, 3, 4, 5, 6],
                        SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
     run_to_end(engine)
+    # shutdown 会释放 runner；先留下这条只读诊断（外部测试持有快照）。
+    last_padded_inputs = runner.proposer.last_padded_inputs
     engine.shutdown()
     # 断言放在轨迹里：每一轮的第一个 forward 之前，Runner 都传了这两个张量
-    assert runner.proposer.last_padded_inputs is not None
-    index = runner.proposer.last_padded_inputs["token_indices_to_sample"]
-    rejected = runner.proposer.last_padded_inputs["num_rejected_tokens_gpu"]
+    assert last_padded_inputs is not None
+    index = last_padded_inputs["token_indices_to_sample"]
+    rejected = last_padded_inputs["num_rejected_tokens_gpu"]
     assert index == [] or len(index) >= 1
     assert rejected is not None and all(value >= 0 for value in rejected)
 
@@ -306,14 +308,14 @@ def test_padding_rows_extend_the_compact_layout(tiny_dir, hf_config):
     engine.add_request("r", [1, 2, 3, 4, 5, 6],
                        SamplingParams(max_tokens=6, temperature=0.0, eos_token_id=999))
     run_to_end(engine)
-    engine.shutdown()
     selections = [s for s in runner.cudagraph_selections if s["mode"] != "NONE"]
+    buffers = runner._padded_buffers
+    engine.shutdown()
     assert selections, "这一轮配置下应该出现过图分派"
     for selection in selections:
         # 统一 decode 批：补齐后的行数 = 请求数 × (1+K)，是紧凑行数的整数倍
         assert selection["padded_tokens"] % (1 + 3) == 0
         assert selection["padded_tokens"] >= selection["num_tokens"]
     # 静态缓冲里的 padding 行槽位是哨兵（不是 0：0 是真实槽位）
-    buffers = runner._padded_buffers
     assert buffers is not None
     assert int(buffers["slot_mapping"].min()) == PADDING_SLOT_ID

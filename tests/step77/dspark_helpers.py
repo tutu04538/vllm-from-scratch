@@ -196,7 +196,8 @@ def make_engine(*, k: int = 3, draft_sample_method: str = "greedy", mode: str = 
     return engine, core, core.model_executor.driver_worker.model_runner
 
 
-def run_prompts(engine, prompts, *, max_tokens=6, temperature=0.0, seed=None):
+def run_prompts(engine, prompts, *, max_tokens=6, temperature=0.0, seed=None,
+                shutdown=True):
     for req_id, prompt in prompts:
         engine.add_request(req_id, list(prompt),
                            SamplingParams(max_tokens=max_tokens, temperature=temperature,
@@ -207,7 +208,8 @@ def run_prompts(engine, prompts, *, max_tokens=6, temperature=0.0, seed=None):
             break
         for out in engine.step():
             outputs[out.request_id] = list(out.token_ids)
-    engine.shutdown()
+    if shutdown:
+        engine.shutdown()
     return outputs
 
 

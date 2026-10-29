@@ -629,6 +629,7 @@ def test_per_module_inputs_kv_and_logits_match_independent_replay(k):
     recorder = RoundRecorder(runner)
     try:
         outputs = _run(engine, max_tokens=8)
+        replay = ReferenceReplay(runner.speculator, recorder.records[0])
     finally:
         engine.shutdown()
 
@@ -646,7 +647,6 @@ def test_per_module_inputs_kv_and_logits_match_independent_replay(k):
         for value in rec.num_rejected.tolist()
     ), "测试没有覆盖部分拒绝（0 < num_rejected < K）的下一轮"
 
-    replay = ReferenceReplay(runner.speculator, recorder.records[0])
     for rec in recorder.records:
         replay.assert_state(rec)
         ref_steps, ref_tokens = replay.run(rec)
@@ -664,12 +664,12 @@ def test_negative_control_corrupted_cache_is_detected():
     recorder = RoundRecorder(runner, corrupt_cache=True)
     try:
         _run(engine)
+        replay = ReferenceReplay(runner.speculator, recorder.records[0])
     finally:
         engine.shutdown()
 
     assert recorder._corrupted, "没有遇到 num_rejected>1 的轮次，无法验证 cache 负向控制"
     rec = next(rec for rec in recorder.records if rec.corrupted)
-    replay = ReferenceReplay(runner.speculator, recorder.records[0])
     for prior in recorder.records:
         ref_steps, _ = replay.run(prior)
         if prior is rec:
@@ -687,12 +687,12 @@ def test_negative_control_stale_hidden_is_detected():
     recorder = RoundRecorder(runner, stale_hidden=True)
     try:
         _run(engine)
+        rec = next((r for r in recorder.records if len(r.steps) > 1), None)
+        assert rec is not None, "没有捕获到多步轮次"
+        replay = ReferenceReplay(runner.speculator, recorder.records[0])
     finally:
         engine.shutdown()
 
-    rec = next((r for r in recorder.records if len(r.steps) > 1), None)
-    assert rec is not None, "没有捕获到多步轮次"
-    replay = ReferenceReplay(runner.speculator, recorder.records[0])
     for prior in recorder.records:
         ref_steps, _ = replay.run(prior)
         if prior is rec:

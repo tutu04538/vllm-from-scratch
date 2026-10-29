@@ -30,7 +30,7 @@ PROMPTS = [("A", [1, 2, 3, 4, 5, 6]), ("B", [7, 8]), ("C", [10, 9, 8, 7, 6])]
 
 def _run(mode, *, spec_k=3, max_tokens=10, budget=64, blocks=64, max_model_len=64,
          max_num_seqs=3, capture_sizes=None, prompts=PROMPTS, seed=None,
-         recorder=False):
+         recorder=False, keep_alive=False):
     kwargs = dict(spec_k=spec_k, mode=mode, budget=budget, blocks=blocks,
                   max_model_len=max_model_len, max_num_seqs=max_num_seqs)
     if capture_sizes is not None:
@@ -57,21 +57,29 @@ def _run(mode, *, spec_k=3, max_tokens=10, budget=64, blocks=64, max_model_len=6
                 break
             for out in engine.step():
                 final[out.request_id] = list(out.token_ids)
+        if keep_alive:
+            runner._test_engine = engine
         return final, runner, rec, rejected_rounds
     finally:
-        engine.shutdown()
+        if not keep_alive:
+            engine.shutdown()
 
 
 @requires_cuda
 def test_batch_reorder_matches_eager():
     """B1：批重排（不同长度的提示词混在一轮里）下，图路径与 eager 逐 token 相同。"""
     eager, _, _, _ = _run("none")
-    graphed, runner, rec, _ = _run("full_decode_only", recorder=True)
-    assert eager == graphed
-    assert all(len(tokens) == 10 for tokens in graphed.values())
-    # 至少有一次真的重放了图（否则这条用例只证明了"大家都没走图"）
-    assert runner.speculator.prefill_cudagraph_manager.num_replays > 0
-    assert runner.speculator.decode_cudagraph_manager.num_replays > 0
+    graphed, runner, rec, _ = _run("full_decode_only", recorder=True,
+                                   keep_alive=True)
+    try:
+        assert eager == graphed
+        assert all(len(tokens) == 10 for tokens in graphed.values())
+        # 至少有一次真的重放了图（否则这条用例只证明了"大家都没走图"）
+        assert runner.speculator.prefill_cudagraph_manager.num_replays > 0
+        assert runner.speculator.decode_cudagraph_manager.num_replays > 0
+    finally:
+        engine = runner._test_engine
+        engine.shutdown()
 
 
 @requires_cuda
@@ -80,13 +88,17 @@ def test_partial_prefill_stays_eager_and_matches():
     kwargs = dict(budget=8, max_num_seqs=2, prompts=[("A", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
                                                      ("B", [7, 8, 9])])
     eager, _, _, _ = _run("none", **kwargs)
-    graphed, runner, rec, _ = _run("full_decode_only", recorder=True, **kwargs)
-    assert eager == graphed
-    # 提示词长 10 > budget 8 → 一定发生过分块 prefill
-    prefill_modes = rec.modes("prefill")
-    assert "NONE" in prefill_modes, f"分块 prefill 的轮次不该进图：{prefill_modes}"
-    # 但统一 decode 的轮次仍然走图（这条边界是"部分 prefill 不进图"，不是"图全废了"）
-    assert "FULL" in prefill_modes, f"统一 decode 的轮次应当走图：{prefill_modes}"
+    graphed, runner, rec, _ = _run("full_decode_only", recorder=True,
+                                   keep_alive=True, **kwargs)
+    try:
+        assert eager == graphed
+        # 提示词长 10 > budget 8 → 一定发生过分块 prefill
+        prefill_modes = rec.modes("prefill")
+        assert "NONE" in prefill_modes, f"分块 prefill 的轮次不该进图：{prefill_modes}"
+        # 但统一 decode 的轮次仍然走图（这条边界是"部分 prefill 不进图"，不是"图全废了"）
+        assert "FULL" in prefill_modes, f"统一 decode 的轮次应当走图：{prefill_modes}"
+    finally:
+        runner._test_engine.shutdown()
 
 
 @requires_cuda
@@ -94,13 +106,17 @@ def test_after_first_rejection_matches_eager():
     """B3：第一次被拒之后（`num_rejected > 0`）的一轮，草稿输入口径与 eager 相同。"""
     kwargs = dict(prompts=[("A", [1, 2, 3, 4, 5, 6])], max_tokens=12)
     eager, _, _, eager_rejected = _run("none", **kwargs)
-    graphed, runner, rec, rejected = _run("full_decode_only", recorder=True, **kwargs)
-    assert eager == graphed
-    assert max(rejected) > 0, (
-        "这轮用的 tiny 权重没产生任何拒绝，用例失去意义（首拒路径没被走到）")
-    assert max(eager_rejected) == max(rejected), "两条路的接受/拒绝序列不同"
-    # 被拒之后仍有 decode 图在跑（被拒不是"图失效"）
-    assert runner.speculator.decode_cudagraph_manager.num_replays > 0
+    graphed, runner, rec, rejected = _run("full_decode_only", recorder=True,
+                                          keep_alive=True, **kwargs)
+    try:
+        assert eager == graphed
+        assert max(rejected) > 0, (
+            "这轮用的 tiny 权重没产生任何拒绝，用例失去意义（首拒路径没被走到）")
+        assert max(eager_rejected) == max(rejected), "两条路的接受/拒绝序列不同"
+        # 被拒之后仍有 decode 图在跑（被拒不是"图失效"）
+        assert runner.speculator.decode_cudagraph_manager.num_replays > 0
+    finally:
+        runner._test_engine.shutdown()
 
 
 @requires_cuda

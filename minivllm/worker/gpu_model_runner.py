@@ -320,6 +320,8 @@ class GPUModelRunner:
         # 由 `_update_states()` 每轮重设；放在这里只是给"还没跑过一轮"的读取一个默认值。
         self._resolved_spec_decode_tokens: dict[str, list[int]] = {}
         self.failure: str | None = None
+        # 83 关：关闭态。shutdown 幂等；关闭后再执行/采样明确报错。
+        self._shutdown = False
 
         # ---------------- 69 关：CUDA Graph ----------------
         self.compilation_config = vllm_config.compilation_config
@@ -684,6 +686,8 @@ class GPUModelRunner:
     # -------- 一轮：更新状态 --------
 
     def _check_usable(self) -> None:
+        if self._shutdown:
+            raise RuntimeError("这个 Runner 已经 shutdown，不再接受新的执行/采样调用")
         if self.failure is not None:
             raise RuntimeError(f"这个 Runner 已经失败，不再接受新的一轮：{self.failure}")
 
@@ -2403,3 +2407,40 @@ class GPUModelRunner:
         # 草稿区到此为止：被接受的已经写进上面这段，被拒的不该再影响 ready 判据
         # （`num_tokens_with_spec` 会把它们算进去）
         self.input_batch.spec_token_ids[row].clear()
+
+    # -------- 生命周期（83 关） --------
+
+    def shutdown(self) -> None:
+        """释放 V1 Runner 自己持有的模型/提议者/KV/图引用。
+
+        只清本实例；不调用 `clear_all_graphs()`，否则另一个仍存活引擎的图会被顺手清掉。
+        CUDA context / allocator 缓存允许保留，不能以“显存归零”作为成功判据。
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        finally:
+            from ..compilation import CUDAGraphWrapper
+
+            model = getattr(self, "model", None)
+            if isinstance(model, CUDAGraphWrapper):
+                model.close()
+            self.model = None
+            self.proposer = None
+            self.kv_caches = {}
+            self.packed_backing = None
+            self.block_tables = None
+            self.input_batch = None
+            self.requests = {}
+            self.execute_model_state = None
+            self._pending_async_output = None
+            self.attn_metadata = None
+            self.target_hidden_states = None
+            self.aux_hidden_states = None
+            self._padded_buffers = None
+            self._padded_metadata = {}
+            self.cudagraph_dispatcher = None
+            self.cudagraph_logging = None

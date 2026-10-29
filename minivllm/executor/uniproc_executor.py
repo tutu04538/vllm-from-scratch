@@ -32,11 +32,24 @@ class UniProcExecutor:
         # driver_worker 是"这个执行端"的入口。57A 允许注入（测试的 FakeRunner 挂在 Worker 上），
         # 生产路径由 57B 提供真实 Worker+ModelRunner。
         self.driver_worker = worker if worker is not None else Worker(vllm_config)
-        self._init_executor()
+        self._shutdown = False
+        try:
+            self._init_executor()
+        except Exception:
+            # 初始化半途失败也要把已经装上的模型/设备状态交回 Worker 清理，不能留下
+            # 一个没有 owner 的 Runner（83 关的“部分对象安全清理”）。
+            self.shutdown()
+            raise
 
     def _init_executor(self) -> None:
         self.driver_worker.init_device()
         self.driver_worker.load_model()
+
+    def _check_open(self) -> None:
+        if self._shutdown:
+            raise RuntimeError("UniProcExecutor 已经 shutdown，不再接受执行/采样调用")
+        if self.driver_worker is None:
+            raise RuntimeError("UniProcExecutor 没有 driver_worker（已关闭或初始化失败）")
 
     # -------- 上层要的 --------
 
@@ -46,6 +59,7 @@ class UniProcExecutor:
         80E.E2/81：模型加载后，Runner 才能按 Attention 层推导 KV group（sliding/full、
         Q-only 源层）。有该入口时必须用它——拿 `CacheConfig` 会把多组压回单组。
         """
+        self._check_open()
         runner = getattr(self.driver_worker, "model_runner", None)
         build = getattr(runner, "build_kv_cache_config", None)
         if build is not None:
@@ -59,6 +73,7 @@ class UniProcExecutor:
         等于把图录到别的张量上——重放时读的是错的显存，而且不报错。上游同样在
         `initialize_from_config()` 之后才 `compile_or_warm_up_model()`。
         """
+        self._check_open()
         self.driver_worker.initialize_from_config(kv_cache_config)
         self.driver_worker.compile_or_warm_up_model()
 
@@ -68,6 +83,7 @@ class UniProcExecutor:
         上游这里要按 executor backend 分派（多进程 executor 支持、某些分布式后端不支持）；
         本仓库只有同进程一种，直接转发。
         """
+        self._check_open()
         return bool(self.driver_worker.supports_async_scheduling())
 
     def execute_model(self, scheduler_output, non_block: bool = False):
@@ -77,15 +93,27 @@ class UniProcExecutor:
         所以 Future 立刻是完成态——"非阻塞"在这里的含义是"调用方不必等结果值"，而不是
         "另起一个线程"。上游多进程 executor 的 Future 要跨 RPC，语义相同。
         """
+        self._check_open()
         output = self.driver_worker.execute_model(scheduler_output, non_block=non_block)
         return _as_future(output) if non_block else output
 
     def sample_tokens(self, grammar_output, non_block: bool = False):
+        self._check_open()
         output = self.driver_worker.sample_tokens(grammar_output, non_block=non_block)
         return _as_future(output) if non_block else output
 
     def take_draft_token_ids(self):
+        self._check_open()
         return self.driver_worker.take_draft_token_ids()
 
     def shutdown(self) -> None:
-        self.driver_worker.shutdown()
+        """关闭执行端；重复调用幂等，且不销毁不属于本执行端的全局资源。"""
+        if self._shutdown:
+            return
+        self._shutdown = True
+        worker = self.driver_worker
+        try:
+            if worker is not None:
+                worker.shutdown()
+        finally:
+            self.driver_worker = None
