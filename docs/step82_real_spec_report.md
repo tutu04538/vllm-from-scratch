@@ -148,12 +148,34 @@ batch 4->3->4 发生 = True
 5. 主瓶颈不是“草稿完全没用”，而是：**单请求固定开销 + 位置接受率衰减 + target batch 调度/attention 开销**。
    B=4 的 K=2 是当前这组实验里更合适的点。
 
-## 6. 未完成/边界
+## 6. vLLM 0.28.0 单场景对照
+
+同一 target/assistant、同一 token IDs、BF16、eager、单卡，B=1、K=2：
+
+| 框架 | target-only | 投机 K=2 | 本框架内加速比 |
+|---|---:|---:|---:|
+| minivllm | 12.07 tok/s | 6.79 tok/s | 0.56× |
+| vLLM 0.28.0 | 28.53 tok/s | 37.36 tok/s | **1.31×** |
+
+- vLLM 用 `TRITON_ATTN` / FlashInfer / 自身调度与 kernel 栈；这不是“只比较投机算法”的数字。
+- vLLM 的 target-only 与 K=2 输出**不是逐 token 相同**：第 90 个 token 开始分歧
+  （target `13984` vs spec `119519`）。本报告不把它写成“等价”，也未把差异归因于投机。
+- vLLM 在本机 WSL2 必须设 `VLLM_WSL2_ENABLE_PIN_MEMORY=1`；否则 EngineCore 报
+  `UVA is not available`，这是 82 之外的环境门槛。
+
+这组对照说明：同一个 B=1 场景，minivllm 的投机更慢、vLLM 的投机更快，差距主要来自
+实现栈（attention/kernel/调度），不能拿单框架加速比直接外推算法优劣。
+
+## 7. 未完成/边界
 
 - **没有新增“真实 assistant 每轮 hidden/logits 对冻结 assistant 的逐值差分”**。现有证据是
   80E.E1 的 tiny 模块差分、80E.E2 的真实 cache/源层/生成对照；本报告只记录真实候选/接受率。
   这是 82 要求里唯一没有在本轮补齐的诊断项。
-- 没有跑 vLLM 0.28.0 的真实端到端对照（本关主表只用本项目开/关投机配对；未编造上游数字）。
+  原因不是“做不到”，而是需要把 target paged KV、Q-only 源层和 assistant 输入序列从
+  minivllm 捕获后，注入冻结 vLLM `Gemma4MTP` 的同一缓存布局；现有 E1 的 identity attention
+  差分不能替代真实 Q-only 读路径。没有用同一实现自比或 identity 代替来伪造通过。
+- vLLM 对照只做了 B=1/K=2 一个场景；vLLM 的 target/spec 输出在第 90 token 分歧，
+  未进一步定位（可能是 backend/精度/调度差异），不声称两者数值等价。
 - 没有量化、TP/DP/PP/CP/EP、多模态、PD、Mamba、torch.compile、异步端到端。
 - graph/prefix/dynamic 是定点补充，不是全排列；没有生产级压测。
 - 接受率是草稿接受率，不是回答正确率；tok/s 不含 prompt 和被拒绝草稿。
@@ -162,6 +184,7 @@ batch 4->3->4 发生 = True
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
+VLLM_WSL2_ENABLE_PIN_MEMORY=1 $PY ...  # vLLM 对照
 $PY benchmarks/check_step82_real_spec.py --preflight
 $PY benchmarks/check_step82_real_spec.py --correctness --max-new-tokens 8
 $PY benchmarks/check_step82_real_spec.py --perf --max-new-tokens 128 --repeats 3 \

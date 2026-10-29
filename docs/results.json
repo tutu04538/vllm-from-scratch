@@ -6088,6 +6088,10 @@
     {
      "cmd": "python -m pytest tests/step58 … tests/step82 -q",
      "result": "1135 passed, 149 warnings in 199.96s（无 failed/skipped；2026-10-29 本机最终回归）"
+    },
+    {
+     "cmd": "VLLM_WSL2_ENABLE_PIN_MEMORY=1 python vLLM 0.28 LLM(target, spec_method=mtp, spec_model=assistant, spec_tokens=2, enforce_eager=True, bf16)",
+     "result": "target-only 28.53 tok/s；K=2 37.36 tok/s（本框架 1.31×）；输出第 90 token 起分歧（13984 vs 119519），不声称等价"
     }
    ],
    "execution_trace": {
@@ -6096,13 +6100,14 @@
     "graph": "FULL_DECODE_ONLY capture 发生，但小规模下 eager 更快；不声称 graph 加速。",
     "prefix": "662-token 公共前缀（> window 512）冷 0 命中、热 704 命中；K0 TTFT 0.898→0.233s，K2 3.309→0.690s。",
     "dynamic": "K2 起始 B4，第一条短请求完成后补第五条，batch 4→3→4 真实发生；交付 68 token，14.29 tok/s，接受率 62.9%。",
-    "memory": "peak allocated 约 14.0–14.8 GiB；reserved 计数跨顺序引擎累计，不作为预算。"
+    "memory": "peak allocated 约 14.0–14.8 GiB；reserved 计数跨顺序引擎累计，不作为预算。",
+    "vllm": "B=1 K=2 同 token IDs/BF16/eager：target-only 28.53 tok/s，spec 37.36 tok/s（1.31×）；输出第 90 token 差异，框架栈不同，不作算法归因。"
    },
    "known_gaps": [
     "未新增真实 assistant 每轮 hidden/logits 对冻结 assistant 的逐值差分；现有证据是 80E.E1 tiny 模块差分 + 80E.E2 真实 cache/源层/生成对照。",
-    "未跑 vLLM 0.28.0 真实端到端对照；主表只用本项目 K=0 配对基线，未编造上游数字。",
     "graph/prefix/dynamic 是定点补充，不是全排列或生产压测。",
-    "不做量化、TP/DP/PP/CP/EP、多模态、PD、Mamba、torch.compile、异步端到端。"
+    "不做量化、TP/DP/PP/CP/EP、多模态、PD、Mamba、torch.compile、异步端到端。",
+    "vLLM 对照只做 B=1/K=2 一个场景；target/spec 输出第 90 token 分歧，未定位到具体 backend/精度/调度层。"
    ]
   },
   "models": {
