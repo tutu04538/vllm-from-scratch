@@ -5999,7 +5999,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "07ee10305da0fc6b2e68af52f97cf84a581e02b60f08e2b68324f773cec927d5",
+     "sha256": "37390ea8f1447b845e5063e1fa1bb7891f7488a490a17c0a81cdcd9b86e21bcc",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7032,6 +7032,169 @@
     ],
     "dtype": "bfloat16（FP32 复放对照）",
     "note": "Q-only 共享 KV；4 层 = 3 sliding + 1 full"
+   },
+   "weights": "target/assistant 均已下载，固定 revision；权重不提交"
+  }
+ },
+ "step86": {
+  "results": {
+   "step": "86（Gemma4 原生分页 Attention）",
+   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/086_Gemma4原生分页Attention.md",
+   "status": "完成 eager 主线：2D unified、SWA、3D 单 token 分段、Q-only 只读、Triton KV 写入、真实 target+assistant；删除 triton_paged.py/fixed_attention.py 与 triton_paged 配置名。完整 Graph 元数据边界留给 087，公平矩阵留给 088",
+   "recorded_at": "2026-10-30T13:10:00+08:00",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 177,
+    "sha256": "37390ea8f1447b845e5063e1fa1bb7891f7488a490a17c0a81cdcd9b86e21bcc",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step86 -q",
+     "result": "30 passed, 0 failed, 0 skipped"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step86 -q",
+     "result": "2 passed, 28 skipped（CUDA kernel/真实模型用例按设备与权重跳过）"
+    },
+    {
+     "cmd": "python -m pytest tests/step86/test_real_gemma4_triton.py -q",
+     "result": "2 passed（真实 target K=0、target+assistant K=2，与 Torch 逐 token 相同）"
+    },
+    {
+     "cmd": "python benchmarks/check_step86_attention.py --micro",
+     "result": "4 个固定 shape 均 ok；每 case 3 次独立运行 × 5 个 CUDA-event loop 中位数"
+    },
+    {
+     "cmd": "python benchmarks/check_step86_attention.py --trace",
+     "result": "真实 K=2 eager 8 个 decode step；unified 344=8×43、reduce 32=8×4、reshape 120=8×15、legacy 0"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step86 -q",
+     "result": "1254 passed, 0 failed, 0 skipped, 148 warnings in 169.82s（exit 0）"
+    }
+   ],
+   "execution_trace": {
+    "micro": [
+     {
+      "name": "decode_swa_d256_s4096",
+      "q_len": 1,
+      "seq_len": 4096,
+      "window": 512,
+      "head_size": 256,
+      "unified_2d_us": 166.84800386428833,
+      "torch_generic_us": 787.168025970459,
+      "ratio_2d_over_torch": 0.22145769701463336,
+      "unified_3d_us": 95.32800316810608,
+      "ratio_3d_over_torch": 0.126529053711568
+     },
+     {
+      "name": "decode_full_d512_s2048",
+      "q_len": 1,
+      "seq_len": 2048,
+      "window": null,
+      "head_size": 512,
+      "unified_2d_us": 805.2160143852234,
+      "torch_generic_us": 863.7120127677917,
+      "ratio_2d_over_torch": 0.9419065340122339,
+      "unified_3d_us": 118.01599711179733,
+      "ratio_3d_over_torch": 0.10985981516346296
+     },
+     {
+      "name": "prefill_swa_d256_s2048",
+      "q_len": 128,
+      "seq_len": 2048,
+      "window": 512,
+      "head_size": 256,
+      "unified_2d_us": 165.6000018119812,
+      "torch_generic_us": 929.3439984321594,
+      "ratio_2d_over_torch": 0.18320879558225917
+     },
+     {
+      "name": "prefill_full_d512_s2048",
+      "q_len": 128,
+      "seq_len": 2048,
+      "window": null,
+      "head_size": 512,
+      "unified_2d_us": 795.1040267944336,
+      "torch_generic_us": 1157.6319932937622,
+      "ratio_2d_over_torch": 0.7014871709902696
+     }
+    ],
+    "real_k2_trace": {
+     "prompt_len": 14,
+     "build_s": 4.541401125025004,
+     "profiled_decode_steps": 8,
+     "per_step": {
+      "gpu_kernel_events": 1011.5,
+      "cpu_kernel_launch_events": 323.0,
+      "unified_attention_events": 43.0,
+      "reduce_segments_events": 4.0,
+      "reshape_cache_events": 15.0
+     },
+     "memory": {
+      "allocated_bytes": 9849767936,
+      "reserved_bytes": 10454302720,
+      "peak_allocated_bytes": 10331055104
+     },
+     "kernel_stats": {
+      "gpu_kernel_events": 8092,
+      "cpu_kernel_launch_events": 2584,
+      "distinct_gpu_kernels": 56,
+      "unified_attention_events": 344,
+      "reduce_segments_events": 32,
+      "reshape_cache_events": 120,
+      "legacy_paged_events": 0
+     },
+     "note": "真实 target+assistant、K=2、eager；prefill 在 profiler 外，后 8 个 decode step；只数 kernel/launch，不作吞吐计时"
+    },
+    "real_e2e": {
+     "target_k0": "真实 target Torch 与 TRITON_ATTN 8 token 完全相同",
+     "target_assistant_k2": "真实 target+assistant Torch 与 TRITON_ATTN 8 token 完全相同；assistant 4 层全部 TritonAttentionImpl",
+     "qonly": "target 20 个 Q-only 层 + assistant 4 层走 forward_q_only；patch Torch _forward_generic 抛异常仍能完成",
+     "rejection": "随机采样 16 token 至少触发一次拒绝（accepted < drafted），随后请求能复用 slot"
+    },
+    "deletions": [
+     "minivllm/attention/backends/triton_paged.py",
+     "minivllm/attention/ops/fixed_attention.py",
+     "tests/step74/test_triton_paged.py（7 项旧 fallback 测试）"
+    ]
+   },
+   "not_run": [
+    "完整 Graph 元数据/边界收口（087）",
+    "完整 B×K 公平性能矩阵（088）",
+    "量化 KV、ALiBi、sinks、softcap、cascade、MM prefix、RSWA、chunked、tensor descriptor",
+    "多模态、PD 分离、张量并行、异步端到端"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "repo": "google/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "architectures": [
+     "Gemma4ForCausalLM"
+    ],
+    "dtype": "bfloat16",
+    "text_only": true,
+    "note": "35 层 = 28 sliding + 7 full；20 个 Q-only 共享尾层；head_dim 256/512"
+   },
+   "assistant": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "repo": "google/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM"
+    ],
+    "dtype": "bfloat16",
+    "note": "4 层 = 3 sliding + 1 full；全部 Q-only 共享读取"
    },
    "weights": "target/assistant 均已下载，固定 revision；权重不提交"
   }

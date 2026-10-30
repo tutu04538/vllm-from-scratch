@@ -156,5 +156,9 @@ class Attention(nn.Module):
         if self._output_buffer is None:
             return result
         out = self._output_buffer[: result.shape[0]]
+        if result.data_ptr() == out.data_ptr():
+            # 086：TRITON_ATTN 直接把结果写进这个 buffer；再 copy_ 一次会
+            # 变成自拷贝（至少浪费带宽，部分版本还会报 overlap）。
+            return out
         out.copy_(result)
         return out

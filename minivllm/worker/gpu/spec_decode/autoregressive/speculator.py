@@ -142,7 +142,7 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
         self.draft_attn_layer_names)`）。
 
-        本仓库只有一个后端、一个 KV group，所以恒为"一组、一个构造器"。**测试的接缝放在这里**：
+        本仓库草稿侧固定用 Torch 参考后端、一个 KV group，所以恒为"一组、一个构造器"。**测试的接缝放在这里**：
         74 关的验收要"支持/不支持 `update_draft_decode_metadata` 的两个后端都跑一遍"，而本仓库
         生产路径只有 Torch 后端（它声明支持），所以测试用 `minivllm/testing/` 里的替身构造器
         替换这个方法——被验证的仍然是**生产的那条门**（`_configure_fused_multi_step_decode()`），

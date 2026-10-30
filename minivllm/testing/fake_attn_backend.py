@@ -1,7 +1,7 @@
 """测试用的注意力替身（**只给测试**，生产路径不 import）。
 
 74 关的验收要求"支持 / 不支持 `update_draft_decode_metadata` 的两个后端都跑一遍，断言实际
-选中 fused / fallback"。本仓库的生产路径只有一个 Torch 后端（它声明支持原地更新），所以
+选中 fused / fallback"。本仓库生产路径的 Torch 后端（默认）声明支持原地更新，所以
 "不支持"的那一档必须由替身来演——**但演的是 capability 声明，不是算法**：
 
     `NoDraftMetadataUpdateBuilder`  继承生产的 Torch 构造器，把

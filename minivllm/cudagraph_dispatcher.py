@@ -147,7 +147,7 @@ class CudagraphDispatcher:
         """按模式列出所有**可能**被用到的键（上游同名方法）。
 
         调用时机有讲究：**必须在注意力后端确定之后**——因为"这个后端支不支持图"决定最终模式。
-        本仓库只有一个 Torch 后端，它也支持图（统一 decode 那条路径，见
+        本仓库每个引擎选一个后端；Torch 与 Triton 都支持图（统一 decode 那条路径，见
         `attention/backends/torch_sdpa.py`），所以模式就是配置里解析出来的那个。
 
         键是"可能用到"，不是"一定用到"：多列一些不会错（`dispatch()` 找不到就回退 eager），

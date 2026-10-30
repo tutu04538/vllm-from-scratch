@@ -70,7 +70,7 @@ class AttentionMetadataBuilder:
         """这个后端在**这份引擎配置**下支持到哪一档（对应上游同名方法）。
 
         上游各后端还会看 `kv_cache_spec`（例如 MLA / 滑动窗口的实现差异）与 dtype。
-        本仓库只有一个后端、一种分页 KV，能力只取决于 `_cudagraph_support` 这个类属性；
+        本仓库每个引擎选一个注意力后端、一种分页 KV，能力只取决于该后端的 `_cudagraph_support`；
         `kv_cache_spec` 参数保留是为了调用点与上游同形（将来加后端时不用改调用方）。
         """
         return cls._cudagraph_support

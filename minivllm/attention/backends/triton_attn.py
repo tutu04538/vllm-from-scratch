@@ -1,72 +1,279 @@
-"""固定场景的 Triton paged attention 后端。
+"""TRITON_ATTN：086 起的唯一 Triton 分页 attention 后端。
 
-固定条件：
+职责边界：
 
-    Qwen3 target / block_size=16 / head_dim in {16,32,64,128}
-    causal / GQA / paged KV / fp16·bf16·fp32
-    query 行按 query_start_loc 打包，prefill/decode/混合批都支持
-    无量化 / 无 sliding / 无 cascade / 无 sinks / 无 MM prefix / 无 RSWA
+    * 这里只做 backend / metadata / 能力检查 / dispatch；
+    * attention 数学在 `attention/ops/triton_unified_attention.py`；
+    * KV 写入在 `attention/ops/triton_reshape_and_cache_flash.py`；
+    * eager、FULL 图、Q-only 共享层全部走同一条 unified 路径，没有
+      “eager 回 Torch”或“block/head 不满足就换旧 kernel”的 fallback。
 
-一个 program 负责一条请求的一个 query block 的一个 query head；query block 之间并行，
-不再像旧 `triton_paged` 那样“一行 query 一个 program”。block4/head4 回退旧 kernel。
-本后端不是完整上游 TRITON_ATTN；配置名 `triton_attn`，`triton` 是别名。
+本地没有上游的量化、ALiBi、sinks、cascade、MM prefix、RSWA、tensor
+descriptor 分支；这些能力不在本后端的支持矩阵内。
 """
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import torch
 
 from ..backend import AttentionCGSupport
-from ..metadata import AttentionMetadata
-from ..ops.fixed_attention import fixed_paged_attention
-from .triton_paged import (TritonPagedAttentionBackend,
-                           TritonPagedAttentionImpl,
-                           TritonPagedAttentionMetadataBuilder)
+from ..metadata import AttentionMetadata, AttentionMetadataBuilder
+from ..ops.triton_reshape_and_cache_flash import (
+    triton_reshape_and_cache_flash,
+)
+from ..ops.triton_unified_attention import (
+    can_use_3d,
+    make_3d_workspace,
+    unified_attention,
+)
+from ...triton_utils import triton
 
 
-class TritonAttentionMetadataBuilder(TritonPagedAttentionMetadataBuilder):
-    """与 Triton paged builder 同字段；能力 ALWAYS。"""
+#: 3D 工作区按 (device, heads, head_dim, threshold, segments) 共享。同一模型的
+#: 28 个 sliding 层共用一份，7 个 full 层共用另一份；不在每层 forward 里分配。
+_WORKSPACE_CACHE: dict[tuple, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
-    _cudagraph_support = AttentionCGSupport.ALWAYS
+#: 上游 `MIN_LAUNCH_GRID_SIZE_2D = 128`；低于这个 batch 时 3D 分段才有意义。
+_MIN_LAUNCH_GRID_SIZE_2D = 128
+_NUM_PAR_SOFTMAX_SEGMENTS = 16
 
 
-class TritonAttentionImpl(TritonPagedAttentionImpl):
-    """图内优先走上游 unified_attention；小 head/小块走本地逐行 fallback。"""
+def _device_key(device: torch.device) -> tuple[str, int]:
+    index = device.index
+    return device.type, -1 if index is None else int(index)
+
+
+def get_3d_workspace(device: torch.device, num_heads: int, head_size: int,
+                     seq_threshold_3D: int,
+                     num_par_softmax_segments: int):
+    key = (_device_key(device), num_heads, head_size,
+           seq_threshold_3D, num_par_softmax_segments)
+    workspace = _WORKSPACE_CACHE.get(key)
+    if workspace is None:
+        workspace = make_3d_workspace(
+            device, num_heads, head_size, seq_threshold_3D,
+            num_par_softmax_segments)
+        _WORKSPACE_CACHE[key] = workspace
+    return workspace
+
+
+class TritonAttentionMetadataBuilder(AttentionMetadataBuilder):
+    """与 Torch builder 同字段；图能力 ALWAYS。
+
+    3D workspace 不放在 metadata 里：metadata 每步重建，而 workspace 必须
+    跨步、跨图复用。它由 Impl 在第一次 forward 时按 shape 缓存。
+    """
+
+    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
+    supports_draft_decode_metadata_update = True
+
+    def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:
+        # 所有步相关字段都是常驻输入缓冲的切片，写缓冲的 kernel 已经就地更新。
+        return None
+
+
+class TritonAttentionImpl:
+    """统一 Triton 分页 attention 实现。"""
+
+    def __init__(self, num_heads: int, head_size: int, scale: float,
+                 num_kv_heads: int | None = None) -> None:
+        self.num_heads = int(num_heads)
+        self.head_size = int(head_size)
+        self.num_kv_heads = (self.num_heads if num_kv_heads is None
+                             else int(num_kv_heads))
+        if self.num_heads <= 0 or self.num_kv_heads <= 0:
+            raise ValueError("attention head 数必须为正")
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError(
+                f"GQA 要求 query head 数整除 KV head 数，收到 "
+                f"{self.num_heads}/{self.num_kv_heads}")
+        if not (1 <= self.head_size <= 512):
+            raise ValueError(
+                f"TRITON_ATTN 当前支持 head_size 1..512（Gemma4 的 256/512、"
+                f"Qwen3 的 128、tiny 模型的 8/16 等），收到 {self.head_size}")
+        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
+        self.scale = float(scale)
+
+        # 单请求时至少让 grid 接近 128 个 program；num_seqs 超过它就退回 2D。
+        self.seq_threshold_3D = max(
+            1, _MIN_LAUNCH_GRID_SIZE_2D // self.num_kv_heads)
+        self.num_par_softmax_segments = _NUM_PAR_SOFTMAX_SEGMENTS
+        self._workspace = None
+        self._workspace_key = None
+
+    # -------- 入口 --------
 
     def forward(self, layer, query: torch.Tensor, key: torch.Tensor,
                 value: torch.Tensor, kv_cache,
-                attn_metadata: AttentionMetadata):
-        self.write_kv(key, value, kv_cache, attn_metadata)
-        if self._graph_dispatched():
-            bs = attn_metadata.block_size
-            if (self.head_size >= 16 and bs >= 16
-                    and self.num_queries_per_kv <= 16):
-                return self._forward_unified(query, kv_cache, attn_metadata)
-            return self._forward_paged(query, kv_cache, attn_metadata)
-        return self._forward_generic(query, kv_cache, attn_metadata)
+                attn_metadata: AttentionMetadata) -> torch.Tensor:
+        q = self._as_3d(query, self.num_heads)
+        k = self._as_3d(key, self.num_kv_heads)
+        v = self._as_3d(value, self.num_kv_heads)
+        if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+            raise ValueError(
+                f"q/k/v 的 token 数不一致：{q.shape[0]}/{k.shape[0]}/{v.shape[0]}")
+        self._write_kv(k, v, kv_cache, attn_metadata.slot_mapping)
+        out_flat, out = self._output_for(layer, q)
+        self._run(q, kv_cache, out, attn_metadata, layer)
+        return out_flat
 
-    def _forward_unified(self, query: torch.Tensor, kv_cache,
-                         attn_metadata: AttentionMetadata) -> torch.Tensor:
-        num_tokens = query.shape[0]
-        num_heads, head_size = self.num_heads, self.head_size
-        q = query.reshape(num_tokens, num_heads, head_size)
-        # 固定场景要求 block16、head_dim>=16；调用方已 gate。
-        out = torch.zeros_like(q)
-        fixed_paged_attention(
-            q, out, kv_cache[0], kv_cache[1],
-            attn_metadata.block_table[: attn_metadata.num_reqs],
-            attn_metadata.seq_lens[: attn_metadata.num_reqs],
-            attn_metadata.query_start_loc[: attn_metadata.num_reqs + 1],
-            block_size=attn_metadata.block_size,
-            scale=self.scale,
+    def forward_q_only(self, layer, query: torch.Tensor, kv_cache,
+                       attn_metadata: AttentionMetadata) -> torch.Tensor:
+        """Q-only 层：只读源层 cache，绝不写 K/V。"""
+        q = self._as_3d(query, self.num_heads)
+        out_flat, out = self._output_for(layer, q)
+        self._run(q, kv_cache, out, attn_metadata, layer)
+        return out_flat
+
+    def do_kv_cache_update(self, layer, key: torch.Tensor, value: torch.Tensor,
+                           kv_cache, slot_mapping: torch.Tensor) -> None:
+        k = self._as_3d(key, self.num_kv_heads)
+        v = self._as_3d(value, self.num_kv_heads)
+        self._write_kv(k, v, kv_cache, slot_mapping)
+
+    # -------- 内部 --------
+
+    def _as_3d(self, x: torch.Tensor, heads: int) -> torch.Tensor:
+        if x.ndim == 3:
+            if x.shape[1] != heads or x.shape[2] != self.head_size:
+                raise ValueError(
+                    f"tensor 形状 {tuple(x.shape)} 与 heads/head_size="
+                    f"{heads}/{self.head_size} 不符")
+            return x
+        if x.ndim == 2:
+            if x.shape[1] != heads * self.head_size:
+                raise ValueError(
+                    f"tensor 末维 {x.shape[1]} != {heads}×{self.head_size}")
+            # `unflatten` 保留 packed QKV 的 row stride，不触发 copy。
+            return x.unflatten(-1, (heads, self.head_size))
+        raise ValueError(f"attention tensor 必须是 2D/3D，收到 {tuple(x.shape)}")
+
+    def _output_for(self, layer, q: torch.Tensor):
+        n = q.shape[0]
+        flat = getattr(layer, "_output_buffer", None)
+        width = self.num_heads * self.head_size
+        if (flat is not None and flat.ndim == 2 and flat.shape[0] >= n
+                and flat.shape[1] == width and flat.dtype == q.dtype
+                and flat.device == q.device):
+            out_flat = flat[:n]
+            return out_flat, out_flat.view(n, self.num_heads, self.head_size)
+        out_flat = torch.empty(
+            (n, width), dtype=q.dtype, device=q.device)
+        return out_flat, out_flat.view(n, self.num_heads, self.head_size)
+
+    def _split_cache(self, kv_cache):
+        if torch.is_tensor(kv_cache):
+            if kv_cache.ndim != 5 or kv_cache.shape[0] != 2:
+                raise ValueError(
+                    f"KV cache 应为 [2, blocks, block_size, kv_heads, head_size]，"
+                    f"收到 {tuple(kv_cache.shape)}")
+            return kv_cache[0], kv_cache[1]
+        if isinstance(kv_cache, (tuple, list)) and len(kv_cache) == 2:
+            return kv_cache[0], kv_cache[1]
+        raise ValueError(
+            "TRITON_ATTN 需要 [2, ...] 的 KV tensor 或 (k_cache, v_cache) 两片视图")
+
+    def _write_kv(self, k: torch.Tensor, v: torch.Tensor, kv_cache,
+                  slot_mapping: torch.Tensor) -> None:
+        k_cache, v_cache = self._split_cache(kv_cache)
+        if k_cache.ndim != 4 or v_cache.ndim != 4:
+            raise ValueError(
+                f"KV cache 必须是 [blocks, block_size, kv_heads, head_size]，"
+                f"收到 {tuple(k_cache.shape)} / {tuple(v_cache.shape)}")
+        if k_cache.shape != v_cache.shape:
+            raise ValueError("K cache 与 V cache 形状不一致")
+        if tuple(k_cache.shape[2:]) != (self.num_kv_heads, self.head_size):
+            raise ValueError(
+                f"KV cache 的 kv_heads/head_size 不符：cache="
+                f"{tuple(k_cache.shape[2:])}, impl="
+                f"{(self.num_kv_heads, self.head_size)}")
+        n = k.shape[0]
+        slots = slot_mapping[:n]
+        if slots.numel() != n:
+            raise ValueError(
+                f"slot_mapping 只有 {slots.numel()} 个，少于 {n} 个 token")
+        triton_reshape_and_cache_flash(k, v, k_cache, v_cache, slots)
+
+    def _workspace_for(self, device: torch.device):
+        key = (_device_key(device), self.num_heads, self.head_size,
+               self.seq_threshold_3D, self.num_par_softmax_segments)
+        if self._workspace is None or self._workspace_key != key:
+            self._workspace = get_3d_workspace(
+                device, self.num_heads, self.head_size,
+                self.seq_threshold_3D, self.num_par_softmax_segments)
+            self._workspace_key = key
+        return self._workspace
+
+    def _run(self, q: torch.Tensor, kv_cache, out: torch.Tensor,
+             attn_metadata: AttentionMetadata, layer) -> None:
+        if attn_metadata is None:
+            raise RuntimeError("TRITON_ATTN 需要 attn_metadata")
+        if triton is None:
+            raise RuntimeError("Triton 不可用，不能使用 TRITON_ATTN 后端")
+
+        k_cache, v_cache = self._split_cache(kv_cache)
+        if attn_metadata.block_size != k_cache.shape[1]:
+            raise ValueError(
+                f"metadata.block_size={attn_metadata.block_size} 与 cache 的 "
+                f"block_size={k_cache.shape[1]} 不一致")
+
+        window = getattr(layer, "per_layer_sliding_window", None)
+        if window is not None:
+            window = int(window)
+            if window <= 0:
+                raise ValueError(f"sliding_window 必须为正，收到 {window}")
+            if (attn_metadata.sliding_window is not None
+                    and int(attn_metadata.sliding_window) != window):
+                raise ValueError(
+                    f"层 sliding_window={window} 与 metadata="
+                    f"{attn_metadata.sliding_window} 不一致")
+            window_size = (window - 1, 0)
+        else:
+            window_size = (-1, -1)
+
+        max_q = (attn_metadata.uniform_query_len
+                 if attn_metadata.uniform_query_len is not None
+                 else attn_metadata.max_query_len)
+        num_seqs = int(attn_metadata.seq_lens.numel())
+        workspace = None
+        if can_use_3d(
+                max_seqlen_q=max_q,
+                num_seqs=num_seqs,
+                seq_threshold_3D=self.seq_threshold_3D,
+                num_par_softmax_segments=self.num_par_softmax_segments):
+            workspace = self._workspace_for(q.device)
+            if workspace[0].shape[0] < num_seqs:
+                raise RuntimeError(
+                    f"3D workspace 只有 {workspace[0].shape[0]} 行，"
+                    f"但本批有 {num_seqs} 条请求")
+
+        unified_attention(
+            q, k_cache, v_cache, out,
+            attn_metadata.query_start_loc,
+            attn_metadata.seq_lens,
+            attn_metadata.block_table,
+            softmax_scale=self.scale,
+            causal=bool(attn_metadata.causal),
+            window_size=window_size,
+            max_seqlen_q=max_q,
+            seq_threshold_3D=(self.seq_threshold_3D
+                              if workspace is not None else None),
+            num_par_softmax_segments=(self.num_par_softmax_segments
+                                      if workspace is not None else None),
+            softmax_segm_output=(workspace[0] if workspace is not None else None),
+            softmax_segm_max=(workspace[1] if workspace is not None else None),
+            softmax_segm_expsum=(workspace[2] if workspace is not None else None),
         )
-        return out.reshape(num_tokens, num_heads * head_size)
 
 
-class TritonAttentionBackend(TritonPagedAttentionBackend):
+class TritonAttentionBackend:
+    """TRITON_ATTN backend 入口。"""
+
     @staticmethod
     def get_name() -> str:
-        return "TRITON_ATTN_FIXED"
+        return "TRITON_ATTN"
 
     @staticmethod
     def get_builder_cls():
@@ -75,3 +282,21 @@ class TritonAttentionBackend(TritonPagedAttentionBackend):
     @staticmethod
     def get_impl_cls():
         return TritonAttentionImpl
+
+    @classmethod
+    def supports_sliding_window(cls) -> bool:
+        return True
+
+    @classmethod
+    def supports_non_causal(cls) -> bool:
+        return True
+
+    @classmethod
+    def supports_head_size(cls, head_size: int) -> bool:
+        return 1 <= int(head_size) <= 512
+
+    @staticmethod
+    def supports_device_cpu_query_lens_mismatch() -> bool:
+        # query_start_loc/seq_lens/block_table 都在 device 上读；不需要用 CPU
+        # query 长度做形状规划，也不按 CPU 长度分支。
+        return True

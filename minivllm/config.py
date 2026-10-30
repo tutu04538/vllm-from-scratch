@@ -1826,10 +1826,10 @@ class VllmConfig:
 
     def _validate_attention_backend(self) -> None:
         name = str(self.attention_backend).lower()
-        if name not in ("torch", "triton", "triton_attn", "triton_paged"):
+        if name not in ("torch", "triton", "triton_attn"):
             raise ValueError(
-                f"attention_backend 只支持 'torch' / 'triton' / 'triton_attn' / "
-                f"'triton_paged'，收到 {self.attention_backend!r}")
+                f"attention_backend 只支持 'torch' / 'triton' / 'triton_attn'，"
+                f"收到 {self.attention_backend!r}")
         # VllmConfig 是 frozen dataclass；归一化交给调用方读取时做，不在这里赋值。
         if name == "triton" and not self.use_v2_model_runner:
             raise NotImplementedError(
@@ -2180,14 +2180,6 @@ class VllmConfig:
             )
         if not self.use_v2_model_runner:
             return
-        if (spec is not None and spec.use_gemma4_mtp()
-                and str(self.attention_backend).lower() != "torch"):
-            raise NotImplementedError(
-                "Gemma4 assistant 的 Q-only 读路径目前只有 Torch 后端实现"
-                "（`forward_q_only`）。上游用 TRITON_ATTN 是因为它的 FlashAttention "
-                "不能读共享 cache；本仓库不能把 Torch Q-only 静默换成别的后端，"
-                f"收到 attention_backend={self.attention_backend!r}。"
-                "E2 要求 target/draft 都保留同一后端；当前唯一可保留的是 torch。")
         if spec is not None and spec.method not in ("eagle", "eagle3", "mtp", "dflash",
                                                     "dspark"):
             raise NotImplementedError(

@@ -466,12 +466,25 @@ def test_v1_multi_group_graph_is_rejected_instead_of_using_group0(tiny_models):
 
 
 @requires_cuda
-def test_non_torch_backend_is_rejected_for_q_only(tiny_models):
+def test_non_torch_backend_supports_q_only(tiny_models):
+    """086：Q-only 共享读取也能走 TRITON_ATTN，而不是静默回 Torch。"""
     target_dir, cfg, draft_dir, draft_cfg = tiny_models
-    with pytest.raises(NotImplementedError, match="forward_q_only"):
-        _make_engine(
-            target_dir, cfg, draft_dir, draft_cfg, v2=True, k=2,
-            attention_backend="triton")
+    torch_engine, _torch_runner, max_tokens = _make_engine(
+        target_dir, cfg, draft_dir, draft_cfg, v2=True, k=2)
+    want = _run(torch_engine, [("r", [1, 2, 3])], max_tokens)
+    engine, runner, _ = _make_engine(
+        target_dir, cfg, draft_dir, draft_cfg, v2=True, k=2,
+        attention_backend="triton")
+    got = _run(engine, [("r", [1, 2, 3])], max_tokens)
+    assert got == want
+    assert runner.attention_backend.get_name() == "TRITON_ATTN"
+    shared = [m for _, m in runner.model.named_modules()
+              if getattr(m, "q_only", False)]
+    assert shared, "tiny Gemma4 应该有 Q-only 共享层"
+    assert all(type(m.impl).__name__ == "TritonAttentionImpl" for m in shared)
+    assert all(type(m.impl).__name__ == "TritonAttentionImpl"
+               for _, m in runner.speculator.model.named_modules()
+               if hasattr(m, "impl") and getattr(m, "q_only", False))
 
 
 @requires_cuda

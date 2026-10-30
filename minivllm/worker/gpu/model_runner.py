@@ -218,7 +218,16 @@ class GPUModelRunner:
 
         if self.speculative_config is not None:
             self.speculator = init_speculator(self.vllm_config, self.device)
-            self.speculator.load_model(self.model)
+            # Gemma4 assistant 是 Q-only 共享读取，必须和 target 用同一条
+            # TRITON_ATTN 路径；其它方法的草稿层仍保留 Torch 参考后端。
+            if self.speculative_config.use_gemma4_mtp():
+                set_attention_impl_cls(self.attention_backend.get_impl_cls())
+                try:
+                    self.speculator.load_model(self.model)
+                finally:
+                    set_attention_impl_cls(TorchAttentionImpl)
+            else:
+                self.speculator.load_model(self.model)
             # 草稿的注意力层名：`set_attn()` 要用它建"草稿自己的"注意力组，而 target 的
             # 注意力元数据也要**覆盖这些层名**（上游 `init_attn_backend` 在 runner 侧不带
             # `active_layer_names`，于是 target 的 metadata 字典天然包含草稿层；草稿 prefill
@@ -451,9 +460,9 @@ class GPUModelRunner:
     def _create_adaptive_verification_manager(self):
         """按实际注意力后端能力建 `AdaptiveVerificationManager`（79 关）。
 
-        上游在 `init_attn_backend()` 之后、图捕获之前建；本仓库只有一个 Torch 后端、
-        一个 KV group，所以这里显式造一个 `AttentionGroup`（后端 + 层名 + 元数据构造器）
-        喂给同一个 `maybe_create_adaptive_verification_manager()`。
+        上游在 `init_attn_backend()` 之后、图捕获之前建；本仓库每个引擎选一个注意力
+        后端、一个 KV group，所以这里显式造一个 `AttentionGroup`（后端 + 层名 + 元数据
+        构造器）喂给同一个 `maybe_create_adaptive_verification_manager()`。
         """
         from ..gpu.attn_utils import AttentionCGSupportInfo
         from ..gpu.spec_decode.adaptive_verification import (
@@ -1272,10 +1281,10 @@ class GPUModelRunner:
         block_tables: tuple[torch.Tensor, ...],
         slot_mappings: torch.Tensor,
     ) -> dict[str, Any]:
-        """把 V2 的批次视图翻成注意力层要的元数据（本项目只有一个后端，一份 metadata）。
+        """把 V2 的批次视图翻成注意力层要的元数据（本项目每个引擎选一个后端、一份 metadata）。
 
         上游这里是 `model_state.prepare_attn(...)`，按 `attn_groups` 分组构造**每组的后端
-        metadata**；本仓库只有一个 Torch 后端、一个 KV group，所以"一组"就是全部层
+        metadata**；本仓库每个引擎选一个注意力后端、一个 KV group，所以"一组"就是全部层
         （`_attn_metadata_layer_names` = target 层 ∪ 草稿层）。
 
         `uniform_query_len` 来自 `InputBatch`（74 关）：统一 decode 批（每请求 `1 + K` 行）里

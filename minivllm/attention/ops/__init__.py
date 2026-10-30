@@ -1,1 +1,1 @@
-"""固定场景的 attention 算子（非上游完整 TRITON_ATTN）。"""
+"""分页 attention 的 Triton 算子（unified attention 与 KV 写入）。"""

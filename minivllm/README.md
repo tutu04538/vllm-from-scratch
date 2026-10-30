@@ -566,12 +566,13 @@ K 列草稿全写出来（多步**真的在图里**）；EAGLE3 与原生 MTP �
 mixed/prefill 回退 eager），见 [`docs/step74_target_graph_varlen.md`](../docs/step74_target_graph_varlen.md)。
 Phase 3 又补上 **breakable PIECEWISE**（混合 prefill/decode 批的手工断点图；attention 写固定
 输出缓冲；纯 prefill 仍 eager），见 [`docs/step74_target_graph_breakable.md`](../docs/step74_target_graph_breakable.md)。
-另有 **固定场景 Triton paged attention**（`attention_backend="triton_attn"`，`"triton"` 是别名）：
-Qwen3 target / block16 / head_dim 16·32·64·128 / causal / GQA / paged KV / fp16·bf16·fp32；
-一个 program 一个 query block/head，`BLOCK_M=16` 走 `tl.dot`，query block 并行；decode 的
-1..K+1 行共享一次 K/V 扫描。量化/sliding/cascade/sinks/MM/RSWA/3D 不做；block4/head4 回退
-本地逐行 kernel。见 [`docs/step74_triton_fixed_attention.md`](../docs/step74_triton_fixed_attention.md)。
-默认仍是 Torch 后端，capability 为 `UNIFORM_BATCH`。
+另有 **统一的 Triton 分页 attention**（`attention_backend="triton_attn"`，`"triton"` 是别名）：
+eager、FULL 图、Q-only 共享读取都走同一条 `unified_attention`，不再有“eager 回 Torch”或
+“block/head 不满足换旧 kernel”的 fallback。支持 paged KV、GQA、causal/非 causal、SWA、
+真实 head_dim 256/512、3D 单 token 分段；block 大小不限，量化/cascade/sinks/ALiBi/MM/RSWA
+明确不在支持矩阵内。旧的 `triton_paged.py` 与 `fixed_attention.py` 已删除；见
+[`docs/step86_alignment.md`](../docs/step86_alignment.md)。默认仍是 Torch 后端，capability
+为 `UNIFORM_BATCH`。
 
 ## 第七十五关：块验证 / synthetic 接受率 / 分块 logits
 
@@ -890,6 +891,31 @@ hidden 相对差约 2.1e-6；全量 **1231 passed**。固定 shape 微测里 Nor
 低于分解路径，激活则不一定（decode 1×12288 约 1.12×、silu 约 1.48× 于 native），详见
 `docs/step85_alignment.md`。
 
+## 第八十六关：Gemma4 原生分页 Attention
+
+`attention/ops/triton_unified_attention.py` 提供 2D/3D 统一分页 kernel：按 `block_table`
+直接读 KV 页、GQA head 映射不复制 KV、FP32 在线 softmax；`window_size` 在 tile 循环边界
+生效，sliding 层不再先扫完整历史再 mask。`attention/ops/triton_reshape_and_cache_flash.py`
+按 slot 写 KV，负 slot 在 kernel 内跳过，并接收 packed cache 的真实 stride。
+
+`attention/backends/triton_attn.py` 收敛为唯一的 `TRITON_ATTN`：eager、FULL 图、Q-only
+共享读取都走同一条路径；target 20 个 Q-only 层和 assistant 4 层不再回 Torch。3D 只在
+`max_seqlen_q == 1` 且 `num_seqs <= 128 // num_kv_heads` 时启用，K=2 target 明确留在 2D。
+旧的 `triton_paged.py`、`fixed_attention.py` 与 `triton_paged` 配置名已删除。
+
+```bash
+python benchmarks/check_step86_attention.py --all
+python -m pytest tests/step86 -q
+```
+
+实测：`tests/step86` **30 passed**；真实 K=2 eager 8-step trace 中
+`kernel_unified_attention` **344 = 8×43**（35 target + 8 assistant）、
+`reduce_segments` **32 = 8×4**（assistant 4 层走 3D）、`reshape_and_cache_kernel`
+**120 = 8×15**（target 15 个非共享层写 KV），旧 paged/fixed kernel 事件为 0。真实 target
+K=0、target+assistant K=2 与 Torch 输出逐 token 相同；固定 shape 微测中 SWA/3D 明显低于
+Torch 分解路径，但 full D=512 的 K+1 多行 2D decode 约 0.94×，不能宣称所有 decode 都加速；
+完整 Graph 元数据留给 087，公平矩阵留给 088。详见 `docs/step86_alignment.md`。
+
 ## 明确不做
 
 异步与多进程端到端、正式生产指标上报、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）；EAGLE/MTP 本身已在 63/65 关接入。
@@ -897,7 +923,7 @@ V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）+
-breakable PIECEWISE（Phase 3，混合批）+ 固定场景 Triton paged（target 混合批 FULL、adaptive 真正 ALWAYS）；
+breakable PIECEWISE（Phase 3，混合批）+ 统一 Triton 分页 attention（086：target/assistant eager、FULL 图、Q-only、SWA、3D）；
 多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 接了 Gemma4 assistant 模型层，80E.E2 又接了 Gemma4 文本 target、多 KV group/SWA/full/异构 head_dim、packed shared slab 与 V1/V2 提议者（真实 target 4.63B + assistant 77.7M 已下载；float32 下 8-token target-only eager == 投机 graph；bf16 near-tie 见 docs）；81 仅完成 E2 所需多组子集，Mamba/抢占矩阵/KV transfer 未做；Step3p5 MTP 已在 80F 接 V1（per-group block table + 分步 head；V1+V2 per-group（V2 K=1/2/4 eager、K=2 图）），80G MTP top-k 索引复用契约已完成（教学 TopKIndexBuffer + 冻结 DeepSeek compact 差分；真实稀疏模型未接）；另有 `testing/sparse_attention.py` 教学版 learned top-k 稀疏注意力（随机权重，不是生产模型）；adaptive verification 已在 79 关接上；Triton 后端需显式
 `attention_backend="triton_attn"`（`"triton"` 别名），默认仍是 Torch。
 另外两条容易误以为已经具备的能力：

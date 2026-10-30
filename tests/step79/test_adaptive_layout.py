@@ -388,7 +388,7 @@ def test_adaptive_triton_attn_unified_block16_matches_eager():
         attention_backend="triton_attn", block_size=16)
     _set_intermediate_budget(graph_runner)
     assert graph_runner.attention_backend_name == "triton_attn"
-    assert graph_runner.attention_backend.get_name() == "TRITON_ATTN_FIXED"
+    assert graph_runner.attention_backend.get_name() == "TRITON_ATTN"
     assert graph_runner.cudagraph_mode == CUDAGraphMode.FULL
     assert graph_runner._target_varlen_cudagraphs_enabled() is True
     graph_out = run_adaptive(graph_engine, PROMPTS, max_tokens=4,
