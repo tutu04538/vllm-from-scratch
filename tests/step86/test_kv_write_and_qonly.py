@@ -13,6 +13,7 @@ from minivllm.attention.backends.torch_sdpa import TorchAttentionImpl
 from minivllm.attention.backends.triton_attn import (
     TritonAttentionBackend,
     TritonAttentionImpl,
+    TritonAttentionWorkspacePool,
 )
 from minivllm.attention.metadata import AttentionMetadata
 from minivllm.attention.ops.triton_reshape_and_cache_flash import (
@@ -95,6 +96,8 @@ def _qonly_case(*, window=None, seq_len=9, heads=4, head_size=16,
         slot_mapping=torch.zeros(1, device="cuda", dtype=torch.int64),
         block_size=block_size, num_reqs=1, max_query_len=1,
         sliding_window=window, causal=True)
+    # 087：3D workspace 的所有权在 metadata builder；直接调 Impl 时显式给一个池。
+    meta.workspace_pool = TritonAttentionWorkspacePool()
     return q, cache, meta
 
 
@@ -156,6 +159,7 @@ def test_forward_writes_kv_and_returns_output_buffer_alias():
         query_start_loc=qsl, seq_lens=seq, block_table=bt,
         slot_mapping=torch.tensor([5], device="cuda", dtype=torch.int64),
         block_size=block_size, num_reqs=1, max_query_len=1, causal=True)
+    meta.workspace_pool = TritonAttentionWorkspacePool()
     impl = TritonAttentionImpl(heads, head_size, 1.0, kv_heads)
     buf = torch.zeros(1, heads * head_size, device="cuda")
     layer = SimpleNamespace(per_layer_sliding_window=None,

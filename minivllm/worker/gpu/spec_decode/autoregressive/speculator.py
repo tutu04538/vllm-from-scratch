@@ -110,6 +110,19 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         """每一步是否推进 positions/seq_lens（EAGLE/标准 MTP：True；Q-only 的 MTP：False）。"""
         return True
 
+    @property
+    def draft_attention_backend(self):
+        """草稿层用哪个注意力后端建 metadata 组。
+
+        默认仍是 Torch 参考后端：EAGLE/MTP 等草稿层的 **Impl** 本来就是 Torch，
+        metadata 也必须是 Torch builder 的语义。Gemma4 assistant 是唯一例外——它的
+        Q-only 层在 086 起由 target 选定的 Triton Impl 执行，因此 087 起把 metadata
+        组也切到同一后端，避免“Impl 是 Triton、metadata 却来自 Torch builder”的错配。
+        """
+        from .....attention.backends.torch_sdpa import TorchAttentionBackend
+
+        return TorchAttentionBackend
+
     # -------- 注意力上下文 --------
 
     def set_attn(
@@ -142,13 +155,13 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
         self.draft_attn_layer_names)`）。
 
-        本仓库草稿侧固定用 Torch 参考后端、一个 KV group，所以恒为"一组、一个构造器"。**测试的接缝放在这里**：
-        74 关的验收要"支持/不支持 `update_draft_decode_metadata` 的两个后端都跑一遍"，而本仓库
-        生产路径只有 Torch 后端（它声明支持），所以测试用 `minivllm/testing/` 里的替身构造器
-        替换这个方法——被验证的仍然是**生产的那条门**（`_configure_fused_multi_step_decode()`），
-        只是换了一份 capability 声明。
+        默认用 Torch 参考后端、一个 KV group，所以恒为"一组、一个构造器"。Gemma4
+        assistant 覆写 `draft_attention_backend`，让 metadata 组与 target 选定的 Triton
+        Impl 一致。**测试的接缝放在这里**：74 关的验收要"支持/不支持
+        `update_draft_decode_metadata` 的两个后端都跑一遍"，测试用 `minivllm/testing/`
+        里的替身构造器替换这个方法——被验证的仍然是**生产的那条门**
+        （`_configure_fused_multi_step_decode()`），只是换了一份 capability 声明。
         """
-        from .....attention.backends.torch_sdpa import TorchAttentionBackend
         from .....attention.layer import Attention
 
         by_group: dict[int, list[str]] = {}
@@ -165,11 +178,12 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         if not by_group:
             raise ValueError(
                 "草稿模型里没有可建组的 Attention 层：draft_attn_layer_names 与模块层名不一致")
-        builder_cls = TorchAttentionBackend.get_builder_cls()
+        backend = self.draft_attention_backend
+        builder_cls = backend.get_builder_cls()
         groups = []
         for group_id in sorted(by_group):
             groups.append(AttentionGroup(
-                backend=TorchAttentionBackend,
+                backend=backend,
                 layer_names=by_group[group_id],
                 metadata_builders=[
                     builder_cls(self.vllm_config.cache_config.block_size)],
@@ -756,10 +770,11 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             `uniform_query_len=1` 固定形状路径（`_forward_padded`）要的每请求行数
 
         上游这里还有 `seq_lens_cpu_upper_bound`（FA3 用它避免一次 D2H 同步）与
-        `causal` / `query_start_loc_np`（多模块 MTP 的非均匀布局）。本仓库的 Torch 后端
-        **只用设备上的 `input_buffers.seq_lens`**（它就是"target 上下文 + 已走的步数"，由
-        `prepare_decode_inputs` / `update_draft_inputs` 两个内核维护），所以不再需要 CPU 上界；
-        多模块 MTP 属 80 关。**不留没人读的参数**：这里只保留真正被消费的三个形状量。
+        `causal` / `query_start_loc_np`（多模块 MTP 的非均匀布局）。本仓库的 Torch 与
+        Triton 后端都**只用设备上的 `input_buffers.seq_lens`**（它就是"target 上下文 +
+        已走的步数"，由 `prepare_decode_inputs` / `update_draft_inputs` 两个内核维护），
+        所以不再需要 CPU 上界；多模块 MTP 属 80 关。**不留没人读的参数**：这里只保留
+        真正被消费的三个形状量。
         """
         if not self.attn_groups:
             return None
@@ -800,19 +815,16 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         与运行期唯一的不同：这里的 `seq_lens` 是**假值**（`InputBatch.make_dummy` 写的
         "每请求 = 本请求的 query 行数"），`hidden_states`/`input_ids` 也还是捕获前的初值。
 
-        **这里刻意不调 `build_for_cudagraph_capture()`**（它会顺手把 `seq_lens` 全填 1）。
-        两条理由，第二条是实测踩出来的：
+        **这里刻意不调 `build_for_cudagraph_capture()`**（基类会顺手把 `seq_lens` 全填 1）。
+        填 1 会让**热身的 eager 那一遍**出现"整行被掩掉"：`make_dummy` 把 query 行数摊成
+        `num_tokens / num_reqs`（统一 decode 图就是 `1+K`），而 `seq_lens=1` 时
+        `context_len = seq_len − query_len < 0` → 逐请求路径里整行都被 `-inf` 掩掉 →
+        softmax 出 **NaN** → NaN 写进 KV 缓存与 `hidden_states`，后面每一次重放都跟着烂。
+        热身那一遍走的就是图的**同一个函数体**，所以它的数值必须也是干净的。
 
-            1. "填 1 更快"对本后端的图内路径**不成立**：`_forward_padded` 无论如何都要按块表
-               宽度把整段上下文 gather 出来（`num_positions = 块表宽度 × block_size`），
-               `seq_lens` 只参与 mask，不决定 work 量。
-            2. 填 1 会让**热身的 eager 那一遍**出现"整行被掩掉"：`make_dummy` 把 query 行数
-               摊成 `num_tokens / num_reqs`（统一 decode 图就是 `1+K`），而 `seq_lens=1` 时
-               `past_len = seq_len − query_len < 0` → 逐请求路径（`_attend`）里整行都被
-               `-inf` 掩掉 → softmax 出 **NaN** → NaN 写进 KV 缓存与 `hidden_states`，
-               后面每一次重放都跟着烂（实测：捕获完 `hidden_states[0]` 与 0 号块都是 NaN，
-               重放出来的草稿 token 全是 0）。热身那一遍走的就是图的**同一个函数体**，
-               所以它的数值必须也是干净的。
+        这不再是"为了旧 Torch 图内固定 kernel 的 work 量"：087 的 Triton 图内路径按设备上的
+        `seq_lens` 决定循环长度，填 1 也不会少做事；保留与运行期同一条 `make_dummy` 口径，
+        是为了让捕获/热身/重放三份 metadata 的 `seq_lens` 语义完全一致。
         """
         metadata = self._build_draft_attn_metadata(
             num_reqs=input_batch.num_reqs,

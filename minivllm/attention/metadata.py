@@ -48,6 +48,11 @@ class AttentionMetadata:
     #: 都必须是因果的，默认值就是它们的正确行为，不需要每个调用点都显式传。
     causal: bool = True
 
+    #: TRITON_ATTN 的 3D 工作区池（087）。由 `TritonAttentionMetadataBuilder` 创建并
+    #: 持有，metadata 只借引用；同一 builder 的每一步都拿到**同一个池**，所以工作区地址
+    #: 在 capture/replay/不同 seq_len 之间稳定。None = 该后端不需要工作区。
+    workspace_pool: object | None = None
+
 
 class AttentionMetadataBuilder:
     """从 InputBatch + 块表构造 metadata。**只做张量准备，不做模型数学**。"""

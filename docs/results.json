@@ -5999,7 +5999,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "37390ea8f1447b845e5063e1fa1bb7891f7488a490a17c0a81cdcd9b86e21bcc",
+     "sha256": "a10cf21a186f4762111f9741d3838a649b2ae44634ce661f9c2a824aea933a2c",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7195,6 +7195,242 @@
     ],
     "dtype": "bfloat16",
     "note": "4 层 = 3 sliding + 1 full；全部 Q-only 共享读取"
+   },
+   "weights": "target/assistant 均已下载，固定 revision；权重不提交"
+  }
+ },
+ "step87": {
+  "results": {
+   "step": "87（Graph 接入与 GPU 元数据边界）",
+   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/087_Graph接入与GPU元数据边界.md",
+   "status": "完成：target eager/FULL、Gemma4 assistant Q-only 图、工作区 builder 所有权与 shutdown 释放、assistant metadata 跟随 Triton、有效长度/容量小对照；K=2 target 仍 2D；完整公平矩阵留 088",
+   "recorded_at": "2026-10-30T21:55:00+08:00",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 177,
+    "sha256": "a10cf21a186f4762111f9741d3838a649b2ae44634ce661f9c2a824aea933a2c",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step87 -q",
+     "result": "13 passed, 0 failed, 0 skipped, 14 warnings in 24.36s"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step87 -q",
+     "result": "4 passed, 9 skipped（CPU 单测实跑；CUDA/真实模型用例按设备跳过）"
+    },
+    {
+     "cmd": "python -m pytest tests/step87/test_real_gemma4_graph.py -q",
+     "result": "2 passed；真实 target K=0 与 target+assistant K=2 的 eager/FULL hidden/logits/输出一致；随机拒绝与 null block 检查通过"
+    },
+    {
+     "cmd": "python benchmarks/check_step87_graph.py --trace",
+     "result": "真实 K=2 FULL_DECODE_ONLY 8 个 decode step；unified 344=8×43、reduce 32=8×4、reshape 120=8×15、legacy 0、CPU launch 14/step"
+    },
+    {
+     "cmd": "python benchmarks/check_step87_graph.py --capacity",
+     "result": "blocks 512→2048：输出相同、图键相同、target workspace 0；8-step 用时 94.08 vs 92.81 ms（单次，不作吞吐结论）"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step87 -q",
+     "result": "1267 passed, 0 failed, 0 skipped, 148 warnings in 202.28s（exit 0）"
+    }
+   ],
+   "execution_trace": {
+    "workspace_ownership": {
+     "pool_owner": "TritonAttentionMetadataBuilder",
+     "process_global_cache": "removed",
+     "release": "Runner shutdown 显式 release target builder 与 assistant 每个 group builder；弱引用测试确认 tensor 回收",
+     "k0_target_buckets": [
+      "8 heads, head_size 256",
+      "8 heads, head_size 512"
+     ],
+     "k2_assistant_buckets": [
+      "4 heads, head_size 256",
+      "4 heads, head_size 512"
+     ],
+     "k2_target_workspace": "eager 3 行 decode 为 0；FULL 捕获中的 1 行 mixed bucket 可走 3D，但不影响 decode bucket"
+    },
+    "real_graph": {
+     "target_k0": "FULL 图；hidden/logits compare rtol=2e-2 atol=2e-2，argmax 全等；输出逐 token 相同；null block 未写",
+     "target_assistant_k2": "FULL 图；target hidden/logits 同上；assistant 4 层 Triton + 2 个 Triton builder；assistant prefill/decode 图均重放；随机采样 drafted>0 且 accepted<drafted；null block 未写",
+     "prefill_policy": "真实首轮 assistant prefill 的 has_prefill=True/uniform=None，按现有策略 eager；后续 decode 轮重放 draft prefill/decode 图"
+    },
+    "graph_trace": {
+     "prompt_len": 14,
+     "profiled_decode_steps": 8,
+     "per_step": {
+      "gpu_kernel_events": 1012.5,
+      "cpu_kernel_launch_events": 14.0,
+      "unified_attention_events": 43.0,
+      "reduce_segments_events": 4.0,
+      "reshape_cache_events": 15.0
+     },
+     "capture": {
+      "mode": "FULL_DECODE_ONLY",
+      "captured": 3,
+      "target_graphs": [
+       {
+        "num_tokens": 3,
+        "num_reqs": 1,
+        "uniform_token_count": 3,
+        "max_query_len": null
+       }
+      ],
+      "graph_pool_bytes": 88080384,
+      "target_workspace_buckets": [],
+      "assistant_workspaces": [
+       {
+        "layers": [
+         "draft::model.layers.0.self_attn.attn",
+         "draft::model.layers.1.self_attn.attn",
+         "draft::model.layers.2.self_attn.attn"
+        ],
+        "backend": "TRITON_ATTN",
+        "builder": "TritonAttentionMetadataBuilder",
+        "workspace_buckets": [
+         {
+          "key": "(('cuda', 0), 4, 256, 128, 16)",
+          "bytes": 8454144
+         }
+        ]
+       },
+       {
+        "layers": [
+         "draft::model.layers.3.self_attn.attn"
+        ],
+        "backend": "TRITON_ATTN",
+        "builder": "TritonAttentionMetadataBuilder",
+        "workspace_buckets": [
+         {
+          "key": "(('cuda', 0), 4, 512, 128, 16)",
+          "bytes": 16842752
+         }
+        ]
+       }
+      ]
+     },
+     "memory": {
+      "allocated_bytes": 9883334656,
+      "reserved_bytes": 10510925824,
+      "peak_allocated_bytes": 10331055104
+     },
+     "note": "真实 target+assistant、K=2、FULL decode graph；首轮 prefill 在 profiler 外，后面 8 个 decode step；只数 kernel/launch，不作吞吐计时",
+     "build_s": 5.871757276006974
+    },
+    "capacity": {
+     "blocks_512": {
+      "tokens": [
+       9259,
+       236888,
+       1030,
+       236789,
+       236751,
+       6290,
+       531,
+       2874,
+       611,
+       236761,
+       2900,
+       563,
+       822,
+       1463,
+       236881,
+       103453,
+       106,
+       106,
+       1,
+       106
+      ],
+      "elapsed_ms_8_steps": 82.26432037353516,
+      "target_graph_keys": [
+       [
+        3,
+        1,
+        3,
+        null
+       ]
+      ],
+      "target_workspace_bytes": 0
+     },
+     "blocks_2048": {
+      "tokens": [
+       9259,
+       236888,
+       1030,
+       236789,
+       236751,
+       6290,
+       531,
+       2874,
+       611,
+       236761,
+       2900,
+       563,
+       822,
+       1463,
+       236881,
+       103453,
+       106,
+       106,
+       1,
+       106
+      ],
+      "elapsed_ms_8_steps": 85.35833740234375,
+      "target_graph_keys": [
+       [
+        3,
+        1,
+        3,
+        null
+       ]
+      ],
+      "target_workspace_bytes": 0
+     },
+     "tokens_equal": true,
+     "same_graph_keys": true,
+     "elapsed_ratio_2048_over_512": 1.0376106799978373,
+     "note": "同一 prompt/有效长度，只改物理 block 容量；耗时包含 8 个 decode step 的完整 engine.step，噪声大，不当作 kernel 微基准"
+    },
+    "known_boundaries": [
+     "target 捕获仍用 make_dummy 的 query 长度，不调用会填 seq_lens=1 的 build_for_cudagraph_capture()；重放前输入内核写回同一块缓冲",
+     "没有给 seq_threshold_3D 做 capture-size 吸附；仍是 128 // num_kv_heads",
+     "首轮 assistant prefill 按现有策略 eager；后续 decode 轮才重放 draft prefill/decode 图",
+     "EAGLE/MTP 等草稿层仍是 Torch；087 只把 Gemma4 assistant 的 metadata 组切到选定后端",
+     "采样提交仍有 D2H；没有打开异步调度；未做整个 Engine.step 一张图",
+     "K=2 target 的 3 行 decode 固定 2D；full D=512 小 grid 的性能边界留 088"
+    ]
+   }
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "repo": "google/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "architectures": [
+     "Gemma4ForCausalLM"
+    ],
+    "dtype": "bfloat16",
+    "text_only": true,
+    "note": "35 层 = 28 sliding + 7 full；20 个 Q-only 共享尾层；head_dim 256/512"
+   },
+   "assistant": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "repo": "google/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM"
+    ],
+    "dtype": "bfloat16",
+    "note": "4 层 = 3 sliding + 1 full；全部 Q-only 共享读取；087 起 metadata 组跟随 TRITON_ATTN"
    },
    "weights": "target/assistant 均已下载，固定 revision；权重不提交"
   }

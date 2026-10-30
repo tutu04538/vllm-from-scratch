@@ -31,47 +31,120 @@ from ..ops.triton_unified_attention import (
 from ...triton_utils import triton
 
 
-#: 3D 工作区按 (device, heads, head_dim, threshold, segments) 共享。同一模型的
-#: 28 个 sliding 层共用一份，7 个 full 层共用另一份；不在每层 forward 里分配。
-_WORKSPACE_CACHE: dict[tuple, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-
 #: 上游 `MIN_LAUNCH_GRID_SIZE_2D = 128`；低于这个 batch 时 3D 分段才有意义。
 _MIN_LAUNCH_GRID_SIZE_2D = 128
 _NUM_PAR_SOFTMAX_SEGMENTS = 16
 
 
-def _device_key(device: torch.device) -> tuple[str, int]:
+def _device_key(device: torch.device | str) -> tuple[str, int]:
+    device = torch.device(device)
     index = device.index
     return device.type, -1 if index is None else int(index)
 
 
-def get_3d_workspace(device: torch.device, num_heads: int, head_size: int,
-                     seq_threshold_3D: int,
-                     num_par_softmax_segments: int):
-    key = (_device_key(device), num_heads, head_size,
-           seq_threshold_3D, num_par_softmax_segments)
-    workspace = _WORKSPACE_CACHE.get(key)
-    if workspace is None:
-        workspace = make_3d_workspace(
-            device, num_heads, head_size, seq_threshold_3D,
-            num_par_softmax_segments)
-        _WORKSPACE_CACHE[key] = workspace
-    return workspace
+class TritonAttentionWorkspacePool:
+    """一个 metadata builder（= 一个 Runner/引擎）持有的 3D 工作区池。
+
+    087 之前工作区放在**进程级** `_WORKSPACE_CACHE` 里：同一模型不同层能共享是省了显存，
+    但引擎 shutdown 后池仍被模块字典引用，工作区永远不释放，也不属于任何一个引擎。
+    现在所有权落到 builder：
+
+    * builder 在 `__init__` 里建池，`build()` 把同一对象挂到每份 metadata 上；
+    * Impl 只从 metadata 借池，不再自己缓存；
+    * Runner shutdown 调 `release()`，池和它的 tensor 一起被回收。
+
+    池按 `(device, num_heads, head_size, seq_threshold_3D, segments)` 分桶。同一模型的
+    28 个 sliding 层共用一个桶、7 个 full 层共用一个桶；图捕获时的 warmup 会把桶建好，
+    capture/replay 读到的就是同一批地址。
+    """
+
+    def __init__(self) -> None:
+        self._workspaces: dict[
+            tuple, tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = {}
+
+    def get(
+        self,
+        device: torch.device | str,
+        num_heads: int,
+        head_size: int,
+        seq_threshold_3D: int,
+        num_par_softmax_segments: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        key = (_device_key(device), int(num_heads), int(head_size),
+               int(seq_threshold_3D), int(num_par_softmax_segments))
+        workspace = self._workspaces.get(key)
+        if workspace is None:
+            workspace = make_3d_workspace(
+                device, num_heads, head_size, seq_threshold_3D,
+                num_par_softmax_segments)
+            self._workspaces[key] = workspace
+        return workspace
+
+    def release(self) -> None:
+        """丢弃所有工作区；只清本池，不碰别的引擎。"""
+        self._workspaces.clear()
+
+    def __len__(self) -> int:
+        return len(self._workspaces)
+
+    def keys(self) -> tuple[tuple, ...]:
+        return tuple(self._workspaces)
+
+    def bucket_bytes(self, key: tuple) -> int:
+        """返回已有桶的字节数；key 不存在时明确报错，不顺手新建。"""
+        try:
+            workspace = self._workspaces[key]
+        except KeyError:
+            raise KeyError(f"没有这个 3D 工作区桶：{key!r}") from None
+        return sum(t.numel() * t.element_size() for t in workspace)
+
+    def num_bytes(self) -> int:
+        return sum(self.bucket_bytes(key) for key in self._workspaces)
 
 
 class TritonAttentionMetadataBuilder(AttentionMetadataBuilder):
     """与 Torch builder 同字段；图能力 ALWAYS。
 
-    3D workspace 不放在 metadata 里：metadata 每步重建，而 workspace 必须
-    跨步、跨图复用。它由 Impl 在第一次 forward 时按 shape 缓存。
+    3D workspace 由**本 builder** 持有，不在每层 Impl 里缓存，也不是进程级全局：
+    metadata 每步重建，但 `workspace_pool` 是同一个对象；Impl 从 metadata 借池。
+    这样 capture 时的 warmup 先建桶，重放/换 seq_len 都读同一批地址；Runner
+    shutdown 调 `release()` 就能把工作区真正还掉。
     """
 
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
     supports_draft_decode_metadata_update = True
 
+    def __init__(self, block_size: int) -> None:
+        super().__init__(block_size)
+        self.workspace_pool = TritonAttentionWorkspacePool()
+
+    def build(self, query_start_loc: torch.Tensor, seq_lens: torch.Tensor,
+              block_table: torch.Tensor, slot_mapping: torch.Tensor,
+              num_reqs: int, uniform_query_len: int | None = None,
+              causal: bool = True, max_query_len: int | None = None,
+              sliding_window: int | None = None) -> AttentionMetadata:
+        metadata = super().build(
+            query_start_loc=query_start_loc,
+            seq_lens=seq_lens,
+            block_table=block_table,
+            slot_mapping=slot_mapping,
+            num_reqs=num_reqs,
+            uniform_query_len=uniform_query_len,
+            causal=causal,
+            max_query_len=max_query_len,
+            sliding_window=sliding_window,
+        )
+        metadata.workspace_pool = self.workspace_pool
+        return metadata
+
     def update_draft_decode_metadata(self, metadata: AttentionMetadata) -> None:
         # 所有步相关字段都是常驻输入缓冲的切片，写缓冲的 kernel 已经就地更新。
         return None
+
+    def release(self) -> None:
+        """Runner shutdown 调用；只释放本 builder 的 3D 工作区。"""
+        self.workspace_pool.release()
 
 
 class TritonAttentionImpl:
@@ -100,8 +173,6 @@ class TritonAttentionImpl:
         self.seq_threshold_3D = max(
             1, _MIN_LAUNCH_GRID_SIZE_2D // self.num_kv_heads)
         self.num_par_softmax_segments = _NUM_PAR_SOFTMAX_SEGMENTS
-        self._workspace = None
-        self._workspace_key = None
 
     # -------- 入口 --------
 
@@ -196,16 +267,6 @@ class TritonAttentionImpl:
                 f"slot_mapping 只有 {slots.numel()} 个，少于 {n} 个 token")
         triton_reshape_and_cache_flash(k, v, k_cache, v_cache, slots)
 
-    def _workspace_for(self, device: torch.device):
-        key = (_device_key(device), self.num_heads, self.head_size,
-               self.seq_threshold_3D, self.num_par_softmax_segments)
-        if self._workspace is None or self._workspace_key != key:
-            self._workspace = get_3d_workspace(
-                device, self.num_heads, self.head_size,
-                self.seq_threshold_3D, self.num_par_softmax_segments)
-            self._workspace_key = key
-        return self._workspace
-
     def _run(self, q: torch.Tensor, kv_cache, out: torch.Tensor,
              attn_metadata: AttentionMetadata, layer) -> None:
         if attn_metadata is None:
@@ -243,7 +304,15 @@ class TritonAttentionImpl:
                 num_seqs=num_seqs,
                 seq_threshold_3D=self.seq_threshold_3D,
                 num_par_softmax_segments=self.num_par_softmax_segments):
-            workspace = self._workspace_for(q.device)
+            pool = attn_metadata.workspace_pool
+            if pool is None:
+                raise RuntimeError(
+                    "TRITON_ATTN 需要 3D 工作区，但这份 metadata 没有 workspace_pool；"
+                    "生产路径必须由 TritonAttentionMetadataBuilder.build() 构造 metadata，"
+                    "不能绕过它直接调用 impl")
+            workspace = pool.get(
+                q.device, self.num_heads, self.head_size,
+                self.seq_threshold_3D, self.num_par_softmax_segments)
             if workspace[0].shape[0] < num_seqs:
                 raise RuntimeError(
                     f"3D workspace 只有 {workspace[0].shape[0]} 行，"

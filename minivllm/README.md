@@ -916,6 +916,37 @@ K=0、target+assistant K=2 与 Torch 输出逐 token 相同；固定 shape 微�
 Torch 分解路径，但 full D=512 的 K+1 多行 2D decode 约 0.94×，不能宣称所有 decode 都加速；
 完整 Graph 元数据留给 087，公平矩阵留给 088。详见 `docs/step86_alignment.md`。
 
+## 第八十七关：Graph 接入与 GPU 元数据边界
+
+086 的 attention 已经能 eager/图/Q-only 走同一条 unified kernel；087 把“图里到底跑了什么”
+收口，而不是再写一套图：
+
+- `TritonAttentionWorkspacePool` 由 `TritonAttentionMetadataBuilder` 持有，metadata 只借引用；
+  target 与 assistant 的每个 builder 在 Runner shutdown 时显式 `release()`，工作区不再挂在
+  进程级缓存里跨引擎泄漏；
+- Gemma4 assistant 的 metadata 组跟随 target 的 `TRITON_ATTN`，Q-only 仍只读 target 的同一
+  份 KV；EAGLE/MTP 草稿层仍是 Torch，不扩大声明；
+- 2D/3D 由 host 侧 `max_query_len/num_seqs` 在启动前决定；kernel 每步从设备上的 `seq_lens`
+  算 tile 循环，块表容量只是寻址上界。图键只含形状 bucket/执行协议，不含 request ID 或实际
+  `seq_len`；
+- 捕获 metadata 的 `seq_lens/query_start_loc/block_table/slot_mapping` 都是常驻输入缓冲的
+  视图，图重放写内容不换地址；target/assistant 的前 1+K 行、draft 的 1 行/请求分别有独立
+  graph key；
+- 首轮 assistant prefill 按现有策略 eager，后续 decode 轮重放 draft prefill 与 decode 两张图；
+  prefill eager 不误报成 decode Graph 不支持；采样提交的 D2H 仍保留，没有偷偷打开异步调度。
+
+```bash
+python benchmarks/check_step87_graph.py --all
+python -m pytest tests/step87 -q
+```
+
+实测：`tests/step87` **13 passed**（CPU-only 4 passed / 9 skipped）；真实 Gemma4 target K=0
+FULL 图与 target+assistant K=2 FULL 图的 hidden/logits/输出均与 eager 一致，随机采样触发
+拒绝后继续生成；`FULL_DECODE_ONLY` K=2 8-step trace 中 `kernel_unified_attention`
+**344 = 8×43**、`reduce_segments` **32 = 8×4**、`reshape_and_cache_kernel` **120 = 8×15**、
+legacy kernel 0，CPU kernel/graph launch **14/step**；容量 512→2048 blocks 输出/图键相同。
+完整公平矩阵留给 088。详见 [`docs/step87_alignment.md`](../docs/step87_alignment.md)。
+
 ## 明确不做
 
 异步与多进程端到端、正式生产指标上报、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）；EAGLE/MTP 本身已在 63/65 关接入。
@@ -923,7 +954,7 @@ V2 入口（73–79 关）当前覆盖 EAGLE/EAGLE3/MTP/DFlash/DSpark/DFlash2（
 DFlash/DSpark/DFlash2 是独立的 `DFlashSpeculator` / `DSparkSpeculator` / `DFlash2Speculator`）
 + standard/synthetic/block 三种验证
 + 草稿侧的 FULL 图 + V2 target 的 `FULL_DECODE_ONLY`（Phase 1）+ varlen decode 图（Phase 2）+
-breakable PIECEWISE（Phase 3，混合批）+ 统一 Triton 分页 attention（086：target/assistant eager、FULL 图、Q-only、SWA、3D）；
+breakable PIECEWISE（Phase 3，混合批）+ 统一 Triton 分页 attention（086：target/assistant eager、FULL 图、Q-only、SWA、3D；087：3D 工作区归 builder、assistant metadata 跟随 Triton、Graph 内有效长度/容量边界）；
 多模块 MTP 已接 80A/80B/80C（输入布局、eager 执行、整段 CUDA Graph）；Q-only 共享 KV 的映射与只读契约已接 80D；80E.E1 接了 Gemma4 assistant 模型层，80E.E2 又接了 Gemma4 文本 target、多 KV group/SWA/full/异构 head_dim、packed shared slab 与 V1/V2 提议者（真实 target 4.63B + assistant 77.7M 已下载；float32 下 8-token target-only eager == 投机 graph；bf16 near-tie 见 docs）；81 仅完成 E2 所需多组子集，Mamba/抢占矩阵/KV transfer 未做；Step3p5 MTP 已在 80F 接 V1（per-group block table + 分步 head；V1+V2 per-group（V2 K=1/2/4 eager、K=2 图）），80G MTP top-k 索引复用契约已完成（教学 TopKIndexBuffer + 冻结 DeepSeek compact 差分；真实稀疏模型未接）；另有 `testing/sparse_attention.py` 教学版 learned top-k 稀疏注意力（随机权重，不是生产模型）；adaptive verification 已在 79 关接上；Triton 后端需显式
 `attention_backend="triton_attn"`（`"triton"` 别名），默认仍是 Torch。
 另外两条容易误以为已经具备的能力：
@@ -994,6 +1025,7 @@ python -m pytest tests/step79 -q                     # 47 项：step79（成本�
 python -m pytest tests/step80 -q                     # 137 项：step80A/80B/80C/80D/80E.E1/80E.E2/80F/80G/80H（输入布局差分 + 多模块 eager/逐模块 KV 独立重放 + 整段 CUDA Graph + Q-only 映射/只读契约 + Gemma4/Step3p5 多组/V1-V2 集成 + 稀疏索引契约 + 能力矩阵收口）
 python -m pytest tests/step82 -q                     # 3 项：82 基准统计公式
 python -m pytest tests/step81 -q                     # 27 项：旧多组子集 7 + 新 81 生命周期 12 + 统计链 5 + 边界 3
+python -m pytest tests/step87 -q                     # 13 项：工作区所有权/释放 + target/assistant Graph 边界 + 真实 K=0/2 + 容量
 ```
 
 ## 与真实 vLLM 的对照（需要 GPU）

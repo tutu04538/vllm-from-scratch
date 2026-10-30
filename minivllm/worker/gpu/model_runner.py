@@ -1693,6 +1693,18 @@ class GPUModelRunner:
                 shutdown = getattr(manager, "shutdown", None)
                 if shutdown is not None:
                     shutdown()
+            # 草稿 metadata 组自己的 builder（Gemma4 assistant 在 087 起是 Triton）
+            # 也拥有 3D 工作区；这里显式 release，不能等 GC 顺手回收。
+            released: set[int] = set()
+            for groups in getattr(speculator, "attn_groups", []):
+                for group in groups:
+                    for builder in getattr(group, "metadata_builders", []):
+                        if id(builder) in released:
+                            continue
+                        released.add(id(builder))
+                        release = getattr(builder, "release", None)
+                        if release is not None:
+                            release()
         self.speculator = None
 
         # 2) 模型：若被 V1/V2 图包装器包过，显式注销全局注册。
@@ -1704,7 +1716,17 @@ class GPUModelRunner:
                 close()
         self.model = None
 
-        # 3) 采样器/输入/KV/状态：断开引用，让 Python 回收。
+        # 3) attention builder 的 3D 工作区：图已经清掉，工作区可以还了。
+        #    087 之前工作区挂在进程级缓存里，引擎 shutdown 后仍不会释放；现在所有权
+        #    在 builder，必须在断开模型/KV 之前显式 release（只清本引擎的池）。
+        builder = getattr(self, "attn_metadata_builder", None)
+        if builder is not None:
+            release = getattr(builder, "release", None)
+            if release is not None:
+                release()
+        self.attn_metadata_builder = None
+
+        # 4) 采样器/输入/KV/状态：断开引用，让 Python 回收。
         self.sampler = None
         self.rejection_sampler = None
         self.structured_outputs_worker = None
