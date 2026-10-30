@@ -1,20 +1,25 @@
-"""RMSNorm：带"残差相加"的融合签名（对应 vLLM `layers/layernorm.py::RMSNorm`）。
+"""RMSNorm：带“残差相加”的融合签名（对应 vLLM `layers/layernorm.py::RMSNorm`）。
 
 vLLM 的约定是 `forward(x, residual=None) -> out | (out, residual)`：
 
 - `residual is None`：只做归一化 → 返回 `out`
 - 给了 `residual`：先 `x = x + residual`，再归一化 → 返回 `(norm(x), x)`
 
-第二段才是关键：层与层之间**不把归一化后的张量当作残差传下去**，残差是"加过、还没归一化"的
+第二段才是关键：层与层之间**不把归一化后的张量当作残差传下去**，残差是“加过、还没归一化”的
 那份。省掉一次显式的加法 kernel，也让模型结构（`layers[i].forward(pos, hidden, residual)`）
-天然把"残差流"表达成一个独立参数。
+天然把“残差流”表达成一个独立参数。
 
-数值上对齐 HF：方差在 **float32** 里算（BF16 直接算方差会明显偏），最后再回原 dtype。
+数值上对齐 HF/上游 native：方差在 **float32** 里归约；权重乘法的 cast 次序在
+`layers/ops/layernorm.py` 里逐项对照。CUDA 走本地 Triton 融合 kernel，CPU 走 Torch 参考。
+`residual` 分支返回**新的** residual 张量，不原地改写调用方的输入（上游 native 同义；
+上游 CUDA 的自定义 op 会原地写，差异记在 `docs/step85_alignment.md`）。
 """
 
 import torch
 from torch import nn
 from torch.nn.parameter import Parameter
+
+from .ops.layernorm import rms_norm
 
 
 class RMSNorm(nn.Module):
@@ -27,23 +32,22 @@ class RMSNorm(nn.Module):
         if has_weight:
             self.weight = Parameter(torch.ones(hidden_size))
         else:
+            # 无权重分支不保留全 1 向量：kernel/native 都走 HAS_WEIGHT=False，
+            # 不会为了省一次判断而每层多存一份 hidden 大小的参数。
             self.register_parameter("weight", None)
 
     def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
-        if residual is not None:
-            x = x + residual
-            residual = x
-        input_dtype = x.dtype
-        # 方差用 float32 算：bf16 下 pow(2).mean() 的累积误差足以让 logits 对不上参考实现
-        x32 = x.to(torch.float32)
-        variance = x32.pow(2).mean(-1, keepdim=True)
-        out = x32 * torch.rsqrt(variance + self.variance_epsilon)
-        out = out.to(input_dtype)
-        if self.weight is not None:
-            out = out * self.weight
-        if residual is None:
-            return out
-        return out, residual
+        return rms_norm(
+            x,
+            self.weight if self.has_weight else None,
+            self.variance_epsilon,
+            residual,
+            add_one=False,
+        )
+
+    def extra_repr(self) -> str:
+        return (f"hidden_size={self.hidden_size}, eps={self.variance_epsilon}, "
+                f"has_weight={self.has_weight}")
 
 
 class GemmaRMSNorm(RMSNorm):
@@ -52,6 +56,9 @@ class GemmaRMSNorm(RMSNorm):
     与 `RMSNorm` 的 `x * w` 差一个 1。Step3p5 的 checkpoint（含 MTP 的 enorm/hnorm/
     shared_head.norm）按零中心存权重，用普通 `RMSNorm` 会把整层乘成 0——不会报错，只会
     让输出全错。这里把差异做成一个明确的类，不靠调用方记得传参数。
+
+    上游还多一条 cast 差异：先 `(x * (1+w))` 在 weight 的 dtype（float32）里算，最后才回
+    orig_dtype，而不是先回 orig_dtype 再乘权重。本类通过 `add_one=True` 保留这条次序。
     """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
@@ -60,16 +67,13 @@ class GemmaRMSNorm(RMSNorm):
             self.weight.zero_()
 
     def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
-        if residual is not None:
-            x = x + residual
-            residual = x
-        input_dtype = x.dtype
-        x32 = x.to(torch.float32)
-        variance = x32.pow(2).mean(-1, keepdim=True)
-        out = x32 * torch.rsqrt(variance + self.variance_epsilon)
-        # 上游先把 x 乘上 (1+w) 再回原 dtype；这里保持 fp32 乘法后再 cast。
-        out = out * (self.weight.float() + 1.0)
-        out = out.to(input_dtype)
-        if residual is None:
-            return out
-        return out, residual
+        return rms_norm(
+            x,
+            self.weight,
+            self.variance_epsilon,
+            residual,
+            add_one=True,
+        )
+
+
+__all__ = ["RMSNorm", "GemmaRMSNorm"]

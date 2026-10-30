@@ -27,13 +27,12 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from ..attention import Attention
 from ..layers import (ColumnParallelLinear, MergedColumnParallelLinear, ParallelLMHead,
-                      RMSNorm, RotaryEmbedding, RowParallelLinear, SiluAndMul,
-                      VocabParallelEmbedding, get_rope)
+                      RMSNorm, RotaryEmbedding, RowParallelLinear,
+                      VocabParallelEmbedding, get_act_and_mul_fn, get_rope)
 from ..layers.logits_processor import LogitsProcessor
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
 from .qwen3 import maybe_prefix
@@ -146,31 +145,6 @@ def _make_rotary_embedding(text_config: Any, layer_idx: int, head_dim: int,
     )
 
 
-class _GeluAndMul(nn.Module):
-    """GeGLU 的合并形式（对应上游 `GeluAndMul`）；Gemma4 默认 `gelu_pytorch_tanh`。"""
-
-    def __init__(self, approximate: str = "none") -> None:
-        super().__init__()
-        if approximate not in ("none", "tanh"):
-            raise ValueError(f"GELU approximate 只能是 none/tanh，收到 {approximate!r}")
-        self.approximate = approximate
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate, up = x.chunk(2, dim=-1)
-        return F.gelu(gate, approximate=self.approximate) * up
-
-
-def _get_act_and_mul_fn(name: str) -> nn.Module:
-    name = str(name).lower()
-    if name in ("silu", "swish"):
-        return SiluAndMul()
-    if name in ("gelu", "geglu"):
-        return _GeluAndMul("none")
-    if name == "gelu_pytorch_tanh":
-        return _GeluAndMul("tanh")
-    raise ValueError(f"Gemma4 的 hidden_activation {name!r} 未适配")
-
-
 class Gemma4MLP(nn.Module):
     """Gemma4 的 gated MLP（对应冻结 `gemma4.py::Gemma4MLP`）。"""
 
@@ -192,7 +166,7 @@ class Gemma4MLP(nn.Module):
             bias=False,
             prefix=maybe_prefix(prefix, "down_proj"),
         )
-        self.act_fn = _get_act_and_mul_fn(
+        self.act_fn = get_act_and_mul_fn(
             str(_cfg(text_config, "hidden_activation", "gelu_pytorch_tanh")))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

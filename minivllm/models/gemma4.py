@@ -3,9 +3,10 @@
 这一关第一次把 Gemma4 的 **target 自身**接进本仓库。它和普通 Qwen 解码器有四处硬差异，
 缺一项都会"能跑但数值不对"：
 
-1. **YOCO 跨层 KV 共享**：最后 `num_kv_shared_layers` 层没有 K/V 投影，只算 Q，读前面
-   同类型（sliding/full）最后一个非共享层的 paged KV。目标模型自己也会产生 Q-only 层，
-   不只是 assistant 才 Q-only。
+1. **YOCO 跨层 KV 共享**：最后 `num_kv_shared_layers` 层只算 Q，读前面同类型
+   （sliding/full）最后一个非共享层的 paged KV。结构上它们仍走统一的 `qkv_proj`
+   （checkpoint 里的 K/V 权重也会装进来），只是 forward 跳过 K/V 的 norm/RoPE。
+   目标模型自己也会产生 Q-only 层，不只是 assistant 才 Q-only。
 2. **混合注意力**：sliding 层 `head_dim=256` + default RoPE + window；full 层
    `head_dim=512` + proportional RoPE。两层型是两个 KV group，块表与 metadata 必须分开。
 3. **Per-Layer Embedding（PLE）**：每层除了主干 hidden 还有一份
@@ -29,13 +30,12 @@ from torch import nn
 
 from ..attention import Attention
 from ..layers import (ColumnParallelLinear, MergedColumnParallelLinear,
-                      ParallelLMHead, RMSNorm, RowParallelLinear,
-                      VocabParallelEmbedding)
+                      ParallelLMHead, QKVParallelLinear, RMSNorm,
+                      RowParallelLinear, VocabParallelEmbedding)
 from ..layers.logits_processor import LogitsProcessor
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
-from .gemma4_mtp import (Gemma4MLP, _cfg, _get_act_and_mul_fn, _int,
-                         _layer_geometry, _layer_types, _make_rotary_embedding,
-                         _text_config)
+from .gemma4_mtp import (Gemma4MLP, _cfg, _int, _layer_geometry, _layer_types,
+                         _make_rotary_embedding, _text_config)
 from .qwen3 import maybe_prefix
 from .registry import register_model
 
@@ -66,7 +66,12 @@ def _kv_source_layer(text_config: Any, layer_idx: int) -> int | None:
 
 
 class Gemma4Attention(nn.Module):
-    """target 的一层注意力。非共享层有完整 Q/K/V；共享层只有 Q。"""
+    """target 的一层注意力。
+
+    上游 target 的所有层都走**一个** `qkv_proj`；共享层也保留 K/V 权重和 k_norm/v_norm，
+    只是 forward 里跳过它们，直接读源层 cache。不要按 mini 早期“共享层只有 q_proj”的
+    结构理解上游。
+    """
 
     def __init__(self, text_config: Any, layer_idx: int, prefix: str = "") -> None:
         super().__init__()
@@ -82,44 +87,35 @@ class Gemma4Attention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
-        self.q_size = num_heads * head_dim
-        self.kv_size = num_kv_heads * head_dim
+        self.qkv_proj = QKVParallelLinear(
+            hidden_size, head_dim, num_heads, num_kv_heads,
+            bias=bool(_cfg(text_config, "attention_bias", False)),
+            prefix=maybe_prefix(prefix, "qkv_proj"))
+        self.q_size = self.qkv_proj.q_size
+        self.kv_size = self.qkv_proj.kv_size
         self.scaling = 1.0
         self.attention_bias = bool(_cfg(text_config, "attention_bias", False))
         self.attention_k_eq_v = bool(_cfg(text_config, "attention_k_eq_v", False))
         self.is_kv_shared_layer = _is_shared_layer(text_config, layer_idx)
         source_idx = _kv_source_layer(text_config, layer_idx)
 
-        self.q_proj = ColumnParallelLinear(
-            hidden_size, self.q_size, bias=self.attention_bias,
-            prefix=maybe_prefix(prefix, "q_proj"))
         self.o_proj = RowParallelLinear(
             self.q_size, hidden_size, bias=self.attention_bias,
             prefix=maybe_prefix(prefix, "o_proj"))
         self.q_norm = RMSNorm(head_dim, eps=float(_cfg(
             text_config, "rms_norm_eps", 1e-6)))
-        self.rotary_emb = _make_rotary_embedding(
-            text_config, layer_idx, head_dim, layer_type, self.is_sliding)
-
-        if not self.is_kv_shared_layer:
-            self.k_proj = ColumnParallelLinear(
-                hidden_size, self.kv_size, bias=self.attention_bias,
-                prefix=maybe_prefix(prefix, "k_proj"))
-            if self.attention_k_eq_v and self.layer_type == "full_attention":
-                self.v_proj = None
-            else:
-                self.v_proj = ColumnParallelLinear(
-                    hidden_size, self.kv_size, bias=self.attention_bias,
-                    prefix=maybe_prefix(prefix, "v_proj"))
+        if self.is_kv_shared_layer:
+            # 共享层不消费 K/V，不建这两个 norm；真实 checkpoint 里即使有对应
+            # 权重也在加载器里显式跳过（无参数可装，不能静默丢）。
+            self.k_norm = None
+            self.v_norm = None
+        else:
             self.k_norm = RMSNorm(head_dim, eps=float(_cfg(
                 text_config, "rms_norm_eps", 1e-6)))
             self.v_norm = RMSNorm(head_dim, eps=float(_cfg(
                 text_config, "rms_norm_eps", 1e-6)), has_weight=False)
-        else:
-            self.k_proj = None
-            self.v_proj = None
-            self.k_norm = None
-            self.v_norm = None
+        self.rotary_emb = _make_rotary_embedding(
+            text_config, layer_idx, head_dim, layer_type, self.is_sliding)
 
         self.attn = Attention(
             num_heads=num_heads,
@@ -136,29 +132,26 @@ class Gemma4Attention(nn.Module):
 
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor,
                 **kwargs: Any) -> torch.Tensor:
-        q, _ = self.q_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split(
+            [self.q_size, self.kv_size, self.kv_size], dim=-1)
+
         q = q.unflatten(-1, (self.num_heads, self.head_dim))
         q = self.q_norm(q)
         q = q.flatten(-2, -1)
 
         if self.is_kv_shared_layer:
+            # 共享层只处理 Q；K/V 已经按检查点加载，但这里不读取/不归一化。
             q, _ = self.rotary_emb(positions, q, None)
-            dummy = torch.empty(
-                q.shape[0], self.kv_size, dtype=q.dtype, device=q.device)
-            attn_output = self.attn(q, dummy, dummy)
+            attn_output = self.attn(q, k, v)
         else:
-            k, _ = self.k_proj(hidden_states)
             k = k.unflatten(-1, (self.num_kv_heads, self.head_dim))
             k = self.k_norm(k)
             k = k.flatten(-2, -1)
             q, k = self.rotary_emb(positions, q, k)
-            if self.v_proj is None:
-                v = k
-            else:
-                v, _ = self.v_proj(hidden_states)
-                v = v.unflatten(-1, (self.num_kv_heads, self.head_dim))
-                v = self.v_norm(v)
-                v = v.flatten(-2, -1)
+            v = v.unflatten(-1, (self.num_kv_heads, self.head_dim))
+            v = self.v_norm(v)
+            v = v.flatten(-2, -1)
             attn_output = self.attn(q, k, v)
 
         output, _ = self.o_proj(attn_output)
@@ -411,10 +404,10 @@ class Gemma4ForCausalLM(nn.Module):
         # 条件生成包装：model.language_model.* → model.*。文本模型本身不改。
         return name.replace("language_model.", "")
 
-    def _shared_layer_indices(self) -> set[int]:
+    def _full_attention_layer_indices(self) -> set[int]:
         return {
             idx for idx in range(self.model.num_hidden_layers)
-            if self.model.layers[idx].self_attn.is_kv_shared_layer
+            if self.model.layers[idx].self_attn.layer_type == "full_attention"
         }
 
     def _load_buffer(self, name: str, tensor: torch.Tensor,
@@ -433,7 +426,15 @@ class Gemma4ForCausalLM(nn.Module):
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         buffers = dict(self.named_buffers())
         loaded_buffers: set[str] = set()
-        shared = self._shared_layer_indices()
+        attns = [layer.self_attn for layer in self.model.layers]
+        for attn in attns:
+            attn.qkv_proj.reset_load_state()
+        k_eq_v = bool(_cfg(self.text_config, "attention_k_eq_v", False))
+        full_layers = self._full_attention_layer_indices()
+        shared_layers = {
+            idx for idx, attn in enumerate(attns)
+            if attn.is_kv_shared_layer
+        }
 
         def routed():
             for name, tensor in weights:
@@ -449,20 +450,41 @@ class Gemma4ForCausalLM(nn.Module):
                 if name in buffers and self._load_buffer(name, tensor, buffers):
                     loaded_buffers.add(name)
                     continue
-                # 共享层在 HF 权重里有被忽略的 k/v 投影；本模型没有这些参数，跳过。
-                if (".layers." in name and "self_attn." in name
-                        and name.rsplit(".", 2)[-2] in (
-                            "k_proj", "v_proj", "k_norm", "v_norm")):
+
+                # 共享层没有 k_norm/v_norm 参数（forward 不消费 K/V）；真实
+                # checkpoint 里可能仍有这两份权重，显式跳过，不能当成未知名字。
+                if ("self_attn." in name
+                        and name.rsplit(".", 2)[-2] in ("k_norm", "v_norm")
+                        and ".layers." in name):
                     try:
-                        layer_idx = int(name.split(".layers.", 1)[1].split(".", 1)[0])
+                        layer_idx = int(
+                            name.split(".layers.", 1)[1].split(".", 1)[0])
                     except (IndexError, ValueError):
                         layer_idx = -1
-                    if layer_idx in shared:
+                    if layer_idx in shared_layers:
+                        continue
+
+                # 上游 `_weight_iterator`：k_eq_v 的 full 层 checkpoint 只有 k_proj，
+                # 把同一份 K 权重复制到 V 槽。复制后 V 仍会走自己的 v_norm（无权重），
+                # 不是“把已经 k_norm/RoPE 的 k 直接当 v”。
+                if (k_eq_v and "self_attn.k_proj" in name
+                        and ".layers." in name):
+                    try:
+                        layer_idx = int(
+                            name.split(".layers.", 1)[1].split(".", 1)[0])
+                    except (IndexError, ValueError):
+                        layer_idx = -1
+                    if layer_idx in full_layers:
+                        yield name, tensor
+                        yield name.replace("k_proj", "v_proj"), tensor.clone()
                         continue
                 yield name, tensor
 
         mapper = WeightsMapper(
             orig_to_new_stacked={
+                ".q_proj": (".qkv_proj", "q"),
+                ".k_proj": (".qkv_proj", "k"),
+                ".v_proj": (".qkv_proj", "v"),
                 ".gate_proj": (".gate_up_proj", 0),
                 ".up_proj": (".gate_up_proj", 1),
             },
@@ -474,4 +496,12 @@ class Gemma4ForCausalLM(nn.Module):
                           "embed_audio."],
         )
         loaded = loader.load_weights(routed(), mapper=mapper)
+        # 非共享层必须拿到 q/k/v 三个 shard；共享层 forward 只消费 Q，允许
+        # checkpoint 只提供 q_proj（上游 tiny/HF 文本栈就是这样），但缺 Q 仍报错。
+        for idx, attn in enumerate(attns):
+            required = {"q"} if attn.is_kv_shared_layer else {"q", "k", "v"}
+            try:
+                attn.qkv_proj.validate_loaded_shards(required)
+            except ValueError as exc:
+                raise ValueError(f"Gemma4 第 {idx} 层：{exc}") from exc
         return loaded | loaded_buffers

@@ -82,6 +82,44 @@ class QKVParallelLinear(nn.Module):
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
+        # 需求 85：加载结束后按“本层实际需要的 shard 集合”对账。只记录 weight 的
+        # 加载次数；bias 复用同一个 loader，不能算成重复覆盖。
+        self._shard_load_counts: dict[str, int] = {}
+
+    def reset_load_state(self) -> None:
+        """开始一次新的权重加载前清空 shard 记账。"""
+        self._shard_load_counts.clear()
+
+    def validate_loaded_shards(self, required: set[str]) -> None:
+        """缺 shard / 同一 shard 被覆盖时明确报错，而不是留下未初始化行。"""
+        required = set(required)
+        invalid = required - {"q", "k", "v"}
+        if invalid:
+            raise ValueError(f"未知的必需 QKV shard: {sorted(invalid)}")
+        missing = sorted(shard for shard in required
+                         if self._shard_load_counts.get(shard, 0) == 0)
+        duplicated = sorted(shard for shard, count in self._shard_load_counts.items()
+                            if count > 1)
+        if missing or duplicated:
+            detail = []
+            if missing:
+                detail.append(f"缺少 {missing}")
+            if duplicated:
+                detail.append(f"重复覆盖 {duplicated}")
+            raise ValueError(
+                f"QKVParallelLinear（输出 {self.output_sizes}）的 shard 加载不完整："
+                + "，".join(detail))
+
+    def _mark_shard_loaded(self, param: Parameter, shard_id: str | None) -> None:
+        if param is not self.weight:
+            return
+        shards = ("q", "k", "v") if shard_id is None else (shard_id,)
+        for shard in shards:
+            if shard not in ("q", "k", "v"):
+                raise ValueError(
+                    f"未知的 shard_id {shard!r}（qkv 只接受 'q' / 'k' / 'v'）")
+            self._shard_load_counts[shard] = (
+                self._shard_load_counts.get(shard, 0) + 1)
 
     def _shard_range(self, shard_id: str) -> tuple[int, int]:
         offsets = {"q": 0, "k": self.q_size, "v": self.q_size + self.kv_size}
@@ -99,9 +137,11 @@ class QKVParallelLinear(nn.Module):
                                  f"收到 {loaded_weight.shape[0]}")
             with torch.no_grad():
                 param.copy_(loaded_weight)
+            self._mark_shard_loaded(param, None)
             return
         offset, size = self._shard_range(shard_id)
         _copy_into(param, loaded_weight, offset, size)
+        self._mark_shard_loaded(param, shard_id)
 
     def forward(self, x: torch.Tensor):
         # 返回值对齐 vLLM 的 (output, output_bias) 约定

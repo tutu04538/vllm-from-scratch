@@ -5998,8 +5998,8 @@
    "results": {
     "package": {
      "root": "minivllm/",
-     "python_files": 175,
-     "sha256": "6e7481e59bd45326f997cfb56f6e28dff0f9defd420f2e3b1052906884fbb325",
+     "python_files": 177,
+     "sha256": "07ee10305da0fc6b2e68af52f97cf84a581e02b60f08e2b68324f773cec927d5",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -6640,6 +6640,375 @@
     "只测 Gemma4 文本路径；视觉/音频塔、TP、量化未接。",
     "真实 target 的 35 层对应当前 config；其他 checkpoint 需重新按 key 审计。",
     "没有单独测表构建的 CPU 峰值；唯一 storage 与整模型 allocated 分开记录。"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "repo": "google/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "architectures": [
+     "Gemma4ForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 复放对照）",
+    "text_only": true,
+    "note": "视觉/音频塔未加载；与 82/83 固定 revision 相同"
+   },
+   "assistant": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "repo": "google/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 复放对照）",
+    "note": "Q-only 共享 KV；4 层 = 3 sliding + 1 full"
+   },
+   "weights": "target/assistant 均已下载，固定 revision；权重不提交"
+  }
+ },
+ "step85": {
+  "results": {
+   "step": "85（减少小任务：Norm、激活融合和 QKV 打包）",
+   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/085_归一化激活融合与QKV打包.md",
+   "status": "完成 A/B/C：RMSNorm/GemmaRMSNorm 融合（CUDA Triton + CPU Native）、GeluAndMul/SiluAndMul 共享融合、Gemma4 target packed QKV + 共享层/k_eq_v 路由；FP32/BF16、2D/3D、stride、residual、真实 target/assistant、K=0/K=2 回归通过；不做 torch.compile，不接完整 Graph（87），不跑完整性能矩阵（88）",
+   "recorded_at": "2026-10-30T11:46:10+08:00",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 177,
+    "sha256": "07ee10305da0fc6b2e68af52f97cf84a581e02b60f08e2b68324f773cec927d5",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step85 -q",
+     "result": "31 passed, 0 failed, 0 skipped"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step85 -q",
+     "result": "11 passed, 20 skipped（CUDA kernel 用例按设备跳过；CPU native 路径实跑）"
+    },
+    {
+     "cmd": "python benchmarks/check_step85_ops.py --all",
+     "result": "micro/trace 2 个隔离 case 均 ok；micro 为 3 次独立运行的中位数"
+    },
+    {
+     "cmd": "python benchmarks/check_step83_numerics.py --max-new-tokens 64 --output-dir benchmarks/results/step85/replay83/bf16 --dtype bfloat16 --blocks 512 --fp32-final-control",
+     "result": "first_diff=None；K0/K2 64 token 输出相同；target top1 64/64 相同"
+    },
+    {
+     "cmd": "python benchmarks/check_step83_numerics.py --max-new-tokens 64 --output-dir benchmarks/results/step85/replay83/fp32 --dtype float32 --blocks 64",
+     "result": "first_diff=None；K0/K2 64 token 输出相同；top1 64/64；final hidden rel 2.12e-6"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step85 -q",
+     "result": "1231 passed, 0 failed, 0 skipped, 148 warnings in 143.60s（exit 0）"
+    }
+   ],
+   "execution_trace": {
+    "micro": {
+     "timing": "3 次独立运行；每次 5 个 CUDA-event loop 取中位数；包含 Python launch 间隙；单机仍有明显噪声",
+     "norm": [
+      {
+       "name": "decode_hidden_1x1536",
+       "fused_us_per_call": 34.398,
+       "native_us_per_call": 92.125,
+       "fused_over_native_including_launch": 0.373,
+       "runs_us": [
+        36.148,
+        34.398,
+        28.629
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "prefill_hidden_128x1536",
+       "fused_us_per_call": 50.869,
+       "native_us_per_call": 85.323,
+       "fused_over_native_including_launch": 0.596,
+       "runs_us": [
+        25.049,
+        50.869,
+        60.737
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_qnorm_1x8x256",
+       "fused_us_per_call": 36.453,
+       "native_us_per_call": 92.442,
+       "fused_over_native_including_launch": 0.394,
+       "runs_us": [
+        32.919,
+        42.697,
+        36.453
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_qnorm_1x8x512",
+       "fused_us_per_call": 39.164,
+       "native_us_per_call": 84.627,
+       "fused_over_native_including_launch": 0.463,
+       "runs_us": [
+        38.2,
+        39.164,
+        45.016
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_vnorm_noweight_1x512",
+       "fused_us_per_call": 30.074,
+       "native_us_per_call": 83.32,
+       "fused_over_native_including_launch": 0.361,
+       "runs_us": [
+        25.247,
+        30.074,
+        36.233
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_gemma_1x1536",
+       "fused_us_per_call": 25.132,
+       "native_us_per_call": 101.329,
+       "fused_over_native_including_launch": 0.248,
+       "runs_us": [
+        33.449,
+        25.132,
+        21.831
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_hidden_residual_1x1536",
+       "fused_us_per_call": 33.753,
+       "native_us_per_call": 120.559,
+       "fused_over_native_including_launch": 0.28,
+       "runs_us": [
+        35.614,
+        32.066,
+        33.753
+       ],
+       "max_abs_error": 0.0
+      }
+     ],
+     "activation": [
+      {
+       "name": "decode_gelu_1x12288",
+       "fused_us_per_call": 31.407,
+       "native_us_per_call": 28.124,
+       "fused_over_native_including_launch": 1.117,
+       "runs_us": [
+        42.513,
+        23.496,
+        31.407
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "decode_gelu_double_1x24576",
+       "fused_us_per_call": 29.544,
+       "native_us_per_call": 25.853,
+       "fused_over_native_including_launch": 1.143,
+       "runs_us": [
+        39.65,
+        26.87,
+        29.544
+       ],
+       "max_abs_error": 0.0
+      },
+      {
+       "name": "prefill_gelu_128x24576",
+       "fused_us_per_call": 34.134,
+       "native_us_per_call": 32.276,
+       "fused_over_native_including_launch": 1.058,
+       "runs_us": [
+        34.134,
+        31.427,
+        34.344
+       ],
+       "max_abs_error": 0.015625
+      },
+      {
+       "name": "decode_silu_1x17920",
+       "fused_us_per_call": 27.889,
+       "native_us_per_call": 18.794,
+       "fused_over_native_including_launch": 1.484,
+       "runs_us": [
+        24.958,
+        27.889,
+        37.342
+       ],
+       "max_abs_error": 0.0
+      }
+     ],
+     "qkv_gemm": [
+      {
+       "name": "decode_sliding_1x",
+       "fused_us_per_call": 13.666,
+       "native_us_per_call": 31.796,
+       "fused_over_native_including_launch": 0.43,
+       "runs_us": [
+        11.773,
+        13.666,
+        16.469
+       ],
+       "max_abs_error": null
+      },
+      {
+       "name": "decode_full_1x",
+       "fused_us_per_call": 17.412,
+       "native_us_per_call": 38.71,
+       "fused_over_native_including_launch": 0.45,
+       "runs_us": [
+        17.412,
+        17.854,
+        15.117
+       ],
+       "max_abs_error": null
+      },
+      {
+       "name": "prefill_sliding_128x",
+       "fused_us_per_call": 36.78,
+       "native_us_per_call": 73.174,
+       "fused_over_native_including_launch": 0.503,
+       "runs_us": [
+        36.356,
+        36.78,
+        37.845
+       ],
+       "max_abs_error": null
+      }
+     ],
+     "notes": [
+      "Norm 的一行一 program 融合 kernel 在全部固定 shape 上中位数低于 Torch 分解路径；single-run 噪声仍存在。",
+      "激活 decode 的 1x12288 / 1x24576 / silu 中位数未超过 Torch 分解路径，原因是 Triton Python launcher/单次 launch 开销大于两个高度优化的小 CUDA kernel；prefill 与部分 shape 受益。不能宣称所有激活都提速。",
+      "QKV packed GEMM 在三个固定 shape 上都低于三次独立 GEMM；但 Q-only 共享层会多算 K/V 行，净收益要按端到端看。"
+     ]
+    },
+    "trace": {
+     "prompt_len": 18,
+     "build_s": 5.295978322043084,
+     "tokens": [
+      1018,
+      57137,
+      236743,
+      82056,
+      237221,
+      57137,
+      47910,
+      237214,
+      59013
+     ],
+     "profiled_decode_steps": 8,
+     "gpu_kernel_events": 15728,
+     "cpu_kernel_launch_events": 11504,
+     "distinct_gpu_kernels": 54,
+     "triton_rms_norm_kernel_events": 1936,
+     "triton_act_and_mul_kernel_events": 280,
+     "per_step_gpu_kernel_events": 1966.0,
+     "per_step_cpu_kernel_launch_events": 1438.0,
+     "theoretical_rms_norm_calls_per_step": 242,
+     "theoretical_act_and_mul_calls_per_step": 35,
+     "memory": {
+      "allocated_bytes": 9665132544,
+      "reserved_bytes": 10175381504,
+      "peak_allocated_bytes": 10111753216
+     },
+     "note": "真实 target、K=0、eager、8 个 decode step；1936 = 8×242，280 = 8×35，说明两个融合 kernel 确实在热路径；profiler 只数 kernel/launch，不作为吞吐计时。CPU launch 事件少于 GPU kernel 事件（profiler CPU 采集合并/丢失），以 GPU kernel 事件为准。"
+    },
+    "replay83": {
+     "bf16": {
+      "first_diff": null,
+      "k0_k2_tokens_same": true,
+      "target_top1_same": "64/64",
+      "token_changes_vs_step83": {
+       "k0": 2,
+       "k2": 0
+      },
+      "changed_positions_vs_step83": [
+       {
+        "index": 45,
+        "old": 57208,
+        "new": 25352
+       },
+       {
+        "index": 46,
+        "old": 25352,
+        "new": 33988
+       }
+      ],
+      "max_final_hidden_relative_l2": 0.024183275949519786,
+      "max_layer_hidden_relative_l2": 0.02122153929799826,
+      "max_layer": "model.layers.11",
+      "position70_k0_top1": 57208,
+      "position70_k0_margin": 0.0,
+      "position70_k0_top_values": [
+       15.6875,
+       15.6875
+      ],
+      "note": "输出不再分叉，但 K=0 在 position 70 的 top1 是精确并列；这不是修好 BF16，只是舍入把 near-tie 推到另一侧。"
+     },
+     "fp32": {
+      "first_diff": null,
+      "k0_k2_tokens_same": true,
+      "target_top1_same": "64/64",
+      "token_changes_vs_step83": {
+       "k0": 0,
+       "k2": 0
+      },
+      "max_final_hidden_relative_l2": 2.1234029462048276e-06,
+      "max_layer_hidden_relative_l2": 1.7872304791862995e-06,
+      "max_layer": "model.layers.11",
+      "position70_margin_old": 0.06539630889892578,
+      "position70_margin_new": 0.06539344787597656
+     },
+     "step84_vs_step85": {
+      "bf16_token_changes": {
+       "k0": 0,
+       "k2": 0
+      },
+      "fp32_token_changes": {
+       "k0": 0,
+       "k2": 0
+      }
+     },
+     "status": "83 原始“第45 token 分叉”在 84/85 的固定复放中不再出现；BF16 near-tie 仍在（margin 0），FP32 仍有 ~2e-6 归约差；没有删除原记录。"
+    },
+    "real_model": {
+     "target": "models/gemma-4-E2B-it",
+     "assistant": "models/gemma-4-E2B-it-assistant",
+     "evidence": "全量回归中的真实 Gemma4 target+assistant 测试通过：target-only K=0 与 K=2 投机 graph greedy 逐 token 相同；35 层、2 个 KV group、20 个 Q-only 共享层、assistant 4 层源映射均核过。",
+     "k0_eager_trace_tokens": [
+      1018,
+      57137,
+      236743,
+      82056,
+      237221,
+      57137,
+      47910,
+      237214,
+      59013
+     ],
+     "target_load_smoke": "真实 target 加载后每层 qkv_proj 的 q/k/v 三段均为有限值；layer 0/14/15/20/34 形状分别覆盖 sliding/full 与共享/非共享。"
+    }
+   },
+   "known_differences": [
+    "本实现用本地 Triton kernel，不是上游 C++ `ops.rms_norm` / `ops.gelu_and_mul`；输入/输出语义对齐，数值在 FP32 有末位归约差。",
+    "RMSNorm 的 residual 分支返回新 residual，不原地写 caller（上游 native 同义；上游 CUDA 自定义 op 是原地写）。",
+    "共享 target 层的 K/V 权重按统一 qkv_proj 装进来，但 forward 不消费 K/V；上游还会为共享层建 k_norm/v_norm，本实现省略这两个无用参数（真实 checkpoint 里若有对应权重则显式跳过）。",
+    "真实 E2B 的 attention_k_eq_v=False；k_eq_v 的 K→K/V 路由由合成配置测试覆盖，不是当前真实模型热路径。",
+    "激活在 decode 小 shape 可能比 Torch 分解慢；这是 launch-bound，不是“融合没生效”。",
+    "没有跑完整 B×K 性能矩阵；没有 torch.compile；没有接 87 的 Graph 系统；没有覆盖量化/并行/多模态。"
    ]
   },
   "models": {

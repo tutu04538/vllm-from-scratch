@@ -429,3 +429,26 @@ fp32/trace_k0.pt、trace_k2.pt、numerics_summary.json
 把旧 TPOT 改名并新增按首 burst 后 token 计算的 TPOT，再用共同历史 + 逐层 hidden + FP32
 把 64-token 第一分歧定位为 target BF16 near-tie；它不优化模型，也不跑完整性能矩阵，但让
 84–88 的结论第一次有了可复现、可归因的测量基础。**
+
+## 10. 2026-10-30 step85 复查（后补，不改原结论）
+
+85 的融合 RMSNorm/激活和 Gemma4 packed QKV 改变了 BF16 的归约顺序，因此按同一固定历史
+（中文 prompt、64 token、K=0/K=2、blocks=512/64）重放：
+
+```text
+BF16：K=0/K=2 输出在 64 token 内完全相同；first_diff = None
+      target top1 在 64 个共同 position 上 64/64 相同
+      K=0 相对 step83 的旧 trace 只改了第 45/46 个输出 token（57208,25352 → 25352,33988）
+      K=2 相对旧 trace 0 个 token 变化
+      max final hidden relative L2 = 2.42e-2，max layer = 2.12e-2（layer 11）
+      position 70 的 K=0 margin = 0.0（57208 / 25352 同为 15.6875），near-tie 仍在
+FP32：K=0/K=2 输出仍完全相同；64/64 top1 相同
+      max final hidden relative L2 = 2.12e-6，max layer = 1.79e-6（layer 11）
+      position 70 的 margin 0.0653963 → 0.0653934
+```
+
+状态更新：**83 的“输出第 45 个 token 分叉”在 85 后的这次固定复放中不再出现；但它不是
+“BF16 数值问题已修”。K=0 在 position 70 的 top1 已经变成精确并列（margin 0），说明改变
+的是 near-tie 落在哪一侧；BF16 逐位等价仍不成立。FP32 仍保留约 2e-6 的归约差，但 token
+与 top1 一致。** 记录保留在 `benchmarks/results/step85/replay83/`（结果目录不跟踪），
+完整对照见 `docs/step85_alignment.md` §5。

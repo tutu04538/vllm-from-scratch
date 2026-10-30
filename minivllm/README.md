@@ -861,6 +861,35 @@ BF16 下 K=0/K=2 的第一分歧从第 45 token 变为无（K=0 改变 2 个 tok
 near-tie 舍入变化，**不是通用精度修复，也不承诺逐 token 等价**。微测只测 RoPE 入口且
 包含 Python launch 间隙，不代表端到端加速。
 
+## 第八十五关：Norm、激活融合与 packed QKV
+
+`layers/ops/layernorm.py` 提供 CUDA Triton + CPU native 两套 RMSNorm：一行一个 program，
+FP32 归约、一次写回；支持 1D/2D/3D、packed QKV 切片的带洞 row stride、Q/K norm 的 3D
+head 布局、residual/no-weight/Gemma `(1+w)`，BF16 权重时按上游次序先 cast 再乘。residual
+分支返回新的 residual，不原地改写 caller（与上游 native 同义，与上游 CUDA 自定义 op 有差异）。
+
+`layers/activation.py` 统一 `GeluAndMul` / `SiluAndMul` / `get_act_and_mul_fn`，Gemma4 私有
+`_GeluAndMul` 已删除；CUDA 用一个融合 kernel 完成切分、GELU/SiLU、乘和写回，支持 2D/3D
+和非连续外层 stride。GELU 的 exact erf 与 tanh 近似分开，不能互换。激活在 decode 小 shape
+仍可能被 Triton launch 开销拖慢，不能宣称所有 shape 都加速。
+
+Gemma4 target 的所有层统一走 `QKVParallelLinear`：checkpoint 的 q/k/v 分别写进 packed 参数
+的 q/k/v shard；共享层也保留 qkv（K/V 权重装入但 forward 跳过），`attention_k_eq_v` 把 K
+权重复制进 K/V 槽，V 再走无权重 `v_norm`；缺 shard/重复覆盖在加载期报错。assistant 仍是
+Q-only `q_proj`，不为了统一类名制造 K/V。
+
+```bash
+python benchmarks/check_step85_ops.py --all --output-dir benchmarks/results/step85
+python -m pytest tests/step85 -q
+```
+
+实测：`tests/step85` **31 passed**；真实 K=0 eager 8-step trace 中 `_rms_norm_kernel`
+**1936 = 8×242**、`_act_and_mul_kernel` **280 = 8×35**；BF16 83 固定复放 K=0/K=2 64 token
+不再分叉，但 position 70 的 K=0 margin=0（精确并列），不是 BF16 已修；FP32 0 token 变化，
+hidden 相对差约 2.1e-6；全量 **1231 passed**。固定 shape 微测里 Norm 和 packed QKV 的中位数
+低于分解路径，激活则不一定（decode 1×12288 约 1.12×、silu 约 1.48× 于 native），详见
+`docs/step85_alignment.md`。
+
 ## 明确不做
 
 异步与多进程端到端、正式生产指标上报、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）；EAGLE/MTP 本身已在 63/65 关接入。
