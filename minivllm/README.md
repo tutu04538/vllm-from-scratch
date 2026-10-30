@@ -829,6 +829,38 @@ python benchmarks/check_step83_numerics.py --max-new-tokens 64 --dtype float32 -
 python -m pytest tests/step83 -q
 ```
 
+## 第八十四关：RoPE 共享紧凑表与融合 Q/K
+
+`get_rope` 现在按完整数学配置缓存表：head/rotary dimension、`max_position`、base、
+rope type/partial factor、`is_neox_style`、dtype、device。嵌套 `rope_parameters`
+递归冻结进 key，不修改调用方字典；同 key 的层拿到同一份 `cos_sin_cache` storage。
+缓存用 `WeakValueDictionary`：活 module 真正共享，最后一个使用者释放后条目不保活旧引擎。
+
+表改成上游紧凑布局：宽 `apply_dim`，前半 cos、后半 sin；普通 partial 的未旋转维不进表，
+Gemma4 proportional 的 nope 维用 `cos=1/sin=0` 表示恒等（频率分母仍是完整 `head_size`）。
+真实 Gemma4 target 35 层（28 sliding + 7 full）+ assistant 4 层（3+1）只剩 **2 个 key**：
+`[131072,256]` 64 MiB + `[131072,512]` 128 MiB，BF16 唯一 storage **192 MiB**；旧布局每层
+一份的名义值是 6016 MiB。`model.to(dtype/device)` 由 `_apply` 重新取 canonical 表，不会
+每层复制一份。
+
+CUDA 前向 `layers/ops/rotary_embedding.py` 用一个原地 Triton kernel 同时转 Q/K：支持
+`key=None`（Gemma4 Q-only）、partial/proportional、任意 2D token/列 stride、BF16/FP32、
+packed QKV 切片（只写 Q/K，不碰 V）和 CUDA Graph；位置/查表/写回都在 kernel 内，没有
+`.item()` 或每层完整 gather。CPU 保留显式 Torch 参考。越界用设备端 assert，不需要 host
+同步，但触发后会污染该 CUDA context（测试放在独立子进程）。
+
+```bash
+python benchmarks/check_step84_rope.py --all --output-dir benchmarks/results/step84
+python -m pytest tests/step84 -q
+```
+
+实测：`tests/step84` **46 passed**，全量 **1200 passed**。真实 target+assistant 的 8-token
+eager 与 `FULL_DECODE_ONLY` graph 输出相同，模型内审到 39 个 RoPE module / 2 张表 / 192 MiB；
+FP32 复放 83 的固定历史 64 token 完全相同（top1 64/64、65/65，hidden 相对差约 2.8e-6）；
+BF16 下 K=0/K=2 的第一分歧从第 45 token 变为无（K=0 改变 2 个 token，K=2 不变），这是
+near-tie 舍入变化，**不是通用精度修复，也不承诺逐 token 等价**。微测只测 RoPE 入口且
+包含 Python launch 间隙，不代表端到端加速。
+
 ## 明确不做
 
 异步与多进程端到端、正式生产指标上报、白名单/bad words/思考预算等未接入的采样字段、KV 连接器、多 KV group 的 Mamba/抢占生命周期（81 只完成 E2 所需子集）；EAGLE/MTP 本身已在 63/65 关接入。

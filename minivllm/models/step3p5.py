@@ -26,7 +26,7 @@ from torch import nn
 
 from ..attention import Attention
 from ..layers import (ColumnParallelLinear, GemmaRMSNorm, MergedColumnParallelLinear,
-                      ParallelLMHead, QKVParallelLinear, RMSNorm, RotaryEmbedding,
+                      ParallelLMHead, QKVParallelLinear, RMSNorm, get_rope,
                       RowParallelLinear, SiluAndMul, SwigluStepAndMul,
                       VocabParallelEmbedding)
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
@@ -215,11 +215,14 @@ class Step3p5Attention(nn.Module):
         self.k_norm = GemmaRMSNorm(head_dim, eps=float(_cfg(config, "rms_norm_eps", 1e-6)))
         self.rotary_emb = None
         if self.use_rope:
-            self.rotary_emb = RotaryEmbedding(
+            self.rotary_emb = get_rope(
                 head_size=head_dim,
-                rotary_dim=int(head_dim * partial_factor),
-                max_position_embeddings=int(config["max_position_embeddings"]),
-                base=float(rope_theta))
+                max_position=int(config["max_position_embeddings"]),
+                is_neox_style=True,
+                rope_parameters={
+                    "rope_theta": float(rope_theta),
+                    "rope_dim": int(head_dim * partial_factor),
+                })
 
         self.use_head_wise_attn_gate = bool(config.get("use_head_wise_attn_gate", False))
         if self.use_head_wise_attn_gate:

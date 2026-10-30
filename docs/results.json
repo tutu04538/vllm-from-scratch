@@ -32,7 +32,8 @@
   "step74_triton_paged_backend": "implemented + self-verified（Triton paged 后端，AttentionCGSupport.ALWAYS；target 混合批 FULL；DSpark adaptive 真 ALWAYS；965 回归）",
   "step74_triton_attn_upstream": "implemented + self-verified（上游 TRITON_ATTN 核心子集：2D unified_attention、block16/head16、paged/GQA/varlen；967 回归）",
   "step74_triton_fixed_attention": "implemented + self-verified（固定场景 query-tiled Triton；block16 混合批 + adaptive；968 回归）",
-  "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）"
+  "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）",
+  "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）"
  },
  "step58": {
   "results": {
@@ -5997,8 +5998,8 @@
    "results": {
     "package": {
      "root": "minivllm/",
-     "python_files": 173,
-     "sha256": "783284d479565090dbf887a02cde0d7495f59eafbf8df0ddcd92c69b5431fe2e",
+     "python_files": 175,
+     "sha256": "6e7481e59bd45326f997cfb56f6e28dff0f9defd420f2e3b1052906884fbb325",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -6219,6 +6220,451 @@
     "dtype": "bfloat16（FP32 对照单列）",
     "note": "Q-only 共享 KV；draft 层 0/1/2→target 13，层 3→target 14"
    }
+  }
+ },
+ "step84": {
+  "results": {
+   "step": "84（RoPE 共享紧凑表与融合 Q/K 旋转）",
+   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/084_RoPE共享缓存与融合执行.md",
+   "status": "完成 A/B：相同配置共享紧凑 cos/sin 表 + 本地 Triton 原地 Q/K 融合；真实 target+assistant eager/graph 短生成通过；FP32 复放 83 历史 64 token 相同，BF16 只改变 near-tie 附近的舍入；不做完整性能矩阵",
+   "recorded_at": "2026-10-30T09:19:35+08:00",
+   "package": {
+    "root": "minivllm/",
+    "python_files": 175,
+    "sha256": "6e7481e59bd45326f997cfb56f6e28dff0f9defd420f2e3b1052906884fbb325",
+    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+   },
+   "environment": {
+    "python": "3.12.14",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "device": "RTX 5090 Laptop 24,463 MiB",
+    "threads": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+    "cuda_extension_path": "conda env bin 补进 PATH（ninja）"
+   },
+   "commands": [
+    {
+     "cmd": "python -m pytest tests/step84 -q",
+     "result": "46 passed, 14 warnings；5 个测试文件"
+    },
+    {
+     "cmd": "python benchmarks/check_step84_rope.py --all --output-dir benchmarks/results/step84",
+     "result": "6 个隔离 case 全部 ok：audit/micro/real_eager/real_graph/replay83_bf16/replay83_fp32"
+    },
+    {
+     "cmd": "python -m pytest tests/step58 … tests/step84 -q",
+     "result": "1200 passed, 149 warnings in 141.80s；exit 0"
+    },
+    {
+     "cmd": "python -m pytest tests/step76/test_dflash_kv.py -q",
+     "result": "11 passed；参考实现改用 apply_to_key，不再把同一张量当 q/k"
+    }
+   ],
+   "execution_trace": {
+    "audit": {
+     "target_layers": 35,
+     "assistant_layers": 4,
+     "max_position": 131072,
+     "dtype": "bfloat16",
+     "unique_tables": 2,
+     "table_widths": [
+      256,
+      512
+     ],
+     "unique_bytes": 201326592,
+     "unique_mib": 192.0,
+     "expected_unique_bytes": 201326592,
+     "per_layer_nominal_mib": 3008.0,
+     "saved_mib": 2816.0,
+     "tables": [
+      {
+       "shape": [
+        131072,
+        256
+       ],
+       "dtype": "torch.bfloat16",
+       "bytes": 67108864,
+       "layers": [
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default",
+        "default"
+       ]
+      },
+      {
+       "shape": [
+        131072,
+        512
+       ],
+       "dtype": "torch.bfloat16",
+       "bytes": 134217728,
+       "layers": [
+        "proportional",
+        "proportional",
+        "proportional",
+        "proportional",
+        "proportional",
+        "proportional",
+        "proportional",
+        "proportional"
+       ]
+      }
+     ],
+     "old_layout_nominal_mib": 6016.0,
+     "target_only_old_layout_nominal_gib": 5.25
+    },
+    "real": {
+     "eager": {
+      "tokens": [
+       1018,
+       57137,
+       47910,
+       236743,
+       55118,
+       237184,
+       1018,
+       108
+      ],
+      "build_s": 6.771044580964372,
+      "audit": {
+       "num_rope_modules": 39,
+       "unique_tables": 2,
+       "unique_bytes": 201326592,
+       "unique_mib": 192.0,
+       "per_layer_nominal_mib": 3008.0,
+       "table_widths": [
+        256,
+        512
+       ]
+      },
+      "memory": {
+       "before": {
+        "allocated": 0,
+        "reserved": 0
+       },
+       "after_build": {
+        "allocated": 9743730688,
+        "reserved": 10422845440,
+        "peak_allocated": 10284393472
+       },
+       "after_run": {
+        "allocated": 9777285120,
+        "reserved": 10424942592,
+        "peak_allocated": 10284393472
+       },
+       "after_shutdown": {
+        "allocated": 33554432,
+        "reserved": 268435456
+       }
+      },
+      "rope_cache_after_shutdown": {
+       "entries": 0,
+       "bytes": 0
+      }
+     },
+     "graph": {
+      "tokens": [
+       1018,
+       57137,
+       47910,
+       236743,
+       55118,
+       237184,
+       1018,
+       108
+      ],
+      "build_s": 6.017926944070496,
+      "audit": {
+       "num_rope_modules": 39,
+       "unique_tables": 2,
+       "unique_bytes": 201326592,
+       "unique_mib": 192.0,
+       "per_layer_nominal_mib": 3008.0,
+       "table_widths": [
+        256,
+        512
+       ]
+      },
+      "memory": {
+       "before": {
+        "allocated": 0,
+        "reserved": 0
+       },
+       "after_build": {
+        "allocated": 9810851840,
+        "reserved": 10582228992,
+        "peak_allocated": 10284393472
+       },
+       "after_run": {
+        "allocated": 9810851840,
+        "reserved": 10584326144,
+        "peak_allocated": 10284393472
+       },
+       "after_shutdown": {
+        "allocated": 33554432,
+        "reserved": 268435456
+       }
+      },
+      "rope_cache_after_shutdown": {
+       "entries": 0,
+       "bytes": 0
+      },
+      "cudagraph_capture_stats": {
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "capture_seconds": 1.2782028840156272,
+       "graphs": {
+        "prefill": {
+         "captured": 1,
+         "token_counts": [
+          3
+         ]
+        },
+        "decode": {
+         "captured": 1,
+         "token_counts": [
+          1
+         ]
+        }
+       },
+       "target": {
+        "captured": 1,
+        "token_counts": [
+         3
+        ]
+       },
+       "graph_pool_bytes": 184549376,
+       "fused_multi_step_decode": true
+      }
+     },
+     "note": "真实权重固定 revision；单 prompt、8 token；K=2；文本路径；不是 B×K 性能表"
+    },
+    "micro": {
+     "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+     "max_position": 4096,
+     "cases": [
+      {
+       "name": "decode_sliding",
+       "num_tokens": 1,
+       "q_heads": 16,
+       "k_heads": 8,
+       "q_only": false,
+       "head_size": 256,
+       "apply_dim": 256,
+       "dtype": "torch.bfloat16",
+       "fused_us_per_call": 34.876033782958984,
+       "native_us_per_call": 193.42002868652344,
+       "fused_over_native_including_launch": 0.1803124217269283,
+       "max_abs_error_vs_native": 0.015625
+      },
+      {
+       "name": "decode_sliding_qonly",
+       "num_tokens": 1,
+       "q_heads": 16,
+       "k_heads": 0,
+       "q_only": true,
+       "head_size": 256,
+       "apply_dim": 256,
+       "dtype": "torch.bfloat16",
+       "fused_us_per_call": 28.76531219482422,
+       "native_us_per_call": 97.27801513671875,
+       "fused_over_native_including_launch": 0.29570208802468056,
+       "max_abs_error_vs_native": 0.015625
+      },
+      {
+       "name": "decode_full_qonly",
+       "num_tokens": 1,
+       "q_heads": 8,
+       "k_heads": 0,
+       "q_only": true,
+       "head_size": 512,
+       "apply_dim": 512,
+       "dtype": "torch.bfloat16",
+       "fused_us_per_call": 24.19513511657715,
+       "native_us_per_call": 130.55340576171875,
+       "fused_over_native_including_launch": 0.1853274908870414,
+       "max_abs_error_vs_native": 0.015625
+      },
+      {
+       "name": "prefill_sliding",
+       "num_tokens": 128,
+       "q_heads": 16,
+       "k_heads": 8,
+       "q_only": false,
+       "head_size": 256,
+       "apply_dim": 256,
+       "dtype": "torch.bfloat16",
+       "fused_us_per_call": 17.671680450439453,
+       "native_us_per_call": 207.8611183166504,
+       "fused_over_native_including_launch": 0.08501676789556602,
+       "max_abs_error_vs_native": 0.03125
+      }
+     ],
+     "note": "只测 RoPE 算子；fused 原地、native 返回新张量，二者都含 launch 开销；5 次 event loop 中位数；包含 launch 间隙，不作端到端加速结论"
+    },
+    "replay83": {
+     "bf16": {
+      "old_first_diff": 45,
+      "new_first_diff": null,
+      "token_changes_k0": 2,
+      "token_changes_k2": 0,
+      "k0": {
+       "common_target_positions": 64,
+       "top1_same": 62,
+       "top1_agreement": 0.96875,
+       "max_margin_abs_change": 6.0625,
+       "max_final_hidden_relative_l2": 0.61181531766769,
+       "max_layer_hidden_relative_l2": 1.024399281652937,
+       "max_layer_hidden_relative_l2_layer": "model.layers.11",
+       "first_layer_relative_l2_gt_1e-3": "model.layers.0",
+       "position70": {
+        "old": {
+         "top1": 57208,
+         "margin": 0.0625
+        },
+        "new": {
+         "top1": 25352,
+         "margin": 0.0625
+        }
+       }
+      },
+      "k2": {
+       "common_target_positions": 65,
+       "top1_same": 65,
+       "top1_agreement": 1.0,
+       "max_margin_abs_change": 0.4375,
+       "max_final_hidden_relative_l2": 0.032018588518690896,
+       "max_layer_hidden_relative_l2": 0.04537757653268569,
+       "max_layer_hidden_relative_l2_layer": "model.layers.13",
+       "first_layer_relative_l2_gt_1e-3": "model.layers.0",
+       "position70": {
+        "old": {
+         "top1": 25352,
+         "margin": 0.25
+        },
+        "new": {
+         "top1": 25352,
+         "margin": 0.3125
+        }
+       }
+      }
+     },
+     "fp32": {
+      "old_first_diff": null,
+      "new_first_diff": null,
+      "token_changes_k0": 0,
+      "token_changes_k2": 0,
+      "k0": {
+       "common_target_positions": 64,
+       "top1_same": 64,
+       "top1_agreement": 1.0,
+       "max_margin_abs_change": 3.4332275390625e-05,
+       "max_final_hidden_relative_l2": 2.8245593393444947e-06,
+       "max_layer_hidden_relative_l2": 2.1200711208497745e-06,
+       "max_layer_hidden_relative_l2_layer": "model.layers.34",
+       "first_layer_relative_l2_gt_1e-3": null,
+       "position70": {
+        "old": {
+         "top1": 25352,
+         "margin": 0.06539630889892578
+        },
+        "new": {
+         "top1": 25352,
+         "margin": 0.0653848648071289
+        }
+       }
+      },
+      "k2": {
+       "common_target_positions": 65,
+       "top1_same": 65,
+       "top1_agreement": 1.0,
+       "max_margin_abs_change": 2.574920654296875e-05,
+       "max_final_hidden_relative_l2": 2.782281655712959e-06,
+       "max_layer_hidden_relative_l2": 1.8356308050418749e-06,
+       "max_layer_hidden_relative_l2_layer": "model.layers.34",
+       "first_layer_relative_l2_gt_1e-3": null,
+       "position70": {
+        "old": {
+         "top1": 25352,
+         "margin": 0.06539535522460938
+        },
+        "new": {
+         "top1": 25352,
+         "margin": 0.0653848648071289
+        }
+       }
+      }
+     },
+     "note": "与 benchmarks/results/step83 的旧 trace 逐 position 比较；新 K=0/K=2 在 BF16 下 64 token 相同，FP32 下与旧 83 的 64 token 相同"
+    },
+    "tests": {
+     "step84": 46,
+     "full_regression": 1200,
+     "dflash_after_fix": 11
+    }
+   },
+   "known_gaps": [
+    "没有跑 B×K 完整性能矩阵；RoPE 微测包含 Python launch 间隙，不给端到端加速比。",
+    "BF16 不是逐 token 等价；本次 K=0 跨过 near-tie 与 K=2 合并，换 prompt/长度仍可能翻转。",
+    "FP32 的 hidden 仍有 ~2.8e-6 相对差（FMA/规约顺序），token/top1 不变，不声称逐位相同。",
+    "越界 device_assert 会污染 CUDA context；生产输入协议必须保证 0 <= position < max_position。",
+    "弱表缓存是进程级、不可变共享；外部仍持有 module 时表不会提前释放，shutdown 不强行 free。",
+    "RoPE 只实现 default/proportional；llama3/yarn/mrope 等显式拒绝。",
+    "只测 Gemma4 文本路径；视觉/音频塔、TP、量化未接。",
+    "真实 target 的 35 层对应当前 config；其他 checkpoint 需重新按 key 审计。",
+    "没有单独测表构建的 CPU 峰值；唯一 storage 与整模型 allocated 分开记录。"
+   ]
+  },
+  "models": {
+   "target": {
+    "path": "models/gemma-4-E2B-it",
+    "repo": "google/gemma-4-E2B-it",
+    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "architectures": [
+     "Gemma4ForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 复放对照）",
+    "text_only": true,
+    "note": "视觉/音频塔未加载；与 82/83 固定 revision 相同"
+   },
+   "assistant": {
+    "path": "models/gemma-4-E2B-it-assistant",
+    "repo": "google/gemma-4-E2B-it-assistant",
+    "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "architectures": [
+     "Gemma4AssistantForCausalLM"
+    ],
+    "dtype": "bfloat16（FP32 复放对照）",
+    "note": "Q-only 共享 KV；4 层 = 3 sliding + 1 full"
+   },
+   "weights": "target/assistant 均已下载，固定 revision；权重不提交"
   }
  }
 }

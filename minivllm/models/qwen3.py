@@ -25,7 +25,7 @@ from torch import nn
 
 from ..attention import Attention
 from ..layers import (MergedColumnParallelLinear, ParallelLMHead, QKVParallelLinear,
-                      RMSNorm, RotaryEmbedding, RowParallelLinear, SiluAndMul,
+                      RMSNorm, RowParallelLinear, SiluAndMul, get_rope,
                       VocabParallelEmbedding)
 from ..model_loader.auto_weights_loader import WeightsMapper
 
@@ -78,12 +78,14 @@ class Qwen3Attention(nn.Module):
                                           prefix=maybe_prefix(prefix, "qkv_proj"))
         self.o_proj = RowParallelLinear(num_heads * head_dim, hidden_size, bias=False,
                                         prefix=maybe_prefix(prefix, "o_proj"))
-        rope_parameters = config.get("rope_parameters") or {}
-        self.rotary_emb = RotaryEmbedding(
+        rope_parameters = dict(config.get("rope_parameters") or {})
+        rope_parameters.setdefault(
+            "rope_theta", config.get("rope_theta", 10000.0))
+        self.rotary_emb = get_rope(
             head_size=head_dim,
-            rotary_dim=head_dim,
-            max_position_embeddings=config["max_position_embeddings"],
-            base=rope_parameters.get("rope_theta", config.get("rope_theta", 10000.0)),
+            max_position=config["max_position_embeddings"],
+            is_neox_style=True,
+            rope_parameters=rope_parameters,
         )
         self.attn = Attention(num_heads=num_heads, head_size=head_dim,
                               num_kv_heads=num_kv_heads, layer_name=maybe_prefix(prefix, "attn"))

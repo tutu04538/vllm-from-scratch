@@ -35,7 +35,7 @@ from ..attention import Attention
 from ..layers import (ParallelLMHead, QKVParallelLinear, RMSNorm, RowParallelLinear,
                       VocabParallelEmbedding)
 from ..layers.logits_processor import LogitsProcessor
-from ..layers.rotary_embedding import RotaryEmbedding
+from ..layers.rotary_embedding import get_rope
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
 from .qwen3 import Qwen2MLP, maybe_prefix
 from .registry import register_model
@@ -140,11 +140,14 @@ class DFlashAttention(nn.Module):
         self.o_proj = RowParallelLinear(num_heads * head_dim, hidden_size,
                                         bias=config.get("attention_bias", False),
                                         prefix=maybe_prefix(prefix, "o_proj"))
-        rope_parameters = config.get("rope_parameters") or {}
-        self.rotary_emb = RotaryEmbedding(
-            head_size=head_dim, rotary_dim=head_dim,
-            max_position_embeddings=config["max_position_embeddings"],
-            base=rope_parameters.get("rope_theta", config.get("rope_theta", 10000.0)))
+        rope_parameters = dict(config.get("rope_parameters") or {})
+        rope_parameters.setdefault(
+            "rope_theta", config.get("rope_theta", 10000.0))
+        self.rotary_emb = get_rope(
+            head_size=head_dim,
+            max_position=config["max_position_embeddings"],
+            is_neox_style=True,
+            rope_parameters=rope_parameters)
         self.attn = Attention(num_heads=num_heads, head_size=head_dim,
                               num_kv_heads=num_kv_heads,
                               layer_name=maybe_prefix(prefix, "attn"))

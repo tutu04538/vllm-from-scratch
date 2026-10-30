@@ -36,7 +36,9 @@ def _layer_kv(layer, context_states: torch.Tensor, context_positions: torch.Tens
     qkv, _ = attn.qkv_proj(context_states)
     _, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
     k = attn.k_norm(k.view(-1, attn.num_kv_heads, attn.head_dim)).view(k.shape)
-    _, k = attn.rotary_emb(context_positions, k, k)   # 第二个返回值就是旋转后的 K
+    # 上下文行没有 query；这里只旋转 K。不能把同一个张量同时当 q/k 传：
+    # 融合 kernel 是原地的，会拒绝同起始地址的 query/key（避免旋转两次）。
+    k = attn.rotary_emb.apply_to_key(context_positions, k)
     return (k.view(-1, attn.num_kv_heads, attn.head_dim),
             v.view(-1, attn.num_kv_heads, attn.head_dim))
 

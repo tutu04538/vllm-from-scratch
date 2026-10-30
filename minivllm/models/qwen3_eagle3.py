@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from ..layers import ParallelLMHead, QKVParallelLinear, RMSNorm, RowParallelLinear, VocabParallelEmbedding
-from ..layers.rotary_embedding import RotaryEmbedding
+from ..layers.rotary_embedding import get_rope
 from ..attention import Attention
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
 from .qwen3 import Qwen2MLP, maybe_prefix
@@ -46,11 +46,14 @@ class Eagle3Attention(nn.Module):
                                           prefix=maybe_prefix(prefix, "qkv_proj"))
         self.o_proj = RowParallelLinear(num_heads * head_dim, hidden_size, bias=False,
                                         prefix=maybe_prefix(prefix, "o_proj"))
-        rope_parameters = config.get("rope_parameters") or {}
-        self.rotary_emb = RotaryEmbedding(
-            head_size=head_dim, rotary_dim=head_dim,
-            max_position_embeddings=config["max_position_embeddings"],
-            base=rope_parameters.get("rope_theta", config.get("rope_theta", 10000.0)))
+        rope_parameters = dict(config.get("rope_parameters") or {})
+        rope_parameters.setdefault(
+            "rope_theta", config.get("rope_theta", 10000.0))
+        self.rotary_emb = get_rope(
+            head_size=head_dim,
+            max_position=config["max_position_embeddings"],
+            is_neox_style=True,
+            rope_parameters=rope_parameters)
         self.attn = Attention(num_heads=num_heads, head_size=head_dim,
                               num_kv_heads=num_kv_heads, layer_name=maybe_prefix(prefix, "attn"))
         eps = config.get("rms_norm_eps", 1e-6)

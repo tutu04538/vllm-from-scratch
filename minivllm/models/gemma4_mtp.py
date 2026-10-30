@@ -33,7 +33,7 @@ from torch import nn
 from ..attention import Attention
 from ..layers import (ColumnParallelLinear, MergedColumnParallelLinear, ParallelLMHead,
                       RMSNorm, RotaryEmbedding, RowParallelLinear, SiluAndMul,
-                      VocabParallelEmbedding)
+                      VocabParallelEmbedding, get_rope)
 from ..layers.logits_processor import LogitsProcessor
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
 from .qwen3 import maybe_prefix
@@ -130,30 +130,19 @@ def _rope_parameters(text_config: Any, layer_type: str, is_sliding: bool) -> dic
 
 def _make_rotary_embedding(text_config: Any, layer_idx: int, head_dim: int,
                            layer_type: str, is_sliding: bool) -> RotaryEmbedding:
+    """配置转发到统一 `get_rope`；**不在这里自己建表**。
+
+    Gemma4 target/assistant 的 35+4 层最终只会落到两个 key（sliding/default 与
+    full/proportional）。层号只用于报错和日志，不进 cache key；否则每层都会
+    重新建一份相同的表，共享失效。
+    """
+    del layer_idx  # 层号不影响 RoPE 数学；保留参数是为了调用点/报错上下文清晰
     parameters = _rope_parameters(text_config, layer_type, is_sliding)
-    rope_type = str(parameters.get("rope_type", "default"))
-    if rope_type not in ("default", "proportional"):
-        # Gemma4 的 full 层用 proportional；别的缩放（llama3/mrope/...）本关没有对齐，
-        # 明确报错而不是悄悄按 default 算。
-        raise ValueError(
-            f"Gemma4 MTP 第 {layer_idx} 层的 RoPE 类型 {rope_type!r} 未适配；"
-            f"只支持 default/proportional（冻结 Gemma4 使用 proportional）")
-    if "rope_dim" in parameters:
-        rotary_dim = int(parameters["rope_dim"])
-    else:
-        partial = float(parameters.get("partial_rotary_factor", 1.0))
-        if partial <= 0.0 or partial > 1.0:
-            raise ValueError(
-                f"partial_rotary_factor 必须在 (0, 1]，收到 {partial}")
-        rotary_dim = int(head_dim * partial)
-    if rotary_dim % 2 != 0:
-        raise ValueError(f"Gemma4 rotary_dim 必须是偶数，收到 {rotary_dim}")
-    return RotaryEmbedding(
+    return get_rope(
         head_size=head_dim,
-        rotary_dim=rotary_dim,
-        max_position_embeddings=_int(text_config, "max_position_embeddings"),
-        base=float(parameters.get("rope_theta", 10000.0)),
-        proportional=rope_type == "proportional",
+        max_position=_int(text_config, "max_position_embeddings"),
+        is_neox_style=True,
+        rope_parameters=parameters,
     )
 
 
