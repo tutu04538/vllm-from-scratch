@@ -36,7 +36,9 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
 3. **Graph 的剩余差距集中在 B=1 K=2 与 1024 上下文**：0.857× 与 0.741×；B=4 Graph
    已接近（0.969×，但 B=4 是非确定性观察）。同输入 2D kernel 对照显示 mini 0.1903 ms
    vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills，vLLM 158 regs/0 spills。
-   vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。
+   vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。第一版
+   2D 修复后 mini 0.1522 ms/198 regs/0 spills，Graph 125.63→135.55 tok/s（0.846×）；
+   剩余 2.3–2.9× 差距转为 load→shared→MMA 流水，而不是 spill。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -122,7 +124,7 @@ TTFT 的绝对值受前端/预热影响，尤其 vLLM 有独立 EngineCore 和 d
 0.741×；eager 反而 1.068×。这说明剩余差距主要在 Graph 下的长上下文 decode/attention
 路径，而不是 eager 的通用 Python 开销。具体见 §6。
 
-后续 microbenchmark 先拆到 kernel 层：q_len=3、context=1024 时 mini 2D 约 0.19 ms，
+后续 microbenchmark 先拆到 kernel 层：q_len=3、context=1024 时 mini 2D 约 0.19 ms（2D 修复后 0.152 ms），
 强制 3D 分段约 0.06–0.07 ms；context=2048 为 4.4–4.6×；context 128/256 反而是 0.53–0.90×。
 但这只是 mini 内部的另一个候选优化；真正的 mini-vs-vLLM 原因见下面的同 2D 对照。
 
@@ -311,16 +313,17 @@ GEMM 几乎不变。实际上下文 Graph 吞吐 mini 125.63 vs vLLM 169.50（0.
 62.30 vs 58.33（1.068×）；这与“Graph 下 attention/长上下文路径是剩余差距”一致。
 
 vLLM 的 Graph trace 在上下文下 attention 只有 1.39 ms（短 0.30 ms），同样受 graph trace
-覆盖影响，不能与 mini 的 50.52 ms 直接相减。为了回答“为什么 mini 比 vLLM 慢”，又做了
+覆盖影响，不能与 mini 的 50.52 ms 直接相减。这里的 50.52 ms 是 **2D 修复前**的 trace；
+修复后 Graph 端到端为 135.55 tok/s，见 §8。为了回答“为什么 mini 比 vLLM 慢”，又做了
 同一组 q/paged K/V、同一个 `max_seqlen_q=3` 的直接 2D kernel 对照（不加载 engine）：
 
 ```text
-q3/ctx1024/hd256: mini 0.1903 ms, vLLM 0.0530 ms（3.59×）
-q3/ctx2048/hd256: mini 0.3706 ms, vLLM 0.0839 ms（4.42×）
-q3/ctx1024/hd512: mini 0.3508 ms, vLLM 0.0762 ms（4.61×）
+q3/ctx1024/hd256: mini 0.1903→0.1522 ms, vLLM 0.0530–0.0663 ms
+q3/ctx2048/hd256: mini 0.3706→0.2952 ms, vLLM 0.0839 ms
+q3/ctx1024/hd512: mini 0.3508→0.2895 ms, vLLM 0.0762–0.0984 ms
 输出逐元素差：全部 0.0
-mini 2D compiled: 255 regs, 58 spills（hd256）/ 280 spills（hd512）
-vLLM 2D compiled: 158 regs, 0 spills（hd256）/ 255 regs, 6 spills（hd512）
+mini 2D compiled: 255 regs/58 spills → 198 regs/0 spills（hd256）
+vLLM 2D compiled: 158 regs/0 spills（hd256）/ 255 regs/6 spills（hd512）
 ```
 
 vLLM 在这个场景实际也走 **2D**（EngineCore 钩子读到 `max_query_len=3`、`TILE_SIZE=32`、
@@ -401,13 +404,29 @@ eager 为 1.51×（45.43/30.07），Graph 为 5.70×（171.28/30.07）。这些�
 5. 删除每 tile 的 `v_keep` 只把 0.185→0.178 ms、58→48 spills，约 4%，不是全部原因；
    仍需减少 mini kernel 的 live range/对齐 vLLM 的优化实现。
 
+**第一版 2D 修复已经落地**（3D 路径不动）：
+
+```text
+2D launch 8 warps；2D 去掉 v_keep；2D block table 尾块 clamp 到最后列
+q3/ctx1024/hd256: 0.1903 → 0.1522 ms（-20.0%）
+q3/ctx2048:       0.3706 → 0.2952 ms（-20.4%）
+hd512 full:       0.3508 → 0.2895 ms（-17.5%）
+registers/spills: 255/58 → 198/0
+真实 Graph:       125.63 → 135.55 tok/s（vLLM 160.16；0.846×，修复前 0.741×）
+```
+
+剩余差距不再是 spill：修复后仍约 2.3–2.9× 慢于 vLLM；vLLM 的 PTX 有
+`cp.async.cg.shared.global`/`ldmatrix` 流水，mini 仍是同步 load + 更多
+`st.shared`。所以下一步要改 2D 的 load→shared→MMA 流水，而不是继续调
+register 或上 3D。
+
 实际下一步：
 
-1. 对 mini 与 vLLM 2D kernel 做 PTX/SASS/live-range 对照，定位 255/58 的具体来源；
-2. 对齐 vLLM 的 2D 实现（尽量减少同时 live 的 mask/V 临时量，或直接移植其 kernel 核心）；
-3. 用 `num_warps`/tile/V-mask A/B 验证，要求输出仍逐元素相同；
-4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐是否从 125.6 向 169.5 靠近；
-5. 2D spill 解决之后，3D q_len>1 仍可作为长上下文补充，但不能抢在主因之前。
+1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS，重点看 `cp.async`/`ldmatrix` 流；
+2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 进入异步 copy，同时保持尾块 V=0；
+3. 再试 `TILE_SIZE`/`num_stages`/`num_warps` 组合，要求输出仍逐元素相同；
+4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐从 135.55 继续向 160.16 靠近；
+5. 3D q_len>1 仍放在 2D 流水修复之后，不能抢在主因之前。
 
 不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D。
 
@@ -444,5 +463,8 @@ $PY -m pytest tests/step58 … tests/step88 -q
 - mini 2D kernel 的 255 regs/58 spills 是实测编译结果；vLLM 2D 在 hd256 为 158/0，
   hd512 为 255/6；这是当前最明确的 mini-vs-vLLM 差距；
 - 3D q_len>1 是 mini 内部的补充优化，不是 vLLM 当前 target decode 的路径。
+- 2D 优化只动 2D：8 warps、去 v_keep、尾块 block table clamp；3D 保持 4 warps + 原
+  v_keep 路径。修复后 mini 2D 198 regs/0 spills，但 kernel 仍无 `cp.async`，与 vLLM
+  还有约 2.3–2.9× 的 codegen/流水差距。
 - `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
   拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。

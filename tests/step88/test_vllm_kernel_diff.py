@@ -34,7 +34,7 @@ def test_kernel_diff_dry_run_lists_22_cases():
 
 
 @torch.no_grad()
-def test_mini_and_vllm_2d_match_and_mini_spills():
+def test_mini_and_vllm_2d_match_and_mini_no_spill():
     if not torch.cuda.is_available():
         return
     case = next(c for c in case_matrix() if c["label"] == "qlen3_ctx1024")
@@ -50,7 +50,8 @@ def test_mini_and_vllm_2d_match_and_mini_spills():
     mini_meta = _kernel_meta(mini_module)
     vllm_meta = _kernel_meta(vllm_module)
     # Triton 缓存是进程级的，前面测试可能已编译别的 shape；这里按变体查找。
-    assert any(item["n_regs"] == 255 and item["n_spills"] > 0
+    # 2D 优化后 mini 应有一个无 spill 的变体（3D 路径仍可能保留旧变体）。
+    assert any(item["n_regs"] <= 255 and item["n_spills"] == 0
                for item in mini_meta)
     # vLLM 的 2D hd256 变体应为 0 spill；hd512 变体可有少量 spill。
     assert any(item["n_spills"] == 0 for item in vllm_meta)

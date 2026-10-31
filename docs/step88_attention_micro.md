@@ -4,8 +4,8 @@
 > 脚本：`benchmarks/check_step88_attention_micro.py`
 > 原始结果：`benchmarks/results/step88/attention_micro{,_flush}/summary.json`（gitignored）
 > **注意：本文件回答“mini 2D → 3D 是否有收益”，不回答“mini 为什么比 vLLM 慢”。**
-> 后者见 `docs/step88_vllm_kernel_diff.md`：vLLM 实际也走 2D，主因是 mini 2D kernel
-> 255 regs/58 spills 对 vLLM 158 regs/0 spills。
+> 后者见 `docs/step88_vllm_kernel_diff.md`：vLLM 实际也走 2D，修复前 mini 2D kernel
+> 255 regs/58 spills 对 vLLM 158 regs/0 spills；2D 第一版修复后为 198 regs/0 spills。
 
 ## 1. 测什么
 
@@ -193,5 +193,5 @@ q_len=3 上用 3D 分段原型可把单 kernel 在 1024/2048 上下文加速约 
 
 补充：这并不能解释当前 mini-vs-vLLM 的 Graph 差距；vLLM 目标 decode 也走 2D
 （`max_query_len=3`、`TILE_SIZE=32`、`BLOCK_M=16`、`IS_3D=false`），真正的差距是
-mini 2D kernel 255 regs/58 spills 对 vLLM 158 regs/0 spills，见
-`docs/step88_vllm_kernel_diff.md`。
+mini 2D kernel 修复前 255 regs/58 spills 对 vLLM 158 regs/0 spills；2D 第一版修复后为
+198 regs/0 spills，见 `docs/step88_vllm_kernel_diff.md`。

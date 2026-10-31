@@ -229,7 +229,9 @@ q_len>1 在 1024/2048 的单 kernel 约 2.7–4.6×，128/256 反而更慢。方
 `IS_3D=false`）；q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms（3.59×），输出差 0.0；
 mini 2D 编译为 255 regs/58 spills，vLLM 为 158 regs/0 spills（hd512 为 255/6）。主因是
 mini 2D kernel 的寄存器 spill，3D 是另一项候选，不是当前差距的解释。见
-`docs/step88_vllm_kernel_diff.md`。
+`docs/step88_vllm_kernel_diff.md`。2D 第一版修复（8 warps、去 v_keep、块表尾块 clamp；
+3D 不动）后 198 regs/0 spills，q3/ctx1024 0.1903→0.1522 ms，真实 Graph 125.63→135.55 tok/s
+（vLLM 160.16，0.741→0.846）；剩余约 2.3–2.9× 是 cp.async/ldmatrix 流水差距。
 
 ## 11. 一句话
 

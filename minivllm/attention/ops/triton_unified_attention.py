@@ -253,12 +253,21 @@ def kernel_unified_attention(
         seq_offset = j * TILE_SIZE + offs_t
         tile_mask = seq_offset < max_prefix
 
-        physical_block = tl.load(
-            block_tables_ptr + block_table_offset
-            + seq_offset // BLOCK_SIZE,
-            mask=tile_mask,
-            other=0,
-        ).to(tl.int64)
+        if IS_3D:
+            physical_block = tl.load(
+                block_tables_ptr + block_table_offset
+                + seq_offset // BLOCK_SIZE,
+                mask=tile_mask,
+                other=0,
+            ).to(tl.int64)
+        else:
+            # 2D 尾块可能读到 seq_len 之后的槽位；clamp 到块表最后一列，
+            # 不越界。尾块 K/V 仍由 tile_mask 清零，不参与 softmax/dot。
+            block_idx = tl.minimum(
+                seq_offset // BLOCK_SIZE, block_table_stride - 1)
+            physical_block = tl.load(
+                block_tables_ptr + block_table_offset + block_idx,
+            ).to(tl.int64)
         slot_in_block = seq_offset % BLOCK_SIZE
 
         k_ptrs = (
@@ -299,10 +308,13 @@ def kernel_unified_attention(
         M, L, P, alpha = _softmax_step(S, M, L)
         acc = acc * alpha[:, None]
 
-        # 被窗口/tail mask 掉的 key 可能落在未写过的槽位；P=0 乘 NaN 仍是
-        # NaN，所以先把这些 V 清零，再进 dot。
-        v_keep = tl.max(tl.where(keep, 1, 0), axis=0) > 0
-        V = tl.where(v_keep[:, None], V, 0.0)
+        # 2D 的 K/V load 已用 tile_mask 把 tail 槽位置 0；causal/window
+        # mask 掉的 key 仍是已写入的有限值，P=0 不会产生 NaN。因此 2D 不再
+        # 逐 tile 做 v_keep 归约（它会额外制造 mask/临时量并增加寄存器压力）。
+        # 3D 保持原路径，避免改变单 token decode 的分段语义。
+        if IS_3D:
+            v_keep = tl.max(tl.where(keep, 1, 0), axis=0) > 0
+            V = tl.where(v_keep[:, None], V, 0.0)
         if Q_IS_FP32:
             acc += tl.dot(P.to(V.dtype), V, input_precision="ieee")
         else:
@@ -564,6 +576,9 @@ def unified_attention(
     if window_size[0] is not None and window_size[0] >= 0:
         sliding_window = int(window_size[0]) + 1
     tile_size = 16 if is_3d else 32
+    # 2D 用 8 warps 分摊 16×256 的 acc/Q/K/V，避免 255 regs + spill；
+    # 3D 保持原 4 warps，避免改变单 token decode 的实测路径。
+    num_warps = 4 if is_3d else 8
 
     # 上界：sum ceil(q_len / BLOCK_Q) <= floor(N / BLOCK_Q) + num_seqs。
     total_q_blocks = num_tokens // block_q + num_seqs
@@ -613,6 +628,7 @@ def unified_attention(
         segm_output_ptr=segm_out,
         segm_max_ptr=segm_max,
         segm_expsum_ptr=segm_expsum,
+        num_warps=num_warps,
     )
 
     if is_3d:

@@ -995,9 +995,11 @@ python -m pytest tests/step88 -q
 q_len>1 后单 kernel 约 2.7–4.6×（1024/2048），但 128/256 更慢。但这还不是 mini-vs-vLLM
 的答案：vLLM 目标 decode 也走 2D（`max_query_len=3`、`TILE_SIZE=32`、`BLOCK_M=16`、
 `IS_3D=false`）；同输入 q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms，输出差 0.0；
-mini 2D kernel 255 regs/58 spills，vLLM 158 regs/0 spills。真正的下一步是降 mini 2D 的
-寄存器 spill（删 v_keep 只 4%、58→48 spills），而不是先上 3D。详见
-[`docs/step88_vllm_kernel_diff.md`](../docs/step88_vllm_kernel_diff.md)。
+mini 2D kernel 255 regs/58 spills，vLLM 158 regs/0 spills。随后完成第一版 2D 修复
+（8 warps、去 v_keep、尾块 block table clamp；3D 路径不动）：198 regs/0 spills，
+q3/ctx1024 0.1903→0.1522 ms，真实 Graph 125.63→135.55 tok/s（vLLM 160.16，
+0.741→0.846）。剩余约 2.3–2.9× 是 vLLM 的 cp.async/ldmatrix 流水差距，不是 spill。
+详见 [`docs/step88_vllm_kernel_diff.md`](../docs/step88_vllm_kernel_diff.md)。
 
 ## 明确不做
 

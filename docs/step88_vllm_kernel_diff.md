@@ -102,6 +102,41 @@ no_vkeep:0.178 ms, 255 regs, 48 spills
 只快约 4%，还剩 48 spills。因此不能把问题简化成“删掉 v_keep 就好”；真正的问题是
 **mini 2D kernel 整体的 live range/寄存器分配**比 vLLM 版本差。
 
+## 6. 已实施的第一版 2D 修复
+
+只改 2D，3D 路径不动：
+
+```text
+1. 2D launch 用 8 warps（3D 仍 4）
+2. 2D 去掉每 tile 的 v_keep / V 清零（3D 保留）
+3. 2D block table 尾块 clamp 到最后一列，去掉 masked load
+   （K/V 仍由 tile_mask 清零，尾块不参与 softmax/dot）
+```
+
+效果：
+
+| 场景 | 修复前 | 修复后 | 变化 |
+|---|---:|---:|---:|
+| q3 ctx1024 hd256 | 0.1903 ms | 0.1522 ms | **-20.0%** |
+| q3 ctx2048 hd256 | 0.3706 ms | 0.2952 ms | -20.4% |
+| q3 ctx1024 hd512 | 0.3508 ms | 0.2895 ms | -17.5% |
+| mini 2D registers | 255 | 198 | — |
+| mini 2D spills | 58 | **0** | — |
+| 真实 Graph 1024 tok/s | 125.63 | 135.55 | +7.9% |
+
+真实 Graph 四格（同协议、repeats=1）：
+
+```text
+mini 135.55 tok/s vs vLLM 160.16（0.846×）
+修复前：125.63 vs 169.50（0.741×）
+```
+
+**spill 已消除，但这只是第一步。** 修复后 q3/ctx1024/hd256 仍是 mini
+0.1522 ms vs vLLM 0.053–0.066 ms，约 2.3–2.9×；剩余差距不是 spill，而是
+kernel codegen/流水线：vLLM 的 PTX 有 `cp.async.cg.shared.global`、
+`ldmatrix`，mini 仍是同步 load + 更多 `st.shared`。所以下一步要优化
+2D 的 load→shared→MMA 流水，而不是继续调 register 或上 3D。
+
 ## 6. 和 3D prototype 的关系
 
 3D q_len>1 prototype 是**另一个可选优化**：
@@ -120,12 +155,13 @@ no_vkeep:0.178 ms, 255 regs, 48 spills
 
 ## 7. 下一步
 
-1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS live range，定位 255/58 的具体来源；
-2. 优先尝试与 vLLM 一致的代码结构（尤其去掉不必要的 V mask、减少同时 live 的 2D mask，
-   或对齐 vLLM 的 `_cast_kv_tile`/softmax helper）；
-3. 用 A/B 检查 `num_warps` / tile / V-mask 方案，要求输出逐元素仍为 0.0 差；
-4. 在真实 Gemma4 B=1 K=2、1024 上下文上验证 Graph 吞吐是否从 125.6 向 169.5 靠近；
-5. 只有 2D spill 问题解决后，3D q_len>1 仍可作为长上下文补充，而不是当前主因。
+1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS：vLLM 的 `cp.async`/`ldmatrix` 流水是
+   当前剩余 2–3× 的主要候选；mini 修复后仍无 `cp.async`；
+2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 能进入异步 copy，
+   同时保持尾块 V=0；
+3. 再试 `TILE_SIZE`/`num_stages`/`num_warps` 组合，要求输出逐元素仍为 0.0 差；
+4. 在真实 Gemma4 B=1 K=2、1024 上下文上验证 Graph 吞吐从 135.55 继续向 160.16 靠近；
+5. 3D q_len>1 仍放在 2D 流水修复之后，不是当前主因。
 
 ## 8. 复现
 

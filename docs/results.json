@@ -35,7 +35,7 @@
   "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）",
   "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）"
 ,
-  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；24 项 step88、全量 1297）"
+  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；2D 修复后 198/0 spills；24 项 step88、全量 1297；2D 修复 198/0 spills，Graph 135.55 tok/s）"
  },
  "step58": {
   "results": {
@@ -6001,7 +6001,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "baeb6b7b136636557f4c6aa23f2c09e25c7c4e42bb46a75b85fd7205de85a4cd",
+     "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7210,7 +7210,7 @@
   "package": {
    "root": "minivllm/",
    "python_files": 177,
-   "sha256": "baeb6b7b136636557f4c6aa23f2c09e25c7c4e42bb46a75b85fd7205de85a4cd",
+   "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293",
    "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
   },
   "environment": {
@@ -7473,12 +7473,12 @@
  "results": {
   "step": "88（单卡执行公平对照与收尾）",
   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；严格等价 false，B=4 只作同模式性能观察；6 trace + 真实 assistant 拒绝后差分 + attention microbenchmark（22 case） + mini-vs-vLLM 同 2D kernel 对照（vLLM 实际也走 2D；mini 255 regs/58 spills，vLLM 158/0）",
+  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；6 trace + 真实 assistant 差分 + microbenchmark 22 case + 同 2D kernel 对照；2D 修复后 198 regs/0 spills，q3/ctx1024 0.1903→0.1522 ms，Graph 125.63→135.55 tok/s",
   "recorded_at": "2026-10-31T17:28+08:00",
   "package": {
    "root": "minivllm/",
    "python_files": 177,
-   "sha256": "baeb6b7b136636557f4c6aa23f2c09e25c7c4e42bb46a75b85fd7205de85a4cd"
+   "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293"
   },
   "environment": {
    "python": "3.12.14",
@@ -7521,11 +7521,11 @@
    },
    {
     "cmd": "python -m pytest tests/step88 -q",
-    "result": "24 passed, 14 warnings in 17.97s（含真实 assistant、GPU microbenchmark 与 mini-vs-vLLM kernel 对照）"
+    "result": "24 passed, 14 warnings in 16.18s（含真实 assistant、GPU microbenchmark 与 mini-vs-vLLM kernel 对照）"
    },
    {
     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
-    "result": "23 passed, 1 skipped in 4.09s（真实 assistant 模型测试按设备跳过；GPU kernel 对照测试在 CUDA 不可用时内部返回）"
+    "result": "23 passed, 1 skipped in 4.04s（真实 assistant 模型测试按设备跳过；GPU kernel 对照测试在 CUDA 不可用时内部返回）"
    },
    {
     "cmd": "python -m pytest tests/step88/test_real_assistant_rejection.py -q",
@@ -7533,7 +7533,7 @@
    },
    {
     "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-    "result": "1297 passed, 152 warnings in 208.88s（exit 0）"
+    "result": "1297 passed, 152 warnings in 216.13s（exit 0；2D 优化后）"
    }
   ],
   "matrix": {
@@ -11116,7 +11116,40 @@
     "is_3d": false,
     "segments": 16
    },
-   "same_2d": {
+   "compiled_kernel": {
+    "mini_2d_hd256": {
+     "n_regs": 255,
+     "n_spills": 58,
+     "shared_bytes": 40960
+    },
+    "vllm_2d_hd256": {
+     "n_regs": 158,
+     "n_spills": 0,
+     "shared_bytes": 42240
+    },
+    "vllm_2d_hd512": {
+     "n_regs": 255,
+     "n_spills": 6,
+     "shared_bytes": 83200
+    },
+    "mini_2d_hd512_spill_variant": {
+     "n_regs": 255,
+     "n_spills": 280,
+     "shared_bytes": 81920
+    }
+   },
+   "v_keep_ablation": {
+    "orig_ms": 0.185,
+    "no_vkeep_ms": 0.178,
+    "orig_spills": 58,
+    "no_vkeep_spills": 48,
+    "note": "只解释约 4%，不是全部原因"
+   },
+   "conclusion": "vLLM target decode 实际也走 2D；修复前 mini 255 regs/58 spills、输出差 0.0，直接 kernel 慢 3.6–4.6×。2D 修复（8 warps、去 v_keep、尾块 clamp）后 198 regs/0 spills，q3/ctx1024 0.1903→0.1522 ms；真实 Graph 125.63→135.55 tok/s。剩余 2.3–2.9× 主要是vLLM 的 cp.async/ldmatrix 流水，不是 spill。",
+   "unsupported": [
+    "hd512+sliding512 synthetic kernel 在 vLLM 2D 下 shared memory 超限；实际模型没有 hd512 sliding，不作为主表证据"
+   ],
+   "same_2d_before": {
     "q3_ctx128_hd256": {
      "mini_ms": 0.0391,
      "vllm_ms": 0.0514,
@@ -11160,39 +11193,118 @@
      "max_abs": 0.0
     }
    },
-   "compiled_kernel": {
+   "same_2d_after": {
+    "q3_ctx128_hd256": {
+     "mini_ms": 0.0385,
+     "vllm_ms": 0.0482,
+     "vllm_speedup": 0.798,
+     "max_abs": 0.0
+    },
+    "q3_ctx256_hd256": {
+     "mini_ms": 0.0445,
+     "vllm_ms": 0.0544,
+     "vllm_speedup": 0.819,
+     "max_abs": 0.0
+    },
+    "q3_ctx512_hd256": {
+     "mini_ms": 0.0794,
+     "vllm_ms": 0.0561,
+     "vllm_speedup": 1.415,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd256": {
+     "mini_ms": 0.1522,
+     "vllm_ms": 0.0663,
+     "vllm_speedup": 2.294,
+     "max_abs": 0.0
+    },
+    "q3_ctx2048_hd256": {
+     "mini_ms": 0.2952,
+     "vllm_ms": 0.0834,
+     "vllm_speedup": 3.542,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd256_sliding": {
+     "mini_ms": 0.0799,
+     "vllm_ms": 0.0714,
+     "vllm_speedup": 1.119,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd512": {
+     "mini_ms": 0.2895,
+     "vllm_ms": 0.0984,
+     "vllm_speedup": 2.941,
+     "max_abs": 0.0
+    }
+   },
+   "compiled_kernel_after": {
     "mini_2d_hd256": {
-     "n_regs": 255,
-     "n_spills": 58,
-     "shared_bytes": 40960
+     "n_regs": 198,
+     "n_spills": 0
     },
     "vllm_2d_hd256": {
      "n_regs": 158,
-     "n_spills": 0,
-     "shared_bytes": 42240
+     "n_spills": 0
     },
     "vllm_2d_hd512": {
      "n_regs": 255,
-     "n_spills": 6,
-     "shared_bytes": 83200
-    },
-    "mini_2d_hd512_spill_variant": {
-     "n_regs": 255,
-     "n_spills": 280,
-     "shared_bytes": 81920
+     "n_spills": 6
     }
    },
-   "v_keep_ablation": {
-    "orig_ms": 0.185,
-    "no_vkeep_ms": 0.178,
-    "orig_spills": 58,
-    "no_vkeep_spills": 48,
-    "note": "只解释约 4%，不是全部原因"
+   "real_engine_graph_1024": {
+    "before": {
+     "mini_tok_s": 125.63,
+     "vllm_tok_s": 169.5,
+     "ratio": 0.741
+    },
+    "after": {
+     "mini_tok_s": 135.55,
+     "vllm_tok_s": 160.16,
+     "ratio": 0.846
+    },
+    "note": "同协议、repeats=1；vLLM 自身也有波动，比值只作同轮观察"
    },
-   "conclusion": "vLLM target decode 实际也走 2D；mini 慢的主因是 2D kernel 255 regs/58 spills，vLLM 158/0（hd256）与 255/6（hd512），同输入输出差为 0.0。eager 时 mini host 路径更轻，Graph 去掉 CPU 开销后才暴露 kernel spill。",
-   "unsupported": [
-    "hd512+sliding512 synthetic kernel 在 vLLM 2D 下 shared memory 超限；实际模型没有 hd512 sliding，不作为主表证据"
+   "applied_changes": [
+    "2D launch num_warps=8（3D 仍 4）",
+    "2D 去掉每 tile v_keep（3D 保留）",
+    "2D block table 尾块 clamp 到最后一列（3D 仍 masked load）"
    ]
+  },
+  "2d_kernel_optimization": {
+   "script": "benchmarks/check_step88_vllm_kernel_diff.py",
+   "before": {
+    "regs": 255,
+    "spills": 58,
+    "spills_hd512": 280,
+    "q3_ctx1024_ms": 0.1903,
+    "q3_ctx2048_ms": 0.3706,
+    "hd512_ms": 0.3508
+   },
+   "after": {
+    "regs": 198,
+    "spills": 0,
+    "q3_ctx1024_ms": 0.1522,
+    "q3_ctx2048_ms": 0.2952,
+    "hd512_ms": 0.2895
+   },
+   "improvement_pct": {
+    "q3_ctx1024": 20.0,
+    "q3_ctx2048": 20.4,
+    "hd512": 17.5
+   },
+   "real_graph_1024": {
+    "before_tok_s": 125.63,
+    "after_tok_s": 135.55,
+    "vllm_tok_s": 160.16,
+    "before_ratio": 0.741,
+    "after_ratio": 0.846
+   },
+   "changes": [
+    "2D num_warps=8",
+    "2D remove v_keep",
+    "2D block-table tail clamp"
+   ],
+   "not_done": "mini 2D 仍无 cp.async/ldmatrix；剩余约 2.3–2.9× 是 load→shared→MMA codegen/流水差距"
   }
  },
  "models": {
