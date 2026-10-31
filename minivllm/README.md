@@ -947,8 +947,48 @@ FULL 图与 target+assistant K=2 FULL 图的 hidden/logits/输出均与 eager �
 拒绝后继续生成；`FULL_DECODE_ONLY` K=2 8-step trace 中 `kernel_unified_attention`
 **344 = 8×43**、`reduce_segments` **32 = 8×4**、`reshape_and_cache_kernel` **120 = 8×15**、
 legacy kernel 0，CPU kernel/graph launch **14/step**；容量 512→2048 blocks 输出/图键相同。
-V2 草稿层已全部跟随 target backend；全量 **1273 passed**。完整公平矩阵留给 088。
+V2 草稿层已全部跟随 target backend；全量 **1273 passed**。公平矩阵见第八十八关。
 详见 [`docs/step87_alignment.md`](../docs/step87_alignment.md)。
+
+## 第八十八关：单卡执行公平对照与收尾
+
+088 不再加模型能力，只把 82/83 的旧数字换成一轮可审计的双方矩阵：固定 Gemma4
+target/assistant，B=1/4 × K=0/2 × eager/FULL decode Graph = 16 个主 case，再加 4 个
+1024-token 上下文 case；每 case 独立子进程、预热后 3 次。两边 attention 都是
+`TRITON_ATTN`，主对照都不开 torch.compile，prefix cache 都关，vLLM 的 KV 也固定 144 MiB。
+
+结果：
+
+```text
+B1 K0：mini 30.07 vs vLLM 29.99 tok/s（eager）；119.89 vs 126.78（Graph）
+B1 K2：mini 45.43 vs vLLM 43.46（eager）；171.28 vs 199.96（Graph）
+B4 K2：mini 174.91 vs vLLM 161.58（eager）；699.61 vs 722.01（Graph）
+1024 ctx K2：mini 62.30 vs vLLM 58.33（eager）；125.63 vs 169.50（Graph）
+```
+
+严格边界：
+
+- mini 的 eager/Graph 输出与接受计数全部一致；B1 vLLM 也逐 token 一致，跨引擎 B1 K0
+  逐 token 相同；
+- vLLM B=4 的 3 次重复输出 hash 不同（K=0 也复现），所以 B=4 只作同模式性能观察，
+  `strict_equivalent=false`，不把第 90 token 分叉解释成单一 Graph 机制；
+- 1024 上下文 Graph 是剩余最大差距（0.741×）。mini trace 中 attention 从 4.17 ms
+  涨到 50.52 ms，GEMM/RMSNorm/RoPE 基本不变，下一步应先验证 2D 长上下文 attention
+  的 tile/head 并行度，而不是先开 compile/异步或重写 GEMM；
+- vLLM graph trace 的 kernel node 覆盖不完整，不把 1012 vs 8098 当 GPU 工作量比。
+
+```bash
+python benchmarks/compare_step88_execution.py --all --repeats 3
+python benchmarks/trace_step88_execution.py --decode-steps 8
+python benchmarks/check_step88_numerics.py
+python -m pytest tests/step88 -q
+```
+
+实测：`tests/step88` **19 passed**（CPU-only 18 passed / 1 skipped，真实 assistant 拒绝后
+差分测试按设备/权重跳过）；全量 **1292 passed**。vLLM B=4 的重复非确定性记录在
+`docs/step88_execution_report.md` §4 与本地 `vllm_bugs/`（gitignored）。详见
+[`docs/step88_execution_report.md`](../docs/step88_execution_report.md) 和
+[`docs/step88_alignment.md`](../docs/step88_alignment.md)。
 
 ## 明确不做
 
