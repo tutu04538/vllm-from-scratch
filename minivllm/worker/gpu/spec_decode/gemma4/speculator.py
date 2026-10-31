@@ -34,18 +34,6 @@ class Gemma4Speculator(AutoRegressiveSpeculator):
     def advance_draft_positions(self) -> bool:
         return False
 
-    @property
-    def draft_attention_backend(self):
-        """assistant 的 metadata 组跟随 target 选定的后端。
-
-        086 已让 assistant 的 Q-only Impl 使用 target 的 TRITON_ATTN；087 把 metadata
-        组也切过去，保证 `workspace_pool`、`update_draft_decode_metadata()` 与 Impl 是
-        同一套契约。target 选 Torch 时仍返回 Torch，不强行升级。
-        """
-        from .....attention.backends import get_attention_backend
-
-        return get_attention_backend(self.vllm_config.attention_backend)
-
     # -------- 模型加载与接线 --------
 
     def load_draft_model(self, target_model: nn.Module) -> nn.Module:

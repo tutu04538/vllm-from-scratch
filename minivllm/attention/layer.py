@@ -25,9 +25,9 @@ from ..compilation.breakable_cudagraph import eager_break_during_capture
 from .backends import TorchAttentionImpl
 from .forward_context import get_forward_context
 
-#: 当前模型加载时选用的 attention impl。默认 Torch；V2 Runner 在加载 target 前按
-#: `vllm_config.attention_backend` 设置，加载完 target 后重置为 Torch，避免草稿层
-#: 误用 target 的后端（草稿的 metadata/能力仍是 Torch 那套）。
+#: 当前模型加载时选用的 attention impl。默认 Torch；V2 Runner 在加载 target 与每个
+#: speculator 草稿模型时按 `vllm_config.attention_backend` 临时设置，加载完恢复 Torch，
+#: 避免全局状态污染。087 起草稿也有自己的 metadata builder，并跟随 target 的 backend。
 _ATTENTION_IMPL_CLS = TorchAttentionImpl
 
 

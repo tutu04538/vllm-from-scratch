@@ -44,7 +44,8 @@ def _force_v2(monkeypatch):
 
 def _mtp_configs(*, k: int, device: str, max_num_seqs: int = 2,
                  budget: int = 64, blocks: int = 64,
-                 sample_method: str = "greedy"):
+                 sample_method: str = "greedy",
+                 attention_backend: str = "torch"):
     directory = tiny_mtp_dir("tiny_gqa", num_mtp_layers=2)
     import json
     from pathlib import Path
@@ -82,13 +83,16 @@ def _mtp_configs(*, k: int, device: str, max_num_seqs: int = 2,
         compilation_config=CompilationConfig(
             cudagraph_mode="none", cudagraph_capture_sizes=None
         ),
+        attention_backend=attention_backend,
     )
 
 
 def _make_engine(*, k: int, mode: str = "none", max_num_seqs: int = 2,
-                 sample_method: str = "greedy", capture_sizes=None):
+                 sample_method: str = "greedy", capture_sizes=None,
+                 attention_backend: str = "torch"):
     cfg = _mtp_configs(
-        k=k, device=DEVICE, max_num_seqs=max_num_seqs, sample_method=sample_method
+        k=k, device=DEVICE, max_num_seqs=max_num_seqs,
+        sample_method=sample_method, attention_backend=attention_backend
     )
     if mode != "none":
         sizes = capture_sizes or [k + 1, 2 * (k + 1)]
@@ -589,3 +593,40 @@ def test_graph_forced_rejection_and_acceptance(forced_rejected):
         int(r.num_rejected.max().item()) == forced_rejected
         for r in graph_trace.rounds
     )
+
+
+@requires_cuda
+def test_multi_module_mtp_draft_follows_target_triton():
+    """087 收口：多模块 MTP 的草稿 metadata 也跟随 target 的 Triton backend。"""
+    from minivllm.attention.backends.triton_attn import TritonAttentionImpl
+
+    k = 2
+    eager, eager_runner = _make_engine(k=k, attention_backend="triton")
+    try:
+        want = _run(eager, max_tokens=6)
+        assert eager_runner.attention_backend.get_name() == "TRITON_ATTN"
+        assert all(isinstance(m.impl, TritonAttentionImpl)
+                   for m in eager_runner.speculator.draft_layer_modules.values())
+    finally:
+        eager.shutdown()
+
+    graph, runner = _make_engine(
+        k=k, mode="full_decode_only", capture_sizes=[k + 1, 2 * (k + 1)],
+        attention_backend="triton",
+    )
+    try:
+        got = _run(graph, max_tokens=6)
+        assert got == want
+        assert all(isinstance(m.impl, TritonAttentionImpl)
+                   for m in runner.speculator.draft_layer_modules.values())
+        # builder 必须与 Impl 同一后端；否则 3D workspace/图能力会错配。
+        assert all(
+            group.get_metadata_builder().__class__.__name__
+            == "TritonAttentionMetadataBuilder"
+            for groups in runner.speculator.attn_groups for group in groups
+        )
+        manager = runner.speculator.cudagraph_manager
+        assert manager is not None and manager.graphs
+        assert manager.num_replays > 0
+    finally:
+        graph.shutdown()

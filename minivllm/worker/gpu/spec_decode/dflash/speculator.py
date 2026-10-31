@@ -132,9 +132,10 @@ class DFlashSpeculator(DraftModelSpeculator):
         接线点建一次，`propose()` 每轮直接用它造元数据。
         """
         self.block_tables = block_tables
-        from .....attention.backends.torch_sdpa import TorchAttentionBackend
-
-        self.metadata_builder = TorchAttentionBackend.get_builder_cls()(
+        # 087 收口：跟随 target 的 attention backend；DFlash 的“非因果”是配置差异，
+        # 不是换回 Torch 的理由。builder 负责给出对应的 workspace_pool/图能力。
+        backend = self.draft_attention_backend
+        self.metadata_builder = backend.get_builder_cls()(
             self.vllm_config.cache_config.block_size)
 
     # -------- 图 --------

@@ -922,10 +922,12 @@ Torch 分解路径，但 full D=512 的 K+1 多行 2D decode 约 0.94×，不能
 收口，而不是再写一套图：
 
 - `TritonAttentionWorkspacePool` 由 `TritonAttentionMetadataBuilder` 持有，metadata 只借引用；
-  target 与 assistant 的每个 builder 在 Runner shutdown 时显式 `release()`，工作区不再挂在
-  进程级缓存里跨引擎泄漏；
+  target 与所有 V2 草稿 speculator 的每个 builder 在 Runner shutdown 时显式 `release()`，
+  工作区不再挂在进程级缓存里跨引擎泄漏；
 - Gemma4 assistant 的 metadata 组跟随 target 的 `TRITON_ATTN`，Q-only 仍只读 target 的同一
-  份 KV；EAGLE/MTP 草稿层仍是 Torch，不扩大声明；
+  份 KV；087 收口后，**V2 的 EAGLE/MTP/DFlash/DSpark/DFlash2/多模块 MTP 草稿层也都跟随
+  target 后端**，各自建 metadata builder，不再在草稿层静默回 Torch；V1 仍是独立的 Torch
+  路径，不在 V2 闭环内；
 - 2D/3D 由 host 侧 `max_query_len/num_seqs` 在启动前决定；kernel 每步从设备上的 `seq_lens`
   算 tile 循环，块表容量只是寻址上界。图键只含形状 bucket/执行协议，不含 request ID 或实际
   `seq_len`；
@@ -940,12 +942,13 @@ python benchmarks/check_step87_graph.py --all
 python -m pytest tests/step87 -q
 ```
 
-实测：`tests/step87` **13 passed**（CPU-only 4 passed / 9 skipped）；真实 Gemma4 target K=0
+实测：`tests/step87` **14 passed**（CPU-only 4 passed / 10 skipped）；真实 Gemma4 target K=0
 FULL 图与 target+assistant K=2 FULL 图的 hidden/logits/输出均与 eager 一致，随机采样触发
 拒绝后继续生成；`FULL_DECODE_ONLY` K=2 8-step trace 中 `kernel_unified_attention`
 **344 = 8×43**、`reduce_segments` **32 = 8×4**、`reshape_and_cache_kernel` **120 = 8×15**、
 legacy kernel 0，CPU kernel/graph launch **14/step**；容量 512→2048 blocks 输出/图键相同。
-完整公平矩阵留给 088。详见 [`docs/step87_alignment.md`](../docs/step87_alignment.md)。
+V2 草稿层已全部跟随 target backend；全量 **1273 passed**。完整公平矩阵留给 088。
+详见 [`docs/step87_alignment.md`](../docs/step87_alignment.md)。
 
 ## 明确不做
 

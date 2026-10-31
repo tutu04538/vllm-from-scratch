@@ -856,7 +856,6 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
                 "multi-module MTP 没有草稿注意力层名：runner 必须先 load_model() "
                 "再设置 draft_attn_layer_names，最后调 set_attn()"
             )
-        from .....attention.backends.torch_sdpa import TorchAttentionBackend
         from .....attention.layer import Attention
 
         kv_config = getattr(self, "kv_cache_config", None)
@@ -875,14 +874,15 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
             raise ValueError(
                 "草稿模型里没有可建组的 Attention 层：draft_attn_layer_names "
                 "与模块层名不一致")
-        builder_cls = TorchAttentionBackend.get_builder_cls()
+        backend = self.draft_attention_backend
+        builder_cls = backend.get_builder_cls()
         groups = []
         for group_id in sorted(by_group):
             spec = None
             if kv_config is not None and group_id < len(kv_config.kv_cache_groups):
                 spec = kv_config.kv_cache_groups[group_id].kv_cache_spec
             groups.append(AttentionGroup(
-                backend=TorchAttentionBackend,
+                backend=backend,
                 layer_names=by_group[group_id],
                 metadata_builders=[
                     builder_cls(self.vllm_config.cache_config.block_size)],

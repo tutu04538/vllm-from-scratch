@@ -158,6 +158,18 @@ class DraftModelSpeculator(BaseSpeculator):
         """Config for the draft's attention metadata builders."""
         return self.vllm_config
 
+    @property
+    def draft_attention_backend(self):
+        """草稿层使用的 attention backend，默认跟随 target。
+
+        对应上游 `DraftModelSpeculator.attn_vllm_config` 的默认实现：草稿层用 target 的
+        backend 配置，但 `set_attn()` 仍为草稿层单独建 AttentionGroup/metadata builder。
+        子类只有在草稿注意力语义真的不同（例如 DFlash 的非因果）时才覆盖配置，不换后端。
+        """
+        from ....attention.backends import get_attention_backend
+
+        return get_attention_backend(self.attn_vllm_config.attention_backend)
+
     def set_attn(self, block_tables, target_input_buffers: InputBuffers,
                  target_build_attn_metadata) -> None:
         """把 draft 的注意力上下文接到 target 的块表与输入缓冲上。

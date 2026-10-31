@@ -225,3 +225,37 @@ def test_combine_hidden_states_rejects_wrong_width():
     model, hf = tiny_dflash_model()
     with pytest.raises(ValueError, match="aux"):
         model.combine_hidden_states(torch.randn(2, hf["hidden_size"] + 1))
+
+
+@requires_cuda
+def test_v2_dflash_draft_follows_target_triton_and_graph_matches_eager():
+    """087 收口：草稿层 backend 跟随 target，DFlash 非因果仍然正确。"""
+    from minivllm.attention.backends.triton_attn import TritonAttentionImpl
+
+    prompts = [("a", [1, 2, 3, 4])]
+    eager_engine, _, eager_runner = make_v2_engine(
+        mode="none", causal=False, attention_backend="triton")
+    eager = run_prompts(eager_engine, prompts, max_tokens=8, shutdown=False)
+    eager_engine.shutdown()
+
+    graph_engine, _, graph_runner = make_v2_engine(
+        capture_sizes=[8, 16], mode="full_decode_only", causal=False,
+        attention_backend="triton")
+    graph = run_prompts(graph_engine, prompts, max_tokens=8, shutdown=False)
+    try:
+        assert eager == graph
+        assert graph_runner.attention_backend.get_name() == "TRITON_ATTN"
+        draft_layers = [
+            m for _, m in graph_runner.speculator.model.named_modules()
+            if type(m).__name__ == "DFlashAttention"
+        ]
+        assert draft_layers
+        assert all(isinstance(m.attn.impl, TritonAttentionImpl)
+                   for m in draft_layers)
+        assert graph_runner.speculator.metadata_builder.__class__.__name__ == (
+            "TritonAttentionMetadataBuilder")
+        assert graph_runner.speculator.query_cudagraph_manager.selections
+        assert any(entry["replayed"] for entry in
+                   graph_runner.speculator.query_cudagraph_manager.selections)
+    finally:
+        graph_engine.shutdown()

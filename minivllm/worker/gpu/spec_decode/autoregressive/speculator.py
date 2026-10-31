@@ -110,19 +110,6 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         """每一步是否推进 positions/seq_lens（EAGLE/标准 MTP：True；Q-only 的 MTP：False）。"""
         return True
 
-    @property
-    def draft_attention_backend(self):
-        """草稿层用哪个注意力后端建 metadata 组。
-
-        默认仍是 Torch 参考后端：EAGLE/MTP 等草稿层的 **Impl** 本来就是 Torch，
-        metadata 也必须是 Torch builder 的语义。Gemma4 assistant 是唯一例外——它的
-        Q-only 层在 086 起由 target 选定的 Triton Impl 执行，因此 087 起把 metadata
-        组也切到同一后端，避免“Impl 是 Triton、metadata 却来自 Torch builder”的错配。
-        """
-        from .....attention.backends.torch_sdpa import TorchAttentionBackend
-
-        return TorchAttentionBackend
-
     # -------- 注意力上下文 --------
 
     def set_attn(
@@ -155,11 +142,10 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
         self.draft_attn_layer_names)`）。
 
-        默认用 Torch 参考后端、一个 KV group，所以恒为"一组、一个构造器"。Gemma4
-        assistant 覆写 `draft_attention_backend`，让 metadata 组与 target 选定的 Triton
-        Impl 一致。**测试的接缝放在这里**：74 关的验收要"支持/不支持
-        `update_draft_decode_metadata` 的两个后端都跑一遍"，测试用 `minivllm/testing/`
-        里的替身构造器替换这个方法——被验证的仍然是**生产的那条门**
+        默认跟随 target 的 attention backend（对应上游 `attn_vllm_config`），但为
+        草稿层单独建组。**测试的接缝放在这里**：74 关的验收要"支持/不支持
+        `update_draft_decode_metadata` 的两个后端都跑一遍"，测试用
+        `minivllm/testing/` 里的替身构造器替换这个方法——被验证的仍然是**生产的那条门**
         （`_configure_fused_multi_step_decode()`），只是换了一份 capability 声明。
         """
         from .....attention.layer import Attention

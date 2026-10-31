@@ -209,7 +209,8 @@ class GPUModelRunner:
         from ...attention.layer import set_attention_impl_cls
         from ...model_loader import get_model
 
-        # 只有 target 用选定的后端；speculator 的草稿层仍是 Torch 参考后端。
+        # target 与草稿都使用选定的后端；草稿在下面重新设置一次，因为它是在
+        # target 加载完之后才实例化的（087 收口：不再只给 Gemma4 assistant 开）。
         set_attention_impl_cls(self.attention_backend.get_impl_cls())
         try:
             self.model = get_model(self.model_config, self.device)
@@ -218,16 +219,15 @@ class GPUModelRunner:
 
         if self.speculative_config is not None:
             self.speculator = init_speculator(self.vllm_config, self.device)
-            # Gemma4 assistant 是 Q-only 共享读取，必须和 target 用同一条
-            # TRITON_ATTN 路径；其它方法的草稿层仍保留 Torch 参考后端。
-            if self.speculative_config.use_gemma4_mtp():
-                set_attention_impl_cls(self.attention_backend.get_impl_cls())
-                try:
-                    self.speculator.load_model(self.model)
-                finally:
-                    set_attention_impl_cls(TorchAttentionImpl)
-            else:
+            # 087 收口：草稿层与 target 使用同一个 attention backend（上游
+            # DraftModelSpeculator.attn_vllm_config 的默认语义）。草稿仍有自己的
+            # AttentionGroup/metadata builder/KV cache，但不是“Impl 跟着 target、
+            # metadata 偷偷回 Torch”。不支持的 shape 会在 Impl 构造期明确报错。
+            set_attention_impl_cls(self.attention_backend.get_impl_cls())
+            try:
                 self.speculator.load_model(self.model)
+            finally:
+                set_attention_impl_cls(TorchAttentionImpl)
             # 草稿的注意力层名：`set_attn()` 要用它建"草稿自己的"注意力组，而 target 的
             # 注意力元数据也要**覆盖这些层名**（上游 `init_attn_backend` 在 runner 侧不带
             # `active_layer_names`，于是 target 的 metadata 字典天然包含草稿层；草稿 prefill

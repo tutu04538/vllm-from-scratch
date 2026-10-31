@@ -107,7 +107,8 @@ def make_spec_config(*, k: int = 3, draft_sample_method: str = "probabilistic",
 
 def make_vllm_config(spec: SpeculativeConfig, *, max_num_seqs: int = 2,
                      budget: int = 64, blocks: int = 64, mode: str = "none",
-                     capture_sizes=(6, 12)) -> VllmConfig:
+                     capture_sizes=(6, 12),
+                     attention_backend: str = "torch") -> VllmConfig:
     from minivllm.config import CompilationConfig
 
     target_config, _ = model_configs()
@@ -120,6 +121,7 @@ def make_vllm_config(spec: SpeculativeConfig, *, max_num_seqs: int = 2,
             device_config=DeviceConfig(device=DEVICE), speculative_config=spec,
             compilation_config=CompilationConfig(
                 cudagraph_mode=mode, cudagraph_capture_sizes=list(capture_sizes)),
+            attention_backend=attention_backend,
         )
 
 
@@ -263,10 +265,12 @@ def make_upstream_selector(*, hidden_size: int, vocab_size: int, rank: int,
 # ---------------- 引擎 ----------------
 
 def make_engine(*, k: int = 3, draft_sample_method: str = "greedy", mode: str = "none",
-                capture_sizes=(6, 12), max_num_seqs: int = 2, **kwargs):
+                capture_sizes=(6, 12), max_num_seqs: int = 2,
+                attention_backend: str = "torch", **kwargs):
     spec = make_spec_config(k=k, draft_sample_method=draft_sample_method, **kwargs)
     config = make_vllm_config(spec, max_num_seqs=max_num_seqs, mode=mode,
-                              capture_sizes=capture_sizes)
+                              capture_sizes=capture_sizes,
+                              attention_backend=attention_backend)
     with v2_env():
         engine = LLMEngine(config, UniProcExecutor(config, Worker(config)), tokenizer=None)
     core = engine.engine_core.engine_core

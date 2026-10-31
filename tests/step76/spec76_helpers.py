@@ -201,7 +201,8 @@ def make_v1_engine(*, spec_k: int = 3, budget: int = 64, blocks: int = 64,
 def make_v2_engine(*, spec_k: int = 3, budget: int = 64, blocks: int = 64,
                    max_num_seqs: int = 2, max_model_len: int = 64,
                    capture_sizes=(4, 8, 16), mode: str = "full_decode_only",
-                   causal: bool = False, draft_sample_method: str = "greedy"):
+                   causal: bool = False, draft_sample_method: str = "greedy",
+                   attention_backend: str = "torch"):
     from minivllm.config import CompilationConfig
 
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1"
@@ -217,6 +218,7 @@ def make_v2_engine(*, spec_k: int = 3, budget: int = 64, blocks: int = 64,
         device_config=DeviceConfig(device=DEVICE), speculative_config=spec,
         compilation_config=CompilationConfig(
             cudagraph_mode=mode, cudagraph_capture_sizes=list(capture_sizes)),
+        attention_backend=attention_backend,
     )
     engine = LLMEngine(config, UniProcExecutor(config, Worker(config)), tokenizer=None)
     core = engine.engine_core.engine_core

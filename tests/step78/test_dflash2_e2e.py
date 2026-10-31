@@ -105,3 +105,36 @@ def test_slot_reuse_keeps_the_output_identical():
         assert runner.speculator._cached_candidate_ids[0].numel() == 2 * 3
     finally:
         engine.shutdown()
+
+
+@requires_cuda
+def test_dflash2_draft_follows_target_triton_and_graph_matches_eager():
+    """087 收口：DFlash2 草稿层也跟随 target 的 Triton backend。"""
+    from minivllm.attention.backends.triton_attn import TritonAttentionImpl
+
+    prompts = [("a", [1, 2, 3, 4])]
+    eager_engine, _, eager_runner = make_engine(
+        k=2, draft_sample_method="greedy", mode="none",
+        attention_backend="triton")
+    eager = run_prompts(eager_engine, prompts, max_tokens=6, shutdown=False)
+    eager_engine.shutdown()
+
+    graph_engine, _, graph_runner = make_engine(
+        k=2, draft_sample_method="greedy", mode="full_decode_only",
+        capture_sizes=(3, 6), attention_backend="triton")
+    graph = run_prompts(graph_engine, prompts, max_tokens=6, shutdown=False)
+    try:
+        assert graph == eager
+        assert graph_runner.attention_backend.get_name() == "TRITON_ATTN"
+        attn_layers = [
+            m for _, m in graph_runner.speculator.model.named_modules()
+            if hasattr(m, "impl")
+        ]
+        assert attn_layers
+        assert all(isinstance(m.impl, TritonAttentionImpl) for m in attn_layers)
+        assert graph_runner.speculator.metadata_builder.__class__.__name__ == (
+            "TritonAttentionMetadataBuilder")
+        manager = graph_runner.speculator.query_cudagraph_manager
+        assert manager is not None and any(e["replayed"] for e in manager.selections)
+    finally:
+        graph_engine.shutdown()

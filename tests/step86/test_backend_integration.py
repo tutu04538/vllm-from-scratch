@@ -58,8 +58,8 @@ def test_triton_run_never_calls_torch_generic(monkeypatch):
 
 @requires_cuda
 def test_triton_spec_decode_graph_matches_eager():
-    # EAGLE3 tiny draft 的草稿层仍是 Torch；target 的验证 attention
-    # 走 unified。这里只要求 target 图/eager 的最终 token 相同。
+    # EAGLE3 tiny draft 现在也跟随 target 的 unified backend；这里仍只检查
+    # 端到端 token，draft 层的 Impl/builder 断言在 087 收口测试里。
     eager, _ = make_engine(
         attention_backend="triton", mode="none", spec_k=2,
         capture_sizes=(1, 2, 3, 4, 8))

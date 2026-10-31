@@ -141,8 +141,8 @@ def test_draft_round_state_matches_eager_across_prefill_and_decode_graphs():
     """目标图 + 草稿两张图都重放时，逐轮草稿状态与 eager 相同。
 
     首次 propose 走 draft prefill 图（每请求 1+K 行），后续走 draft decode 图
-    （每请求 1 行）；Qwen3/EAGLE3 的草稿层仍由既有 Torch 实现执行，这里只该
-    验证图生命周期/输入缓冲没有被 Graph 改坏。
+    （每请求 1 行）；Qwen3/EAGLE3 的草稿层也跟随 target 的 Triton backend，这里
+    同时验证图生命周期/输入缓冲与后端切换没有改坏逐轮状态。
     """
     from spec87_helpers import DraftRoundRecorder
 

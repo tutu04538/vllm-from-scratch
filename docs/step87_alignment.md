@@ -4,8 +4,9 @@
 > 前置：086（Gemma4 原生分页 Attention）
 > 下一关：088（单卡执行公平对照与收尾）
 >
-> 状态：**实现完成（target eager/FULL、Gemma4 assistant Q-only 图、工作区生命周期、
-> 有效长度与容量小对照均实测；完整性能矩阵留给 088）**
+> 状态：**实现完成（target eager/FULL、工作区生命周期、有效长度与容量小对照均实测）。
+> 另含 087 收口补丁：V2 的 EAGLE/MTP/DFlash/DSpark/DFlash2/多模块 MTP 草稿层全部跟随
+> target 的 attention backend；V1 仍是独立 Torch 路径。完整性能矩阵留给 088。**
 
 ## 1. 这一关要解决什么
 
@@ -33,8 +34,10 @@
 | `minivllm/attention/backends/triton_attn.py` | 新增 `TritonAttentionWorkspacePool`；builder 持有池并挂到 metadata；Impl 不再按层缓存；shutdown 可 `release()` |
 | `minivllm/attention/metadata.py` | `AttentionMetadata.workspace_pool`：metadata 只借引用，池归 builder |
 | `minivllm/worker/gpu/model_runner.py` | target builder 池随 shutdown 释放；assistant 的 `attn_groups` builder 也显式 release |
-| `minivllm/worker/gpu/spec_decode/autoregressive/speculator.py` | `draft_attention_backend` 接缝（默认 Torch）；草稿 metadata 组的 builder 可跟随 target 后端 |
-| `minivllm/worker/gpu/spec_decode/gemma4/speculator.py` | assistant 覆写为 target 选定的后端；metadata/Impl/workspace 契约统一 |
+| `minivllm/worker/gpu/spec_decode/speculator.py` | `draft_attention_backend` 默认跟随 target；对应上游 `attn_vllm_config` |
+| `minivllm/worker/gpu/spec_decode/autoregressive/speculator.py` | 草稿 metadata 组使用 `draft_attention_backend`；不再默认 Torch |
+| `minivllm/worker/gpu/spec_decode/dflash/speculator.py` | 删掉写死的 Torch metadata builder；DFlash 非因果仍保留 |
+| `minivllm/worker/gpu/spec_decode/multi_module_mtp/speculator.py` | 删掉写死的 Torch backend/builder；逐 KV group 跟随 target |
 | `minivllm/worker/gpu/cudagraph_utils.py` | 不改图管理器；本次只使用既有 `ModelCudaGraphManager` / `SpeculatorCudaGraphManager` |
 | `minivllm/compilation/cuda_graph.py` | V1 wrapper 不动；V2 没有另造第二套图缓存 |
 
@@ -148,6 +151,8 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 
 覆盖：
 
+全量回归（最终）：`tests/step58`–`tests/step87` **1273 passed, 152 warnings, 201.06s**。
+
 | 文件 | 内容 |
 |---|---|
 | `test_workspace_ownership.py` | builder 同一池；地址复用；release 弱引用；无进程级缓存；2D/3D CUDA Graph 重放读取更新后的 `seq_lens` |
@@ -196,7 +201,7 @@ K=2，只改物理块容量 512 → 2048：
 | 编号 | 差异 / 边界 | 影响 |
 |---|---|---|
 | D87-1 | 工作区从进程级缓存改为 builder 池；同一模型同一 shape 仍共享 | shutdown 真释放；不再跨引擎泄漏；图地址仍稳定 |
-| D87-2 | Gemma4 assistant 的 metadata 组跟随 target 后端；EAGLE/MTP 等草稿层仍 Torch | 087 只扩大 Gemma4 assistant，不声称所有草稿层上 Triton |
+| D87-2 | V2 所有草稿 speculator 的 Impl/metadata builder 跟随 target；V1 仍是独立 Torch 路径 | 不再出现 V2“target Triton、草稿 Torch”；不支持 shape 在 Impl 构造期报错 |
 | D87-3 | target 捕获仍用 `make_dummy` 的 query 长度，不调用会填 `seq_lens=1` 的基类 `build_for_cudagraph_capture()` | 捕获仍安全、无 NaN；重放前输入内核会把真实 `seq_lens` 写回同一块缓冲；与上游“填 1 提速”有差异 |
 | D87-4 | 没有给 `seq_threshold_3D` 做 capture-size 吸附 | 仍是 `128 // num_kv_heads`；小 batch 3D 选择不随捕获档位改变 |
 | D87-5 | 首轮 assistant prefill 走 eager；后续 decode 轮才重放草稿 prefill/decode 图 | 符合现有 prefill eager 策略；不能解读为“assistant 完全不进图” |
@@ -210,12 +215,19 @@ K=2，只改物理块容量 512 → 2048：
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
 
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest tests/step87 -q
+# 14 passed
+
 CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   $PY -m pytest tests/step87 -q
+# 4 passed, 10 skipped
+
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
+  tests/step74 tests/step76 tests/step77 tests/step78 -q
+# 191 passed（含新增的 EAGLE3/MTP/DFlash/DSpark/DFlash2 草稿 follow-target）
 
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
   tests/step58 … tests/step87 -q
-# 1267 passed, 148 warnings, 202.28s
+# 1273 passed, 152 warnings, 201.06s
 
 $PY benchmarks/check_step87_graph.py --trace
 $PY benchmarks/check_step87_graph.py --capacity
@@ -231,7 +243,63 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest \
 ## 10. 一句话
 
 **087 把 086 的 unified 分页 attention 真正接进已有 target/assistant CUDA Graph：
-3D 工作区从进程级缓存改成 builder 持有并在 shutdown 释放，assistant 的 metadata 组跟随
-Triton，kernel 每步从设备上的 `seq_lens` 决定循环长度；真实 K=0/2 eager 与 Graph 的
-hidden/logits/输出一致，K=2 trace 中 CPU launch 从 323/step 降到 14/step，容量 512→2048
-不改变图键或输出。**
+3D 工作区从进程级缓存改成 builder 持有并在 shutdown 释放，kernel 每步从设备上的
+`seq_lens` 决定循环长度；真实 K=0/2 eager 与 Graph 的 hidden/logits/输出一致，K=2 trace
+中 CPU launch 从 323/step 降到 14/step，容量 512→2048 不改变图键或输出。087 收口补丁
+又把 V2 的 EAGLE/MTP/DFlash/DSpark/DFlash2/多模块 MTP 草稿层接到与 target 相同的
+attention backend，不再只有 Gemma4 assistant 走 Triton。**
+
+
+## 11. 087 收口补丁：草稿层 backend 跟随 target
+
+### 11.1 为什么补
+
+086 只把 Gemma4 assistant 切到 Triton，EAGLE/MTP/DFlash 等草稿层仍 Torch。结果不是
+“配置层禁止”，而是三处本地接线不对称：
+
+```text
+runner.load_model()
+  只给 Gemma4 assistant 重设 _ATTENTION_IMPL_CLS
+AutoRegressiveSpeculator
+  draft_attention_backend 默认 Torch
+DFlashSpeculator / MultiModuleMTPSpeculator
+  set_attn() 直接把 metadata builder 写死成 Torch
+```
+
+上游 `DraftModelSpeculator.set_attn()` 用 `attn_vllm_config` 调
+`init_attn_backend(..., active_layer_names=draft_attn_layer_names)`；默认
+`attn_vllm_config = self.vllm_config`，所以**草稿层默认跟随 target 的 backend 配置**，
+但仍然建自己的 AttentionGroup/metadata builder。DFlash 只覆盖 `use_non_causal`，不换后端。
+
+### 11.2 本补丁
+
+1. `runner.load_model()` 在加载**所有** V2 speculator 时使用 target 选定的 Impl；
+2. `DraftModelSpeculator.draft_attention_backend` 返回
+   `get_attention_backend(self.attn_vllm_config.attention_backend)`；
+3. `AutoRegressiveSpeculator` 删除“默认 Torch”的覆盖；
+4. `DFlashSpeculator.set_attn()` 与 `MultiModuleMTPSpeculator.set_attn()` 改用
+   `draft_attention_backend.get_builder_cls()`；
+5. 草稿仍有自己的 KV cache、AttentionGroup、metadata builder、workspace pool 和 graph key；
+   Q-only 只用于 Gemma4 assistant，不扩散。
+
+覆盖：
+
+| 草稿族 | 测试 | 结果 |
+|---|---|---|
+| EAGLE3 tiny + 真实 Qwen3-1.7B | `test_triton_backend_e2e.py`、`test_real_eagle3_backend.py` | eager/Graph 相同；draft Impl/builder 均 Triton |
+| 原生 MTP | `test_mtp_speculator.py::test_mtp_draft_follows_target_triton...` | K=2 FULL 图；draft 层 Triton |
+| DFlash（非因果） | `test_dflash_kv.py::test_v2_dflash_draft_follows_target_triton...` | eager/Graph 相同；非因果仍生效 |
+| DSpark | `test_dspark_sampling.py::test_dspark_draft_follows_target_triton...` | eager/Graph 相同；metadata builder Triton |
+| DFlash2 | `test_dflash2_e2e.py::test_dflash2_draft_follows_target_triton...` | eager/Graph 相同；metadata builder Triton |
+| 多模块 MTP | `test_multi_module_graph_state.py::test_multi_module_mtp_draft_follows_target_triton` | 整段 K 步 FULL 图重放；逐 group builder Triton |
+| Gemma4 assistant | `test_real_gemma4_graph.py` | 原有 K=0/2 真实 eager/FULL 继续通过 |
+
+### 11.3 边界
+
+- **V1 仍是独立 Torch runner**：本补丁只覆盖 V2（`worker/gpu/`）；V1 的 target 图/Triton
+  接线本来就未闭环，不能声称 V1 已跟随。
+- 真实权重只有 Gemma4 target+assistant 与 Qwen3-1.7B+EAGLE3；DFlash/DSpark/DFlash2/
+  多模块 MTP 的 backend 切换是 **tiny + 机制验证**，权重质量仍待真实 checkpoint。
+- DFlash/DSpark/DFlash2 的非因果是**配置差异**，不是换后端；继续由 `causal=False` 传递。
+- 多模块 MTP 的非均匀 packed query 走现有 Triton 2D 路径；没有新增 kernel 分支。
+- 未支持的头宽/布局会在 `TritonAttentionImpl` / KV 绑定处明确报错，不静默回 Torch。

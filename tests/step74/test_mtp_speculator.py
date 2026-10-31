@@ -30,7 +30,8 @@ from minivllm.worker.gpu.spec_decode.mtp.speculator import MTPSpeculator  # noqa
 PROMPTS = [("a", [1, 2, 3, 4, 1, 2, 3, 4]), ("b", [5, 6, 5, 6])]
 
 
-def mtp_configs(*, k: int, explicit_draft: bool = True, mode: str = "none"):
+def mtp_configs(*, k: int, explicit_draft: bool = True, mode: str = "none",
+                attention_backend: str = "torch"):
     """tiny MTP checkpoint 的 (target 配置, draft 配置)。
 
     真实 MTP 的权重与 target 在**同一个文件**里，draft 配置由
@@ -54,13 +55,16 @@ def mtp_configs(*, k: int, explicit_draft: bool = True, mode: str = "none"):
                      device_config=DeviceConfig(device="cuda"),
                      speculative_config=spec,
                      compilation_config=CompilationConfig(
-                         cudagraph_mode=mode, cudagraph_capture_sizes=[1, 2, 3, 4, 8]))
+                         cudagraph_mode=mode, cudagraph_capture_sizes=[1, 2, 3, 4, 8]),
+                     attention_backend=attention_backend)
     return cfg
 
 
-def run_mtp(*, v2: bool, mode: str, k: int, max_tokens: int = 8, explicit_draft: bool = True):
+def run_mtp(*, v2: bool, mode: str, k: int, max_tokens: int = 8,
+            explicit_draft: bool = True, attention_backend: str = "torch"):
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "1" if v2 else "0"
-    cfg = mtp_configs(k=k, explicit_draft=explicit_draft, mode=mode)
+    cfg = mtp_configs(k=k, explicit_draft=explicit_draft, mode=mode,
+                      attention_backend=attention_backend)
     engine = LLMEngine(cfg, UniProcExecutor(cfg, Worker(cfg)), tokenizer=None)
     runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
     try:
@@ -217,3 +221,40 @@ def test_v2_mtp_requires_explicit_draft_config():
     # V1 仍然能建（拒绝来自 V2 的接线，不是把 MTP 一起砍了）
     os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "0"
     assert cfg.use_v2_model_runner is False
+
+
+@requires_cuda
+def test_mtp_draft_follows_target_triton_and_graph_matches_torch_draft():
+    """087 收口：原生 MTP 的草稿层也跟随 target 的 Triton backend。"""
+    from minivllm.attention.backends.triton_attn import TritonAttentionImpl
+
+    torch_out, _ = run_mtp(v2=True, mode="full_decode_only", k=2,
+                           attention_backend="torch")
+    triton_out, _ = run_mtp(v2=True, mode="full_decode_only", k=2,
+                            attention_backend="triton")
+    assert triton_out == torch_out
+
+    cfg = mtp_configs(k=2, mode="full_decode_only", attention_backend="triton")
+    engine = LLMEngine(cfg, UniProcExecutor(cfg, Worker(cfg)), tokenizer=None)
+    runner = engine.engine_core.engine_core.model_executor.driver_worker.model_runner
+    try:
+        for req_id, prompt in PROMPTS:
+            engine.add_request(req_id, list(prompt),
+                               SamplingParams(max_tokens=8, temperature=0.0,
+                                              eos_token_id=999))
+        for _ in range(400):
+            if not engine.has_unfinished_requests():
+                break
+            for _out in engine.step():
+                pass
+        speculator = runner.speculator
+        assert runner.attention_backend.get_name() == "TRITON_ATTN"
+        assert speculator.draft_attention_backend.get_name() == "TRITON_ATTN"
+        assert all(isinstance(m.impl, TritonAttentionImpl)
+                   for m in speculator.draft_layer_modules.values())
+        assert all(g.get_metadata_builder().__class__.__name__ ==
+                   "TritonAttentionMetadataBuilder"
+                   for groups in speculator.attn_groups for g in groups)
+        assert speculator.decode_cudagraph_manager.num_replays > 0
+    finally:
+        engine.shutdown()

@@ -74,12 +74,13 @@ def test_triton_full_mixed_batch_matches_torch_eager():
 @requires_cuda
 def test_triton_spec_target_graph_matches_torch_eager():
     eager, _, _ = make_engine(
-        spec_k=3, mode="none", capture_sizes=[4, 8, 12, 16], max_num_seqs=2)
+        spec_k=3, mode="none", capture_sizes=[1, 2, 4, 8, 12, 16],
+        max_num_seqs=2)
     want = _run_decode(eager)
 
     graph, _, runner = make_engine(
-        spec_k=3, mode="full", capture_sizes=[4, 8, 12, 16], max_num_seqs=2,
-        attention_backend="triton")
+        spec_k=3, mode="full", capture_sizes=[1, 2, 4, 8, 12, 16],
+        max_num_seqs=2, attention_backend="triton")
     got = _run_decode(graph, shutdown=False)
     try:
         assert got == want
@@ -87,6 +88,16 @@ def test_triton_spec_target_graph_matches_torch_eager():
         assert runner.cudagraph_mode == CUDAGraphMode.FULL
         assert runner.target_cudagraph_manager is not None
         assert runner.target_cudagraph_manager.graphs
+        # 087 收口：EAGLE3 草稿层也跟随 target 的 Triton backend，不能只剩 target 优化。
+        from minivllm.attention.backends.triton_attn import TritonAttentionImpl
+        speculator = runner.speculator
+        assert all(isinstance(m.impl, TritonAttentionImpl)
+                   for m in speculator.draft_layer_modules.values())
+        assert all(g.get_metadata_builder().__class__.__name__ ==
+                   "TritonAttentionMetadataBuilder"
+                   for groups in speculator.attn_groups for g in groups)
+        assert speculator.prefill_cudagraph_manager.num_replays > 0
+        assert speculator.decode_cudagraph_manager.num_replays > 0
     finally:
         graph.shutdown()
 
