@@ -224,6 +224,13 @@ q_len=3/context=1024 的 2D 只有 2 个 program、每 program 约 33 个 KV til
 q_len>1 在 1024/2048 的单 kernel 约 2.7–4.6×，128/256 反而更慢。方法、正确性与生产化边界见
 `docs/step88_attention_micro.md`；生产 `can_use_3d()` 仍拒绝 q_len>1，未改执行路径。
 
+随后同输入 2D 对照（`benchmarks/check_step88_vllm_kernel_diff.py`）回答了真正的 mini-vs-vLLM
+问题：vLLM 目标 decode 也走 2D（`max_query_len=3`、`TILE_SIZE=32`、`BLOCK_M=16`、
+`IS_3D=false`）；q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms（3.59×），输出差 0.0；
+mini 2D 编译为 255 regs/58 spills，vLLM 为 158 regs/0 spills（hd512 为 255/6）。主因是
+mini 2D kernel 的寄存器 spill，3D 是另一项候选，不是当前差距的解释。见
+`docs/step88_vllm_kernel_diff.md`。
+
 ## 11. 一句话
 
 **088 用 16 个主 case + 4 个 1024-token 上下文 case，在无 compile、同 attention backend、

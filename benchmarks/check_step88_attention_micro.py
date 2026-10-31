@@ -153,13 +153,14 @@ def _prepare(case: dict[str, Any], seed: int = 1234) -> dict[str, Any]:
     q, k, v, block_table, seq_lens, cu, scale, window = _tensors(case, seed)
     out2 = torch.empty_like(q)
     out3 = torch.empty_like(q)
+    out_vllm = torch.empty_like(q)
     workspace = _make_workspace(case)
     torch.cuda.synchronize()
     return {
         "q": q, "k": k, "v": v, "block_table": block_table,
         "seq_lens": seq_lens, "cu": cu, "scale": scale,
         "window": window, "out2": out2, "out3": out3,
-        "workspace": workspace,
+        "out_vllm": out_vllm, "workspace": workspace,
     }
 
 

@@ -34,9 +34,9 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
 2. **eager B=1/B=4 已经基本同量级**：K=0 1.003×、K=2 1.045×（B=1）；B=4 eager 分别
    1.086×/1.082×。这是两套实现栈在相同 workload 下的总时间，不是“投机算法更优”。
 3. **Graph 的剩余差距集中在 B=1 K=2 与 1024 上下文**：0.857× 与 0.741×；B=4 Graph
-   已接近（0.969×，但 B=4 是非确定性观察）。后续 microbenchmark 定位到 2D kernel 的
-   KV 串行扫描：q_len=3/context=1024 时每 program 约 33 个 tile，只有 2 个 program；
-   强制 3D 分段原型在 1024/2048 约 2.7–4.6×，128/256 反而更慢。
+   已接近（0.969×，但 B=4 是非确定性观察）。同输入 2D kernel 对照显示 mini 0.1903 ms
+   vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills，vLLM 158 regs/0 spills。
+   vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -122,9 +122,9 @@ TTFT 的绝对值受前端/预热影响，尤其 vLLM 有独立 EngineCore 和 d
 0.741×；eager 反而 1.068×。这说明剩余差距主要在 Graph 下的长上下文 decode/attention
 路径，而不是 eager 的通用 Python 开销。具体见 §6。
 
-后续 microbenchmark 已把这一格拆到 kernel 层：q_len=3、context=1024 时 2D 约 0.19 ms，
+后续 microbenchmark 先拆到 kernel 层：q_len=3、context=1024 时 mini 2D 约 0.19 ms，
 强制 3D 分段约 0.06–0.07 ms；context=2048 为 4.4–4.6×；context 128/256 反而是 0.53–0.90×。
-完整方法与数据见 `docs/step88_attention_micro.md`。
+但这只是 mini 内部的另一个候选优化；真正的 mini-vs-vLLM 原因见下面的同 2D 对照。
 
 ## 4. 输出身份与数值边界
 
@@ -294,7 +294,7 @@ GPU 工作量比，也不拿 3 次 graph launch 当重放次数。**
 vLLM eager 的 top kernel 仍是 cutlass GEMM / RMSNorm / `kernel_unified_attention`；Graph
 后同一组名字仍在，说明不是换了一套数学。
 
-### 6.3 1024 上下文：attention 变成主项
+### 6.3 1024 上下文：attention 变成主项，但根因是 mini 2D kernel spill
 
 mini 同一张 B1 K2 Graph：
 
@@ -311,8 +311,22 @@ GEMM 几乎不变。实际上下文 Graph 吞吐 mini 125.63 vs vLLM 169.50（0.
 62.30 vs 58.33（1.068×）；这与“Graph 下 attention/长上下文路径是剩余差距”一致。
 
 vLLM 的 Graph trace 在上下文下 attention 只有 1.39 ms（短 0.30 ms），同样受 graph trace
-覆盖影响，不能与 mini 的 50.52 ms 直接相减；但实际 wall/吞吐比和 mini 自己的 attention
-增长方向一致，足以把下一项指向长上下文 attention，而不是 GEMM。
+覆盖影响，不能与 mini 的 50.52 ms 直接相减。为了回答“为什么 mini 比 vLLM 慢”，又做了
+同一组 q/paged K/V、同一个 `max_seqlen_q=3` 的直接 2D kernel 对照（不加载 engine）：
+
+```text
+q3/ctx1024/hd256: mini 0.1903 ms, vLLM 0.0530 ms（3.59×）
+q3/ctx2048/hd256: mini 0.3706 ms, vLLM 0.0839 ms（4.42×）
+q3/ctx1024/hd512: mini 0.3508 ms, vLLM 0.0762 ms（4.61×）
+输出逐元素差：全部 0.0
+mini 2D compiled: 255 regs, 58 spills（hd256）/ 280 spills（hd512）
+vLLM 2D compiled: 158 regs, 0 spills（hd256）/ 255 regs, 6 spills（hd512）
+```
+
+vLLM 在这个场景实际也走 **2D**（EngineCore 钩子读到 `max_query_len=3`、`TILE_SIZE=32`、
+`BLOCK_M=16`、`BLOCK_Q=2`、`IS_3D=false`），所以“vLLM 用 3D”不是原因。真正的主因是
+**mini 2D kernel 顶到 255 寄存器并大量 spill，vLLM 的 kernel 只有 0–6 spills**。
+细节与 `v_keep` A/B 见 `docs/step88_vllm_kernel_diff.md`。
 
 ### 6.4 真实 assistant 拒绝后差分
 
@@ -371,33 +385,31 @@ eager 为 1.51×（45.43/30.07），Graph 为 5.70×（171.28/30.07）。这些�
 
 ## 8. 下一步只选一个瓶颈
 
-**选 1024 上下文、B=1、K=2 的 2D 分页 attention 并行度**，而不是 GEMM 或再开 compile/异步。
+**选 mini 的 2D `kernel_unified_attention` 寄存器压力/spills，而不是 3D split、GEMM 或
+继续砍 CPU launch。**
 
 证据链：
 
-1. 短 prompt B=1 K=2 Graph：mini 171.28 vs vLLM 199.96（0.857×）；1024 上下文 Graph：
-   125.63 vs 169.50（0.741×），差距随上下文增长；
-2. mini 自己的 trace：attention 从 4.17 ms 涨到 50.52 ms（12×），GEMM 基本不变
-   （39.80→39.92 ms），RMSNorm/RoPE 也不变；
-3. mini Graph 的 CPU launch 已经降到 88/8 steps，继续只砍 launch 不能解释长上下文差距；
-4. vLLM 的 graph trace 对 kernel node 覆盖不完整，不能拿它的绝对 kernel 数做下一项依据，
-   但实际吞吐和 mini 的 attention 增长方向一致。
+1. 同输入同 2D：q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms（3.59×），输出差 0.0；
+   ctx2048 为 4.42×，hd512 full 为 4.61×；
+2. mini 2D 编译为 255 regs + 58 spills（hd256）、255 regs + 280 spills（hd512 变体）；
+   vLLM 2D 为 158 regs + 0 spills（hd256）、255 regs + 6 spills（hd512）；
+3. vLLM 实际也走 2D：`max_query_len=3`、`TILE_SIZE=32`、`BLOCK_M=16`、`BLOCK_Q=2`、
+   `IS_3D=false`；所以 3D prototype 不能解释这格差距；
+4. eager 下 mini 62.30 vs vLLM 58.33（mini 略快），Graph 下 mini 125.63 vs vLLM 169.50
+   （0.741×）：Graph 去掉 CPU 开销后才暴露 kernel spills；
+5. 删除每 tile 的 `v_keep` 只把 0.185→0.178 ms、58→48 spills，约 4%，不是全部原因；
+   仍需减少 mini kernel 的 live range/对齐 vLLM 的优化实现。
 
-这一步已经做了（`docs/step88_attention_micro.md`）：结论不是“query 行数/launch 不够”，
-而是 **2D kernel 每个 program 串行扫完整 KV**。q_len=3、B=1 时只有 2 个 program，每个
-扫约 33 个 KV tile；强制 3D 分段后 32 个 program、每 program 约 5 个 tile，单 kernel 在
-1024/2048 上下文约 2.7–4.6×，且 3 个 seed 的 synthetic 输出与 2D 一致。
+实际下一步：
 
-但 128/256 上下文 3D 更慢（segment/reduce 固定开销），且原型没有经过真实 engine/Graph。
-因此下一步是**受控的真实 engine 原型**，不是直接改生产：
+1. 对 mini 与 vLLM 2D kernel 做 PTX/SASS/live-range 对照，定位 255/58 的具体来源；
+2. 对齐 vLLM 的 2D 实现（尽量减少同时 live 的 mask/V 临时量，或直接移植其 kernel 核心）；
+3. 用 `num_warps`/tile/V-mask A/B 验证，要求输出仍逐元素相同；
+4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐是否从 125.6 向 169.5 靠近；
+5. 2D spill 解决之后，3D q_len>1 仍可作为长上下文补充，但不能抢在主因之前。
 
-1. 保留 2D 默认，只在 `seq_len >= 512` 且 q_len>1 时尝试 3D；
-2. 复用 `TritonAttentionWorkspacePool`，确认 metadata/Graph capture/reduce 都能重放；
-3. 真实 Gemma4 B=1 K=2 在短/1024/2048 下比 eager/Graph 的 2D/3D；
-4. 先看 attention 是否从 50 ms 降到约 15–20 ms，再决定是否合入。
-
-不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D，不能把
-“换成 3D”当作已证明的生产修复。
+不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D。
 
 ## 9. 复现命令
 
@@ -410,6 +422,7 @@ $PY benchmarks/compare_step88_execution.py --all --repeats 3
 $PY benchmarks/trace_step88_execution.py --decode-steps 8
 $PY benchmarks/check_step88_numerics.py
 $PY benchmarks/check_step88_attention_micro.py --warmup 50 --repeats 200 --rounds 10
+$PY benchmarks/check_step88_vllm_kernel_diff.py --warmup 50 --repeats 200 --rounds 10
 $PY -m pytest tests/step88 -q
 
 # 全量
@@ -428,5 +441,8 @@ $PY -m pytest tests/step58 … tests/step88 -q
 - 不把 kernel 间隙当未插桩利用率，不把 inclusive 范围重复相加；
 - `limit_mm_per_prompt={"image":0,"video":0}` 只跳过纯文本 case 的多模态 warmup；
 - 不把 84/85/86/87 的单算子收益相乘，本关不做新的 kernel 消融；
+- mini 2D kernel 的 255 regs/58 spills 是实测编译结果；vLLM 2D 在 hd256 为 158/0，
+  hd512 为 255/6；这是当前最明确的 mini-vs-vLLM 差距；
+- 3D q_len>1 是 mini 内部的补充优化，不是 vLLM 当前 target decode 的路径。
 - `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
   拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。

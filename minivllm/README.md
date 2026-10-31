@@ -984,16 +984,20 @@ python benchmarks/check_step88_numerics.py
 python -m pytest tests/step88 -q
 ```
 
-实测：`tests/step88` **22 passed**（CPU-only 21 passed / 1 skipped，真实 assistant 拒绝后
-差分与 GPU microbenchmark 测试按设备跳过）；全量 **1295 passed**。vLLM B=4 的重复非确定性记录在
+实测：`tests/step88` **24 passed**（CPU-only 23 passed / 1 skipped，真实 assistant 拒绝后
+差分与 GPU kernel 对照测试按设备跳过）；全量 **1297 passed**。vLLM B=4 的重复非确定性记录在
 `docs/step88_execution_report.md` §4 与本地 `vllm_bugs/`（gitignored）。详见
 [`docs/step88_execution_report.md`](../docs/step88_execution_report.md) 和
 [`docs/step88_alignment.md`](../docs/step88_alignment.md)。
 
 后续 attention microbenchmark 见 [`docs/step88_attention_micro.md`](../docs/step88_attention_micro.md)：
 2D 在 q_len=3/context=1024 只有 2 个 program、每 program 串行约 33 个 KV tile；强制 3D
-q_len>1 后单 kernel 约 2.7–4.6×（1024/2048），但 128/256 更慢；生产 `can_use_3d()` 仍
-拒绝 q_len>1，未改生产路径。
+q_len>1 后单 kernel 约 2.7–4.6×（1024/2048），但 128/256 更慢。但这还不是 mini-vs-vLLM
+的答案：vLLM 目标 decode 也走 2D（`max_query_len=3`、`TILE_SIZE=32`、`BLOCK_M=16`、
+`IS_3D=false`）；同输入 q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms，输出差 0.0；
+mini 2D kernel 255 regs/58 spills，vLLM 158 regs/0 spills。真正的下一步是降 mini 2D 的
+寄存器 spill（删 v_keep 只 4%、58→48 spills），而不是先上 3D。详见
+[`docs/step88_vllm_kernel_diff.md`](../docs/step88_vllm_kernel_diff.md)。
 
 ## 明确不做
 

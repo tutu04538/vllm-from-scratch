@@ -35,7 +35,7 @@
   "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）",
   "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）"
 ,
-  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；22 项 step88、全量 1295）"
+  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；24 项 step88、全量 1297）"
  },
  "step58": {
   "results": {
@@ -7473,7 +7473,7 @@
  "results": {
   "step": "88（单卡执行公平对照与收尾）",
   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；严格等价 false，B=4 只作同模式性能观察；6 个 trace + 真实 assistant 拒绝后差分 + attention microbenchmark（22 case）已跑",
+  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；严格等价 false，B=4 只作同模式性能观察；6 trace + 真实 assistant 拒绝后差分 + attention microbenchmark（22 case） + mini-vs-vLLM 同 2D kernel 对照（vLLM 实际也走 2D；mini 255 regs/58 spills，vLLM 158/0）",
   "recorded_at": "2026-10-31T17:28+08:00",
   "package": {
    "root": "minivllm/",
@@ -7516,12 +7516,16 @@
     "result": "22/22 正确性（3 seeds）；q_len=3/context=1024 单 kernel 2D 0.1891 ms vs 3D 0.0584 ms（3.24×）；context=2048 4.37×；context=128/256 0.53/0.82×；生产 can_use_3d 未改"
    },
    {
+    "cmd": "python benchmarks/check_step88_vllm_kernel_diff.py --warmup 50 --repeats 200 --rounds 10",
+    "result": "22 case；同输入 q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills vs vLLM 158 regs/0 spills；vLLM 实际 2D（max_query_len=3、TILE_SIZE=32、IS_3D=false）"
+   },
+   {
     "cmd": "python -m pytest tests/step88 -q",
-    "result": "22 passed, 14 warnings in 22.60s（含真实 assistant 拒绝后差分与 GPU microbenchmark 正确性）"
+    "result": "24 passed, 14 warnings in 17.97s（含真实 assistant、GPU microbenchmark 与 mini-vs-vLLM kernel 对照）"
    },
    {
     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
-    "result": "21 passed, 1 skipped in 6.62s（真实模型/GPU microbenchmark 测试按设备跳过）"
+    "result": "23 passed, 1 skipped in 4.09s（真实 assistant 模型测试按设备跳过；GPU kernel 对照测试在 CUDA 不可用时内部返回）"
    },
    {
     "cmd": "python -m pytest tests/step88/test_real_assistant_rejection.py -q",
@@ -7529,7 +7533,7 @@
    },
    {
     "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-    "result": "1295 passed, 152 warnings in 217.70s（exit 0）"
+    "result": "1297 passed, 152 warnings in 208.88s（exit 0）"
    }
   ],
   "matrix": {
@@ -11050,7 +11054,8 @@
    "真实 DFlash/DSpark/DFlash2/多模块 MTP 权重不在本机",
    "V1 仍是独立 Torch 路径，不在本矩阵",
    "不把 84/85/86/87 的收益相乘",
-   "3D q_len>1 只是 diagnostic prototype；生产 can_use_3d 仍拒绝，短上下文 3D 更慢，未做真实 engine/Graph 验证"
+   "3D q_len>1 只是 diagnostic prototype；生产 can_use_3d 仍拒绝，短上下文 3D 更慢，未做真实 engine/Graph 验证",
+   "mini-vs-vLLM 2D kernel 差距已定位为 mini 255 regs/58 spills 对 vLLM 158/0（hd256）；3D q_len>1 是另一候选，不是 vLLM 当前路径"
   ],
   "attention_microbenchmark": {
    "script": "benchmarks/check_step88_attention_micro.py",
@@ -11091,6 +11096,103 @@
    },
    "conclusion": "2D 长上下文瓶颈是每个 program 串行扫描完整 KV；q_len=3/B=1/context=1024 时只有 2 个 program、约 33 个 KV tile。强制 3D 分段后 32 个 program、每 program 约 5 tile，1024/2048 约 2.7–4.6×；但 128/256 因 segment/reduce 固定开销更慢。",
    "not_done": "生产 can_use_3d() 仍要求 max_seqlen_q==1；未改 metadata/Graph；需真实 engine/Graph 原型后再决定合入"
+  },
+  "vllm_kernel_diff": {
+   "script": "benchmarks/check_step88_vllm_kernel_diff.py",
+   "report": "docs/step88_vllm_kernel_diff.md",
+   "cases": 22,
+   "warmup": 50,
+   "repeats": 200,
+   "rounds": 10,
+   "engine_metadata": {
+    "max_query_len": 3,
+    "head_size": [
+     256,
+     512
+    ],
+    "tile_size": 32,
+    "block_m": 16,
+    "block_q": 2,
+    "is_3d": false,
+    "segments": 16
+   },
+   "same_2d": {
+    "q3_ctx128_hd256": {
+     "mini_ms": 0.0391,
+     "vllm_ms": 0.0514,
+     "vllm_speedup": 0.761,
+     "max_abs": 0.0
+    },
+    "q3_ctx256_hd256": {
+     "mini_ms": 0.0553,
+     "vllm_ms": 0.0627,
+     "vllm_speedup": 0.882,
+     "max_abs": 0.0
+    },
+    "q3_ctx512_hd256": {
+     "mini_ms": 0.1003,
+     "vllm_ms": 0.0541,
+     "vllm_speedup": 1.853,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd256": {
+     "mini_ms": 0.1903,
+     "vllm_ms": 0.053,
+     "vllm_speedup": 3.587,
+     "max_abs": 0.0
+    },
+    "q3_ctx2048_hd256": {
+     "mini_ms": 0.3706,
+     "vllm_ms": 0.0839,
+     "vllm_speedup": 4.417,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd256_sliding": {
+     "mini_ms": 0.092,
+     "vllm_ms": 0.0442,
+     "vllm_speedup": 2.082,
+     "max_abs": 0.0
+    },
+    "q3_ctx1024_hd512": {
+     "mini_ms": 0.3508,
+     "vllm_ms": 0.0762,
+     "vllm_speedup": 4.606,
+     "max_abs": 0.0
+    }
+   },
+   "compiled_kernel": {
+    "mini_2d_hd256": {
+     "n_regs": 255,
+     "n_spills": 58,
+     "shared_bytes": 40960
+    },
+    "vllm_2d_hd256": {
+     "n_regs": 158,
+     "n_spills": 0,
+     "shared_bytes": 42240
+    },
+    "vllm_2d_hd512": {
+     "n_regs": 255,
+     "n_spills": 6,
+     "shared_bytes": 83200
+    },
+    "mini_2d_hd512_spill_variant": {
+     "n_regs": 255,
+     "n_spills": 280,
+     "shared_bytes": 81920
+    }
+   },
+   "v_keep_ablation": {
+    "orig_ms": 0.185,
+    "no_vkeep_ms": 0.178,
+    "orig_spills": 58,
+    "no_vkeep_spills": 48,
+    "note": "只解释约 4%，不是全部原因"
+   },
+   "conclusion": "vLLM target decode 实际也走 2D；mini 慢的主因是 2D kernel 255 regs/58 spills，vLLM 158/0（hd256）与 255/6（hd512），同输入输出差为 0.0。eager 时 mini host 路径更轻，Graph 去掉 CPU 开销后才暴露 kernel spill。",
+   "unsupported": [
+    "hd512+sliding512 synthetic kernel 在 vLLM 2D 下 shared memory 超限；实际模型没有 hd512 sliding，不作为主表证据"
+   ]
   }
  },
  "models": {
