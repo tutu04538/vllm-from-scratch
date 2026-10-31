@@ -34,7 +34,9 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
 2. **eager B=1/B=4 已经基本同量级**：K=0 1.003×、K=2 1.045×（B=1）；B=4 eager 分别
    1.086×/1.082×。这是两套实现栈在相同 workload 下的总时间，不是“投机算法更优”。
 3. **Graph 的剩余差距集中在 B=1 K=2 与 1024 上下文**：0.857× 与 0.741×；B=4 Graph
-   已接近（0.969×，但 B=4 是非确定性观察）。
+   已接近（0.969×，但 B=4 是非确定性观察）。后续 microbenchmark 定位到 2D kernel 的
+   KV 串行扫描：q_len=3/context=1024 时每 program 约 33 个 tile，只有 2 个 program；
+   强制 3D 分段原型在 1024/2048 约 2.7–4.6×，128/256 反而更慢。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -119,6 +121,10 @@ TTFT 的绝对值受前端/预热影响，尤其 vLLM 有独立 EngineCore 和 d
 上下文把“短 prompt 的启动开销占比”压低后，Graph 差距从 B=1 短 prompt 的 0.857× 扩大到
 0.741×；eager 反而 1.068×。这说明剩余差距主要在 Graph 下的长上下文 decode/attention
 路径，而不是 eager 的通用 Python 开销。具体见 §6。
+
+后续 microbenchmark 已把这一格拆到 kernel 层：q_len=3、context=1024 时 2D 约 0.19 ms，
+强制 3D 分段约 0.06–0.07 ms；context=2048 为 4.4–4.6×；context 128/256 反而是 0.53–0.90×。
+完整方法与数据见 `docs/step88_attention_micro.md`。
 
 ## 4. 输出身份与数值边界
 
@@ -377,10 +383,21 @@ eager 为 1.51×（45.43/30.07），Graph 为 5.70×（171.28/30.07）。这些�
 4. vLLM 的 graph trace 对 kernel node 覆盖不完整，不能拿它的绝对 kernel 数做下一项依据，
    但实际吞吐和 mini 的 attention 增长方向一致。
 
-下一步应先用一个独立的 2D attention microbenchmark（固定 1024/2048 上下文、B=1、GQA、
-K=2 的 3 行 query）验证 tile/head 并行度与 split-KV 的收益，再决定是否改 kernel；**不要**
-先开 torch.compile、异步调度或重写 GEMM。K=2 target 目前是 3 行 query，仍走 2D；3D 只在
-`max_seqlen_q == 1` 时启用，不能把“换成 3D”当作已证明的修复。
+这一步已经做了（`docs/step88_attention_micro.md`）：结论不是“query 行数/launch 不够”，
+而是 **2D kernel 每个 program 串行扫完整 KV**。q_len=3、B=1 时只有 2 个 program，每个
+扫约 33 个 KV tile；强制 3D 分段后 32 个 program、每 program 约 5 个 tile，单 kernel 在
+1024/2048 上下文约 2.7–4.6×，且 3 个 seed 的 synthetic 输出与 2D 一致。
+
+但 128/256 上下文 3D 更慢（segment/reduce 固定开销），且原型没有经过真实 engine/Graph。
+因此下一步是**受控的真实 engine 原型**，不是直接改生产：
+
+1. 保留 2D 默认，只在 `seq_len >= 512` 且 q_len>1 时尝试 3D；
+2. 复用 `TritonAttentionWorkspacePool`，确认 metadata/Graph capture/reduce 都能重放；
+3. 真实 Gemma4 B=1 K=2 在短/1024/2048 下比 eager/Graph 的 2D/3D；
+4. 先看 attention 是否从 50 ms 降到约 15–20 ms，再决定是否合入。
+
+不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D，不能把
+“换成 3D”当作已证明的生产修复。
 
 ## 9. 复现命令
 
@@ -392,6 +409,7 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 $PY benchmarks/compare_step88_execution.py --all --repeats 3
 $PY benchmarks/trace_step88_execution.py --decode-steps 8
 $PY benchmarks/check_step88_numerics.py
+$PY benchmarks/check_step88_attention_micro.py --warmup 50 --repeats 200 --rounds 10
 $PY -m pytest tests/step88 -q
 
 # 全量
@@ -409,4 +427,6 @@ $PY -m pytest tests/step58 … tests/step88 -q
   node 覆盖不完整，不把 1012 vs 8098 当 GPU 工作量比；
 - 不把 kernel 间隙当未插桩利用率，不把 inclusive 范围重复相加；
 - `limit_mm_per_prompt={"image":0,"video":0}` 只跳过纯文本 case 的多模态 warmup；
-- 不把 84/85/86/87 的单算子收益相乘，本关不做新的 kernel 消融。
+- 不把 84/85/86/87 的单算子收益相乘，本关不做新的 kernel 消融；
+- `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
+  拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。

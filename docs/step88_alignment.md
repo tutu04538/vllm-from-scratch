@@ -217,7 +217,14 @@ vLLM: 1536 个逻辑块，block_size 32/16 的 sliding/full 组，144 MiB
    `docs/step88_execution_report.md` §4，并记录疑似问题到本地 `vllm_bugs/`（gitignored）。
 9. 本关不增加新模型能力、不改 Scheduler/BlockPool/拒绝采样算法。
 
-## 10. 一句话
+## 10. 后续 microbenchmark
+
+88 收尾后补做了 `benchmarks/check_step88_attention_micro.py`，直接测 `unified_attention`：
+q_len=3/context=1024 的 2D 只有 2 个 program、每 program 约 33 个 KV tile；强制 3D
+q_len>1 在 1024/2048 的单 kernel 约 2.7–4.6×，128/256 反而更慢。方法、正确性与生产化边界见
+`docs/step88_attention_micro.md`；生产 `can_use_3d()` 仍拒绝 q_len>1，未改执行路径。
+
+## 11. 一句话
 
 **088 用 16 个主 case + 4 个 1024-token 上下文 case，在无 compile、同 attention backend、
 同 Graph 模式的条件下重新测量 minivllm 与 vLLM；同时把配置身份、KV 字节、Graph 捕获/重放、

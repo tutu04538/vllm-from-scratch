@@ -35,7 +35,7 @@
   "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）",
   "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）"
 ,
-  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；19 项 step88、全量 1292）"
+  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；22 项 step88、全量 1295）"
  },
  "step58": {
   "results": {
@@ -7473,7 +7473,7 @@
  "results": {
   "step": "88（单卡执行公平对照与收尾）",
   "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；严格等价 false，B=4 只作同模式性能观察；6 个 trace + 真实 assistant 拒绝后差分已跑",
+  "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；严格等价 false，B=4 只作同模式性能观察；6 个 trace + 真实 assistant 拒绝后差分 + attention microbenchmark（22 case）已跑",
   "recorded_at": "2026-10-31T17:28+08:00",
   "package": {
    "root": "minivllm/",
@@ -7512,12 +7512,16 @@
     "result": "2/2 vLLM B=4 K=0 eager/Graph；单次 128/128 token 相同（first_diff=None）；不能证明确定性，重复 hash 见 determinism"
    },
    {
+    "cmd": "python benchmarks/check_step88_attention_micro.py --warmup 50 --repeats 200 --rounds 10 --flush-l2",
+    "result": "22/22 正确性（3 seeds）；q_len=3/context=1024 单 kernel 2D 0.1891 ms vs 3D 0.0584 ms（3.24×）；context=2048 4.37×；context=128/256 0.53/0.82×；生产 can_use_3d 未改"
+   },
+   {
     "cmd": "python -m pytest tests/step88 -q",
-    "result": "19 passed, 14 warnings in 15.96s（含真实 assistant 拒绝后差分）"
+    "result": "22 passed, 14 warnings in 22.60s（含真实 assistant 拒绝后差分与 GPU microbenchmark 正确性）"
    },
    {
     "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
-    "result": "18 passed, 1 skipped in 7.51s（真实模型测试按设备跳过）"
+    "result": "21 passed, 1 skipped in 6.62s（真实模型/GPU microbenchmark 测试按设备跳过）"
    },
    {
     "cmd": "python -m pytest tests/step88/test_real_assistant_rejection.py -q",
@@ -7525,7 +7529,7 @@
    },
    {
     "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-    "result": "1292 passed, 152 warnings in 211.09s（exit 0）"
+    "result": "1295 passed, 152 warnings in 217.70s（exit 0）"
    }
   ],
   "matrix": {
@@ -11045,8 +11049,49 @@
    "vLLM graph trace kernel node 覆盖不完整；主表不把 vLLM kernel 数当 GPU 工作量",
    "真实 DFlash/DSpark/DFlash2/多模块 MTP 权重不在本机",
    "V1 仍是独立 Torch 路径，不在本矩阵",
-   "不把 84/85/86/87 的收益相乘"
-  ]
+   "不把 84/85/86/87 的收益相乘",
+   "3D q_len>1 只是 diagnostic prototype；生产 can_use_3d 仍拒绝，短上下文 3D 更慢，未做真实 engine/Graph 验证"
+  ],
+  "attention_microbenchmark": {
+   "script": "benchmarks/check_step88_attention_micro.py",
+   "report": "docs/step88_attention_micro.md",
+   "cases": 22,
+   "warmup": 50,
+   "repeats": 200,
+   "rounds": 10,
+   "correctness": {
+    "ok": true,
+    "seeds": [
+     1234,
+     1235,
+     1236
+    ],
+    "max_abs_max": 0.002,
+    "note": "3D q_len>1 绕过 can_use_3d 的 production 条件，仅用于诊断"
+   },
+   "no_flush": {
+    "q_len3_context_128_speedup": 0.607,
+    "q_len3_context_256_speedup": 0.901,
+    "q_len3_context_512_speedup": 1.696,
+    "q_len3_context_1024_speedup": 2.716,
+    "q_len3_context_2048_speedup": 4.614,
+    "q_len3_hd512_full_speedup": 4.505,
+    "q_len3_hd512_sliding_speedup": 3.791,
+    "q_len3_b4_ctx1024_speedup": 2.676
+   },
+   "flush_l2": {
+    "q_len3_context_128_speedup": 0.532,
+    "q_len3_context_256_speedup": 0.818,
+    "q_len3_context_512_speedup": 1.336,
+    "q_len3_context_1024_speedup": 3.239,
+    "q_len3_context_2048_speedup": 4.37,
+    "q_len3_hd512_full_speedup": 5.996,
+    "q_len3_hd512_sliding_speedup": 2.682,
+    "q_len3_b4_ctx1024_speedup": 2.617
+   },
+   "conclusion": "2D 长上下文瓶颈是每个 program 串行扫描完整 KV；q_len=3/B=1/context=1024 时只有 2 个 program、约 33 个 KV tile。强制 3D 分段后 32 个 program、每 program 约 5 tile，1024/2048 约 2.7–4.6×；但 128/256 因 segment/reduce 固定开销更慢。",
+   "not_done": "生产 can_use_3d() 仍要求 max_seqlen_q==1；未改 metadata/Graph；需真实 engine/Graph 原型后再决定合入"
+  }
  },
  "models": {
   "target": {

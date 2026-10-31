@@ -984,11 +984,16 @@ python benchmarks/check_step88_numerics.py
 python -m pytest tests/step88 -q
 ```
 
-实测：`tests/step88` **19 passed**（CPU-only 18 passed / 1 skipped，真实 assistant 拒绝后
-差分测试按设备/权重跳过）；全量 **1292 passed**。vLLM B=4 的重复非确定性记录在
+实测：`tests/step88` **22 passed**（CPU-only 21 passed / 1 skipped，真实 assistant 拒绝后
+差分与 GPU microbenchmark 测试按设备跳过）；全量 **1295 passed**。vLLM B=4 的重复非确定性记录在
 `docs/step88_execution_report.md` §4 与本地 `vllm_bugs/`（gitignored）。详见
 [`docs/step88_execution_report.md`](../docs/step88_execution_report.md) 和
 [`docs/step88_alignment.md`](../docs/step88_alignment.md)。
+
+后续 attention microbenchmark 见 [`docs/step88_attention_micro.md`](../docs/step88_attention_micro.md)：
+2D 在 q_len=3/context=1024 只有 2 个 program、每 program 串行约 33 个 KV tile；强制 3D
+q_len>1 后单 kernel 约 2.7–4.6×（1024/2048），但 128/256 更慢；生产 `can_use_3d()` 仍
+拒绝 q_len>1，未改生产路径。
 
 ## 明确不做
 
