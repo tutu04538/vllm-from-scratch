@@ -44,7 +44,7 @@ def test_mini_and_vllm_2d_match_and_mini_no_spill():
     torch.cuda.synchronize()
     assert torch.equal(mini, vllm), "同一 2D 输入下 mini/vLLM 输出不一致"
 
-    from minivllm.attention.ops import triton_unified_attention as mini_module
+    from minivllm.attention.ops import triton_unified_attention_vllm as mini_module
     from vllm.v1.attention.ops import triton_unified_attention as vllm_module
 
     mini_meta = _kernel_meta(mini_module)

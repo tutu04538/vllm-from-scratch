@@ -8,6 +8,11 @@
     * paged KV、GQA、causal/非 causal、sliding window；
     * Q-only 层只读 cache，不写。
 
+2D 生产路径使用从 vLLM 0.28.0 vendored 的版本
+（`triton_unified_attention_vllm.py`，Apache-2.0）：它带 `cp.async`/`ldmatrix`
+流水，实测把 q3/ctx1024 的 kernel 从约 0.15 ms 降到约 0.047 ms。
+3D 仍使用本文件的本地实现，避免改变单 token decode 的分段路径。
+
 不做的分支（量化、ALiBi、sinks、softcap、cascade、MM prefix、RSWA、tensor
 descriptor）在 backend 的入口检查里明确拒绝，不在这里静默走另一条路径。
 
@@ -29,6 +34,9 @@ from __future__ import annotations
 import torch
 
 from ...triton_utils import tl, triton
+from .triton_unified_attention_vllm import (
+    unified_attention as _vllm_2d_unified_attention,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -575,10 +583,30 @@ def unified_attention(
     sliding_window = 0
     if window_size[0] is not None and window_size[0] >= 0:
         sliding_window = int(window_size[0]) + 1
+    # vLLM 2D kernel 在 head_size=512 + sliding window 的合成组合会超过
+    # shared memory（vLLM 自己也不支持这个组合）；这种形状回退本地 kernel。
+    vendor_2d = (
+        not is_3d
+        and q.dtype != torch.float32
+        and not (head_size >= 512 and sliding_window > 0)
+    )
+    if vendor_2d:
+        max_q = int(max_seqlen_q) if max_seqlen_q is not None else 1
+        return _vllm_2d_unified_attention(
+            q, k, v, out, cu_seqlens_q, max_q, seqused_k, 0,
+            softmax_scale=softmax_scale,
+            causal=bool(causal),
+            window_size=window_size,
+            block_table=block_table,
+            softcap=0.0,
+            q_descale=None,
+            k_descale=None,
+            v_descale=None,
+        )
+
     tile_size = 16 if is_3d else 32
-    # 2D 用 8 warps 分摊 16×256 的 acc/Q/K/V，避免 255 regs + spill；
-    # 3D 保持原 4 warps，避免改变单 token decode 的实测路径。
-    num_warps = 4 if is_3d else 8
+    # 2D 已在上面返回；这里只走 3D，保持原 4 warps。
+    num_warps = 4
 
     # 上界：sum ceil(q_len / BLOCK_Q) <= floor(N / BLOCK_Q) + num_seqs。
     total_q_blocks = num_tokens // block_q + num_seqs

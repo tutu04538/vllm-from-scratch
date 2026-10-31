@@ -229,9 +229,24 @@ q_len>1 在 1024/2048 的单 kernel 约 2.7–4.6×，128/256 反而更慢。方
 `IS_3D=false`）；q3/ctx1024/hd256 mini 0.1903 ms vs vLLM 0.0530 ms（3.59×），输出差 0.0；
 mini 2D 编译为 255 regs/58 spills，vLLM 为 158 regs/0 spills（hd512 为 255/6）。主因是
 mini 2D kernel 的寄存器 spill，3D 是另一项候选，不是当前差距的解释。见
-`docs/step88_vllm_kernel_diff.md`。2D 第一版修复（8 warps、去 v_keep、块表尾块 clamp；
-3D 不动）后 198 regs/0 spills，q3/ctx1024 0.1903→0.1522 ms，真实 Graph 125.63→135.55 tok/s
-（vLLM 160.16，0.741→0.846）；剩余约 2.3–2.9× 是 cp.async/ldmatrix 流水差距。
+`docs/step88_vllm_kernel_diff.md`。2D 第一版本地修复（8 warps、去 v_keep、块表尾块 clamp）后 198 regs/0 spills、
+0.1522 ms；最终把 vLLM 0.28.0 的 2D kernel vendored 到本地
+（`triton_unified_attention_vllm.py` + `triton_attention_helpers.py`，Apache-2.0；
+不是 import 上游），157 regs/0 spills、cp.async 51，q3/ctx1024 0.0472 ms（vLLM 0.0536）。
+真实 Graph 173.74 vs vLLM 138.23 tok/s（同轮；vLLM 自身 138–160 波动）。FP32、
+hd512+sliding、3D 保留本地 fallback。
+
+路径映射（vendored 2D）：
+
+```text
+minivllm/attention/ops/triton_unified_attention_vllm.py
+  ↔ vLLM 0.28.0 v1/attention/ops/triton_unified_attention.py（2D 子集，Apache-2.0）
+minivllm/attention/ops/triton_attention_helpers.py
+  ↔ vLLM 0.28.0 v1/attention/ops/triton_attention_helpers.py（Apache-2.0）
+```
+
+vendored 文件不带上游 Runner/proposer 依赖；INT4 分支改为显式 `NotImplementedError`，
+生产 backend 仍在入口拒绝量化。
 
 ## 11. 一句话
 

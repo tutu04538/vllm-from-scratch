@@ -107,7 +107,7 @@ def _bench_pair(case: dict[str, Any], prepared: dict[str, Any], *,
 def _run_all(cases, *, warmup: int, repeats: int,
              rounds: int) -> list[dict[str, Any]]:
     import torch
-    from minivllm.attention.ops import triton_unified_attention as mini_module
+    from minivllm.attention.ops import triton_unified_attention_vllm as mini_module
     from vllm.v1.attention.ops import triton_unified_attention as vllm_module
 
     results = []

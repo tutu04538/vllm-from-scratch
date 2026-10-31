@@ -37,8 +37,10 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
    已接近（0.969×，但 B=4 是非确定性观察）。同输入 2D kernel 对照显示 mini 0.1903 ms
    vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills，vLLM 158 regs/0 spills。
    vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。第一版
-   2D 修复后 mini 0.1522 ms/198 regs/0 spills，Graph 125.63→135.55 tok/s（0.846×）；
-   剩余 2.3–2.9× 差距转为 load→shared→MMA 流水，而不是 spill。
+   2D 第一版本地修复后 mini 0.1522 ms/198 regs/0 spills，Graph 125.63→135.55 tok/s；
+   最终 vendored 2D kernel 为 157 regs/0 spills、0.0472 ms（vLLM 0.0536 ms），Graph
+   173.74 vs vLLM 138.23 tok/s（同轮）。2D attention 主路径已基本对齐；剩余是引擎噪声
+   与 FP32/hd512+sliding/3D fallback，不再是 spill。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -404,29 +406,37 @@ eager 为 1.51×（45.43/30.07），Graph 为 5.70×（171.28/30.07）。这些�
 5. 删除每 tile 的 `v_keep` 只把 0.185→0.178 ms、58→48 spills，约 4%，不是全部原因；
    仍需减少 mini kernel 的 live range/对齐 vLLM 的优化实现。
 
-**第一版 2D 修复已经落地**（3D 路径不动）：
+**第一版本地 2D 修复**（3D 路径不动）：
 
 ```text
 2D launch 8 warps；2D 去掉 v_keep；2D block table 尾块 clamp 到最后列
 q3/ctx1024/hd256: 0.1903 → 0.1522 ms（-20.0%）
-q3/ctx2048:       0.3706 → 0.2952 ms（-20.4%）
-hd512 full:       0.3508 → 0.2895 ms（-17.5%）
 registers/spills: 255/58 → 198/0
-真实 Graph:       125.63 → 135.55 tok/s（vLLM 160.16；0.846×，修复前 0.741×）
+真实 Graph:       125.63 → 135.55 tok/s
 ```
 
-剩余差距不再是 spill：修复后仍约 2.3–2.9× 慢于 vLLM；vLLM 的 PTX 有
-`cp.async.cg.shared.global`/`ldmatrix` 流水，mini 仍是同步 load + 更多
-`st.shared`。所以下一步要改 2D 的 load→shared→MMA 流水，而不是继续调
-register 或上 3D。
+但本地 kernel 仍无 `cp.async`，比 vLLM 慢 2.3–2.9×。最终把 vLLM 0.28.0 的
+2D kernel **vendored 到本地**（`triton_unified_attention_vllm.py` +
+`triton_attention_helpers.py`，Apache-2.0；不是 import 上游 Runner/kernel）：
+
+```text
+2D BF16：157 regs/0 spills，cp.async 51
+q3/ctx1024: 0.0472 ms vs vLLM 0.0536 ms（0.880×）
+ctx128/512/1024/2048、hd256 full/sliding、hd512 full：0.88–1.12×
+真实 Graph 1024：173.74 vs vLLM 138.23 tok/s（同轮 1.257×；vLLM 本轮低于此前 160.16）
+```
+
+2D attention 主路径已基本对齐；保留 fallback：FP32 走本地 `ieee` dot，
+hd512+sliding 走本地 kernel（vLLM 组合 shared 超限），3D 保持本地 kernel。
+真实 target 是 BF16（hd256 sliding + hd512 full），不经过两个 fallback 的合成形状。
 
 实际下一步：
 
-1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS，重点看 `cp.async`/`ldmatrix` 流；
-2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 进入异步 copy，同时保持尾块 V=0；
-3. 再试 `TILE_SIZE`/`num_stages`/`num_warps` 组合，要求输出仍逐元素相同；
-4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐从 135.55 继续向 160.16 靠近；
-5. 3D q_len>1 仍放在 2D 流水修复之后，不能抢在主因之前。
+1. 2D 主路径已经 vendored 对齐，不再继续消融 kernel；后续升级 vLLM 时同步核对来源；
+2. 用多轮同协议重测 vLLM 的 138–160 tok/s 波动，不用单轮 1.257× 下结论；
+3. FP32 本地 fallback 只服务测试，真实 target 是 BF16；
+4. hd512+sliding 是合成边界，真实 Gemma4 是 hd256 sliding + hd512 full；
+5. 3D 仍留本地路径，是否启用由后续需求决定，不与本次 2D 优化混在一起。
 
 不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D。
 
@@ -463,8 +473,10 @@ $PY -m pytest tests/step58 … tests/step88 -q
 - mini 2D kernel 的 255 regs/58 spills 是实测编译结果；vLLM 2D 在 hd256 为 158/0，
   hd512 为 255/6；这是当前最明确的 mini-vs-vLLM 差距；
 - 3D q_len>1 是 mini 内部的补充优化，不是 vLLM 当前 target decode 的路径。
-- 2D 优化只动 2D：8 warps、去 v_keep、尾块 block table clamp；3D 保持 4 warps + 原
-  v_keep 路径。修复后 mini 2D 198 regs/0 spills，但 kernel 仍无 `cp.async`，与 vLLM
-  还有约 2.3–2.9× 的 codegen/流水差距。
+- 2D 最终方案：vendored vLLM 0.28.0 2D kernel（Apache-2.0，非 import），157 regs/0 spills、
+  cp.async 51，q3/ctx1024 0.0472 ms（vLLM 0.0536），多数 shape 0.88–1.12×；真实 Graph
+  173.74 vs vLLM 138.23 tok/s（同轮，vLLM 自身 138–160 波动）。
+- FP32 走本地 `ieee` dot；head_size=512+sliding 走本地 kernel（vLLM 组合 shared 超限）；
+  3D 保持本地 kernel。
 - `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
   拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。

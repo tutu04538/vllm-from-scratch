@@ -135,9 +135,57 @@ mini 135.55 tok/s vs vLLM 160.16（0.846×）
 0.1522 ms vs vLLM 0.053–0.066 ms，约 2.3–2.9×；剩余差距不是 spill，而是
 kernel codegen/流水线：vLLM 的 PTX 有 `cp.async.cg.shared.global`、
 `ldmatrix`，mini 仍是同步 load + 更多 `st.shared`。所以下一步要优化
-2D 的 load→shared→MMA 流水，而不是继续调 register 或上 3D。
+2D 的 load→shared→MMA 流水，而不是继续调 register 或上 3D。这一阶段的 0.152 ms
+已在下一节的 vendored 方案中被 0.047 ms 取代。
 
-## 6. 和 3D prototype 的关系
+## 7. 最终方案：vendored vLLM 2D kernel
+
+第一版本地优化只到 0.152 ms，仍比 vLLM 的 2D kernel 慢。最终做法是把 vLLM 0.28.0
+的 2D kernel **vendored 到本地**（`triton_unified_attention_vllm.py` +
+`triton_attention_helpers.py`，保留 Apache-2.0 头；不是 import 上游包），
+由 `unified_attention` 在 2D BF16 路径直接调用。
+
+结果（同输入、同 2D、同 `max_seqlen_q=3`）：
+
+| 场景 | mini | vLLM | mini/vLLM |
+|---|---:|---:|---:|
+| q3 ctx128 | 0.0748 ms | 0.0759 ms | 0.985 |
+| q3 ctx512 | 0.0455 ms | 0.0449 ms | 1.013 |
+| q3 ctx1024 | 0.0472 ms | 0.0536 ms | 0.880 |
+| q3 ctx2048 | 0.0839 ms | 0.0833 ms | 1.008 |
+| hd256 full | 0.0531 ms | 0.0516 ms | 1.029 |
+| hd256 sliding | 0.0496 ms | 0.0442 ms | 1.122 |
+| hd512 full | 0.0662 ms | 0.0664 ms | 0.997 |
+
+编译结果：
+
+```text
+mini vendored 2D: 157 regs, 0 spills, cp.async 51
+vLLM 2D:          158 regs, 0 spills
+```
+
+**2D attention 的差距已基本消除**：直接 kernel 在多数 shape 上为 0.88–1.12×，
+剩下的差异在噪声范围；不是此前 2.3–3.6×。
+
+真实 Gemma4 B1 K2 1024 context（同协议 repeats=1）：
+
+```text
+mini Graph: 173.74 tok/s
+vLLM Graph: 138.23 tok/s（本轮；此前 160.16，vLLM 自身波动）
+mini/vLLM:  1.257
+修复前:     125.63 vs 169.50（0.741）
+```
+
+这轮 vLLM 比此前慢，不能把 1.257 当作稳定领先；能确定的是 attention kernel 已对齐，
+剩余是 engine 噪声/FP32 fallback/3D 等边界，不是主路径。
+
+保留的 fallback：
+
+- **FP32 q**：走本地 `ieee` dot，满足 step86 的 2e-5 精度；
+- **head_size=512 + sliding**：vLLM 2D 组合 shared memory 超限，走本地 kernel；
+- **3D**：保持本地 kernel，不改变单 token decode 分段。
+
+## 8. 和 3D prototype 的关系
 
 3D q_len>1 prototype 是**另一个可选优化**：
 
@@ -153,17 +201,17 @@ kernel codegen/流水线：vLLM 的 PTX 有 `cp.async.cg.shared.global`、
 3. 最后才考虑 compile/异步
 ```
 
-## 7. 下一步
+## 9. 下一步
 
-1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS：vLLM 的 `cp.async`/`ldmatrix` 流水是
-   当前剩余 2–3× 的主要候选；mini 修复后仍无 `cp.async`；
-2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 能进入异步 copy，
-   同时保持尾块 V=0；
-3. 再试 `TILE_SIZE`/`num_stages`/`num_warps` 组合，要求输出逐元素仍为 0.0 差；
-4. 在真实 Gemma4 B=1 K=2、1024 上下文上验证 Graph 吞吐从 135.55 继续向 160.16 靠近；
-5. 3D q_len>1 仍放在 2D 流水修复之后，不是当前主因。
+2D attention 主路径已基本对齐 vLLM，下一步不再是继续调 kernel：
 
-## 8. 复现
+1. 保留 vendored 文件的来源/许可说明，后续升级 vLLM 时同步核对；
+2. 观察 vLLM 自身 138–160 tok/s 的波动，用多轮同协议重测，不拿单轮比值下结论；
+3. FP32 的本地 fallback 只服务测试；真实 target 是 BF16；
+4. hd512+sliding 是合成边界，真实 Gemma4 是 hd256 sliding + hd512 full；
+5. 3D 仍留在本地路径，是否启用由后续需求决定，不与本次 2D 优化混在一起。
+
+## 10. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
