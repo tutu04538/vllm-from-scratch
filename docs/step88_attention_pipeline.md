@@ -458,6 +458,26 @@ K [HEAD,TILE]（无 transpose）
 
 > K 和 V 都用 `[TILE,HEAD]` load，K 只在小块 transpose，才是 0-spill 的原因。
 
+### 11.9 hd512 用 TILE64 的负结果
+
+试过把 head512 也改成 TILE64：
+
+```text
+255 regs / 304 spills / shared 24,576 B
+hd512 full: 0.204 ms
+hd512 sliding B4: 0.103 ms
+```
+
+输出仍 0.0，但 304 spills 直接不可用。原因：head512 的 64×512 K/V 需要 128 KiB
+shared，超出可用预算，编译器把 live range 拆到 local memory。
+
+所以生产必须保留：
+
+```text
+head<=256：TILE64 + 2×32 subtile
+head=512：TILE32
+```
+
 ## 12. 复现
 
 ```bash

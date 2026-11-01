@@ -11545,6 +11545,15 @@
      "shared": 6144,
      "max_abs": 0.0,
      "note": "K 改回 [HEAD,TILE] 无 transpose 会 252 spills，确认 [TILE,HEAD]+transpose 是关键。"
+    },
+    "hd512_tile64_trial": {
+     "full_ms": 0.204,
+     "sliding_b4_ms": 0.103,
+     "regs": 255,
+     "spills": 304,
+     "shared": 24576,
+     "max_abs": 0.0,
+     "note": "head512 TILE64 超 shared，304 spills，必须 TILE32。"
     }
    },
    "kv_layout_optimization": {
