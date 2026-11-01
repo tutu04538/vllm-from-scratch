@@ -6000,7 +6000,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "f28d24752ce90b3c713075fb62cbc85c4f1a251002e81de17001262093bfa4a6",
+     "sha256": "d5a0104ef1f6d54bcf54862dda6fe2979c10718462630bb8ee7cc9775ea46c9e",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -11700,7 +11700,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "f28d24752ce90b3c713075fb62cbc85c4f1a251002e81de17001262093bfa4a6"
+     "sha256": "d5a0104ef1f6d54bcf54862dda6fe2979c10718462630bb8ee7cc9775ea46c9e"
     },
     "previous_current_package": {
      "root": "minivllm/",

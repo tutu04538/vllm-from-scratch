@@ -23,18 +23,18 @@ def reshape_and_cache_kernel(
     key_cache_ptr,
     value_cache_ptr,
     slot_mapping_ptr,
-    key_stride_tok: tl.int64,
-    key_stride_head: tl.int64,
-    value_stride_tok: tl.int64,
-    value_stride_head: tl.int64,
-    kc_stride_block: tl.int64,
-    kc_stride_slot: tl.int64,
-    kc_stride_head: tl.int64,
-    kc_stride_dim: tl.int64,
-    vc_stride_block: tl.int64,
-    vc_stride_slot: tl.int64,
-    vc_stride_head: tl.int64,
-    vc_stride_dim: tl.int64,
+    key_stride_tok: tl.int64,  # type: ignore
+    key_stride_head: tl.int64,  # type: ignore
+    value_stride_tok: tl.int64,  # type: ignore
+    value_stride_head: tl.int64,  # type: ignore
+    kc_stride_block: tl.int64,  # type: ignore
+    kc_stride_slot: tl.int64,  # type: ignore
+    kc_stride_head: tl.int64,  # type: ignore
+    kc_stride_dim: tl.int64,  # type: ignore
+    vc_stride_block: tl.int64,  # type: ignore
+    vc_stride_slot: tl.int64,  # type: ignore
+    vc_stride_head: tl.int64,  # type: ignore
+    vc_stride_dim: tl.int64,  # type: ignore
     NUM_HEADS: tl.constexpr,
     HEAD_SIZE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,

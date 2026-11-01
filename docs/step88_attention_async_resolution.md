@@ -366,5 +366,5 @@ IR/原始测量在 `benchmarks/results/step88/async_stride/`，被 Git 忽略；
 - PyTorch：`2.13.0+cu130`；Triton：`3.7.1`；vLLM：`0.28.0`。
 - 对照旧生产提交：`bb1380d`。
 - 最终 kernel 文件 SHA256：`82202dd0873c09dfc9d81fbc2b89acc43ec23d5b4afcfdd43db2d5770013a4bd`。
-- 最终 `minivllm/*.py` 包摘要（递归 177 文件）：`f28d24752ce90b3c713075fb62cbc85c4f1a251002e81de17001262093bfa4a6`。
+- 最终 `minivllm/*.py` 包摘要（递归 177 文件）：`d5a0104ef1f6d54bcf54862dda6fe2979c10718462630bb8ee7cc9775ea46c9e`。
 - 包摘要算法：按相对路径排序，逐文件 SHA256，拼接 `路径\0哈希\n` 后再 SHA256。

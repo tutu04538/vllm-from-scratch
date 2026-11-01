@@ -159,27 +159,27 @@ def kernel_unified_attention(
     scale,
     num_query_heads: tl.constexpr,
     num_queries_per_kv: tl.constexpr,
-    block_table_stride: tl.int64,
-    query_stride_0: tl.int64,
-    query_stride_1: tl.int64,
-    output_stride_0: tl.int64,
-    output_stride_1: tl.int64,
+    block_table_stride: tl.int64,  # type: ignore
+    query_stride_0: tl.int64,  # type: ignore
+    query_stride_1: tl.int64,  # type: ignore
+    output_stride_0: tl.int64,  # type: ignore
+    output_stride_1: tl.int64,  # type: ignore
     BLOCK_SIZE: tl.constexpr,
     TILE_SIZE: tl.constexpr,
     HEAD_SIZE: tl.constexpr,
     HEAD_SIZE_PADDED: tl.constexpr,
     SLIDING_WINDOW: tl.constexpr,
     USE_CAUSAL: tl.constexpr,
-    stride_k_cache_0: tl.int64,
-    stride_k_cache_1: tl.int64,
-    stride_k_cache_2: tl.int64,
+    stride_k_cache_0: tl.int64,  # type: ignore
+    stride_k_cache_1: tl.int64,  # type: ignore
+    stride_k_cache_2: tl.int64,  # type: ignore
     stride_k_cache_3: tl.constexpr,
-    stride_v_cache_0: tl.int64,
-    stride_v_cache_1: tl.int64,
-    stride_v_cache_2: tl.int64,
+    stride_v_cache_0: tl.int64,  # type: ignore
+    stride_v_cache_1: tl.int64,  # type: ignore
+    stride_v_cache_2: tl.int64,  # type: ignore
     stride_v_cache_3: tl.constexpr,
     BLOCK_Q: tl.constexpr,
-    num_seqs: tl.int32,
+    num_seqs: tl.int32,  # type: ignore
     BLOCK_M: tl.constexpr,
     IS_3D: tl.constexpr,
     NUM_SEGMENTS_PER_SEQ: tl.constexpr,
@@ -410,8 +410,8 @@ def reduce_segments(
     query_start_len_ptr,
     num_seqs,
     num_query_heads: tl.constexpr,
-    output_stride_0: tl.int64,
-    output_stride_1: tl.int64,
+    output_stride_0: tl.int64,  # type: ignore
+    output_stride_1: tl.int64,  # type: ignore
     TILE_SIZE: tl.constexpr,
     HEAD_SIZE: tl.constexpr,
     HEAD_SIZE_PADDED: tl.constexpr,
