@@ -11442,6 +11442,16 @@
       "max_abs": 0.002
      },
      "note": "tile64 有 BF16 数值差，未生产化；当前仍 TILE32 精确 0.0。"
+    },
+    "exact_subtile_tile64": {
+     "ctx128_ms": 0.026,
+     "ctx1024_ms": 0.068,
+     "ctx2048_ms": 0.1293,
+     "max_abs": 0.0,
+     "regs": 255,
+     "spills": 18,
+     "shared": 24576,
+     "note": "64 load + 2×32 exact subtile；短上下文快，长上下文无收益，未生产化。"
     }
    },
    "kv_layout_optimization": {
