@@ -7520,11 +7520,11 @@
     },
     {
      "cmd": "python -m pytest tests/step88 -q",
-     "result": "24 passed（最终 K/V layout 版本；含真实 assistant 与 GPU microbenchmark）"
+     "result": "24 passed, 14 warnings in 17.36s（最终 K/V layout）"
     },
     {
      "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
-     "result": "23 passed, 1 skipped in 4.04s（真实 assistant 模型测试按设备跳过；GPU kernel 对照测试在 CUDA 不可用时内部返回）"
+     "result": "23 passed, 1 skipped in 3.88s（GPU 测试按设备跳过）"
     },
     {
      "cmd": "python -m pytest tests/step88/test_real_assistant_rejection.py -q",
