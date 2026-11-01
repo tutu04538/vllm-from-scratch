@@ -169,7 +169,32 @@ vLLM:
 - K/V load 的 `tile_mask`/`dim_mask` 可能让 pipeline pass 只保留 block-table；
 - 需要在 **2D-only/BF16-only** 的干净循环中逐项移除 mask/layout，找到 K/V 进入 async 的条件。
 
-## 9. 复现
+## 9. K/V async 尝试矩阵
+
+所有变体都保持输出逐元素差 0.0（除 tile16 另行标注）：
+
+| 变体 | async block-table | async K | async V | cp.async | 时间 |
+|---|---:|---:|---:|---:|---:|
+| stage5 基线 | 10 | 0 | 0 | 22 | 0.1606 ms |
+| K/V 完全去 mask | 10 | 0 | 0 | 22 | 0.1705 ms |
+| K/V 只留 head mask | 10 | 0 | 0 | 22 | 0.1530 ms |
+| 去 mask + head contiguity hint | 10 | 0 | 0 | 22 | 0.1530 ms |
+| tile16 + stage5 | 10 | 0 | 0 | 22 | 0.1411 ms |
+| tile16 + BLOCK_M=8 + stage5 | 10 | 0 | 0 | 22 | 0.1557 ms |
+| block-table 行 gather（loop 内无块表 load） | 0 | 0 | 0 | 0 | 0.1566 ms |
+
+结论：
+
+```text
+去掉 K/V mask、缩小 tile、降低 BLOCK_M、给 head 加 contiguity hint、
+把 block-table 改成寄存器 gather，都不能让 K/V 进入 async_copy。
+```
+
+所以 K/V 是否 async 不是 mask/shared/tile/block-table 单点决定，而是 K/V load 本身的
+pointer/layout 表达没有满足 Triton pipeline pass 的条件。vLLM 的 K/V async copy 带
+`contiguity=8`；本地所有变体的 K/V 都是普通 `tt.load`。
+
+## 10. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
