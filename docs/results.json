@@ -11350,6 +11350,33 @@
      "tile64_regs": 255,
      "tile64_spills": 4,
      "note": "以上均未触发完整 async pipeline；tile16 有数值差，tile64 无 async。"
+    },
+    "stage_scan": {
+     "2": {
+      "async": 4,
+      "cp_async": 10,
+      "ms": 0.1575
+     },
+     "3": {
+      "async": 6,
+      "cp_async": 14,
+      "ms": 0.1592
+     },
+     "4": {
+      "async": 8,
+      "cp_async": 18,
+      "ms": 0.1589
+     },
+     "5": {
+      "async": 10,
+      "cp_async": 22,
+      "ms": 0.1606
+     },
+     "vllm": {
+      "async": 10,
+      "cp_async": 51,
+      "ms": 0.0825
+     }
     }
    }
   },

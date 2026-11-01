@@ -113,7 +113,26 @@ vLLM 的 pipeline 更像是 **整段 loop body 的代码形状** 触发的；下
 先把 loop body 缩到最小，再逐步加回 `K/V` load 和 block table，观察 `async_copy` 从 0 到 10
 的那一步。
 
-## 7. 复现
+## 7. `tl.range` stage 扫描
+
+同一个本地 kernel，只改 `tl.range(..., num_stages=N)`：
+
+| stages | TTGIR async_copy | PTX cp.async | 时间 |
+|---:|---:|---:|---:|
+| 2 | 4 | 10 | 0.1575 ms |
+| 3 | 6 | 14 | 0.1592 ms |
+| 4 | 8 | 18 | 0.1589 ms |
+| 5 | **10** | **22** | 0.1606 ms |
+| vLLM | 10 | **51** | 0.0825 ms |
+
+stage5 已经把 TTGIR 的 `async_copy` 数追到和 vLLM 一样的 10，但 PTX
+`cp.async` 只有 22（vLLM 51），时间仍约 0.16 ms。说明：
+
+- “有 async_copy”不等于“K/V 的三类 load 都被多 stage 覆盖”；
+- 下一步不能只看 TTGIR 计数，要看每个 `async_copy` 的 operand 和 stage 深度；
+- 目前仍是同步回退，生产不使用 `tl.range`。
+
+## 8. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
