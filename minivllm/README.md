@@ -998,9 +998,9 @@ q_len>1 后单 kernel 约 2.7–4.6×（1024/2048），但 128/256 更慢。但�
 mini 2D kernel 255 regs/58 spills，vLLM 158 regs/0 spills。随后完成第一版 2D 修复
 （8 warps、去 v_keep、尾块 block table clamp；3D 路径不动）到 198 regs/0 spills、
 0.1522 ms；最终把 K/V 统一为 `[TILE, HEAD]` load、K 在 dot 前 `tl.trans`，2D 用 4 warps，
-去掉冗余 tile_mask：168 regs/0 spills、25.6 KiB shared，q3/ctx1024 0.066–0.071 ms。
-短/中上下文多数不慢于 vLLM；真实 Graph 145–157 vs vLLM 163 tok/s（单轮 0.89–0.96×）；
-长上下文仍 1.1–1.5×。详见
+去掉冗余 tile_mask：168 regs/0 spills、20,992 B shared，q3/ctx1024 0.0647 ms。
+短/中上下文多数不慢于 vLLM；真实 Graph 148.83 vs vLLM 153.42 tok/s（单轮 0.970×）；
+长上下文仍 1.2–1.5×。详见
 [`docs/step88_vllm_kernel_diff.md`](../docs/step88_vllm_kernel_diff.md)。
 
 ## 明确不做

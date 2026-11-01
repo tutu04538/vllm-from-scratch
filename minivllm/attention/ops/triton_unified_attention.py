@@ -558,7 +558,7 @@ def unified_attention(
 
     # BLOCK_M 是“query 位置 × GQA 组内 head”的总行数；尽量让 K+1 行共享
     # 一次 KV 扫描。组大于 16 时退化为一个 query 位置。
-    block_m = 16 if group <= 16 else _next_power_of_2(group)
+    block_m = 8 if group <= 8 else (16 if group <= 16 else _next_power_of_2(group))
     block_q = block_m // group
     if block_q < 1:
         raise ValueError(f"GQA group={group} 无法装入 BLOCK_M={block_m}")

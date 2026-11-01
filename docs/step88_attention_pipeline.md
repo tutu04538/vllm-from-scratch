@@ -94,8 +94,8 @@ vLLM 同输入: 0.0486–0.0969 ms（轮次波动）
 ```
 
 K/V 统一 load layout 后，2D 直接 kernel 在短/中上下文、B>1 多数场景已不慢于 vLLM；
-长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议为 145–157 vs
-vLLM 163 tok/s（单轮有波动）。之前 vendored vLLM kernel 的 0.047 ms 只作为
+长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议为 148.83 vs
+vLLM 153.42 tok/s（单轮有波动）。之前 vendored vLLM kernel 的 0.047 ms 只作为
 “目标上限”证据，已经 revert，不在生产代码里。
 
 ## 5. 当时的下一步（后来被 §10 的 layout 优化替代）
@@ -322,6 +322,32 @@ V_load: tensor<32x256, #blocked2> sizePerThread=[1,8]
 - **当前最优不是“coalesced load”**，而是“没有 layout conversion 的 load”；
 - K/V async 需要的是 **既 coalesced、又能被 pipeline pass 选中** 的 load；
 - 下一步可以用 `tl.make_block_ptr` 或显式 layout hint 做实验，而不是继续切 transpose。
+
+### 11.3 BLOCK_M=8：用更多 program 换长上下文
+
+在 K/V layout 后，把 GQA group8 的 `BLOCK_M` 从 16 改成 8（`BLOCK_Q=1`），
+q3 从 2 个 program 变成 3 个 program：
+
+| ctx | BLOCK_M16 | BLOCK_M8 |
+|---|---:|---:|
+| 128 | 0.0507 ms | 0.0567 ms（变慢） |
+| 256 | 0.0269 ms | 0.0454 ms（变慢） |
+| 1024 | 0.0662 ms | **0.0647 ms** |
+| 2048 | 0.1271 ms | **0.1210 ms** |
+| hd512 full | 0.1128 ms | **0.0985 ms** |
+| hd512 sliding | 0.0935 ms | **0.0622 ms** |
+
+输出差：**0.0**；shared 25,600 → 20,992 B；regs 168 不变。
+
+真实 Graph 1024：
+
+```text
+BLOCK_M8：148.83 vs vLLM 153.42（0.970×）
+BLOCK_M16：145.35–157.39 vs vLLM 163.07（0.89–0.96×）
+```
+
+这是一个**明确 tradeoff**：短上下文多 program 有启动/重复扫描成本，长上下文和
+hd512 受益。目标场景是 1024 context，因此生产选 BLOCK_M8；短上下文回退是已知边界。
 
 ## 12. 复现
 

@@ -6000,7 +6000,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea",
+     "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7209,7 +7209,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea",
+    "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -7472,12 +7472,12 @@
   "results": {
    "step": "88（单卡执行公平对照与收尾）",
    "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；6 trace + 真实 assistant 差分 + microbenchmark 22 case + 同 2D kernel 对照；K/V 统一 [TILE,HEAD] layout + w4 + 去冗余 tile_mask 后 168 regs/25.6 KiB shared，q3/ctx1024 0.151→0.066–0.071 ms，短/中上下文多数不慢于 vLLM；Graph 145–157 vs vLLM 163（单轮波动）；长上下文仍 1.1–1.5×",
+   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；K/V [TILE,HEAD] layout + w4 + 去冗余 tile_mask + BLOCK_M8 后 168 regs/20,992 B shared，q3/ctx1024 0.0647 ms、ctx2048 0.1210 ms；短上下文回退（ctx128/256），真实 Graph 148.83 vs vLLM 153.42（0.970×）。",
    "recorded_at": "2026-10-31T17:28+08:00",
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea"
+    "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4"
    },
    "environment": {
     "python": "3.12.14",
@@ -7520,7 +7520,7 @@
     },
     {
      "cmd": "python -m pytest tests/step88 -q",
-     "result": "24 passed, 14 warnings in 17.36s（最终 K/V layout）"
+     "result": "24 passed, 14 warnings in 17.91s（BLOCK_M8 / K/V layout 最终版）"
     },
     {
      "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
@@ -7532,7 +7532,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-     "result": "1297 passed, 152 warnings in 204.15s（exit 0；K/V layout 优化后）"
+     "result": "1297 passed, 152 warnings in 203.40s（exit 0；BLOCK_M8 后）"
     },
     {
      "cmd": "python benchmarks/check_step88_attention_pipeline.py --case qlen3_ctx1024 --warmup 50 --repeats 200 --rounds 10",
@@ -11463,6 +11463,36 @@
       "async": 0
      },
      "note": "强制 V [HEAD,TILE] 更慢；下一步用 block_ptr/layout hint 做既 coalesced 又可 async 的 load。"
+    },
+    "block_m8": {
+     "before": {
+      "block_m": 16,
+      "ctx128_ms": 0.0507,
+      "ctx256_ms": 0.0269,
+      "ctx1024_ms": 0.0662,
+      "ctx2048_ms": 0.1271,
+      "hd512_ms": 0.1128,
+      "hd512_sliding_ms": 0.0935,
+      "graph_tok_s": "145.35-157.39",
+      "graph_ratio": "0.89-0.96"
+     },
+     "after": {
+      "block_m": 8,
+      "ctx128_ms": 0.0567,
+      "ctx256_ms": 0.0454,
+      "ctx1024_ms": 0.0647,
+      "ctx2048_ms": 0.121,
+      "hd512_ms": 0.0985,
+      "hd512_sliding_ms": 0.0622,
+      "graph_tok_s": 148.83,
+      "vllm_graph_tok_s": 153.42,
+      "graph_ratio": 0.97
+     },
+     "output_max_abs": 0.0,
+     "shared_before": 25600,
+     "shared_after": 20992,
+     "regs": 168,
+     "note": "短上下文回退，长上下文/hd512 受益；目标 1024 选 BM8。"
     }
    },
    "kv_layout_optimization": {
@@ -11495,6 +11525,36 @@
     },
     "evidence": "输出逐元素差 0.0；regs 198→168，shared 40,960→25,600；TTGIR async_copy 仍为 0（收益不是 cp.async）",
     "not_done": "长上下文仍慢；K/V async 尚未实现；Graph 单轮 0.89–0.96× vLLM"
+   },
+   "block_m8_optimization": {
+    "before": {
+     "block_m": 16,
+     "ctx128_ms": 0.0507,
+     "ctx256_ms": 0.0269,
+     "ctx1024_ms": 0.0662,
+     "ctx2048_ms": 0.1271,
+     "hd512_ms": 0.1128,
+     "hd512_sliding_ms": 0.0935,
+     "graph_tok_s": "145.35-157.39",
+     "graph_ratio": "0.89-0.96"
+    },
+    "after": {
+     "block_m": 8,
+     "ctx128_ms": 0.0567,
+     "ctx256_ms": 0.0454,
+     "ctx1024_ms": 0.0647,
+     "ctx2048_ms": 0.121,
+     "hd512_ms": 0.0985,
+     "hd512_sliding_ms": 0.0622,
+     "graph_tok_s": 148.83,
+     "vllm_graph_tok_s": 153.42,
+     "graph_ratio": 0.97
+    },
+    "output_max_abs": 0.0,
+    "shared_before": 25600,
+    "shared_after": 20992,
+    "regs": 168,
+    "note": "短上下文回退，长上下文/hd512 受益；目标 1024 选 BM8。"
    }
   },
   "models": {
