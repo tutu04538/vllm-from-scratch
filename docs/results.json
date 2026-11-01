@@ -11570,6 +11570,22 @@
      },
      "max_abs": 0.0,
      "note": "长上下文无收益，短 sliding 略快，未生产化。"
+    },
+    "load_order_trial": {
+     "ctx1024": {
+      "kv": 0.0525,
+      "vk": 0.0568
+     },
+     "ctx2048": {
+      "kv": 0.0987,
+      "vk": 0.1053
+     },
+     "hd512": {
+      "kv": 0.106,
+      "vk": 0.1028
+     },
+     "max_abs": 0.0,
+     "note": "交换 K/V load 顺序主流更慢，未生产化。"
     }
    },
    "kv_layout_optimization": {
