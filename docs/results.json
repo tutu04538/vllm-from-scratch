@@ -11492,6 +11492,14 @@
      "shared_after": 20992,
      "regs": 168,
      "note": "短上下文回退，长上下文/hd512 受益；目标 1024 选 BM8。"
+    },
+    "hd512_bm4_trial": {
+     "bm8_w4_full_ms": 0.0979,
+     "bm4_w4_full_ms": 0.0987,
+     "bm4_w4_spills": 28,
+     "bm4_w8_full_ms": 0.1055,
+     "bm4_w8_sliding_b4_ms": 0.0562,
+     "note": "hd512 full 无收益；BM4+w8 仅 sliding B4 快 5%，未生产化。"
     }
    },
    "kv_layout_optimization": {
