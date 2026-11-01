@@ -11554,6 +11554,22 @@
      "shared": 24576,
      "max_abs": 0.0,
      "note": "head512 TILE64 超 shared，304 spills，必须 TILE32。"
+    },
+    "head256_bm4_trial": {
+     "ctx1024": {
+      "bm8": 0.0522,
+      "bm4": 0.0556
+     },
+     "ctx2048": {
+      "bm8": 0.0991,
+      "bm4": 0.099
+     },
+     "sliding": {
+      "bm8": 0.043,
+      "bm4": 0.0387
+     },
+     "max_abs": 0.0,
+     "note": "长上下文无收益，短 sliding 略快，未生产化。"
     }
    },
    "kv_layout_optimization": {
