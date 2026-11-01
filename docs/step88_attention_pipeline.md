@@ -93,7 +93,27 @@ vLLM 同输入: 0.0825 ms（本轮；此前 0.053–0.083 波动）
    block-table，本地 TTGIR 出现两次 `tt.load`；这可能是 pipeline pass 的阻碍点；
 5. 保持输出逐元素为 0.0 差，再谈真实 Graph。
 
-## 6. 复现
+## 6. 本轮追加的负结果
+
+这些实验都保持输出逐元素差 0.0（除 tile16 明确标注），但没有触发完整 pipeline：
+
+| 实验 | 结果 | 说明 |
+|---|---|---|
+| K/V 共用 base offset | 0.1509 ms，async 0 | 减少 block-table 两种 layout 的使用，但 compiler 仍复制 |
+| 每 tile 两个标量 block load | 0.1528 ms，async 0 | 避免向量 block-table load，仍不 pipeline |
+| 精确 query-mask / 去掉 keep tensor | 0.1504 ms，async 0 | 只略快，不触发 async |
+| 去掉 3D + FP32 两个编译期分支 | 0.1505 ms，async 0 | 排除“分支阻止 pipeline” |
+| vLLM 侧换入 mini 的 softmax / `L=0` / `S` 直接赋值 / S mask 加 tile_mask | async 10 不变 | 这些不是 vLLM pipeline 的触发点 |
+| 2D `BLOCK_M=32`（q3 共享一次 KV 扫描） | 0.1752 ms，更慢 | K/V 读取减半但 acc/Q 翻倍，寄存器/占用率更差 |
+| `TILE_SIZE=16` + 标量 block-table | 0.1256 ms，async 0 | 约 -17%，但输出差 0.000976，且没有 async |
+| `TILE_SIZE=64` | 0.1411 ms，255 regs/4 spills | 略快，但没有 async，且 shared 增大到 73 KiB |
+
+因此目前不能把差距归因于单一 `v_keep`、mask、`L`、`S`、query-mask 或 warps。
+vLLM 的 pipeline 更像是 **整段 loop body 的代码形状** 触发的；下一步应保持 2D-only/BF16-only，
+先把 loop body 缩到最小，再逐步加回 `K/V` load 和 block table，观察 `async_copy` 从 0 到 10
+的那一步。
+
+## 7. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python

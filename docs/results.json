@@ -11337,7 +11337,20 @@
      "ptx_st_shared": 14
     },
     "conclusion": "vLLM 的核心优化是 Triton software pipeline（cp.async global→shared 与 MMA 重叠）；mini 本地 kernel 仍是同步 load→shared→MMA。tl.range 只触发 8–14 条 cp.async 且更慢，尚未实现生产化。",
-    "boundary": "这是诊断数据，不是已追平；生产仍是本地 198/0 kernel。"
+    "boundary": "这是诊断数据，不是已追平；生产仍是本地 198/0 kernel。",
+    "negative_experiments": {
+     "kv_shared_base_ms": 0.1509,
+     "scalar_block_load_ms": 0.1528,
+     "exact_query_mask_ms": 0.1504,
+     "clean_2d_bf16_ms": 0.1505,
+     "block_m32_ms": 0.1752,
+     "tile16_scalar_ms": 0.1256,
+     "tile16_max_abs": 0.000976,
+     "tile64_ms": 0.1411,
+     "tile64_regs": 255,
+     "tile64_spills": 4,
+     "note": "以上均未触发完整 async pipeline；tile16 有数值差，tile64 无 async。"
+    }
    }
   },
   "models": {
