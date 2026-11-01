@@ -539,6 +539,20 @@ mask、block-table、stages 或函数边界。vLLM 能得到 coalesced layout，
 **TILE64 load + 2×32 精确 subtile + BLOCK_M8** 把 K/V 延迟/循环开销压下去；
 但长上下文仍受 `[1,1]` scalar load 限制（2048 约 1.2×、hd512 约 1.37×）。
 
+### 11.13 去掉 head 维 dim_mask 的实验
+
+head=256/512 时 `HEAD_SIZE_PADDED == HEAD_SIZE`，`dim_mask` 恒真。去掉 K/V load 的
+head 维 mask 后：
+
+| ctx | 默认 | 去 dim_mask |
+|---|---:|---:|
+| 1024 | 0.0617 ms | 0.0567 ms |
+| 2048 | 0.0989 ms | 0.0989 ms |
+| hd512 | 0.0979 ms | 0.0980 ms |
+
+输出差 0.0，async 仍 0。1024 有一点收益，但 2048/hd512 持平，且当前最优轮次
+默认值本就能到 0.0522；没有稳定全局收益，未生产化。
+
 ## 12. 复现
 
 ```bash

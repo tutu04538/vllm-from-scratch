@@ -11599,6 +11599,23 @@
      ],
      "result": "本地 paged gather 的 layout 推断仍是 scalar；async 不是 mask/stage/函数边界能触发。",
      "workaround": "TILE64 load + 2×32 exact subtile + BLOCK_M8，输出0.0差；1024≈1.06–1.12×，2048≈1.20×。"
+    },
+    "no_dim_mask_trial": {
+     "ctx1024": {
+      "default": 0.0617,
+      "new": 0.0567
+     },
+     "ctx2048": {
+      "default": 0.0989,
+      "new": 0.0989
+     },
+     "hd512": {
+      "default": 0.0979,
+      "new": 0.098
+     },
+     "max_abs": 0.0,
+     "async": 0,
+     "note": "1024 小收益，2048/hd512 持平，未生产化。"
     }
    },
    "kv_layout_optimization": {
