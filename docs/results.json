@@ -11586,6 +11586,19 @@
      },
      "max_abs": 0.0,
      "note": "交换 K/V load 顺序主流更慢，未生产化。"
+    },
+    "async_root_cause": {
+     "vllm": "K #blocked1[8,1], V #blocked2[1,8], coalesced → async10/cp51",
+     "mini": "K/V #blocked[1,1], scalar → async0",
+     "tried": [
+      "K HEAD,TILE w4 TILE32 BM16",
+      "block-table no clamp/padded",
+      "cast helper",
+      "num_stages1..5",
+      "K/V load order"
+     ],
+     "result": "本地 paged gather 的 layout 推断仍是 scalar；async 不是 mask/stage/函数边界能触发。",
+     "workaround": "TILE64 load + 2×32 exact subtile + BLOCK_M8，输出0.0差；1024≈1.06–1.12×，2048≈1.20×。"
     }
    },
    "kv_layout_optimization": {

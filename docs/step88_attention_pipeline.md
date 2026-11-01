@@ -502,6 +502,43 @@ head=512：TILE32
 输出差 0.0，仍是 `#blocked [1,1]`、async 0。除 hd512 略快外，主流 ctx 更慢，
 未生产化。Triton 的 load layout 不是简单交换顺序能改的。
 
+### 11.12 vLLM async 的最终原理定位
+
+把 vLLM 源码和 TTGIR 对齐后，结论不是“vLLM 用了某个秘密 flag”，而是：
+
+```text
+vLLM K_load: tensor<256x32, #blocked1> sizePerThread=[8,1]
+vLLM V_load: tensor<32x256, #blocked2> sizePerThread=[1,8]
+→ 两个 load 都是 coalesced/vectorized
+→ Triton pipeline pass 选中它们
+→ ttg.async_copy_global_to_local + ptX cp.async
+```
+
+本地最终：
+
+```text
+K/V load: tensor<64x256, #blocked> sizePerThread=[1,1]
+→ paged gather + transpose/dot 的 layout 推断成 scalar-per-thread
+→ pipeline pass 不选 K/V，只可能选 block-table
+```
+
+逐项复刻 vLLM 的源码 shape 也没能改变这个推断：
+
+- K 改 `[HEAD,TILE]`、w4、TILE32、BM16：本地 K load 仍是 `#blocked1 [1,1]`，async 0；
+- block-table 去 clamp（补一列）仍 async 0；
+- 把 K/V load 包进 `@triton.jit` 的 `_cast_kv_tile` 函数边界仍 async 0；
+- `num_stages=1..5` 仍 async 0；
+- 交换 K/V load 顺序仍 async 0。
+
+所以根因是 **Triton 对本地 paged-gather + transpose/dot 的 layout 选择**，不是
+mask、block-table、stages 或函数边界。vLLM 能得到 coalesced layout，是因为它的
+完整 kernel/分支结构让 compiler 选了 `[8,1]/[1,8]`；本地最小 2D kernel 被选成
+`[1,1]`。
+
+这也解释了为什么最终能追平：本地没有硬碰 async，而是用
+**TILE64 load + 2×32 精确 subtile + BLOCK_M8** 把 K/V 延迟/循环开销压下去；
+但长上下文仍受 `[1,1]` scalar load 限制（2048 约 1.2×、hd512 约 1.37×）。
+
 ## 12. 复现
 
 ```bash
