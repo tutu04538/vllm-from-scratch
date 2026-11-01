@@ -6000,7 +6000,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4",
+     "sha256": "8718c068b8514f2e7fb8ca55a280408211f9711d978e773e138ba827c7f69a0f",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7209,7 +7209,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4",
+    "sha256": "8718c068b8514f2e7fb8ca55a280408211f9711d978e773e138ba827c7f69a0f",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -7472,12 +7472,12 @@
   "results": {
    "step": "88（单卡执行公平对照与收尾）",
    "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；K/V [TILE,HEAD] layout + w4 + 去冗余 tile_mask + BLOCK_M8 后 168 regs/20,992 B shared，q3/ctx1024 0.0647 ms、ctx2048 0.1210 ms；短上下文回退（ctx128/256），真实 Graph 148.83 vs vLLM 153.42（0.970×）。",
+   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；K/V [TILE,HEAD] + BLOCK_M8 + TILE64 load/2×32 exact subtile 后 255 regs/0 spills/20,480 B shared，q3/ctx1024 0.0522 ms、ctx2048 0.0990 ms，输出 0.0 差；22-case 短/中上下文更快，1024 1.12×、2048 1.20×；真实 Graph 150.87 vs vLLM 168.42（单轮 0.896×，vLLM 153–168 波动）。",
    "recorded_at": "2026-10-31T17:28+08:00",
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "b4e0748034bc75c102955ec5bb2171670cca59f1533a9c2afe961c99a87741a4"
+    "sha256": "8718c068b8514f2e7fb8ca55a280408211f9711d978e773e138ba827c7f69a0f"
    },
    "environment": {
     "python": "3.12.14",
@@ -7520,11 +7520,11 @@
     },
     {
      "cmd": "python -m pytest tests/step88 -q",
-     "result": "24 passed, 14 warnings in 17.91s（BLOCK_M8 / K/V layout 最终版）"
+     "result": "24 passed, 14 warnings in 14.85s（TILE64 exact subtile 最终版）"
     },
     {
      "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
-     "result": "23 passed, 1 skipped in 3.88s（GPU 测试按设备跳过）"
+     "result": "23 passed, 1 skipped in 3.81s（GPU 测试按设备跳过）"
     },
     {
      "cmd": "python -m pytest tests/step88/test_real_assistant_rejection.py -q",
@@ -7532,7 +7532,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-     "result": "1297 passed, 152 warnings in 203.40s（exit 0；BLOCK_M8 后）"
+     "result": "1297 passed, 152 warnings in 214.47s（exit 0；TILE64 exact subtile 最终版）"
     },
     {
      "cmd": "python benchmarks/check_step88_attention_pipeline.py --case qlen3_ctx1024 --warmup 50 --repeats 200 --rounds 10",
@@ -11314,18 +11314,17 @@
     "report": "docs/step88_attention_pipeline.md",
     "case": "qlen3_ctx1024",
     "measurement": {
-     "mini_ms": 0.0713,
-     "vllm_ms": 0.0969,
-     "mini_vs_vllm": 0.736,
+     "mini_ms": 0.0522,
+     "vllm_ms": 0.0492,
+     "mini_vs_vllm": 1.061,
      "max_abs": 0.0
     },
     "mini": {
-     "regs": 168,
+     "regs": 255,
      "spills": 0,
-     "shared": 25600,
+     "shared": 20480,
      "ttgir_async_copy": 0,
      "ptx_cp_async": 0,
-     "ptx_st_shared": 86,
      "num_warps": 4
     },
     "vllm": {
@@ -11338,7 +11337,7 @@
      "ptx_st_shared": 14,
      "num_warps": 4
     },
-    "conclusion": "最终优化不是 cp.async，而是 K/V 统一 [TILE,HEAD] load layout；K 在 dot 前 transpose。shared 40.96→25.6 KiB、regs 198→168，q3/ctx1024 从 0.151 降到 0.066–0.071，短/中上下文多数已不慢于 vLLM；长上下文仍 1.1–1.5×。",
+    "conclusion": "最终优化不是 cp.async，而是 K/V [TILE,HEAD] layout + BLOCK_M8 + head<=256 的 TILE64 load/2×32 exact subtile。regs 255/0 spills、shared 20,480 B，q3/ctx1024 0.0522–0.0553 ms、ctx2048 0.0990 ms，输出 0.0 差；22-case 短/中上下文更快，1024≈1.12×、2048≈1.20×；真实 Graph 150.87 vs vLLM 168.42（0.896×）。",
     "boundary": "这是诊断数据，不是已追平；生产仍是本地 198/0 kernel。",
     "negative_experiments": {
      "kv_shared_base_ms": 0.1509,
@@ -11555,6 +11554,21 @@
     "shared_after": 20992,
     "regs": 168,
     "note": "短上下文回退，长上下文/hd512 受益；目标 1024 选 BM8。"
+   },
+   "subtile_tile64_bm8": {
+    "ctx128_ms": 0.0317,
+    "ctx256_ms": 0.0364,
+    "ctx1024_ms": 0.0522,
+    "ctx2048_ms": 0.099,
+    "hd512_ms": 0.0975,
+    "regs": 255,
+    "spills": 0,
+    "shared": 20480,
+    "max_abs": 0.0,
+    "graph_tok_s": 150.87,
+    "vllm_graph_tok_s": 168.42,
+    "graph_ratio": 0.896,
+    "note": "TILE64 load + 2×32 exact subtile + BM8；输出 0.0 差，短/中上下文更快，长上下文 1.12–1.20×。"
    }
   },
   "models": {

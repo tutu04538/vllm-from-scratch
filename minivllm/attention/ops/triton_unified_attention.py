@@ -299,32 +299,69 @@ def kernel_unified_attention(
             other=0.0,
         ).to(Q.dtype)
 
-        if Q_IS_FP32:
-            S = tl.dot(Q, K, input_precision="ieee") * scale
+        # 2D head<=256 用 64 宽 K/V load，但内部按两个 32 宽 subtile 处理，
+        # 保持和 TILE32 完全相同的 online-softmax 合并顺序（输出 0.0 差）。
+        # head=512 的 64 宽 K/V 会超过 shared 限制，因此 wrapper 仍用 TILE32。
+        if TILE_SIZE == 64:
+            K3 = tl.permute(tl.reshape(K, [HEAD_SIZE_PADDED, 2, 32]), 0, 2, 1)
+            K0, K1 = tl.split(K3)
+            V3 = tl.permute(tl.reshape(V, [2, 32, HEAD_SIZE_PADDED]), 1, 2, 0)
+            V0, V1 = tl.split(V3)
+            K_h = K0
+            V_h = V0
+            seq_offset_h = j * TILE_SIZE + 0 + tl.arange(0, 32)
+            seq_mask = _kv_seq_mask(
+                query_abs_pos, seq_offset_h, seq_len,
+                SLIDING_WINDOW, USE_CAUSAL)
+            keep = row_mask[:, None] & seq_mask
+            if Q_IS_FP32:
+                S = tl.dot(Q, K_h, input_precision="ieee") * scale
+            else:
+                S = tl.dot(Q, K_h) * scale
+            S = tl.where(keep, S, float("-inf"))
+            M, L, P, alpha = _softmax_step(S, M, L)
+            acc = acc * alpha[:, None]
+            if Q_IS_FP32:
+                acc += tl.dot(P.to(V_h.dtype), V_h, input_precision="ieee")
+            else:
+                acc += tl.dot(P.to(V_h.dtype), V_h)
+            K_h = K1
+            V_h = V1
+            seq_offset_h = j * TILE_SIZE + 32 + tl.arange(0, 32)
+            seq_mask = _kv_seq_mask(
+                query_abs_pos, seq_offset_h, seq_len,
+                SLIDING_WINDOW, USE_CAUSAL)
+            keep = row_mask[:, None] & seq_mask
+            if Q_IS_FP32:
+                S = tl.dot(Q, K_h, input_precision="ieee") * scale
+            else:
+                S = tl.dot(Q, K_h) * scale
+            S = tl.where(keep, S, float("-inf"))
+            M, L, P, alpha = _softmax_step(S, M, L)
+            acc = acc * alpha[:, None]
+            if Q_IS_FP32:
+                acc += tl.dot(P.to(V_h.dtype), V_h, input_precision="ieee")
+            else:
+                acc += tl.dot(P.to(V_h.dtype), V_h)
         else:
-            S = tl.dot(Q, K) * scale
-        seq_mask = _kv_seq_mask(
-            query_abs_pos, seq_offset, seq_len,
-            SLIDING_WINDOW, USE_CAUSAL)
-        # tail 已由 seq_mask（causal/window 或 seq_offset < seq_len）挡住；
-        # 不再把 tile_mask 塞进 S，减少一个 16×32 mask 的 live range。
-        keep = row_mask[:, None] & seq_mask
-        S = tl.where(keep, S, float("-inf"))
-
-        M, L, P, alpha = _softmax_step(S, M, L)
-        acc = acc * alpha[:, None]
-
-        # 2D 的 K/V load 已用 tile_mask 把 tail 槽位置 0；causal/window
-        # mask 掉的 key 仍是已写入的有限值，P=0 不会产生 NaN。因此 2D 不再
-        # 逐 tile 做 v_keep 归约（它会额外制造 mask/临时量并增加寄存器压力）。
-        # 3D 保持原路径，避免改变单 token decode 的分段语义。
-        if IS_3D:
-            v_keep = tl.max(tl.where(keep, 1, 0), axis=0) > 0
-            V = tl.where(v_keep[:, None], V, 0.0)
-        if Q_IS_FP32:
-            acc += tl.dot(P.to(V.dtype), V, input_precision="ieee")
-        else:
-            acc += tl.dot(P.to(V.dtype), V)
+            if Q_IS_FP32:
+                S = tl.dot(Q, K, input_precision="ieee") * scale
+            else:
+                S = tl.dot(Q, K) * scale
+            seq_mask = _kv_seq_mask(
+                query_abs_pos, seq_offset, seq_len,
+                SLIDING_WINDOW, USE_CAUSAL)
+            keep = row_mask[:, None] & seq_mask
+            S = tl.where(keep, S, float("-inf"))
+            M, L, P, alpha = _softmax_step(S, M, L)
+            acc = acc * alpha[:, None]
+            if IS_3D:
+                v_keep = tl.max(tl.where(keep, 1, 0), axis=0) > 0
+                V = tl.where(v_keep[:, None], V, 0.0)
+            if Q_IS_FP32:
+                acc += tl.dot(P.to(V.dtype), V, input_precision="ieee")
+            else:
+                acc += tl.dot(P.to(V.dtype), V)
 
     if IS_3D:
         # 3D 保存的是未归一化的部分和；M/L 供 reduce_segments 合并。
@@ -581,9 +618,9 @@ def unified_attention(
     sliding_window = 0
     if window_size[0] is not None and window_size[0] >= 0:
         sliding_window = int(window_size[0]) + 1
-    tile_size = 16 if is_3d else 32
-    # 2D 用 8 warps 分摊 16×256 的 acc/Q/K/V，避免 255 regs + spill；
-    # 3D 保持原 4 warps，避免改变单 token decode 的实测路径。
+    tile_size = 16 if is_3d else (64 if head_size <= 256 else 32)
+    # 2D 用 4 warps + BLOCK_M8；head<=256 用 TILE64 load，但内部拆两个 32 宽
+    # subtile，保持 TILE32 的 softmax 合并顺序。3D 保持 4 warps/TILE16。
     num_warps = 4
 
     # 上界：sum ceil(q_len / BLOCK_Q) <= floor(N / BLOCK_Q) + num_seqs。

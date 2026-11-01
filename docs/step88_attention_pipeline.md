@@ -2,8 +2,8 @@
 
 > 脚本：`benchmarks/check_step88_attention_pipeline.py`
 > 原始结果：`benchmarks/results/step88/attention_pipeline/summary.json`（gitignored）
-> 当前生产：本地 2D kernel，168 regs / 0 spills，25,600 B shared；**没有 vendored vLLM 代码**。
-> 最终突破是把 K/V 统一成 `[TILE, HEAD]` load layout（§10），不是 cp.async。
+> 当前生产：本地 2D kernel，255 regs / 0 spills，20,480 B shared；**没有 vendored vLLM 代码**。
+> 最终优化是 K/V `[TILE,HEAD]` layout + BLOCK_M8 + TILE64 load/2×32 精确 subtile（§10–§11.4），不是 cp.async。
 
 ## 1. 先看结论
 
@@ -20,7 +20,7 @@ vLLM:  0.0825 ms，158 regs，0 spills
 **最终（K/V 都按 `[TILE,HEAD]` load，K 再 transpose；§10）**：
 
 ```text
-mini:  0.0658–0.0713 ms，168 regs，0 spills，25,600 B shared
+mini:  0.0522–0.0553 ms，255 regs，0 spills，20,480 B shared
 vLLM:  0.0486–0.0969 ms（轮次波动）
 输出差：0.0
 ```
@@ -88,14 +88,14 @@ cp.async 把下一 tile 的 K/V/block-table 直接写 shared
 ## 4. 当前仓库状态
 
 ```text
-生产 2D: 本地 kernel，168 regs / 0 spills，25,600 B shared
-q3/ctx1024: 0.0658–0.0713 ms
+生产 2D: 本地 kernel，255 regs / 0 spills，20,480 B shared
+q3/ctx1024: 0.0522–0.0553 ms
 vLLM 同输入: 0.0486–0.0969 ms（轮次波动）
 ```
 
 K/V 统一 load layout 后，2D 直接 kernel 在短/中上下文、B>1 多数场景已不慢于 vLLM；
-长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议为 148.83 vs
-vLLM 153.42 tok/s（单轮有波动）。之前 vendored vLLM kernel 的 0.047 ms 只作为
+长上下文（ctx1024/2048）仍约 1.1–1.2×。真实 Graph 1024 同协议为 150.87 vs
+vLLM 168.42 tok/s（单轮 0.896×；vLLM 153–168 波动）。之前 vendored vLLM kernel 的 0.047 ms 只作为
 “目标上限”证据，已经 revert，不在生产代码里。
 
 ## 5. 当时的下一步（后来被 §10 的 layout 优化替代）
@@ -342,12 +342,53 @@ q3 从 2 个 program 变成 3 个 program：
 真实 Graph 1024：
 
 ```text
-BLOCK_M8：148.83 vs vLLM 153.42（0.970×）
+BLOCK_M8：148.83 vs vLLM 153.42（0.89–0.96×，不同轮）
 BLOCK_M16：145.35–157.39 vs vLLM 163.07（0.89–0.96×）
 ```
 
 这是一个**明确 tradeoff**：短上下文多 program 有启动/重复扫描成本，长上下文和
 hd512 受益。目标场景是 1024 context，因此生产选 BLOCK_M8；短上下文回退是已知边界。
+
+### 11.4 最终生产：TILE64 load + 2×32 subtile + BM8
+
+把 11.1 的精确 subtile 与 BM8 结合后，长上下文终于有收益，且输出仍是 **0.0 差**：
+
+| ctx | TILE32 + BM8 | TILE64 subtile + BM8 |
+|---|---:|---:|
+| 128 | 0.0373 ms | **0.0317 ms** |
+| 256 | 0.0454 ms | **0.0364 ms** |
+| 1024 | 0.0647 ms | **0.0522 ms** |
+| 2048 | 0.1210 ms | **0.0990 ms** |
+| hd512 full | 0.0985 ms | 0.0975 ms（head>256 仍 TILE32） |
+
+```text
+regs: 255 / spills: 0 / shared: 20,480 B
+输出差: 0.0
+```
+
+机制：
+
+```text
+一次 load 64 宽 K/V
+→ reshape/permute/split 成两个 32 宽 subtile
+→ 按 TILE32 的顺序做两次 softmax/acc
+```
+
+这样 K/V load 次数减半，但 online-softmax 的合并顺序没变，所以不是 tile64 的
+BF16 舍入差。最终 22-case：
+
+```text
+ctx128 0.0403 vs 0.0457 ms（mini 快）
+ctx256 0.0447 vs 0.0575 ms（mini 快）
+ctx512 0.0542 vs 0.0783 ms（mini 快）
+ctx1024 0.0553 vs 0.0492 ms（约 1.12×）
+ctx2048 0.1036 vs 0.0862 ms（约 1.20×）
+hd512  0.1015 vs 0.0741 ms（约 1.37×）
+```
+
+真实 Graph 1024：mini 150.87 vs vLLM 168.42 tok/s（0.896×）；vLLM 本轮偏高
+（153–168 波动），绝对 mini 从 148.83 提到 150.87。短/中上下文已不慢于 vLLM，
+剩余是长上下文/hd512 的 1.2–1.4×。
 
 ## 12. 复现
 

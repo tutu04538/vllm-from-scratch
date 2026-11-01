@@ -38,8 +38,8 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
    vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills，vLLM 158 regs/0 spills。
    vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。第一版
    最终 K/V 统一 `[TILE,HEAD]` load layout + 2D 4 warps + 去掉冗余 tile_mask：
-   mini 168 regs/0 spills、20,992 B shared，q3/ctx1024 0.0647 ms，短/中上下文多数
-   不慢于 vLLM；Graph 148.83 vs vLLM 153.42 tok/s（单轮 0.970×），长上下文仍 1.2–1.5×。
+   mini 255 regs/0 spills、20,480 B shared，q3/ctx1024 0.0522 ms，短/中上下文多数
+   不慢于 vLLM；Graph 150.87 vs vLLM 168.42 tok/s（单轮 0.896×），长上下文仍 1.2–1.5×。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -421,31 +421,33 @@ registers/spills: 255/58 → 198/0
 `st.shared`。所以下一步要改 2D 的 load→shared→MMA 流水，而不是继续调
 register 或上 3D。
 
-**最终本地 2D 优化**：把 K/V 都改成 `[TILE, HEAD]` load，K 在 dot 前 `tl.trans`；
-2D 用 4 warps；S mask 去掉冗余 `tile_mask`。这不是 cp.async，而是**统一 K/V 的 load layout**：
+**最终本地 2D 优化**：K/V 统一 `[TILE,HEAD]` load，K 在 dot 前 `tl.trans`；
+2D 用 4 warps；BLOCK_M=8；head<=256 用 TILE64 load，但拆成两个 32 宽 subtile
+做 online softmax，保持 TILE32 的合并顺序：
 
 ```text
-regs:      198 → 168
-shared:    40,960 → 25,600 B
-q3/ctx1024:0.151 → 0.066–0.071 ms
+regs:      198 → 255 / 0 spills
+shared:    40,960 → 20,480 B
+q3/ctx1024:0.151 → 0.0522–0.0553 ms
+ctx2048:   0.0990 ms
 输出差:    0.0
 ```
 
-直接 22-case 对照里，短/中上下文、B>1 多数场景 mini 已不慢于 vLLM；
-长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议：
+22-case：短/中上下文比 vLLM 快；1024 约 1.12×、2048 约 1.20×。
+真实 Graph 1024：
 
 ```text
-mini 148.83 tok/s
-vLLM 153.42 tok/s（单轮 0.970×；vLLM 自身也波动）
+mini 150.87 tok/s
+vLLM 168.42 tok/s（单轮 0.896×；vLLM 本轮偏高，153–168 波动）
 ```
 
-**实际下一步**：不要再把 cp.async 当成唯一目标；先保持当前 layout 收益，再针对
-长上下文做 K/V async 或长序列专用策略。
+**实际下一步**：长上下文/hd512 还差 1.2–1.4×；若要继续，优先做 K/V async，
+而不是继续调 tile 大小。
 
 1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS，重点看 `cp.async`/`ldmatrix` 流；
 2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 进入异步 copy，同时保持尾块 V=0；
 3. 再试 `TILE_SIZE`/`num_stages`/`num_warps` 组合，要求输出仍逐元素相同；
-4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐从 135.55 继续向 160.16 靠近；
+4. 真实 Gemma4 B=1 K=2、1024 上下文 Graph 上确认吞吐从 150.87 继续向 168.42 靠近；
 5. 3D q_len>1 仍放在 2D 流水修复之后，不能抢在主因之前。
 
 不要先开 torch.compile、异步调度或重写 GEMM；K=2 target 的 3 行 query 仍走 2D。
@@ -484,8 +486,8 @@ $PY -m pytest tests/step58 … tests/step88 -q
   hd512 为 255/6；这是当前最明确的 mini-vs-vLLM 差距；
 - 3D q_len>1 是 mini 内部的补充优化，不是 vLLM 当前 target decode 的路径。
 - 2D 最终优化：K/V 都按 `[TILE,HEAD]` load，K 在 dot 前 transpose；2D 用 4 warps；
-  S mask 去掉冗余 tile_mask。mini 2D 为 168 regs/0 spills、20,992 B shared，
-  q3/ctx1024 0.0647 ms；短/中上下文多数不慢于 vLLM，长上下文仍 1.2–1.5×。
+  S mask 去掉冗余 tile_mask。mini 2D 为 255 regs/0 spills、20,480 B shared，
+  q3/ctx1024 0.0522 ms；短/中上下文多数不慢于 vLLM，长上下文仍 1.2–1.5×。
   这里没有 cp.async；收益来自消除 K/V 两套 shared layout。
 - `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
   拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。
