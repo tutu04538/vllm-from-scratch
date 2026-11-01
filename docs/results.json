@@ -11500,6 +11500,22 @@
      "bm4_w8_full_ms": 0.1055,
      "bm4_w8_sliding_b4_ms": 0.0562,
      "note": "hd512 full 无收益；BM4+w8 仅 sliding B4 快 5%，未生产化。"
+    },
+    "cache_policy_trial": {
+     "ctx1024": {
+      "default": 0.0709,
+      "cg": 0.0662,
+      "evict_first": 0.0591,
+      "evict_last": 0.0582
+     },
+     "ctx2048": {
+      "default": 0.0986,
+      "cg": 0.0982,
+      "evict_first": 0.1106,
+      "evict_last": 0.111
+     },
+     "max_abs": 0.0,
+     "note": "1024 evict 偶发更快但默认值同轮波动大；2048 更慢；未生产化。"
     }
    },
    "kv_layout_optimization": {
