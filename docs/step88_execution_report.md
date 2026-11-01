@@ -37,8 +37,9 @@ vLLM B=4 出现 run-to-run 非确定性：同一 case 的 3 次重复输出 hash
    已接近（0.969×，但 B=4 是非确定性观察）。同输入 2D kernel 对照显示 mini 0.1903 ms
    vs vLLM 0.0530 ms（3.59×），输出差 0.0；mini 255 regs/58 spills，vLLM 158 regs/0 spills。
    vLLM 实际也用 2D，因此主因是 mini kernel 的寄存器 spill，而不是 3D/KV 分段。第一版
-   2D 修复后 mini 0.1522 ms/198 regs/0 spills，Graph 125.63→135.55 tok/s（0.846×）；
-   剩余 2.3–2.9× 差距转为 load→shared→MMA 流水，而不是 spill。
+   最终 K/V 统一 `[TILE,HEAD]` load layout + 2D 4 warps + 去掉冗余 tile_mask：
+   mini 168 regs/0 spills、25.6 KiB shared，q3/ctx1024 0.066–0.071 ms，短/中上下文多数
+   不慢于 vLLM；Graph 145–157 vs vLLM 163 tok/s（单轮 0.89–0.96×），长上下文仍 1.1–1.5×。
 4. **启动成本不是稳态吞吐**：mini build 4–6 s，vLLM build 63–72 s；不把模型加载算进 tok/s。
 5. **严格等价边界**：B=1 和跨引擎 B=1 K=0 是强对照；vLLM B=4 的 eager/Graph 与重复
    测量都不稳定，B=4 性能只作同模式观察。
@@ -420,7 +421,26 @@ registers/spills: 255/58 → 198/0
 `st.shared`。所以下一步要改 2D 的 load→shared→MMA 流水，而不是继续调
 register 或上 3D。
 
-实际下一步：
+**最终本地 2D 优化**：把 K/V 都改成 `[TILE, HEAD]` load，K 在 dot 前 `tl.trans`；
+2D 用 4 warps；S mask 去掉冗余 `tile_mask`。这不是 cp.async，而是**统一 K/V 的 load layout**：
+
+```text
+regs:      198 → 168
+shared:    40,960 → 25,600 B
+q3/ctx1024:0.151 → 0.066–0.071 ms
+输出差:    0.0
+```
+
+直接 22-case 对照里，短/中上下文、B>1 多数场景 mini 已不慢于 vLLM；
+长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议：
+
+```text
+mini 145.35–157.39 tok/s
+vLLM 163.07 tok/s（单轮 0.89–0.96×；vLLM 自身也波动）
+```
+
+**实际下一步**：不要再把 cp.async 当成唯一目标；先保持当前 layout 收益，再针对
+长上下文做 K/V async 或长序列专用策略。
 
 1. 对比 mini 与 vLLM 2D kernel 的 PTX/SASS，重点看 `cp.async`/`ldmatrix` 流；
 2. 先试“full tile 无 mask + tail 单独处理”，让 K/V load 进入异步 copy，同时保持尾块 V=0；
@@ -463,8 +483,9 @@ $PY -m pytest tests/step58 … tests/step88 -q
 - mini 2D kernel 的 255 regs/58 spills 是实测编译结果；vLLM 2D 在 hd256 为 158/0，
   hd512 为 255/6；这是当前最明确的 mini-vs-vLLM 差距；
 - 3D q_len>1 是 mini 内部的补充优化，不是 vLLM 当前 target decode 的路径。
-- 2D 优化只动 2D：8 warps、去 v_keep、尾块 block table clamp；3D 保持 4 warps + 原
-  v_keep 路径。修复后 mini 2D 198 regs/0 spills，但 kernel 仍无 `cp.async`，与 vLLM
-  还有约 2.3–2.9× 的 codegen/流水差距。
+- 2D 最终优化：K/V 都按 `[TILE,HEAD]` load，K 在 dot 前 transpose；2D 用 4 warps；
+  S mask 去掉冗余 tile_mask。mini 2D 为 168 regs/0 spills、25.6 KiB shared，
+  q3/ctx1024 0.066–0.071 ms；短/中上下文多数不慢于 vLLM，长上下文仍 1.1–1.5×。
+  这里没有 cp.async；收益来自消除 K/V 两套 shared layout。
 - `check_step88_attention_micro.py` 的 3D q_len>1 是**诊断原型**，生产 `can_use_3d()` 仍
   拒绝 q_len>1；短上下文 3D 更慢，未做真实 engine/Graph 验证。

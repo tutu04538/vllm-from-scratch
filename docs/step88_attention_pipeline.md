@@ -2,17 +2,30 @@
 
 > 脚本：`benchmarks/check_step88_attention_pipeline.py`
 > 原始结果：`benchmarks/results/step88/attention_pipeline/summary.json`（gitignored）
-> 当前生产：本地 2D kernel，198 regs / 0 spills；**没有 vendored vLLM 代码**。
+> 当前生产：本地 2D kernel，168 regs / 0 spills，25,600 B shared；**没有 vendored vLLM 代码**。
+> 最终突破是把 K/V 统一成 `[TILE, HEAD]` load layout（§10），不是 cp.async。
 
 ## 1. 先看结论
 
-同一组 q、paged K/V、block table，`q_len=3/context=1024/head_dim=256`：
+同一组 q、paged K/V、block table，`q_len=3/context=1024/head_dim=256`。
+
+**诊断阶段（K 还是 `[HEAD,TILE]` load layout）**：
 
 ```text
 mini:  0.1511 ms，198 regs，0 spills
 vLLM:  0.0825 ms，158 regs，0 spills
 输出差：0.0
 ```
+
+**最终（K/V 都按 `[TILE,HEAD]` load，K 再 transpose；§10）**：
+
+```text
+mini:  0.0658–0.0713 ms，168 regs，0 spills，25,600 B shared
+vLLM:  0.0486–0.0969 ms（轮次波动）
+输出差：0.0
+```
+
+短/中上下文大多数 shape 已不慢于 vLLM；长上下文仍约 1.1–1.5×。
 
 vLLM 快的核心不是 3D、不是 grid/tile，而是 **Triton 把 block-table/K/V load 编成了
 `cp.async` 的 software pipeline**：
@@ -75,15 +88,17 @@ cp.async 把下一 tile 的 K/V/block-table 直接写 shared
 ## 4. 当前仓库状态
 
 ```text
-生产 2D: 本地 kernel，198 regs / 0 spills
-q3/ctx1024: 0.1511 ms
-vLLM 同输入: 0.0825 ms（本轮；此前 0.053–0.083 波动）
+生产 2D: 本地 kernel，168 regs / 0 spills，25,600 B shared
+q3/ctx1024: 0.0658–0.0713 ms
+vLLM 同输入: 0.0486–0.0969 ms（轮次波动）
 ```
 
-因此当前是 **约 1.8×**，不是已追平。之前 vendored vLLM kernel 的 0.047 ms 只作为
+K/V 统一 load layout 后，2D 直接 kernel 在短/中上下文、B>1 多数场景已不慢于 vLLM；
+长上下文（ctx1024/2048）仍约 1.1–1.5×。真实 Graph 1024 同协议为 145–157 vs
+vLLM 163 tok/s（单轮有波动）。之前 vendored vLLM kernel 的 0.047 ms 只作为
 “目标上限”证据，已经 revert，不在生产代码里。
 
-## 5. 下一步（本地实现，不复制）
+## 5. 当时的下一步（后来被 §10 的 layout 优化替代）
 
 1. 让 block-table/K/V 三类 load 都成为 `ttg.async_copy_global_to_local`；
 2. 先做 **2D-only、BF16-only** 的循环，排除 3D/FP32 分支对 pipeline pass 的干扰；
@@ -194,7 +209,47 @@ vLLM:
 pointer/layout 表达没有满足 Triton pipeline pass 的条件。vLLM 的 K/V async copy 带
 `contiguity=8`；本地所有变体的 K/V 都是普通 `tt.load`。
 
-## 10. 复现
+## 10. 突破：统一 K/V 的 load layout
+
+之前 K 以 `[HEAD, TILE]` 指针加载，V 以 `[TILE, HEAD]` 加载；虽然数学一样，但
+Triton 为两者生成不同的 shared layout，带来：
+
+```text
+198 regs / 40,960 B shared / 0.151 ms
+```
+
+改成 **K 也用 `[TILE, HEAD]` 加载，再 `tl.trans` 给 dot**：
+
+```python
+k_ptrs = key_cache + physical_block[:, None] * stride0 + ...
+K = tl.trans(tl.load(k_ptrs, mask=...)).to(Q.dtype)
+```
+
+K/V 现在共用一种 load layout，编译器不再为 K 单独保留 `[HEAD, TILE]` 的
+shared 布局。效果：
+
+| 版本 | regs | shared | q3/ctx1024 | 输出差 |
+|---|---:|---:|---:|---:|
+| K `[HEAD,TILE]` + w8 | 198 | 40,960 | 0.151 ms | 0 |
+| K `[TILE,HEAD]` + w8 | 140 | 25,600 | 0.068 ms | 0 |
+| K `[TILE,HEAD]` + w4 | 180 | 25,600 | 0.066 ms | 0 |
+| + 去掉 S mask 的冗余 tile_mask | 168 | 25,600 | 0.066 ms | 0 |
+
+真实 Graph（1024 context，同协议）：
+
+```text
+w8 + K 原 layout：140.39 tok/s
+w4 + K [TILE,HEAD]：157.39 tok/s（vLLM 163.23，0.964×）
+```
+
+**这里没有 cp.async**：K/V 仍是同步 load。收益来自 **消除 K/V 两套 layout 的
+shared 转换和寄存器压力**。所以“vLLM 有 cp.async”是事实，但本地不一定非要
+先复刻 cp.async 才能接近它；先把数据布局做对，已经能把 0.151 ms 降到 0.066 ms。
+
+当前 2D 直接 kernel 在短/中上下文、B>1 多数场景已不慢于 vLLM；长上下文
+（ctx1024/2048）仍约 1.1–1.5×，是下一阶段（K/V async 或长上下文专用策略）。
+
+## 11. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python

@@ -6000,7 +6000,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293",
+     "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -7209,7 +7209,7 @@
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293",
+    "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
    },
    "environment": {
@@ -7472,12 +7472,12 @@
   "results": {
    "step": "88（单卡执行公平对照与收尾）",
    "requirement": "learning_notes/14_vllm_from_scratch/单卡执行优化需求/088_单卡执行公平对照与收尾.md",
-   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；6 trace + 真实 assistant 差分 + microbenchmark 22 case + 同 2D kernel 对照；2D 修复后 198 regs/0 spills，q3/ctx1024 0.1903→0.1522 ms，Graph 125.63→135.55 tok/s",
+   "status": "完成：16 主 case + 4 上下文 case；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；strict_equivalent=false；6 trace + 真实 assistant 差分 + microbenchmark 22 case + 同 2D kernel 对照；K/V 统一 [TILE,HEAD] layout + w4 + 去冗余 tile_mask 后 168 regs/25.6 KiB shared，q3/ctx1024 0.151→0.066–0.071 ms，短/中上下文多数不慢于 vLLM；Graph 145–157 vs vLLM 163（单轮波动）；长上下文仍 1.1–1.5×",
    "recorded_at": "2026-10-31T17:28+08:00",
    "package": {
     "root": "minivllm/",
     "python_files": 177,
-    "sha256": "3032f6641a53aa95935fa631ba3a6e6f952aba5805988cff21d9ab01f210a293"
+    "sha256": "da74154b7d64d281356d87c9b0f37c01eac864277d27720c44635c74af2f46ea"
    },
    "environment": {
     "python": "3.12.14",
@@ -7520,7 +7520,7 @@
     },
     {
      "cmd": "python -m pytest tests/step88 -q",
-     "result": "24 passed, 14 warnings in 16.18s（含真实 assistant、GPU microbenchmark 与 mini-vs-vLLM kernel 对照）"
+     "result": "24 passed（最终 K/V layout 版本；含真实 assistant 与 GPU microbenchmark）"
     },
     {
      "cmd": "CUDA_VISIBLE_DEVICES='' python -m pytest tests/step88 -q",
@@ -7532,7 +7532,7 @@
     },
     {
      "cmd": "python -m pytest tests/step58 … tests/step88 -q",
-     "result": "1297 passed, 152 warnings in 216.13s（exit 0；2D 优化后）"
+     "result": "1297 passed, 152 warnings in 204.15s（exit 0；K/V layout 优化后）"
     },
     {
      "cmd": "python benchmarks/check_step88_attention_pipeline.py --case qlen3_ctx1024 --warmup 50 --repeats 200 --rounds 10",
@@ -11314,18 +11314,19 @@
     "report": "docs/step88_attention_pipeline.md",
     "case": "qlen3_ctx1024",
     "measurement": {
-     "mini_ms": 0.1511,
-     "vllm_ms": 0.0825,
-     "mini_vs_vllm": 1.83,
+     "mini_ms": 0.0713,
+     "vllm_ms": 0.0969,
+     "mini_vs_vllm": 0.736,
      "max_abs": 0.0
     },
     "mini": {
-     "regs": 198,
+     "regs": 168,
      "spills": 0,
-     "shared": 40960,
+     "shared": 25600,
      "ttgir_async_copy": 0,
      "ptx_cp_async": 0,
-     "ptx_st_shared": 72
+     "ptx_st_shared": 86,
+     "num_warps": 4
     },
     "vllm": {
      "regs": 158,
@@ -11334,9 +11335,10 @@
      "ttgir_async_copy": 10,
      "ttgir_async_wait": 3,
      "ptx_cp_async": 51,
-     "ptx_st_shared": 14
+     "ptx_st_shared": 14,
+     "num_warps": 4
     },
-    "conclusion": "vLLM 的核心优化是 Triton software pipeline（cp.async global→shared 与 MMA 重叠）；mini 本地 kernel 仍是同步 load→shared→MMA。tl.range 只触发 8–14 条 cp.async 且更慢，尚未实现生产化。",
+    "conclusion": "最终优化不是 cp.async，而是 K/V 统一 [TILE,HEAD] load layout；K 在 dot 前 transpose。shared 40.96→25.6 KiB、regs 198→168，q3/ctx1024 从 0.151 降到 0.066–0.071，短/中上下文多数已不慢于 vLLM；长上下文仍 1.1–1.5×。",
     "boundary": "这是诊断数据，不是已追平；生产仍是本地 198/0 kernel。",
     "negative_experiments": {
      "kv_shared_base_ms": 0.1509,
@@ -11424,6 +11426,37 @@
      },
      "note": "均未让 K/V 进入 async；vLLM K/V async 带 contiguity=8。"
     }
+   },
+   "kv_layout_optimization": {
+    "change": "K/V 都按 [TILE, HEAD] load，K 在 dot 前 tl.trans；2D num_warps=4；S mask 去掉冗余 tile_mask",
+    "before": {
+     "regs": 198,
+     "spills": 0,
+     "shared": 40960,
+     "q3_ctx1024_ms": 0.1511,
+     "graph_tok_s_w8": 140.39
+    },
+    "after": {
+     "regs": 168,
+     "spills": 0,
+     "shared": 25600,
+     "q3_ctx1024_ms": 0.0658,
+     "graph_tok_s": 145.35,
+     "graph_tok_s_second_run": 157.39,
+     "vllm_graph_tok_s": 163.07
+    },
+    "direct_22_case": {
+     "q3_ctx128_ms": 0.042,
+     "q3_ctx256_ms": 0.0341,
+     "q3_ctx512_ms": 0.0411,
+     "q3_ctx1024_ms": 0.0686,
+     "q3_ctx2048_ms": 0.1288,
+     "hd256_full_ms": 0.0987,
+     "hd512_full_ms": 0.1134,
+     "note": "vLLM 同轮波动 0.044–0.109 ms；短/中上下文 mini 多次更快，long ctx 仍慢 1.1–1.5×"
+    },
+    "evidence": "输出逐元素差 0.0；regs 198→168，shared 40,960→25,600；TTGIR async_copy 仍为 0（收益不是 cp.async）",
+    "not_done": "长上下文仍慢；K/V async 尚未实现；Graph 单轮 0.89–0.96× vLLM"
    }
   },
   "models": {

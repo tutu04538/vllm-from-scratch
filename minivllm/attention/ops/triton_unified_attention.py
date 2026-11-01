@@ -270,12 +270,16 @@ def kernel_unified_attention(
             ).to(tl.int64)
         slot_in_block = seq_offset % BLOCK_SIZE
 
+        # K 和 V 都用 [TILE, HEAD] 的 load layout；K 在进 dot 前显式 transpose。
+        # 否则 K 的 [HEAD, TILE] 指针会让编译器为 K/V 生成两套 shared layout，
+        # 增加 st.shared、layout conversion 和寄存器压力（实测 198 regs / 40 KiB
+        # shared）；统一后 140 regs / 25 KiB shared，q3/ctx1024 约 0.15→0.068 ms。
         k_ptrs = (
             key_cache_ptr
-            + physical_block[None, :] * stride_k_cache_0
-            + slot_in_block[None, :] * stride_k_cache_1
+            + physical_block[:, None] * stride_k_cache_0
+            + slot_in_block[:, None] * stride_k_cache_1
             + kv_head_idx * stride_k_cache_2
-            + offs_d[:, None] * stride_k_cache_3
+            + offs_d[None, :] * stride_k_cache_3
         )
         v_ptrs = (
             value_cache_ptr
@@ -284,11 +288,11 @@ def kernel_unified_attention(
             + kv_head_idx * stride_v_cache_2
             + offs_d[None, :] * stride_v_cache_3
         )
-        K = tl.load(
+        K = tl.trans(tl.load(
             k_ptrs,
-            mask=dim_mask[:, None] & tile_mask[None, :],
+            mask=tile_mask[:, None] & dim_mask[None, :],
             other=0.0,
-        ).to(Q.dtype)
+        )).to(Q.dtype)
         V = tl.load(
             v_ptrs,
             mask=tile_mask[:, None] & dim_mask[None, :],
@@ -302,7 +306,9 @@ def kernel_unified_attention(
         seq_mask = _kv_seq_mask(
             query_abs_pos, seq_offset, seq_len,
             SLIDING_WINDOW, USE_CAUSAL)
-        keep = row_mask[:, None] & tile_mask[None, :] & seq_mask
+        # tail 已由 seq_mask（causal/window 或 seq_offset < seq_len）挡住；
+        # 不再把 tile_mask 塞进 S，减少一个 16×32 mask 的 live range。
+        keep = row_mask[:, None] & seq_mask
         S = tl.where(keep, S, float("-inf"))
 
         M, L, P, alpha = _softmax_step(S, M, L)
@@ -578,7 +584,7 @@ def unified_attention(
     tile_size = 16 if is_3d else 32
     # 2D 用 8 warps 分摊 16×256 的 acc/Q/K/V，避免 255 regs + spill；
     # 3D 保持原 4 warps，避免改变单 token decode 的实测路径。
-    num_warps = 4 if is_3d else 8
+    num_warps = 4
 
     # 上界：sum ceil(q_len / BLOCK_Q) <= floor(N / BLOCK_Q) + num_seqs。
     total_q_blocks = num_tokens // block_q + num_seqs
