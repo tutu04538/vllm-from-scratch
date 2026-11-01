@@ -11425,6 +11425,23 @@
       "ms": 0.1566
      },
      "note": "均未让 K/V 进入 async；vLLM K/V async 带 contiguity=8。"
+    },
+    "long_context_options": {
+     "tile32_ms": {
+      "ctx1024": 0.066,
+      "ctx2048": 0.127
+     },
+     "tile64_ms": {
+      "ctx1024": 0.0595,
+      "ctx2048": 0.107,
+      "max_abs": 0.002
+     },
+     "tile64_bm8_ms": {
+      "ctx1024": 0.053,
+      "ctx2048": 0.0996,
+      "max_abs": 0.002
+     },
+     "note": "tile64 有 BF16 数值差，未生产化；当前仍 TILE32 精确 0.0。"
     }
    },
    "kv_layout_optimization": {
