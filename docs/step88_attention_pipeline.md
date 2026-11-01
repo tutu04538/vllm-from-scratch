@@ -291,6 +291,38 @@ shared: 24,576 B
 “tile 循环次数”，而是 K/V global load 延迟/async 覆盖；仅拆 subtile 不够。
 这条实验只作为学习记录，未生产化。
 
+### 11.2 为什么当前布局更快，但 K/V 仍不 async
+
+当前生产的 K/V load 在 TTGIR 里是：
+
+```text
+K/V load: tensor<32x256xbf16, #blocked>
+#blocked: sizePerThread=[1,1], order=[1,0]
+```
+
+它是**非合并的 scalar-per-thread 布局**，但省掉了 K/V 两套 shared layout 的转换，
+所以整体仍然更快（198→168 regs，40.96→25.6 KiB shared）。
+
+对照 vLLM：
+
+```text
+K_load: tensor<256x32, #blocked1> sizePerThread=[8,1]
+V_load: tensor<32x256, #blocked2> sizePerThread=[1,8]
+→ async_copy，带 contiguity=8
+```
+
+试过把 V 也改成 `[HEAD, TILE]` load 再 transpose：
+
+```text
+0.150 ms，255 regs/22 spills，async 0
+```
+
+更慢，因此没有采用。结论：
+
+- **当前最优不是“coalesced load”**，而是“没有 layout conversion 的 load”；
+- K/V async 需要的是 **既 coalesced、又能被 pipeline pass 选中** 的 load；
+- 下一步可以用 `tl.make_block_ptr` 或显式 layout hint 做实验，而不是继续切 transpose。
+
 ## 12. 复现
 
 ```bash

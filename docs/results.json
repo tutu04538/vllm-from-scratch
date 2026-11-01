@@ -11452,6 +11452,17 @@
      "spills": 18,
      "shared": 24576,
      "note": "64 load + 2×32 exact subtile；短上下文快，长上下文无收益，未生产化。"
+    },
+    "kv_load_layout": {
+     "current": "K/V [TILE,HEAD] #blocked sizePerThread[1,1]，非合并但无 layout conversion",
+     "vllm": "K [HEAD,TILE] #blocked1 [8,1] + V [TILE,HEAD] #blocked2 [1,8] + async contiguity=8",
+     "v_head_tile_trial": {
+      "ms": 0.15,
+      "regs": 255,
+      "spills": 22,
+      "async": 0
+     },
+     "note": "强制 V [HEAD,TILE] 更慢；下一步用 block_ptr/layout hint 做既 coalesced 又可 async 的 load。"
     }
    },
    "kv_layout_optimization": {
