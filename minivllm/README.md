@@ -1,5 +1,9 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
+2026-11-01 attention 优化：K/V 最后维 stride 编译期特化，让连续 BF16 数据进入
+Triton async pipeline；配套调整 2D tile/query 分组，保留 FP32/SWA 的原计算布局。
+根因、实测和边界见 [完整优化记录](../docs/step88_attention_async_resolution.md)。
+
 这是仓库里**唯一的实现**（原 `step57/`，含 204/205 两轮验收修复，以及第五十八～六十六关：draft 输入/双预算、GPU 批量拒绝采样、CPU/GPU ngram、Suffix Decoding、自定义 Proposer 接入、EAGLE/EAGLE3、HiddenStateExtraction、原生 MTP、Medusa 多头提议）。旧的 `stepNN/` 代码目录已经
 删除，历史记录留在 `docs/` 与 git 历史里；后续改动只在这个包上做。
 

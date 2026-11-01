@@ -173,11 +173,11 @@ def kernel_unified_attention(
     stride_k_cache_0: tl.int64,
     stride_k_cache_1: tl.int64,
     stride_k_cache_2: tl.int64,
-    stride_k_cache_3: tl.int64,
+    stride_k_cache_3: tl.constexpr,
     stride_v_cache_0: tl.int64,
     stride_v_cache_1: tl.int64,
     stride_v_cache_2: tl.int64,
-    stride_v_cache_3: tl.int64,
+    stride_v_cache_3: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     num_seqs: tl.int32,
     BLOCK_M: tl.constexpr,
@@ -270,10 +270,11 @@ def kernel_unified_attention(
             ).to(tl.int64)
         slot_in_block = seq_offset % BLOCK_SIZE
 
-        # K 和 V 都用 [TILE, HEAD] 的 load layout；K 在进 dot 前显式 transpose。
-        # 否则 K 的 [HEAD, TILE] 指针会让编译器为 K/V 生成两套 shared layout，
-        # 增加 st.shared、layout conversion 和寄存器压力（实测 198 regs / 40 KiB
-        # shared）；统一后 140 regs / 25 KiB shared，q3/ctx1024 约 0.15→0.068 ms。
+        # 最后一维 stride 必须在编译时已知：stride==1 时 AxisInfo 才能证明
+        # offs_d 对应连续元素。运行时 tl.int64 会丢失这条信息，使 BF16 load
+        # 退化到每线程一个元素（2 bytes），达不到 cp.async 的 4-byte 门槛。
+        # 这里没有把 stride 硬编码为 1；非单位 stride 仍按实际值专门编译。
+        # K/V 均按 [TILE, HEAD] 读取，K 在 dot 前 transpose。
         k_ptrs = (
             key_cache_ptr
             + physical_block[:, None] * stride_k_cache_0
@@ -299,9 +300,8 @@ def kernel_unified_attention(
             other=0.0,
         ).to(Q.dtype)
 
-        # 2D head<=256 用 64 宽 K/V load，但内部按两个 32 宽 subtile 处理，
-        # 保持和 TILE32 完全相同的 online-softmax 合并顺序（输出 0.0 差）。
-        # head=512 的 64 宽 K/V 会超过 shared 限制，因此 wrapper 仍用 TILE32。
+        # FP32/SWA 保留 TILE64 的两个 32 宽 subtile，维持原有浮点计算
+        # 布局与窗口起点；BF16/FP16 全注意力改用直接 TILE32。
         if TILE_SIZE == 64:
             K3 = tl.permute(tl.reshape(K, [HEAD_SIZE_PADDED, 2, 32]), 0, 2, 1)
             K0, K1 = tl.split(K3)
@@ -618,9 +618,18 @@ def unified_attention(
     sliding_window = 0
     if window_size[0] is not None and window_size[0] >= 0:
         sliding_window = int(window_size[0]) + 1
-    tile_size = 16 if is_3d else (64 if head_size <= 256 else 32)
-    # 2D 用 4 warps + BLOCK_M8；head<=256 用 TILE64 load，但内部拆两个 32 宽
-    # subtile，保持 TILE32 的 softmax 合并顺序。3D 保持 4 warps/TILE16。
+
+    # 连续 K/V 已可异步搬运，全注意力不再需要 TILE64 摊薄标量 load。
+    # FP32 保留原 dot 布局；SWA 保留原 tile 边界和 query 分组：改变边界
+    # 会跳过全 mask 的 subtile，改变 online softmax 的浮点缩放历史。
+    preserve_tiling = q.dtype == torch.float32 or sliding_window > 0
+    if not is_3d and not preserve_tiling and head_size <= 256:
+        block_m = 16 if group <= 16 else _next_power_of_2(group)
+        block_q = block_m // group
+
+    tile_size = (16 if is_3d else
+                 (64 if preserve_tiling and head_size <= 256 else 32))
+    # 不提高 num_stages；使用默认 3，3D 保持 4 warps/TILE16。
     num_warps = 4
 
     # 上界：sum ceil(q_len / BLOCK_Q) <= floor(N / BLOCK_Q) + num_seqs。

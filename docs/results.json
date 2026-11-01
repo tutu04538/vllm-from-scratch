@@ -6000,7 +6000,7 @@
     "package": {
      "root": "minivllm/",
      "python_files": 177,
-     "sha256": "8718c068b8514f2e7fb8ca55a280408211f9711d978e773e138ba827c7f69a0f",
+     "sha256": "f28d24752ce90b3c713075fb62cbc85c4f1a251002e81de17001262093bfa4a6",
      "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
     },
     "base_commit": "ef55797（81 收口前）",
@@ -11693,6 +11693,521 @@
     "vllm_graph_tok_s": 168.42,
     "graph_ratio": 0.896,
     "note": "TILE64 load + 2×32 exact subtile + BM8；输出 0.0 差，短/中上下文更快，长上下文 1.12–1.20×。"
+   },
+   "async_stride_resolution": {
+    "recorded_at": "2026-11-01",
+    "baseline_commit": "bb1380d",
+    "package": {
+     "root": "minivllm/",
+     "python_files": 177,
+     "sha256": "f28d24752ce90b3c713075fb62cbc85c4f1a251002e81de17001262093bfa4a6"
+    },
+    "previous_current_package": {
+     "root": "minivllm/",
+     "python_files": 177,
+     "sha256": "8718c068b8514f2e7fb8ca55a280408211f9711d978e773e138ba827c7f69a0f",
+     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+    },
+    "report": "docs/step88_attention_async_resolution.md",
+    "microbenchmark": "benchmarks/results/step88/async_stride/final/summary.json",
+    "status": "completed_with_documented_boundaries",
+    "initial_full_regression": {
+     "passed": 1306,
+     "failed": 1,
+     "reason": "current package hash not refreshed; no behavioral failure"
+    },
+    "targeted_regression": {
+     "passed": 82,
+     "failed": 0,
+     "skipped": 0,
+     "warnings": 14,
+     "seconds": 65.48
+    },
+    "source_sha256": "82202dd0873c09dfc9d81fbc2b89acc43ec23d5b4afcfdd43db2d5770013a4bd",
+    "environment": {
+     "args": {
+      "baseline_ref": "bb1380d",
+      "cases": null,
+      "variant": null,
+      "warmup": 10,
+      "calls": 100,
+      "rounds": 7,
+      "output_dir": "benchmarks/results/step88/async_stride/final"
+     },
+     "device": "NVIDIA GeForce RTX 5090 Laptop GPU",
+     "recorded_at": "2026-11-01T15:14:01.231731+08:00",
+     "capability": [
+      12,
+      0
+     ],
+     "baseline_ref": "bb1380d",
+     "baseline_sha256": "c96388335452f05f19577b4f44209f3ab9260bd9c8347e1f7bfdb238b7dcd474",
+     "optimized_sha256": "82202dd0873c09dfc9d81fbc2b89acc43ec23d5b4afcfdd43db2d5770013a4bd",
+     "metric": "CUDA graph burst, warm-cache ms/kernel; no engine",
+     "torch": "2.13.0+cu130",
+     "triton": "3.7.1",
+     "vllm": "0.28.0"
+    },
+    "root_cause": "runtime tl.int64 inner K/V stride loses AxisInfo contiguity; constexpr restores vector width and cp.async eligibility",
+    "numerical_policy": "specialize real inner strides; TILE32/BLOCK_M16 only for non-FP32 full attention head<=256; preserve original SWA/FP32/3D tiling",
+    "micro_results": {
+     "qlen1_ctx1024": {
+      "baseline_us": 50.136961936950684,
+      "optimized_us": 40.956478118896484,
+      "vllm_us": 40.47488212585449,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen2_ctx1024": {
+      "baseline_us": 50.0819206237793,
+      "optimized_us": 41.04288101196289,
+      "vllm_us": 40.38815975189209,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen4_ctx1024": {
+      "baseline_us": 50.191359519958496,
+      "optimized_us": 41.3097620010376,
+      "vllm_us": 40.261759757995605,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen8_ctx1024": {
+      "baseline_us": 50.62687873840332,
+      "optimized_us": 41.37824058532715,
+      "vllm_us": 40.56416034698486,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_ctx128": {
+      "baseline_us": 9.87392008304596,
+      "optimized_us": 7.9497599601745605,
+      "vllm_us": 7.542719841003418,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_ctx256": {
+      "baseline_us": 15.544320344924927,
+      "optimized_us": 12.42751955986023,
+      "vllm_us": 12.136319875717163,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_ctx512": {
+      "baseline_us": 27.041280269622803,
+      "optimized_us": 21.918718814849854,
+      "vllm_us": 21.387839317321777,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_ctx1024": {
+      "baseline_us": 49.8803186416626,
+      "optimized_us": 41.13056182861328,
+      "vllm_us": 40.06783962249756,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_ctx2048": {
+      "baseline_us": 95.66720008850098,
+      "optimized_us": 79.0227222442627,
+      "vllm_us": 77.04576015472412,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_b2_ctx1024": {
+      "baseline_us": 50.490241050720215,
+      "optimized_us": 41.603522300720215,
+      "vllm_us": 40.23168087005615,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_b4_ctx1024": {
+      "baseline_us": 50.84320068359375,
+      "optimized_us": 41.6374397277832,
+      "vllm_us": 40.96735954284668,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_b8_ctx1024": {
+      "baseline_us": 50.76096057891846,
+      "optimized_us": 42.20191955566406,
+      "vllm_us": 40.82943916320801,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_hd256_win-1": {
+      "baseline_us": 49.95391845703125,
+      "optimized_us": 41.24671936035156,
+      "vllm_us": 40.01984119415283,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_hd256_win512": {
+      "baseline_us": 27.51840114593506,
+      "optimized_us": 29.677441120147705,
+      "vllm_us": 24.527359008789062,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_hd512_win-1": {
+      "baseline_us": 95.0057601928711,
+      "optimized_us": 57.971200942993164,
+      "vllm_us": 61.532158851623535,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_hd512_win512": {
+      "baseline_us": 52.26431846618652,
+      "optimized_us": 33.80608081817627,
+      "vllm_us": null,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": null,
+      "vllm_unsupported": "out of resource: shared memory, Required: 115968, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+     },
+     "qlen3_seg4": {
+      "baseline_us": 49.976959228515625,
+      "optimized_us": 41.30527973175049,
+      "vllm_us": 39.73151922225952,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_seg8": {
+      "baseline_us": 49.99839782714844,
+      "optimized_us": 41.01215839385986,
+      "vllm_us": 40.018558502197266,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_seg16": {
+      "baseline_us": 50.04159927368164,
+      "optimized_us": 41.20448112487793,
+      "vllm_us": 39.98143911361694,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_seg32": {
+      "baseline_us": 50.581440925598145,
+      "optimized_us": 41.47007942199707,
+      "vllm_us": 40.1251220703125,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     },
+     "qlen3_hd512_win512_b4": {
+      "baseline_us": 52.628159523010254,
+      "optimized_us": 34.59872007369995,
+      "vllm_us": null,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": null,
+      "vllm_unsupported": "out of resource: shared memory, Required: 115968, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+     },
+     "qlen3_hd256_win512_b4": {
+      "baseline_us": 28.14687967300415,
+      "optimized_us": 31.40543937683105,
+      "vllm_us": 24.978559017181396,
+      "optimized_max_abs": 0.0,
+      "vllm_max_abs": 0.0,
+      "vllm_unsupported": null
+     }
+    },
+    "real_attention_equivalence": {
+     "calls": 946,
+     "different_calls": 0,
+     "max_abs": 0.0,
+     "shapes": {
+      "q=(128, 8, 256),window=(511, 0)": {
+       "calls": 448,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(128, 8, 512),window=(-1, -1)": {
+       "calls": 112,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(128, 4, 256),window=(511, 0)": {
+       "calls": 48,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(128, 4, 512),window=(-1, -1)": {
+       "calls": 16,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(1, 4, 256),window=(511, 0)": {
+       "calls": 66,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(1, 4, 512),window=(-1, -1)": {
+       "calls": 22,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(3, 8, 256),window=(511, 0)": {
+       "calls": 168,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(3, 8, 512),window=(-1, -1)": {
+       "calls": 42,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(3, 4, 256),window=(511, 0)": {
+       "calls": 18,
+       "different_calls": 0,
+       "max_abs": 0.0
+      },
+      "q=(3, 4, 512),window=(-1, -1)": {
+       "calls": 6,
+       "different_calls": 0,
+       "max_abs": 0.0
+      }
+     }
+    },
+    "real_model_final": {
+     "config": {
+      "batch": 1,
+      "k": 2,
+      "prompt_tokens": 1024,
+      "output_tokens": 128,
+      "dtype": "bfloat16",
+      "graph": true,
+      "repeats": 3
+     },
+     "baseline_tok_s": {
+      "median": 175.79882239247178,
+      "min": 160.49222805395442,
+      "max": 178.3623994339715,
+      "values": [
+       160.49222805395442,
+       175.79882239247178,
+       178.3623994339715
+      ]
+     },
+     "optimized_tok_s": {
+      "median": 175.44346569326035,
+      "min": 174.39012296358456,
+      "max": 176.58103535843358,
+      "values": [
+       174.39012296358456,
+       175.44346569326035,
+       176.58103535843358
+      ]
+     },
+     "all_tokens_equal": true,
+     "acceptance_equal": true,
+     "acceptance": {
+      "num_drafts": 47,
+      "num_draft_tokens": 94,
+      "num_accepted_tokens": 80,
+      "acceptance_rate": 0.851063829787234,
+      "mean_acceptance_length": 2.702127659574468,
+      "accepted_per_pos": [
+       41,
+       39
+      ],
+      "draft_per_pos": [
+       47,
+       47
+      ],
+      "position_acceptance": [
+       0.8723404255319149,
+       0.8297872340425532
+      ],
+      "position_acceptance_actual": [
+       0.8723404255319149,
+       0.8297872340425532
+      ]
+     },
+     "prior_round": {
+      "baseline_tok_s": {
+       "median": 159.4201989043139,
+       "min": 158.6868561647836,
+       "max": 159.49837422516876,
+       "values": [
+        159.4201989043139,
+        159.49837422516876,
+        158.6868561647836
+       ]
+      },
+      "optimized_tok_s": {
+       "median": 175.0939031771792,
+       "min": 170.75193565107654,
+       "max": 176.59220859317367,
+       "values": [
+        175.0939031771792,
+        176.59220859317367,
+        170.75193565107654
+       ]
+      },
+      "tokens_equal": true
+     },
+     "vllm_reference": {
+      "tok_s": {
+       "median": 172.48117437909468,
+       "min": 169.51626621611973,
+       "max": 173.2151741369625,
+       "values": [
+        173.2151741369625,
+        172.48117437909468,
+        169.51626621611973
+       ]
+      },
+      "first_different_token_index": 111,
+      "strict_equivalent": false
+     },
+     "conclusion": "kernel gain established; stable end-to-end tok/s gain NOT established; repeat A/B medians essentially equal"
+    },
+    "rejected_candidate": {
+     "change": "apply TILE32/BLOCK_M16 to BF16 SWA too",
+     "random_micro_zero": true,
+     "real_model_first_different_token_index": 108,
+     "reason": "all-masked subtile changes online softmax rounding history",
+     "action": "preserve original SWA tiling and add four regressions"
+    },
+    "boundaries": [
+     "D256/SWA512 B1/B4 micro regressions approximately 8%/12%",
+     "FP32 large-head baseline itself exceeds shared-memory limit; no large-head FP32 zero-diff claim",
+     "vLLM D512/SWA512 B1/B4 unsupported on this device",
+     "no full real-model 20-case matrix rerun",
+     "no all-input bitwise guarantee or cross-GPU performance extrapolation"
+    ],
+    "commands": [
+     "python benchmarks/check_step88_async_stride.py --output-dir benchmarks/results/step88/async_stride/final",
+     "python benchmarks/check_step88_async_model.py --variant optimized",
+     "python benchmarks/check_step88_async_model.py --variant baseline",
+     "python benchmarks/check_step88_async_model.py --eager --compare-attention --max-new-tokens 8 --repeats 1",
+     "python -m pytest tests/step88/test_attention_async_stride.py -q",
+     "python -m pytest tests/step86 tests/step87 tests/step88 -q",
+     "python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q"
+    ],
+    "new_tests": {
+     "passed": 14,
+     "failed": 0,
+     "skipped": 0
+    },
+    "compiler_variants": {
+     "qlen3_ctx1024": {
+      "baseline": {
+       "n_regs": 255,
+       "n_spills": 0,
+       "shared_bytes": 20480,
+       "num_stages": 3,
+       "async_copy": 0,
+       "bf16_async_copy": 0,
+       "cp_async": 0,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.0498803186416626
+      },
+      "constexpr_only": {
+       "n_regs": 199,
+       "n_spills": 0,
+       "shared_bytes": 70400,
+       "num_stages": 3,
+       "async_copy": 7,
+       "bf16_async_copy": 4,
+       "cp_async": 77,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.050426878929138184
+      },
+      "optimized": {
+       "n_regs": 155,
+       "n_spills": 0,
+       "shared_bytes": 42112,
+       "num_stages": 3,
+       "async_copy": 7,
+       "bf16_async_copy": 4,
+       "cp_async": 45,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.04113056182861328
+      },
+      "vllm": {
+       "n_regs": 158,
+       "n_spills": 0,
+       "shared_bytes": 42240,
+       "num_stages": 3,
+       "async_copy": 10,
+       "bf16_async_copy": 4,
+       "cp_async": 51,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.04006783962249756
+      }
+     },
+     "qlen3_hd512_win-1": {
+      "baseline": {
+       "n_regs": 255,
+       "n_spills": 28,
+       "shared_bytes": 41472,
+       "num_stages": 3,
+       "async_copy": 0,
+       "bf16_async_copy": 0,
+       "cp_async": 0,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.09500576019287109
+      },
+      "constexpr_only": {
+       "n_regs": 255,
+       "n_spills": 4,
+       "shared_bytes": 74368,
+       "num_stages": 3,
+       "async_copy": 7,
+       "bf16_async_copy": 4,
+       "cp_async": 77,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.05776224136352539
+      },
+      "optimized": {
+       "n_regs": 255,
+       "n_spills": 4,
+       "shared_bytes": 74368,
+       "num_stages": 3,
+       "async_copy": 7,
+       "bf16_async_copy": 4,
+       "cp_async": 77,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.05797120094299316
+      },
+      "vllm": {
+       "n_regs": 255,
+       "n_spills": 6,
+       "shared_bytes": 83200,
+       "num_stages": 3,
+       "async_copy": 10,
+       "bf16_async_copy": 4,
+       "cp_async": 83,
+       "max_abs_vs_baseline": 0.0,
+       "median_ms": 0.06153215885162353
+      }
+     }
+    },
+    "full_regression": {
+     "passed": 1311,
+     "failed": 0,
+     "skipped": 0,
+     "warnings": 152,
+     "seconds": 221.87
+    }
    }
   },
   "models": {
