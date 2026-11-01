@@ -440,6 +440,24 @@ evict 明显更慢。结论：
 hd512 变慢，且 tail 安全性依赖 `V=0` 的 where。由于不是全局收益，**未生产化**；
 当前仍保留带 mask 的 K/V load，尾块语义更直接。
 
+### 11.8 K 改回 `[HEAD,TILE]` 的负结果
+
+为了省掉 K 的 `tl.trans`，试过把 K 直接按 `[HEAD,TILE]` load：
+
+```text
+K [HEAD,TILE]（无 transpose）
+→ 255 regs / 252 spills / shared 6,144 B
+→ ctx1024 0.156 ms
+→ ctx2048 0.302 ms
+```
+
+输出仍是 0.0，但完全不可用。原因很直接：K 的 `[HEAD,TILE]` load layout 与 V 的
+`[TILE,HEAD]` 再次分叉，layout conversion 把寄存器打爆。
+
+这条负结果反过来确认了当前方案的关键：
+
+> K 和 V 都用 `[TILE,HEAD]` load，K 只在小块 transpose，才是 0-spill 的原因。
+
 ## 12. 复现
 
 ```bash

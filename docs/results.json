@@ -11536,6 +11536,15 @@
      },
      "max_abs": 0.0,
      "note": "短/1024 有 7–13% 收益，2048 持平、hd512 变慢，未生产化。"
+    },
+    "k_head_tile_trial": {
+     "ctx1024_ms": 0.156,
+     "ctx2048_ms": 0.302,
+     "regs": 255,
+     "spills": 252,
+     "shared": 6144,
+     "max_abs": 0.0,
+     "note": "K 改回 [HEAD,TILE] 无 transpose 会 252 spills，确认 [TILE,HEAD]+transpose 是关键。"
     }
    },
    "kv_layout_optimization": {
