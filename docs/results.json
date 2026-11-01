@@ -11377,6 +11377,14 @@
       "cp_async": 51,
       "ms": 0.0825
      }
+    },
+    "stage5_operands": {
+     "mini_async_block_table": 10,
+     "mini_async_k": 0,
+     "mini_async_v": 0,
+     "vllm_async_k": 1,
+     "vllm_async_v": 1,
+     "note": "stage5 的 async_copy 全是 block-table；K/V 没有进入 pipeline，cp.async 22 vs vLLM 51。"
     }
    }
   },

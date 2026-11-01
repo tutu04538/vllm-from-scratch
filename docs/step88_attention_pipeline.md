@@ -132,7 +132,44 @@ stage5 已经把 TTGIR 的 `async_copy` 数追到和 vLLM 一样的 10，但 PTX
 - 下一步不能只看 TTGIR 计数，要看每个 `async_copy` 的 operand 和 stage 深度；
 - 目前仍是同步回退，生产不使用 `tl.range`。
 
-## 8. 复现
+## 8. operand 级发现：stage5 只流水化了 block-table
+
+把 stage5 的每个 `async_copy` 按 operand 拆开：
+
+```text
+stage5:
+  async_copy(physical_block) x 10
+  async_copy(K)               x 0
+  async_copy(V)               x 0
+
+vLLM:
+  async_copy(physical_block)
+  async_copy(K_load)
+  async_copy(V_load)
+  ... 多 stage 重复
+```
+
+这解释了两件事：
+
+1. 为什么 stage5 的 TTGIR `async_copy` 也是 10，但 PTX `cp.async` 只有 22：本地只拷贝了
+   32 个 int32 的 block-table，没有拷贝 256×32 的 K 和 32×256 的 V；
+2. 为什么 stage5 时间反而约 0.16 ms：pipeline 只包住了很小的 block-table load，
+   K/V 仍然同步，stage 增加只增加了调度/shared 开销。
+
+所以下一步目标非常具体：
+
+```text
+让 K_load / V_load 也变成 async_copy
+```
+
+而不是继续增加 block-table 的 stage 数。候选原因：
+
+- K/V load 的 pointer/mask layout 没有让 Triton 推断出 `contiguity=8`（vLLM 的 async
+  copy 带这个属性，本地 stage5 的 K/V 连 async 都没进）；
+- K/V load 的 `tile_mask`/`dim_mask` 可能让 pipeline pass 只保留 block-table；
+- 需要在 **2D-only/BF16-only** 的干净循环中逐项移除 mask/layout，找到 K/V 进入 async 的条件。
+
+## 9. 复现
 
 ```bash
 PY=/home/user/anaconda3/envs/vllm-omni-dev/bin/python
