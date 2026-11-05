@@ -55,7 +55,13 @@ def device_checks(device: int) -> dict:
 
 
 def main():
+    if "--communication" in sys.argv:
+        from step089_communication import main as communication_main
+        args = sys.argv[1:]
+        args.remove("--communication")
+        sys.exit(communication_main(args))
     parser = argparse.ArgumentParser(__doc__)
+    parser.add_argument("--communication", action="store_true", help="run supervised step089 communication benchmark; remaining options after --")
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

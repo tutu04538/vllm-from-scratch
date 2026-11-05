@@ -12540,5 +12540,182 @@
    "没有 NVLink；所有跨卡 CUDA peer access 查询为 false；NCCL 仍通过 SHM 完成测试"
   ],
   "artifacts_directory": "benchmarks/results/parallel_setup/"
+ },
+ "step089": {
+  "results": {
+   "status": "环境基线与通信测量完成；Graph 既有缺陷复现，104/105 验收阻塞未关闭",
+   "head": "03791f511d67799c8b9b8d13978f41fe29172c90",
+   "head_note": "实施前 HEAD；本关修改在工作区，提交后 HEAD 改变",
+   "package_sha256": "d5a0104ef1f6d54bcf54862dda6fe2979c10718462630bb8ee7cc9775ea46c9e",
+   "package_python_files": 177,
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "env": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "transformers": "5.14.1",
+    "nccl": "2.29.7",
+    "driver": "535.309.01",
+    "uva": "cpp"
+   },
+   "devices": {
+    "gpu": "4 x RTX 4090",
+    "numa": "0/1 -> 0; 2/3 -> 1",
+    "peer_access": "all off-diagonal false",
+    "topology": "benchmarks/results/step089/topology.txt",
+    "uuids": [
+     [
+      "9024d349-5dea-a096-461c-814151a37a6c",
+      "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9"
+     ],
+     [
+      "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+      "4b94902f-c58e-c720-ac41-a2336fd4827c"
+     ],
+     [
+      "9024d349-5dea-a096-461c-814151a37a6c",
+      "b173b7a3-a395-80b6-9c50-3cebe441c9f4"
+     ],
+     [
+      "9024d349-5dea-a096-461c-814151a37a6c",
+      "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+      "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+      "4b94902f-c58e-c720-ac41-a2336fd4827c"
+     ]
+    ]
+   },
+   "commands": [
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1288,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 104.93,
+     "log": "benchmarks/results/step089/full_pytest.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=$gpu python benchmarks/check_parallel_environment.py --single --output benchmarks/results/step089/single_gpu${gpu}.json (gpu=0,1,2,3 各自独立进程)",
+     "exit_code": 0,
+     "passed": 4,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step089/single_gpu*.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 -q -ra",
+     "exit_code": 0,
+     "passed": 7,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 24.49,
+     "log": "benchmarks/results/step089/pytest_complete.log"
+    },
+    {
+     "cmd": "python benchmarks/check_parallel_environment.py --communication --output benchmarks/results/step089/communication",
+     "exit_code": 0,
+     "passed": 80,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 33.903096474241465,
+     "log": "benchmarks/results/step089/communication/summary.json",
+     "note": "80 为配置数，非 pytest 项数；每 rank 三组；此后只改失败状态打印，不改计时代码"
+    },
+    {
+     "cmd": "同一 Python 进程连续两次 pytest.main([tests/step69/test_spec_cudagraph.py, -q, -ra])",
+     "exit_code": 1,
+     "passed": 36,
+     "failed": 2,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step089/graph_repeat.log"
+    },
+    {
+     "cmd": "单独 pytest.main 运行 test_polluted_padding_buffer_does_not_change_valid_output",
+     "exit_code": 1,
+     "passed": 0,
+     "failed": 1,
+     "skipped": 0,
+     "duration_seconds": 1.29,
+     "log": "benchmarks/results/step089/graph_two_engine_repeat.log"
+    },
+    {
+     "cmd": "诊断进程中将 _get_global_graph_pool 临时替换为 torch.cuda.graph_pool_handle 后运行上述单测",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 1.35,
+     "log": "benchmarks/results/step089/graph_fresh_pool_probe.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py",
+     "exit_code": 0,
+     "passed": 8003,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step089/requirements_check.log"
+    }
+   ],
+   "cases": {
+    "groups": [
+     [
+      0,
+      1
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      0,
+      2
+     ],
+     [
+      0,
+      1,
+      2,
+      3
+     ]
+    ],
+    "ops": [
+     "all_reduce",
+     "all_gather",
+     "reduce_scatter",
+     "broadcast",
+     "send_recv"
+    ],
+    "sizes_bytes": [
+     4096,
+     65536,
+     1048576,
+     16777216
+    ],
+    "warmup": 20,
+    "iterations": 100,
+    "repeats": 3,
+    "gpu_configurations": 80,
+    "correctness": "每 rank 精确检查数学结果",
+    "failure_cases": [
+     "缺 rank 初始化超时",
+     "rank 1 设备初始化失败",
+     "父进程组超时"
+    ]
+   },
+   "oracle": "通信整数值精确比较；冻结源码及安装版 sha256 对齐；未声称 PyTorch NCCL 等于上游通信器性能",
+   "known_failures": [
+    "Graph 共享池使用期间复现 allocator 断言，根因未确认；104/105 前必须关闭相关阻塞",
+    "23 个旧真实模型测试 skip 不计通过"
+   ],
+   "artifacts": "benchmarks/results/step089/"
+  },
+  "models": {
+   "real_model_run": false,
+   "reason": "089 不下载或验收真实模型权重",
+   "fixed_model_metadata": "learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/模型基线.json"
+  }
  }
 }
