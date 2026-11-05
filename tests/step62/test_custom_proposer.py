@@ -368,7 +368,10 @@ def test_call_args_match_frozen_runner_branch(tiny):
         engine.shutdown()
 
     # 冻结源码对照：上游那一段的参数顺序与我们调用的一致
-    upstream = (Path("/home/user/anaconda3/envs/vllm-omni-dev/lib/python3.12/site-packages/vllm")
+    # 从当前解释器定位同版本上游，不绑定开发者本机 conda 的绝对路径。
+    import vllm
+    assert vllm.__version__.split("+")[0] == "0.28.0"
+    upstream = (Path(vllm.__file__).resolve().parent
                 / "v1" / "worker" / "gpu_model_runner.py").read_text()
     marker = 'elif spec_config.method == "custom_class":'
     snippet = upstream[upstream.index(marker):upstream.index(marker) + 400]

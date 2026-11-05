@@ -12247,5 +12247,298 @@
     "compilation": "NONE (no torch.compile)"
    }
   }
+ },
+ "parallel_environment_001": {
+  "date": "2026-11-05",
+  "scope": "服务器环境/资料迁移；未修改生产 Python 实现；未实现 TP/PP",
+  "source_commit": "704a7a3138073e59a9c87700047426bf8dba16eb",
+  "package": {
+   "root": "minivllm/",
+   "python_files": 177,
+   "sha256": "d5a0104ef1f6d54bcf54862dda6fe2979c10718462630bb8ee7cc9775ea46c9e",
+   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256"
+  },
+  "server": {
+   "ssh_alias": "4090X4-NSSL",
+   "repo": "/data/syh/infra/vllm-from-scratch",
+   "origin": "git@github.com:tutu04538/vllm-from-scratch.git",
+   "branch": "master",
+   "gpu": "4 × RTX 4090 24564 MiB",
+   "driver": "535.309.01",
+   "nvcc": "12.9.86",
+   "venv": ".venv",
+   "cuda_toolkit": "/data/syh/infra/cuda-12.9",
+   "numa_gpu_groups": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ],
+   "nccl_transport_observed": "SHM/direct/direct",
+   "system_driver_changed": false
+  },
+  "single_process_smoke": {
+   "devices": [
+    {
+     "device": 0,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true
+    },
+    {
+     "device": 1,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true
+    },
+    {
+     "device": 2,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true
+    },
+    {
+     "device": 3,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true
+    }
+   ],
+   "uva_cpp_shared_memory": true,
+   "vllm_cuda_rmsnorm": true,
+   "python": "3.12.13 (main, Jun 11 2026, 04:03:26) [Clang 22.1.3 ]",
+   "torch": "2.13.0+cu129",
+   "cuda": "12.9",
+   "versions": {
+    "vllm": "0.28.0+cu129",
+    "triton": "3.7.1",
+    "transformers": "5.14.1",
+    "arctic-inference": "0.3.0",
+    "pytest": "9.1.1"
+   },
+   "peer_access": [
+    [
+     null,
+     false,
+     false,
+     false
+    ],
+    [
+     false,
+     null,
+     false,
+     false
+    ],
+    [
+     false,
+     false,
+     null,
+     false
+    ],
+    [
+     false,
+     false,
+     false,
+     null
+    ]
+   ]
+  },
+  "distributed_smoke": {
+   "backend": "nccl",
+   "world_size": 4,
+   "nccl": [
+    2,
+    29,
+    7
+   ],
+   "ranks": [
+    {
+     "device": 0,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true,
+     "rank": 0,
+     "all_reduce": true,
+     "all_gather": true,
+     "reduce_scatter": true,
+     "broadcast": true,
+     "ring_send_recv": true
+    },
+    {
+     "device": 1,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true,
+     "rank": 1,
+     "all_reduce": true,
+     "all_gather": true,
+     "reduce_scatter": true,
+     "broadcast": true,
+     "ring_send_recv": true
+    },
+    {
+     "device": 2,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true,
+     "rank": 2,
+     "all_reduce": true,
+     "all_gather": true,
+     "reduce_scatter": true,
+     "broadcast": true,
+     "ring_send_recv": true
+    },
+    {
+     "device": 3,
+     "name": "NVIDIA GeForce RTX 4090",
+     "capability": [
+      8,
+      9
+     ],
+     "triton": true,
+     "bf16_matmul": true,
+     "cuda_graph_replay": true,
+     "rank": 3,
+     "all_reduce": true,
+     "all_gather": true,
+     "reduce_scatter": true,
+     "broadcast": true,
+     "ring_send_recv": true
+    }
+   ]
+  },
+  "commands": [
+   "source scripts/activate-4090.sh",
+   "python benchmarks/check_parallel_environment.py --single --output benchmarks/results/parallel_setup/single_gpu.json",
+   "NCCL_DEBUG=INFO torchrun --standalone --nproc-per-node=4 benchmarks/check_parallel_environment.py --output benchmarks/results/parallel_setup/nccl_4gpu.json",
+   "CUDA_VISIBLE_DEVICES=0 python -m pytest $(printf \"tests/step%s \" $(seq 58 88)) -q -rs",
+   "CUDA_VISIBLE_DEVICES=0 python -m pytest tests/step69/test_spec_cudagraph.py -q",
+   "~/.local/bin/uv pip check --python .venv/bin/python"
+  ],
+  "dependency_check": {
+   "packages": 200,
+   "conflicts": 0,
+   "setup_script_replay": "passed",
+   "lockfile": "requirements/4090-dev.lock.txt"
+  },
+  "regressions": [
+   {
+    "name": "local_step62_portability",
+    "passed": 37,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 10.19
+   },
+   {
+    "name": "server_full_initial",
+    "passed": 1287,
+    "failed": 1,
+    "skipped": 23,
+    "seconds": 209.36,
+    "failure": "missing models/gemma-4-E2B-it-assistant/config.json",
+    "log": "full_pytest_initial.log"
+   },
+   {
+    "name": "server_full_after_config_copy",
+    "passed": 1275,
+    "failed": 13,
+    "skipped": 23,
+    "seconds": 101.31,
+    "failure": "CUDACachingAllocator.cpp:3332 it->second->use_count > 0",
+    "failed_nodes": [
+     "tests.step69.test_spec_cudagraph::test_polluted_padding_buffer_does_not_change_valid_output",
+     "tests.step69.test_spec_cudagraph::test_padding_rows_have_deterministic_content",
+     "tests.step69.test_spec_cudagraph::test_padding_writes_land_only_in_the_blank_block",
+     "tests.step69.test_spec_cudagraph::test_no_per_request_sync_inside_the_graph_path",
+     "tests.step69.test_spec_cudagraph::test_profiler_sees_a_real_graph_replay",
+     "tests.step69.test_spec_cudagraph::test_graph_mode_keeps_spec_logprobs_and_grammar_working",
+     "tests.step71.test_dynamic_sd::test_dynamic_sd_with_explicit_async_scheduling",
+     "tests.step71.test_dynamic_sd::test_scheduler_picks_k_by_scheduled_request_count",
+     "tests.step71.test_dynamic_sd::test_proposal_width_is_this_round_k_and_verification_is_previous_round",
+     "tests.step71.test_dynamic_sd::test_workspace_addresses_do_not_change_with_k",
+     "tests.step71.test_dynamic_sd::test_k0_rounds_still_sync_draft_kv_and_output_stays_identical",
+     "tests.step71.test_dynamic_sd::test_dynamic_sd_actually_runs_piecewise_graphs",
+     "tests.step71.test_dynamic_sd::test_q_rows_follow_this_round_proposal_width"
+    ],
+    "log": "full_pytest.log"
+   },
+   {
+    "name": "server_step69_isolated",
+    "passed": 19,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 3.37,
+    "log": "graph_isolated.log"
+   },
+   {
+    "name": "server_full_repeat",
+    "passed": 1275,
+    "failed": 13,
+    "skipped": 23,
+    "seconds": 111.29,
+    "failure": "same CUDACachingAllocator.cpp:3332 use_count assertion",
+    "log": "full_pytest_repeat.log"
+   }
+  ],
+  "private_docs": {
+   "source": "/home/user/proj/vllm-omni/learning_notes/14_vllm_from_scratch",
+   "destination": "learning_notes/14_vllm_from_scratch",
+   "original_markdown_count": 270,
+   "sha256_comparison": "all original Markdown match both local and server copies",
+   "frozen_reference_directories": "copied",
+   "gitignored": true,
+   "manifest": "benchmarks/results/parallel_setup/requirements_docs_manifest.json"
+  },
+  "model_assets": {
+   "weights_or_tokenizers_copied": false,
+   "config_copied": "models/gemma-4-E2B-it-assistant/config.json",
+   "sha256": "7f42f559a6a69ffaeaf6b61a1ece3a562a2ed5ad00b8d30f16917ba5ab1bcbe9"
+  },
+  "known_limits": [
+   "真实模型资料不足导致 23 个既有用例 skip，不算通过",
+   "全量回归第二次出现共享 graph pool 捕获分配器断言，step69 单独跑通过，根因未确认；不能认定全量稳定通过",
+   "环境功能 smoke 不等价于 TP/PP 端到端或通信性能验收",
+   "没有 NVLink；所有跨卡 CUDA peer access 查询为 false；NCCL 仍通过 SHM 完成测试"
+  ],
+  "artifacts_directory": "benchmarks/results/parallel_setup/"
  }
 }

@@ -1,5 +1,7 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
+4090×4 开发环境及启用方法见 [并行环境 001](../docs/parallel_001_4090_setup.md)。
+
 2026-11-01 attention 优化：K/V 最后维 stride 编译期特化，让连续 BF16 数据进入
 Triton async pipeline；配套调整 2D tile/query 分组，保留 FP32/SWA 的原计算布局。
 根因、实测和边界见 [完整优化记录](../docs/step88_attention_async_resolution.md)。

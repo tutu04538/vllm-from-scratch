@@ -59,3 +59,6 @@ benchmarks/**/*.pt.trace.json.gz
 
 # 本地工作目录：上游 vLLM 疑似 BUG 清单 + 复现脚本（给验证方 agent 的任务单，只在本机，不提交）
 vllm_bugs/
+
+# 私有学习需求与冻结参考资料：本机/服务器同步，不提交仓库
+/learning_notes/

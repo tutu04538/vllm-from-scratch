@@ -1,0 +1,10 @@
+# 使用 uv pip install -r requirements/4090-dev.txt --torch-backend=cu129
+# CUDA 12.9 运行库；不要用本机 5090 的 CUDA 13 组合覆盖 535 驱动服务器。
+torch==2.13.0+cu129
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.28.0/vllm-0.28.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl
+triton==3.7.1
+transformers==5.14.1
+arctic-inference==0.3.0
+pytest==9.1.1
+ninja
+pip
