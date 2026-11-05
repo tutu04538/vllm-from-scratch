@@ -45,7 +45,7 @@ def graph_capture(device: str = "cuda"):
 
     **池是全进程共享的一个**（上游 `current_platform.get_global_graph_pool()` 同款）：
     PIECEWISE 下"每层两段 × 每个档位"会有几十上百张图，一张图一个池会让显存按图数增长；
-    共享池是安全的——同一条流上任何时刻只有一张图在重放。
+    同流串行重放是共享池的前提之一；引擎关闭后池内张量和图的生命周期也必须正确。
 
     ⚠️ **为什么捕获期间要 `gc.disable()`**（74 关实测，是个"不报错就崩进程"的坑）：自动 GC 会在
     **任意一次分配**时触发，一旦它回收掉**别的** `torch.cuda.CUDAGraph` 对象，那个对象的析构
@@ -105,7 +105,7 @@ class CUDAGraphOptions:
 class CUDAGraphWrapper:
     """给一个可调用对象加上"捕获一次、之后重放"的能力（上游同名类）。"""
 
-    #: 所有**仍存活**的实例。这里用 WeakSet 而不是上游的 set：强引用会让一个已经
+    #: 所有**仍存活**的实例。与冻结上游一样使用 WeakSet：强引用会让一个已经
     #: shutdown 的引擎的模型/图无法被回收，正是 83 关查到的生命周期问题。WeakSet 不延长
     #: 实例寿命；`close()` 还会显式注销，`clear_all_graphs()` 只影响仍存活的实例。
     _all_instances: ClassVar["weakref.WeakSet[CUDAGraphWrapper]"] = weakref.WeakSet()
@@ -194,8 +194,7 @@ class CUDAGraphWrapper:
             entry.input_addresses = [x.data_ptr() for x in args if isinstance(x, torch.Tensor)]
             cudagraph = torch.cuda.CUDAGraph()
             pool = _get_global_graph_pool()
-            # 注意引用管理：捕获期间 `output` 由图的显存池管理，出了 `with` 之后只留弱引用，
-            # 否则这块显存看起来永远"有人用"。
+            # 本项目保留强引用到 entry.output；冻结上游使用不持有存储的 tensor 别名。
             with torch.cuda.graph(cudagraph, pool=pool):
                 output = self.runnable(*args, **kwargs)
             # 强引用留在 entry 里：这块张量就是图的输出缓冲，重放时写回同一块

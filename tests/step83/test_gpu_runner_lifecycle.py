@@ -130,3 +130,28 @@ def test_v2_shutting_one_engine_keeps_another_alive():
     assert not second_runner._shutdown
     assert _run(second)["a"]
     second.shutdown()
+
+
+def test_v1_graph_warmup_does_not_attach_autograd_and_recreates_engine():
+    """Three graph lifetimes reuse the global pool with gradients enabled by caller."""
+    outputs = []
+    snapshots = []
+    for _ in range(3):
+        with torch.enable_grad():
+            engine, runner = _v1_graph_engine()
+            try:
+                assert runner.model.concrete_cudagraph_entries
+                # Warmup writes into KV before serving any user request.
+                assert runner.kv_caches
+                for cache in runner.kv_caches.values():
+                    assert not cache.requires_grad
+                    assert cache.grad_fn is None
+                # Keep a consumer-owned copy across shutdown and the next capture.
+                snapshot = torch.cat([cache.flatten() for cache in runner.kv_caches.values()]).clone()
+                assert not snapshot.requires_grad and snapshot.grad_fn is None
+                snapshots.append(snapshot)
+                outputs.append(_run(engine))
+                assert runner.model.num_replays > 0
+            finally:
+                engine.shutdown()
+    assert all(result == outputs[0] for result in outputs)

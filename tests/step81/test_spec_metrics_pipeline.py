@@ -90,11 +90,11 @@ def test_scheduler_stats_survive_a_no_output_prefill_step():
         engine.shutdown()
 
 
-def test_current_step81_package_hash_matches_results():
+def test_current_package_hash_matches_results():
     import hashlib
     import json
     data = json.loads((Path(__file__).resolve().parents[2] / "docs/results.json").read_text())
-    package = data["step81"]["closeout"]["results"]["package"]
+    package = data["current_package"]
     root = Path(__file__).resolve().parents[2] / "minivllm"
     names = sorted(root.rglob("*.py"), key=lambda p: str(p.relative_to(root)))
     digest = hashlib.sha256("".join(

@@ -1363,12 +1363,14 @@ class GPUModelRunner:
                 f"图键 {batch_descriptor} 还没在捕获窗口里建过元数据："
                 f"请先跑 capture_model()（Worker.compile_or_warm_up_model()）")
 
+    @torch.inference_mode()
     def _dummy_run(self, num_tokens: int, uniform_decode: bool = False,
                    cudagraph_runtime_mode: CUDAGraphMode | None = None,
                    is_graph_capturing: bool = False) -> torch.Tensor:
         """跑一次"假"前向：用来热身、也用来**在捕获窗口里录图**（上游同名方法的子集）。
 
-        与上游一致的三点：
+        与上游一致：整个 dummy 前向在 inference_mode 下运行，避免热身和捕获
+        在 KV 缓存上留下反向图。其余三个执行约束：
 
         1. 形状由分派器决定（`force_uniform_decode=uniform_decode`），不是自己拼；
         2. 捕获时把 `seq_lens` 全填 1（见 `AttentionMetadataBuilder.build_for_cudagraph_capture`）；

@@ -1,6 +1,6 @@
 > **交付物位置（有意偏离需求总纲 §4）**：总纲点名 `docs/stepNN_results.json` 与
 
-并行环境基线与通信测量见 [step089](step089_alignment.md)；Graph 旧问题仍待关闭，环境通过不代表 TP/PP/DP 已实现。
+并行环境基线与通信测量见 [step089](step089_alignment.md)；V1 Graph 热身问题及修复见 [生命周期分析](step089_graph_lifecycle_fix.md)，环境通过不代表 TP/PP/DP 已实现。
 > `docs/stepNN_models.json` 两份文件；为了让 `docs/` 根目录只留一个机器可读件，本项目把它们
 > （以及 61 关的依赖锁定记录）**合并成一份 [`docs/results.json`](results.json)**，按关分键：
 > `stepNN.results` / `stepNN.models` / `stepNN.dependencies`，字段口径与逐字内容不变。

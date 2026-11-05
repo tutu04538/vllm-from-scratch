@@ -12543,6 +12543,70 @@
  },
  "step089": {
   "results": {
+   "graph_lifecycle_fix": {
+    "status": "V1 热身 inference_mode 缺口已按冻结源码修复；多 rank Graph 未验",
+    "head": "e06a4d0",
+    "head_note": "变更前 HEAD；工作区含本次修复",
+    "package_sha256": "0dfdbb66ba9a6d91ef986a23c82108ab94882f616fcadcd2aabff85bc588fd2c",
+    "oracle": {
+     "frozen_source": "v1/worker/gpu_model_runner.py::_dummy_run",
+     "sha256": "7f2890eefca1efe25565bf1c7e5906a87948ae922610a7aaac620b28b46f26aa",
+     "archive": "learning_notes/14_vllm_from_scratch/投机解码完整需求/参考资料/vllm_spec_decode_20261003.tar.gz",
+     "match_installed": true
+    },
+    "commands": [
+     {
+      "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) tests/step089 -q -ra",
+      "exit_code": 0,
+      "passed": 1296,
+      "failed": 0,
+      "skipped": 23,
+      "duration_seconds": 134.32,
+      "log": "benchmarks/results/graph_lifecycle/full_pytest_fixed.log"
+     },
+     {
+      "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step83/test_gpu_runner_lifecycle.py tests/step69/test_spec_cudagraph.py tests/step71 -q -ra",
+      "exit_code": 0,
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 5.76,
+      "log": "benchmarks/results/graph_lifecycle/focused_final.log"
+     },
+     {
+      "cmd": "同一进程连续三次 pytest.main step69/test_spec_cudagraph.py",
+      "exit_code": 0,
+      "passed": 57,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": null,
+      "log": "benchmarks/results/graph_lifecycle/graph_repeat_fixed.log"
+     },
+     {
+      "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 -q -ra",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 23.56,
+      "log": "benchmarks/results/graph_lifecycle/step089_separate.log"
+     }
+    ],
+    "diagnostics": {
+     "old_kv": "requires_grad=True; CopySlices",
+     "old_digest": "requires_grad=True; CatBackward0",
+     "old_active_pool_blocks": 22,
+     "new_kv_digest": "requires_grad=False; grad_fn=None",
+     "new_active_pool_blocks": 0,
+     "negative_test": "remove decorator, test fails at KV requires_grad",
+     "original_test": "original fails without boundary and passes with boundary"
+    },
+    "limitations": [
+     "23 skipped are real model cases not passed",
+     "multi-rank Graph and real Qwen3-8B/14B remain unverified"
+    ],
+    "artifacts": "benchmarks/results/graph_lifecycle/"
+   },
    "status": "环境基线与通信测量完成；Graph 既有缺陷复现，104/105 验收阻塞未关闭",
    "head": "03791f511d67799c8b9b8d13978f41fe29172c90",
    "head_note": "实施前 HEAD；本关修改在工作区，提交后 HEAD 改变",
@@ -12717,5 +12781,12 @@
    "reason": "089 不下载或验收真实模型权重",
    "fixed_model_metadata": "learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/模型基线.json"
   }
+ },
+ "current_package": {
+  "root": "minivllm/",
+  "python_files": 177,
+  "sha256": "0dfdbb66ba9a6d91ef986a23c82108ab94882f616fcadcd2aabff85bc588fd2c",
+  "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
+  "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  }
 }
