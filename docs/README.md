@@ -137,3 +137,5 @@
 | [step81_alignment.md](step81_alignment.md) | `minivllm/core/{kv_cache_interface,kv_cache_coordinator,single_type_kv_cache_manager,kv_cache_manager}.py` + `minivllm/worker/{block_table,gpu_input_batch,gpu_model_runner}.py` + `minivllm/worker/gpu/model_runner.py` + `minivllm/attention/backends/torch_sdpa.py` | 第八十一关旧版（**E2 所需多组子集，不是新 81 完成**）：FullAttention+SlidingWindow 多 KV group 的 spec/group/config、组块大小 4/8 的分配与共同前缀边界、`HybridKVCacheCoordinator` 固定点取 min、V2 多组块表/逐组 metadata、V1 多组块表包装与逐组工作区、绝对位置滑窗掩码、Q-only 组跟随源层；多 group target 用 packed shared slab（一个 backing + 每层 offset view）；不同 group block_size 只到控制面，Mamba 混合状态/抢占三时刻/滑窗块回收/KV transfer/多模态仍未做。`tests/step81` 7 passed（旧子集）；新 81 收口见 `step81_closeout.md`；`docs/results.json` → `step81.results` / `step81.closeout` |
 
 并行专题：[091 并行配置与支持矩阵](step091_alignment.md)：提供 TP/PP/DP 布局校验和单卡执行器工厂；多卡执行尚未开放。
+
+[092 进程组与通信原语](step092_alignment.md)：单机 NCCL/Gloo 通信组和真实多 rank 原语；正式多卡执行器仍属后续关卡。

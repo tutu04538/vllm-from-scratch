@@ -1108,3 +1108,7 @@ python benchmarks/trace_step57.py                       # 一条覆盖五种事�
 ### 并行配置（091）
 
 `ParallelConfig` 描述 TP、PP、DP、rank 和可见设备预算；`LLMEngine(config)` 使用工厂创建真实的单卡 `UniProcExecutor`，旧的显式 executor 参数仍可用。当前仅支持 TP=PP=DP=1；多卡、mp 和 external launcher 明确拒绝。模型执行组 `world_size=TP×PP`（PCP=1），服务总 GPU 预算还要乘 DP。详见 [091 对齐报告](../docs/step091_alignment.md)。
+
+### 并行通信原语（092）
+
+`minivllm.distributed` 管理单机稠密 TP/PP 的 NCCL 设备组和 Gloo 元数据组，提供 eager 通信；不能据此认为多卡模型推理已经开放。三维及以上 `reduce_scatter` 在部分维度存在冻结上游的形状问题，使用范围与复现见 [092 对齐报告](../docs/step092_alignment.md)。
