@@ -1104,3 +1104,7 @@ python benchmarks/trace_step57.py                       # 一条覆盖五种事�
 数值对照用的外部参照是 **transformers 的 Qwen3**（同一份 tiny 权重）与一份**按公式手写**的
 注意力参考实现；权重与 tokenizer 用本机 `models/Qwen3-1.7B` 与**现场生成**的 tiny 模型
 （`minivllm/testing/tiny_models.py`，固定 seed、写临时目录，不下载也不提交权重）。
+
+### 并行配置（091）
+
+`ParallelConfig` 描述 TP、PP、DP、rank 和可见设备预算；`LLMEngine(config)` 使用工厂创建真实的单卡 `UniProcExecutor`，旧的显式 executor 参数仍可用。当前仅支持 TP=PP=DP=1；多卡、mp 和 external launcher 明确拒绝。模型执行组 `world_size=TP×PP`（PCP=1），服务总 GPU 预算还要乘 DP。详见 [091 对齐报告](../docs/step091_alignment.md)。

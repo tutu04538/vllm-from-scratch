@@ -261,6 +261,93 @@ class DeviceConfig:
     device: str = "cpu"
 
 
+@dataclass(frozen=True)
+class ParallelConfig:
+    """单机并行布局；world_size 是一个模型副本的进程数。"""
+
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    data_parallel_size: int = 1
+    prefill_context_parallel_size: int = 1
+    decode_context_parallel_size: int = 1
+    rank: int = 0
+    local_rank: int = 0
+    data_parallel_rank: int = 0
+    distributed_executor_backend: str | None = None
+    device_ids: tuple[int, ...] | None = None
+    nnodes: int = 1
+    enable_expert_parallel: bool = False
+    enable_dbo: bool = False
+
+    def __post_init__(self):
+        for name in ("tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size",
+                     "prefill_context_parallel_size", "decode_context_parallel_size", "nnodes"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} 必须是正整数，收到 {value!r}")
+        for name, limit in (("rank", self.world_size), ("local_rank", self.world_size),
+                            ("data_parallel_rank", self.data_parallel_size)):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value < limit:
+                raise ValueError(f"{name} 必须在 [0, {limit}) 内，收到 {value!r}")
+        for name in ("enable_expert_parallel", "enable_dbo"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} 必须是 bool")
+            if getattr(self, name):
+                raise NotImplementedError(f"{name} 尚未支持")
+        if self.nnodes != 1 or self.prefill_context_parallel_size != 1 or self.decode_context_parallel_size != 1:
+            raise NotImplementedError("仅支持单机且 PCP=DCP=1")
+        if self.distributed_executor_backend not in (None, "uni", "mp", "external_launcher"):
+            raise NotImplementedError(f"不支持 executor 后端 {self.distributed_executor_backend!r}")
+        if self.device_ids is not None:
+            if not isinstance(self.device_ids, (tuple, list)):
+                raise ValueError("device_ids 必须是整数序列")
+            ids = tuple(self.device_ids)
+            if len(ids) != self.total_gpu_count or any(type(i) is not int or i < 0 for i in ids):
+                raise ValueError("device_ids 必须逐卡列出非负整数")
+            if len(set(ids)) != len(ids):
+                raise ValueError("device_ids 不能重复")
+            object.__setattr__(self, "device_ids", ids)
+
+    @property
+    def world_size(self) -> int:
+        size = self.tensor_parallel_size * self.pipeline_parallel_size * self.prefill_context_parallel_size
+        return size * self.data_parallel_size if self.distributed_executor_backend == "external_launcher" else size
+
+    @property
+    def total_gpu_count(self) -> int:
+        return (self.world_size if self.distributed_executor_backend == "external_launcher"
+                else self.world_size * self.data_parallel_size)
+
+    @property
+    def resolved_backend(self) -> str:
+        return self.distributed_executor_backend or ("mp" if self.total_gpu_count > 1 else "uni")
+
+    def validate_devices(self, available: int) -> None:
+        if type(available) is not int or available < 0:
+            raise ValueError("可见设备数必须是非负整数")
+        if self.total_gpu_count > available:
+            raise ValueError(f"需要 {self.total_gpu_count} 张 GPU，可见 {available} 张")
+        if self.device_ids is not None and any(i >= available for i in self.device_ids):
+            raise ValueError(f"device_ids 超出可见 GPU 数 {available}")
+
+    def validate_model(self, model: ModelConfig) -> None:
+        if self.world_size == 1:
+            return
+        hf = model._text_hf_config()
+        required = ("num_attention_heads", "num_key_value_heads", "num_hidden_layers")
+        if any(type(hf.get(k)) is not int or hf[k] < 1 for k in required):
+            raise ValueError("并行布局需要模型的正整数 Q 头数、KV 头数和层数")
+        q, kv, layers = (hf[k] for k in required)
+        tp, pp = self.tensor_parallel_size, self.pipeline_parallel_size
+        if q % tp or q % kv:
+            raise ValueError("Q 头数必须能被 TP 和 KV 头数整除")
+        if (kv >= tp and kv % tp) or (kv < tp and tp % kv):
+            raise ValueError("KV 头数与 TP 不支持均分或复制")
+        if pp > layers:
+            raise ValueError("PP 大于模型层数，无法给每个 stage 分层")
+
+
 # 66 关：另一个"有配置枚举、但本机 V1 里没有实现"的方法（需求 066 §3）。
 # 它不是别名、也不是"还没适配的家族"——上游 0.28.0 的注册表里那条是**注释掉的**，
 # 所以配置层能认出它、执行层谁也建不起来。本仓库把这条事实写成明确的报错，
@@ -378,6 +465,7 @@ class SpeculativeConfig:
     # 按每请求置信度自适应决定验证预算。只有 DSpark 能开（配置期检查）；执行期还要由
     # Runner 检查注意力后端是否支持 device/CPU query 长度不一致（以及 target varlen 图能力）。
     enable_adaptive_verification: bool = False
+    draft_tensor_parallel_size: int | None = None
 
     @staticmethod
     def _is_custom_proposer_path(model: str | None) -> bool:
@@ -1816,13 +1904,50 @@ class VllmConfig:
     #: 注意力后端：`torch`（默认，Torch SDPA 参考实现）或 `triton`
     #: （Triton paged attention；声明 AttentionCGSupport.ALWAYS）。
     attention_backend: str = "torch"
+    parallel_config: ParallelConfig = field(default_factory=ParallelConfig)
 
     def __post_init__(self):
+        self._validate_parallel_config()
         self._validate_attention_backend()
         self._resolve_cudagraph_config()
         # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
         # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
         self.validate_v2_model_runner()
+
+    def _validate_parallel_config(self) -> None:
+        p = self.parallel_config
+        spec = self.speculative_config
+        draft_tp = None if spec is None else spec.draft_tensor_parallel_size
+        if draft_tp is not None and (type(draft_tp) is not int or draft_tp < 1):
+            raise ValueError("draft_tensor_parallel_size 必须是正整数")
+        if draft_tp is not None and draft_tp != p.tensor_parallel_size:
+            raise NotImplementedError("本专题 draft TP 必须等于 target TP")
+        if p.pipeline_parallel_size > 1 and spec is not None and spec.method == "eagle3" and self.use_v2_model_runner:
+            raise NotImplementedError("V2 不支持 EAGLE3 + PP>1")
+        if p.pipeline_parallel_size > 1 and p.distributed_executor_backend == "external_launcher":
+            raise NotImplementedError("不支持 external_launcher + PP>1")
+        p.validate_model(self.model_config)
+        if p.total_gpu_count > 1 and self.device_config.device.startswith("cuda"):
+            import torch
+            p.validate_devices(torch.cuda.device_count())
+        if p.total_gpu_count > 1:
+            raise NotImplementedError("多卡并行尚未开放；V1/V2 均不能执行此布局")
+        if p.resolved_backend != "uni":
+            raise NotImplementedError(f"executor 后端 {p.resolved_backend!r} 尚未开放")
+        if p.device_ids is not None:
+            device = self.device_config.device
+            if not device.startswith("cuda"):
+                raise ValueError("指定 device_ids 时必须使用 CUDA 设备")
+            device_index = int(device.split(":", 1)[1]) if ":" in device else 0
+            if p.device_ids != (device_index,):
+                raise ValueError("device_ids 与 Worker 的 CUDA 设备不一致")
+
+    @property
+    def effective_draft_tensor_parallel_size(self) -> int | None:
+        if self.speculative_config is None:
+            return None
+        return (self.speculative_config.draft_tensor_parallel_size
+                or self.parallel_config.tensor_parallel_size)
 
     def _validate_attention_backend(self) -> None:
         name = str(self.attention_backend).lower()

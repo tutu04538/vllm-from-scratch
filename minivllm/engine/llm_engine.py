@@ -22,7 +22,10 @@ from .output_processor import OutputProcessor
 
 
 class LLMEngine:
-    def __init__(self, vllm_config, executor, tokenizer=None) -> None:
+    def __init__(self, vllm_config, executor=None, tokenizer=None) -> None:
+        if executor is None:
+            from ..executor import create_executor
+            executor = create_executor(vllm_config)
         self.vllm_config = vllm_config
         self._shutdown = False
         try:

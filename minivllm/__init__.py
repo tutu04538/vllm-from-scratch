@@ -62,7 +62,7 @@
   与 docs/step57c_kv_and_prefix.md 的差异账本）。
 """
 
-from .config import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,
+from .config import (CacheConfig, DeviceConfig, ModelConfig, ParallelConfig, SchedulerConfig,
                      SpeculativeConfig, VllmConfig)
 from .engine import EngineCore, InprocClient, LLMEngine, OutputProcessor
 from .outputs import (EngineCoreOutput, EngineCoreOutputs, EngineCoreRequest, FinishReason,
@@ -81,7 +81,7 @@ __all__ = [
     "Request", "RequestStatus", "SamplingParams", "StructuredOutputsParams",
     "EngineCoreRequest", "EngineCoreOutput", "EngineCoreOutputs", "ModelRunnerOutput",
     "RequestOutput", "FinishReason",
-    "VllmConfig", "ModelConfig", "CacheConfig", "SchedulerConfig", "DeviceConfig",
+    "VllmConfig", "ModelConfig", "CacheConfig", "SchedulerConfig", "DeviceConfig", "ParallelConfig",
     "SpeculativeConfig",
     "get_model", "Qwen3ForCausalLM", "Sampler",
 ]

@@ -34,7 +34,8 @@
   "step74_triton_fixed_attention": "implemented + self-verified（固定场景 query-tiled Triton；block16 混合批 + adaptive；968 回归）",
   "step83": "implemented + self-verified（一配置一子进程；shutdown 所有权/幂等；committed 吞吐 + burst 间隔 + 新 TPOT；第一分歧 BF16 near-tie 定位 + FP32 对照；22 项 step83、全量 1154；不优化算子、不跑完整矩阵）",
   "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）",
-  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；2D 修复后 198/0 spills；24 项 step88、全量 1297；2D 修复 198/0 spills，Graph 135.55 tok/s）"
+  "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；2D 修复后 198/0 spills；24 项 step88、全量 1297；2D 修复 198/0 spills，Graph 135.55 tok/s）",
+  "step091": "已实现并验收配置矩阵与单卡执行器工厂；多卡仍拒绝"
  },
  "step58": {
   "results": {
@@ -14043,9 +14044,129 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 177,
-  "sha256": "72d60e24993f38881b1cf558ff52b427aa2279706da202d44dd657bdf3f25ad5",
+  "python_files": 178,
+  "sha256": "d8f68961dbc5f08a8f7dbace6862c52eb09c0281289429d3b231878a5fbba03d",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
+ },
+ "step091": {
+  "results": {
+   "status": "passed (configuration and single-GPU only)",
+   "head": "6178c301720cee542375c50b70c6053cd16ef204 (parent before 091)",
+   "package_sha256": "d8f68961dbc5f08a8f7dbace6862c52eb09c0281289429d3b231878a5fbba03d",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "transformers": "5.14.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step091 -q -ra (由验收入口子进程执行)",
+     "exit_code": 0,
+     "passed": 59,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 5.83,
+     "artifact": "benchmarks/results/step091/acceptance.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step091_acceptance.py --case all --timeout 120 --output benchmarks/results/step091/acceptance.json",
+     "exit_code": 0,
+     "duration_seconds": 7.4229136819485575
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 113.87,
+     "artifact": "benchmarks/results/step091/regression_final.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 20,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 23.88,
+     "artifact": "benchmarks/results/step091/parallel_regression.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step090_models.py --mode forward --model 8b --timeout 1800 --output benchmarks/results/step091/qwen3_8b_forward.json",
+     "exit_code": 0,
+     "duration_seconds": 7.634115851018578
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step091/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "executed_cases": [
+    "配置矩阵与非法值",
+    "四个冻结文件逐字节哈希核对",
+    "上游 world_size 和 draft TP 实际方法差分",
+    "真实GPU tiny Qwen V1/V2 工厂建引擎及生成",
+    "Qwen3-8B V2 真实权重单卡前向",
+    "真实可见GPU预算与越界设备在创建worker前拒绝"
+   ],
+   "support_matrix": {
+    "single": "supported",
+    "tp_pp_dp_multi": "not implemented",
+    "eagle3_pp": "rejected",
+    "async_scheduling": "rejected"
+   },
+   "artifacts": [
+    "benchmarks/results/step091/acceptance.json",
+    "benchmarks/results/step091/qwen3_8b_forward.json",
+    "benchmarks/results/step091/requirements_audit.json"
+   ],
+   "initial_diagnostics": [
+    "首次091测试有1项fixture缺少EAGLE3 draft_model_config，修正测试构造后通过；未改放断言。",
+    "需求静态检查首次因状态字段不含需求编写时原文失败，恢复历史状态说明后通过。"
+   ],
+   "not_run": [
+    "多卡执行、分片、并行通信和14B推理为后续关卡，不由配置校验代表通过。",
+    "23个旧回归skip为缺少旧真实权重，未计为通过。"
+   ]
+  },
+  "models": {
+   "8b": {
+    "repo": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+    "dtype": "bfloat16",
+    "weight_count": 399,
+    "tensor_bytes": 16381470720,
+    "weights_sha256": {
+     "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+     "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+     "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+     "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+     "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+    },
+    "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "architectures": [
+     "Qwen3ForCausalLM"
+    ],
+    "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+    "tensor_manifest": "benchmarks/results/step090/audit_8b.json",
+    "real_gpu_execution": true,
+    "manifest": "benchmarks/results/step091/qwen3_8b_forward.json",
+    "weight_hash_note": "沿用090审计；本次前向未重复hash全部权重",
+    "output_token_ids": [
+     104198
+    ],
+    "gpu_peak_allocated_bytes": 16745053696,
+    "kv_tensor_count": 36
+   },
+   "tiny": "固定seed生成的 tiny_gqa；V1/V2各在单张GPU经工厂构建并生成2 token。",
+   "other": "091未运行14B或EAGLE3真实模型。"
+  }
  }
 }
