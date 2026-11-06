@@ -7,8 +7,8 @@
 
 **为什么是"流"而不是"字典"**：真实模型几十 GB，先读进一个大 dict 会把内存打满（本关要加载的
 本机 Qwen3-1.7B 是 3.8 GB）。safetensors 支持按 key 惰性读取（`safe_open` + `get_tensor`），
-所以按 shard 打开、读完一个再开下一个，峰值内存只有"一个 shard + 正在写的那几个参数"。
-这也是 vLLM 的做法（`DefaultModelLoader.get_all_weights()` 返回迭代器）。
+所以一次映射各 shard，按全局名字顺序逐个取张量，避免先构造完整权重字典。
+vLLM 同样以迭代器向模型交付权重；排序服务于本项目的分组加载器。
 
 **校验**（198 §8 要求"严格检查"，不能靠 `strict=False` 掩盖漏加载）。先跑一遍**只看名字**的
 预检（不读张量，开销只是目录元数据），全过了才开始 yield 张量——这样"检查点坏了"不会变成
@@ -28,6 +28,7 @@
 
 import json
 import os
+from contextlib import ExitStack
 from collections.abc import Iterator
 
 import torch
@@ -43,8 +44,16 @@ _SUPPORTED_SUFFIX = ".safetensors"
 
 
 def _read_json(path: str) -> dict:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{path} 中 JSON 键重复：{key!r}")
+            result[key] = value
+        return result
+
     with open(path) as handle:
-        return json.load(handle)
+        return json.load(handle, object_pairs_hook=unique_pairs)
 
 
 def _shard_names(path: str) -> list[str]:
@@ -126,7 +135,7 @@ def iter_weights(model_dir: str) -> Iterator[tuple[str, torch.Tensor]]:
     files, weight_map = get_safetensors_files(model_dir)
 
     # ---- 预检：只看名字，全过了再开始读张量 ----
-    all_names: list[str] = []
+    name_to_path: dict[str, str] = {}
     seen: set[str] = set()
     for path in files:
         shard = os.path.basename(path)
@@ -141,20 +150,22 @@ def iter_weights(model_dir: str) -> Iterator[tuple[str, torch.Tensor]]:
                     f"权重 {name!r} 出现在 {shard}，但索引说它在 {expected_shard}："
                     f"检查点与索引对不上")
             seen.add(name)
-            all_names.append(name)
+            name_to_path[name] = path
     if weight_map is not None:
         missing = sorted(set(weight_map) - seen)
         if missing:
             raise ValueError(
                 f"索引里有这些权重名，但 shard 里一个都没读到：{missing[:8]}"
                 f"{' …' if len(missing) > 8 else ''}（共 {len(missing)} 个）")
-    _check_grouping(all_names)
-
-    # ---- 正式读：按 shard 打开，逐个 key 惰性取张量 ----
-    for path in files:
-        with safe_open(path, framework="pt", device="cpu") as handle:
-            for name in handle.keys():
-                yield name, handle.get_tensor(name)
+    # 一个模块可能跨多个 shard，逐文件产出会让层名前缀交错。只排序名字，不缓存
+    # 张量：每个文件 mmap 打开一次，按全局顺序逐 tensor 惰性读取。
+    names = sorted(name_to_path)
+    _check_grouping(names)
+    with ExitStack() as stack:
+        handles = {path: stack.enter_context(safe_open(path, framework="pt", device="cpu"))
+                   for path in files}
+        for name in names:
+            yield name, handles[name_to_path[name]].get_tensor(name)
 
 
 def default_weight_loader(param, loaded_weight: torch.Tensor, shard_id=None) -> None:

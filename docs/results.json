@@ -12782,10 +12782,1269 @@
    "fixed_model_metadata": "learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/模型基线.json"
   }
  },
+ "step090": {
+  "results": {
+   "status": "completed: 090 范围通过；draft 真实前向与项目多卡在后续关卡",
+   "head": "63f0c97",
+   "package_sha256": "72d60e24993f38881b1cf558ff52b427aa2279706da202d44dd657bdf3f25ad5",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "environment": {
+    "disk_available_at_start": "约1.7 TiB",
+    "weights_total_bytes": 47937135500,
+    "disk_estimate": "至少约100 GiB含暂存余量"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 9,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 1.64,
+     "log": "benchmarks/results/step090/unit_final5.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 1294,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 119.58,
+     "note": "090当时5项，其余新增用例单独运行",
+     "log": "benchmarks/results/step090/full_pytest.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 12,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 24.89,
+     "note": "090当时5项",
+     "log": "benchmarks/results/step090/new_tests.log"
+    }
+   ],
+   "artifacts": "benchmarks/results/step090/",
+   "numerics_contract": {
+    "path": "benchmarks/results/step090/numerics_contract.json",
+    "sha256": "29bcbf64f1212cf100845387ff46ddcd43981b3d9fd4487c044a455ec28d0e7c",
+    "scope": "2×参考最大观察误差，最小绝对门槛1e-5；仅登记本固定输入和所测对象，未使用mini结果",
+    "unregistered": [
+     "EAGLE3映射后logits：090未执行draft前向，113前不得视为已登记"
+    ],
+    "models": {
+     "8b": {
+      "reference_tp": 1,
+      "thresholds": {
+       "qkv": {
+        "max_abs": 0.0078125,
+        "relative_l2": 0.005170576762257551
+       },
+       "attention": {
+        "max_abs": 0.03125,
+        "relative_l2": 0.008006860320069968
+       },
+       "hidden": {
+        "max_abs": 18.8125,
+        "relative_l2": 0.06743141058080449
+       },
+       "kv": {
+        "max_abs": 2.0,
+        "relative_l2": 0.005530955741364658
+       },
+       "raw_logits": {
+        "max_abs": 1.1875,
+        "relative_l2": 0.08588981977004848
+       },
+       "probability": {
+        "max_abs": 1e-05,
+        "relative_l2": 1e-05
+       },
+       "local_qkv_fp32": {
+        "max_abs": 0.006048798561096191,
+        "relative_l2": 0.004025365691632032
+       }
+      },
+      "configs": {
+       "1": {
+        "top": {
+         "ids": [
+          198,
+          271
+         ],
+         "values": [
+          41.75,
+          28.5
+         ],
+         "margin": 13.25
+        },
+        "ranks": [
+         {
+          "rank": 0,
+          "local_rank": 0,
+          "device": 0,
+          "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 5105280,
+          "gpu_peak_allocated_bytes": 21714503680,
+          "gpu_peak_reserved_bytes": 21781020672,
+          "qkv_weight_shape": [
+           6144,
+           4096
+          ]
+         }
+        ],
+        "local_fp32": [
+         {
+          "rank": 0,
+          "max_abs": 0.002772212028503418,
+          "relative_l2": 0.0019490839913487434,
+          "max_error_index": [
+           8,
+           3793
+          ],
+          "observed_value": 0.984375,
+          "reference_value": 0.9816027879714966,
+          "shape": [
+           128,
+           6144
+          ]
+         }
+        ],
+        "max_abs_vs_reference_tp": {
+         "qkv": 0.0,
+         "attention": 0.0,
+         "hidden": 0.0,
+         "kv": 0.0,
+         "raw_logits": 0.0,
+         "probability": 0.0
+        }
+       },
+       "2": {
+        "top": {
+         "ids": [
+          198,
+          271
+         ],
+         "values": [
+          41.25,
+          28.0
+         ],
+         "margin": 13.25
+        },
+        "ranks": [
+         {
+          "rank": 0,
+          "local_rank": 0,
+          "device": 0,
+          "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 4273996,
+          "gpu_peak_allocated_bytes": 21808875520,
+          "gpu_peak_reserved_bytes": 21818769408,
+          "qkv_weight_shape": [
+           3072,
+           4096
+          ]
+         },
+         {
+          "rank": 1,
+          "local_rank": 1,
+          "device": 1,
+          "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 4249580,
+          "gpu_peak_allocated_bytes": 21808875520,
+          "gpu_peak_reserved_bytes": 21818769408,
+          "qkv_weight_shape": [
+           3072,
+           4096
+          ]
+         }
+        ],
+        "local_fp32": [
+         {
+          "rank": 0,
+          "max_abs": 0.0030243992805480957,
+          "relative_l2": 0.0020110232289880514,
+          "max_error_index": [
+           15,
+           2355
+          ],
+          "observed_value": -0.671875,
+          "reference_value": -0.6748993992805481,
+          "shape": [
+           128,
+           3072
+          ]
+         },
+         {
+          "rank": 1,
+          "max_abs": 0.002310633659362793,
+          "relative_l2": 0.001915759057737887,
+          "max_error_index": [
+           8,
+           2532
+          ],
+          "observed_value": -0.5,
+          "reference_value": -0.5023106336593628,
+          "shape": [
+           128,
+           3072
+          ]
+         }
+        ],
+        "max_abs_vs_reference_tp": {
+         "qkv": 0.00390625,
+         "attention": 0.015625,
+         "hidden": 8.875,
+         "kv": 1.0,
+         "raw_logits": 0.59375,
+         "probability": 6.170269850613863e-11
+        }
+       },
+       "4": {
+        "top": {
+         "ids": [
+          198,
+          271
+         ],
+         "values": [
+          41.75,
+          28.25
+         ],
+         "margin": 13.5
+        },
+        "ranks": [
+         {
+          "rank": 0,
+          "local_rank": 0,
+          "device": 0,
+          "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3616432,
+          "gpu_peak_allocated_bytes": 21813921792,
+          "gpu_peak_reserved_bytes": 21892169728,
+          "qkv_weight_shape": [
+           1536,
+           4096
+          ]
+         },
+         {
+          "rank": 1,
+          "local_rank": 1,
+          "device": 1,
+          "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3627328,
+          "gpu_peak_allocated_bytes": 21813921792,
+          "gpu_peak_reserved_bytes": 21892169728,
+          "qkv_weight_shape": [
+           1536,
+           4096
+          ]
+         },
+         {
+          "rank": 2,
+          "local_rank": 2,
+          "device": 2,
+          "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3620168,
+          "gpu_peak_allocated_bytes": 21813921792,
+          "gpu_peak_reserved_bytes": 21892169728,
+          "qkv_weight_shape": [
+           1536,
+           4096
+          ]
+         },
+         {
+          "rank": 3,
+          "local_rank": 3,
+          "device": 3,
+          "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3593828,
+          "gpu_peak_allocated_bytes": 21813921792,
+          "gpu_peak_reserved_bytes": 21892169728,
+          "qkv_weight_shape": [
+           1536,
+           4096
+          ]
+         }
+        ],
+        "local_fp32": [
+         {
+          "rank": 0,
+          "max_abs": 0.0024051666259765625,
+          "relative_l2": 0.001922862371429801,
+          "max_error_index": [
+           8,
+           1231
+          ],
+          "observed_value": -0.76171875,
+          "reference_value": -0.7641239166259766,
+          "shape": [
+           128,
+           1536
+          ]
+         },
+         {
+          "rank": 1,
+          "max_abs": 0.0018920302391052246,
+          "relative_l2": 0.002012682845816016,
+          "max_error_index": [
+           2,
+           1103
+          ],
+          "observed_value": -0.5234375,
+          "reference_value": -0.5215454697608948,
+          "shape": [
+           128,
+           1536
+          ]
+         },
+         {
+          "rank": 2,
+          "max_abs": 0.0019238591194152832,
+          "relative_l2": 0.0019752865191549063,
+          "max_error_index": [
+           2,
+           1124
+          ],
+          "observed_value": -0.6015625,
+          "reference_value": -0.6034863591194153,
+          "shape": [
+           128,
+           1536
+          ]
+         },
+         {
+          "rank": 3,
+          "max_abs": 0.002310633659362793,
+          "relative_l2": 0.0018793692579492927,
+          "max_error_index": [
+           8,
+           1252
+          ],
+          "observed_value": -0.5,
+          "reference_value": -0.5023106336593628,
+          "shape": [
+           128,
+           1536
+          ]
+         }
+        ],
+        "max_abs_vs_reference_tp": {
+         "qkv": 0.00390625,
+         "attention": 0.015625,
+         "hidden": 9.40625,
+         "kv": 1.0,
+         "raw_logits": 0.53125,
+         "probability": 3.89385945709364e-07
+        }
+       }
+      }
+     },
+     "14b": {
+      "reference_tp": 2,
+      "thresholds": {
+       "qkv": {
+        "max_abs": 0.0078125,
+        "relative_l2": 0.004322734039780155
+       },
+       "attention": {
+        "max_abs": 0.0625,
+        "relative_l2": 0.008416881714935947
+       },
+       "hidden": {
+        "max_abs": 8.4375,
+        "relative_l2": 0.08767365254711046
+       },
+       "kv": {
+        "max_abs": 1.0,
+        "relative_l2": 0.0037116907093553467
+       },
+       "raw_logits": {
+        "max_abs": 1.8125,
+        "relative_l2": 0.1003019703108038
+       },
+       "probability": {
+        "max_abs": 1e-05,
+        "relative_l2": 1e-05
+       },
+       "local_qkv_fp32": {
+        "max_abs": 0.004977583885192871,
+        "relative_l2": 0.004045019391924143
+       }
+      },
+      "configs": {
+       "2": {
+        "top": {
+         "ids": [
+          198,
+          271
+         ],
+         "values": [
+          40.0,
+          26.375
+         ],
+         "margin": 13.625
+        },
+        "ranks": [
+         {
+          "rank": 0,
+          "local_rank": 0,
+          "device": 0,
+          "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 4339424,
+          "gpu_peak_allocated_bytes": 21803112448,
+          "gpu_peak_reserved_bytes": 21894266880,
+          "qkv_weight_shape": [
+           3584,
+           5120
+          ]
+         },
+         {
+          "rank": 1,
+          "local_rank": 1,
+          "device": 1,
+          "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 4314724,
+          "gpu_peak_allocated_bytes": 21803112448,
+          "gpu_peak_reserved_bytes": 21894266880,
+          "qkv_weight_shape": [
+           3584,
+           5120
+          ]
+         }
+        ],
+        "local_fp32": [
+         {
+          "rank": 0,
+          "max_abs": 0.0018584132194519043,
+          "relative_l2": 0.0016621712129563093,
+          "max_error_index": [
+           15,
+           370
+          ],
+          "observed_value": 0.5078125,
+          "reference_value": 0.5059540867805481,
+          "shape": [
+           128,
+           3584
+          ]
+         },
+         {
+          "rank": 1,
+          "max_abs": 0.0018730759620666504,
+          "relative_l2": 0.0016672193305566907,
+          "max_error_index": [
+           15,
+           2778
+          ],
+          "observed_value": -0.62890625,
+          "reference_value": -0.6307793259620667,
+          "shape": [
+           128,
+           3584
+          ]
+         }
+        ],
+        "max_abs_vs_reference_tp": {
+         "qkv": 0.0,
+         "attention": 0.0,
+         "hidden": 0.0,
+         "kv": 0.0,
+         "raw_logits": 0.0,
+         "probability": 0.0
+        }
+       },
+       "4": {
+        "top": {
+         "ids": [
+          198,
+          271
+         ],
+         "values": [
+          40.0,
+          26.375
+         ],
+         "margin": 13.625
+        },
+        "ranks": [
+         {
+          "rank": 0,
+          "local_rank": 0,
+          "device": 0,
+          "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3611440,
+          "gpu_peak_allocated_bytes": 21742819328,
+          "gpu_peak_reserved_bytes": 21873295360,
+          "qkv_weight_shape": [
+           1792,
+           5120
+          ]
+         },
+         {
+          "rank": 1,
+          "local_rank": 1,
+          "device": 1,
+          "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3673296,
+          "gpu_peak_allocated_bytes": 21742819328,
+          "gpu_peak_reserved_bytes": 21873295360,
+          "qkv_weight_shape": [
+           1792,
+           5120
+          ]
+         },
+         {
+          "rank": 2,
+          "local_rank": 2,
+          "device": 2,
+          "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3562848,
+          "gpu_peak_allocated_bytes": 21742819328,
+          "gpu_peak_reserved_bytes": 21873295360,
+          "qkv_weight_shape": [
+           1792,
+           5120
+          ]
+         },
+         {
+          "rank": 3,
+          "local_rank": 3,
+          "device": 3,
+          "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+          "device_name": "NVIDIA GeForce RTX 4090",
+          "cpu_max_rss_kib": 3665164,
+          "gpu_peak_allocated_bytes": 21742819328,
+          "gpu_peak_reserved_bytes": 21873295360,
+          "qkv_weight_shape": [
+           1792,
+           5120
+          ]
+         }
+        ],
+        "local_fp32": [
+         {
+          "rank": 0,
+          "max_abs": 0.0018584132194519043,
+          "relative_l2": 0.0019145617261528969,
+          "max_error_index": [
+           15,
+           370
+          ],
+          "observed_value": 0.5078125,
+          "reference_value": 0.5059540867805481,
+          "shape": [
+           128,
+           1792
+          ]
+         },
+         {
+          "rank": 1,
+          "max_abs": 0.0024887919425964355,
+          "relative_l2": 0.001955644227564335,
+          "max_error_index": [
+           15,
+           909
+          ],
+          "observed_value": -0.5625,
+          "reference_value": -0.5649887919425964,
+          "shape": [
+           128,
+           1792
+          ]
+         },
+         {
+          "rank": 2,
+          "max_abs": 0.002033054828643799,
+          "relative_l2": 0.0019341023871675134,
+          "max_error_index": [
+           15,
+           1498
+          ],
+          "observed_value": -0.6328125,
+          "reference_value": -0.6307794451713562,
+          "shape": [
+           128,
+           1792
+          ]
+         },
+         {
+          "rank": 3,
+          "max_abs": 0.0021291375160217285,
+          "relative_l2": 0.0020225096959620714,
+          "max_error_index": [
+           2,
+           1496
+          ],
+          "observed_value": -0.734375,
+          "reference_value": -0.7322458624839783,
+          "shape": [
+           128,
+           1792
+          ]
+         }
+        ],
+        "max_abs_vs_reference_tp": {
+         "qkv": 0.00390625,
+         "attention": 0.03125,
+         "hidden": 4.21875,
+         "kv": 0.5,
+         "raw_logits": 0.90625,
+         "probability": 1.7678129793363695e-11
+        }
+       }
+      }
+     }
+    },
+    "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+    "historical_archive_sha256": "c2917a2106bb7de0bdbadc023e9c75b6ba6fee372f0aee406135635431e807ea"
+   },
+   "final_tests": [
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 1302,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 121.02,
+     "log": "benchmarks/results/step090/final_full_pytest.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 20,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 26.34,
+     "log": "benchmarks/results/step090/final_parallel_pytest.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 13,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 2.18,
+     "log": "benchmarks/results/step090/final_unit_pytest.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py",
+     "exit_code": 0,
+     "passed": 8003,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step090/final_requirements_after_update.log"
+    }
+   ],
+   "executed_cases": {
+    "source_hash": "4 repos,15 weights match Hub LFS",
+    "converted": "two real draft checkpoints: 15 tensors each exact; repeated conversion same manifest",
+    "mapping": "d2t/t2d validated for both",
+    "target_8b": "BF16 V2 eager single GPU short prefill + 1 token",
+    "target_14b": "CPU stream audit 443 tensors, no project GPU forward",
+    "reference": "8b TP1/2/4 and 14b TP2/4, each 3 repeats, target-only fixed 128 tokens"
+   },
+   "real_commands": [
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode audit --model 8b --output benchmarks/results/step090/audit_8b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 24.109873231034726,
+     "output": "benchmarks/results/step090/audit_8b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode audit --model 14b --output benchmarks/results/step090/audit_14b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 352.7502663480118,
+     "output": "benchmarks/results/step090/audit_14b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode convert --model 8b-draft --output benchmarks/results/step090/convert_final_8b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 3.103937702951953,
+     "output": "benchmarks/results/step090/convert_final_8b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode convert --model 14b-draft --output benchmarks/results/step090/convert_final_14b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 4.578183324076235,
+     "output": "benchmarks/results/step090/convert_final_14b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode load-draft --model 8b-draft --output benchmarks/results/step090/draft_load_final_8b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 2.164672100916505,
+     "output": "benchmarks/results/step090/draft_load_final_8b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode load-draft --model 14b-draft --output benchmarks/results/step090/draft_load_final_14b.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 3.186709488974884,
+     "output": "benchmarks/results/step090/draft_load_final_14b.json"
+    },
+    {
+     "cmd": "python benchmarks/check_step090_models.py --mode forward --model 8b --output benchmarks/results/step090/forward_8b_manifest.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 7.836202465929091,
+     "output": "benchmarks/results/step090/forward_8b_manifest.json"
+    }
+   ],
+   "failed_diagnostics": [
+    {
+     "exit_code": 1,
+     "reason": "BatchEncoding keys mistaken for token IDs, fixed with explicit validation",
+     "log": "benchmarks/results/step090/forward_8b.log"
+    },
+    {
+     "exit_code": 1,
+     "reason": "frozen vLLM RPC rejected function serialization; enabled only in local test processes",
+     "log": "benchmarks/results/step090/reference_8b_tp1.log"
+    },
+    {
+     "exit_code": 1,
+     "reason": "TP2 cannot pickle temporary __main__ function; moved hooks to importable test module",
+     "log": "benchmarks/results/step090/reference_8b_tp2.log"
+    },
+    {
+     "exit_code": 1,
+     "reason": "reference TP1 lacked device UUID; reran with per-rank telemetry",
+     "log": "benchmarks/results/step090/numerics_contract_final.log"
+    }
+   ],
+   "remaining_limits": [
+    "真实 EAGLE3 草稿前向/拒绝后差分/映射 logits 由 113 负责",
+    "项目 14B GPU 和 TP/PP/DP 尚未实现验收",
+    "参考数值阈值仅适用登记的固定输入及测量对象",
+    "23 项旧真实模型 skip 不算通过"
+   ],
+   "reference_and_source_commands": [
+    {
+     "cmd": "PYTHONPATH=$PWD CUDA_VISIBLE_DEVICES=0 VLLM_ALLOW_INSECURE_SERIALIZATION=1 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WORKER_MULTIPROC_METHOD=spawn OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/check_step090_reference.py --model 8b --tp 1 --output benchmarks/results/step090/reference/8b_tp1_kv",
+     "exit_code": 0,
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 17.283874516841024,
+     "log": "benchmarks/results/step090/reference_8b_tp1_telemetry.log",
+     "note": "3 次固定历史参考重复，不是 3 个 pytest case"
+    },
+    {
+     "cmd": "PYTHONPATH=$PWD CUDA_VISIBLE_DEVICES=0,1 VLLM_ALLOW_INSECURE_SERIALIZATION=1 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WORKER_MULTIPROC_METHOD=spawn OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/check_step090_reference.py --model 8b --tp 2 --output benchmarks/results/step090/reference/8b_tp2_kv",
+     "exit_code": 0,
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 27.63005432416685,
+     "log": "benchmarks/results/step090/reference_8b_tp2_complete.log",
+     "note": "3 次固定历史参考重复，不是 3 个 pytest case"
+    },
+    {
+     "cmd": "PYTHONPATH=$PWD CUDA_VISIBLE_DEVICES=0,1,2,3 VLLM_ALLOW_INSECURE_SERIALIZATION=1 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WORKER_MULTIPROC_METHOD=spawn OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/check_step090_reference.py --model 8b --tp 4 --output benchmarks/results/step090/reference/8b_tp4_kv",
+     "exit_code": 0,
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 26.286981632001698,
+     "log": "benchmarks/results/step090/reference_8b_tp4_complete.log",
+     "note": "3 次固定历史参考重复，不是 3 个 pytest case"
+    },
+    {
+     "cmd": "PYTHONPATH=$PWD CUDA_VISIBLE_DEVICES=0,1 VLLM_ALLOW_INSECURE_SERIALIZATION=1 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WORKER_MULTIPROC_METHOD=spawn OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/check_step090_reference.py --model 14b --tp 2 --output benchmarks/results/step090/reference/14b_tp2_kv",
+     "exit_code": 0,
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 32.47733655106276,
+     "log": "benchmarks/results/step090/reference_14b_tp2_complete.log",
+     "note": "3 次固定历史参考重复，不是 3 个 pytest case"
+    },
+    {
+     "cmd": "PYTHONPATH=$PWD CUDA_VISIBLE_DEVICES=0,1,2,3 VLLM_ALLOW_INSECURE_SERIALIZATION=1 VLLM_USE_V2_MODEL_RUNNER=1 VLLM_WORKER_MULTIPROC_METHOD=spawn OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/check_step090_reference.py --model 14b --tp 4 --output benchmarks/results/step090/reference/14b_tp4_kv",
+     "exit_code": 0,
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 29.658139168983325,
+     "log": "benchmarks/results/step090/reference_14b_tp4_complete.log",
+     "note": "3 次固定历史参考重复，不是 3 个 pytest case"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/compare_step090_reference.py --reference-root benchmarks/results/step090/reference --output benchmarks/results/step090/numerics_contract.json",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step090/numerics_contract_final_retry.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step090_sources.py --results benchmarks/results/step090 --output benchmarks/results/step090/source_lfs_verification_full.json",
+     "exit_code": 0,
+     "passed": 15,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": null,
+     "log": "benchmarks/results/step090/source_lfs_verification_full.log"
+    }
+   ],
+   "historical_unrun_before_download": [
+    "四份真实权重完整下载和hash",
+    "两份真实draft转换与逐tensor对账",
+    "8B真实单卡前向",
+    "14B CPU逐tensor审计",
+    "冻结参考数值门槛登记",
+    "真实模型相关回归与最终验收"
+   ],
+   "historical_update_20261106_before_completion": {
+    "snapshot_status": "四份固定revision下载日志完成，已核对5/8/1/1个权重文件可读取及总字节数；尚未逐文件对照远端LFS hash",
+    "conversion": {
+     "8b": {
+      "initial": "benchmarks/results/step090/convert_8b.json",
+      "repeat": "benchmarks/results/step090/convert_repeat_8b.json",
+      "status": "passed",
+      "tensor_count": 15
+     },
+     "14b": {
+      "initial": "benchmarks/results/step090/convert_14b.json",
+      "repeat": "benchmarks/results/step090/convert_repeat_14b.json",
+      "status": "passed",
+      "tensor_count": 15
+     }
+    },
+    "tests": {
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step090 -q -ra",
+     "exit_code": 0,
+     "passed": 10,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 3.32,
+     "log": "benchmarks/results/step090/unit_20261106.log"
+    },
+    "in_progress": [
+     "14B CPU 权重审计",
+     "8B target 单卡短前向"
+    ],
+    "unrun": [
+     "下载权重逐文件与Hub LFS hash对照",
+     "冻结参考数值门槛",
+     "完成后全量回归与验收"
+    ]
+   },
+   "historical_continuation_20261106_before_completion": {
+    "source_lfs_hash": "15/15匹配固定revision Hub metadata",
+    "weight_audit": {
+     "8b": {
+      "status": "passed",
+      "tensor_count": 399,
+      "tensor_bytes": 16381470720,
+      "log": "benchmarks/results/step090/audit_8b.json"
+     },
+     "14b": {
+      "status": "passed",
+      "tensor_count": 443,
+      "tensor_bytes": 29536614400,
+      "log": "benchmarks/results/step090/audit_14b.json"
+     }
+    },
+    "draft_dtype": {
+     "8b": "bfloat16",
+     "14b": "float16; config declares bfloat16; conversion preserved float16"
+    },
+    "forward_8b_initial": {
+     "status": "failed",
+     "reason": "chat template BatchEncoding keys were mistaken for token IDs",
+     "log": "benchmarks/results/step090/forward_8b.json"
+    },
+    "forward_8b_retry": {
+     "status": "passed",
+     "gpu_peak_allocated_bytes": 16745053696,
+     "log": "benchmarks/results/step090/forward_8b_retry.json"
+    },
+    "unit_tests": {
+     "passed": 11,
+     "failed": 0,
+     "skipped": 0,
+     "log": "benchmarks/results/step090/unit_20261106b.log"
+    },
+    "pending": [
+     "冻结上游数值契约",
+     "最终完整回归与交付"
+    ]
+   }
+  },
+  "models": {
+   "identities": {
+    "8b": {
+     "repo": "Qwen/Qwen3-8B",
+     "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+     "dtype": "bfloat16",
+     "weight_count": 399,
+     "tensor_bytes": 16381470720,
+     "weights_sha256": {
+      "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+      "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+      "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+      "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+      "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_8b.json",
+     "real_gpu_execution": true,
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "gpu_peak_allocated_bytes": 16745053696,
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "project_ranks": [
+      {
+       "rank": 0,
+       "device": "cuda:0",
+       "parameter_count": 291,
+       "parameter_manifest": "benchmarks/results/step090/forward_8b_manifest.json",
+       "kv_tensor_count": 36,
+       "kv_bytes": 301989888,
+       "kv_manifest": "benchmarks/results/step090/forward_8b_manifest.json",
+       "gpu_peak_allocated_bytes": 16745053696,
+       "cpu_peak_rss_kib": 17098136
+      }
+     ],
+     "reference_ranks": {
+      "1": [
+       {
+        "rank": 0,
+        "local_rank": 0,
+        "device": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 5105280,
+        "gpu_peak_allocated_bytes": 21714503680,
+        "gpu_peak_reserved_bytes": 21781020672,
+        "qkv_weight_shape": [
+         6144,
+         4096
+        ]
+       }
+      ],
+      "2": [
+       {
+        "rank": 0,
+        "local_rank": 0,
+        "device": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 4273996,
+        "gpu_peak_allocated_bytes": 21808875520,
+        "gpu_peak_reserved_bytes": 21818769408,
+        "qkv_weight_shape": [
+         3072,
+         4096
+        ]
+       },
+       {
+        "rank": 1,
+        "local_rank": 1,
+        "device": 1,
+        "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 4249580,
+        "gpu_peak_allocated_bytes": 21808875520,
+        "gpu_peak_reserved_bytes": 21818769408,
+        "qkv_weight_shape": [
+         3072,
+         4096
+        ]
+       }
+      ],
+      "4": [
+       {
+        "rank": 0,
+        "local_rank": 0,
+        "device": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3616432,
+        "gpu_peak_allocated_bytes": 21813921792,
+        "gpu_peak_reserved_bytes": 21892169728,
+        "qkv_weight_shape": [
+         1536,
+         4096
+        ]
+       },
+       {
+        "rank": 1,
+        "local_rank": 1,
+        "device": 1,
+        "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3627328,
+        "gpu_peak_allocated_bytes": 21813921792,
+        "gpu_peak_reserved_bytes": 21892169728,
+        "qkv_weight_shape": [
+         1536,
+         4096
+        ]
+       },
+       {
+        "rank": 2,
+        "local_rank": 2,
+        "device": 2,
+        "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3620168,
+        "gpu_peak_allocated_bytes": 21813921792,
+        "gpu_peak_reserved_bytes": 21892169728,
+        "qkv_weight_shape": [
+         1536,
+         4096
+        ]
+       },
+       {
+        "rank": 3,
+        "local_rank": 3,
+        "device": 3,
+        "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3593828,
+        "gpu_peak_allocated_bytes": 21813921792,
+        "gpu_peak_reserved_bytes": 21892169728,
+        "qkv_weight_shape": [
+         1536,
+         4096
+        ]
+       }
+      ]
+     }
+    },
+    "14b": {
+     "repo": "Qwen/Qwen3-14B",
+     "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "dtype": "bfloat16",
+     "weight_count": 443,
+     "tensor_bytes": 29536614400,
+     "weights_sha256": {
+      "model-00001-of-00008.safetensors": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+      "model-00002-of-00008.safetensors": "f7c9c6eee628f5ad831d2d1d292e120505e5fcadeb38f88b4d3c4cb86306ccf9",
+      "model-00003-of-00008.safetensors": "dfb8c5df9404b41ad6ae74e8b6b367135f017b4467b884cf71b17c71954f18a9",
+      "model-00004-of-00008.safetensors": "eab286fec759e3e59ab228621aefa0fef14ed56039e06f959e67257d5af7604d",
+      "model-00005-of-00008.safetensors": "97f0dc2992e59da95c466eff6f4fd0c8335843bbc36ed5c913a6f5150748c0e6",
+      "model-00006-of-00008.safetensors": "9e8e76a013cd5e253865b792991e0b410f869b136b3c500079b531b09198e99e",
+      "model-00007-of-00008.safetensors": "0aee70ee6e91dc00d818804fb47f124d13ee4ad5b4a64553e09dbf9391cd5750",
+      "model-00008-of-00008.safetensors": "0d6b92296e326d39bbbaeb32c3ec454ac606da843d4c8ffa8edf010b62b8c9e0"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_14b.json",
+     "real_gpu_execution": false,
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "project_ranks": [],
+     "reference_ranks": {
+      "2": [
+       {
+        "rank": 0,
+        "local_rank": 0,
+        "device": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 4339424,
+        "gpu_peak_allocated_bytes": 21803112448,
+        "gpu_peak_reserved_bytes": 21894266880,
+        "qkv_weight_shape": [
+         3584,
+         5120
+        ]
+       },
+       {
+        "rank": 1,
+        "local_rank": 1,
+        "device": 1,
+        "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 4314724,
+        "gpu_peak_allocated_bytes": 21803112448,
+        "gpu_peak_reserved_bytes": 21894266880,
+        "qkv_weight_shape": [
+         3584,
+         5120
+        ]
+       }
+      ],
+      "4": [
+       {
+        "rank": 0,
+        "local_rank": 0,
+        "device": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3611440,
+        "gpu_peak_allocated_bytes": 21742819328,
+        "gpu_peak_reserved_bytes": 21873295360,
+        "qkv_weight_shape": [
+         1792,
+         5120
+        ]
+       },
+       {
+        "rank": 1,
+        "local_rank": 1,
+        "device": 1,
+        "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3673296,
+        "gpu_peak_allocated_bytes": 21742819328,
+        "gpu_peak_reserved_bytes": 21873295360,
+        "qkv_weight_shape": [
+         1792,
+         5120
+        ]
+       },
+       {
+        "rank": 2,
+        "local_rank": 2,
+        "device": 2,
+        "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3562848,
+        "gpu_peak_allocated_bytes": 21742819328,
+        "gpu_peak_reserved_bytes": 21873295360,
+        "qkv_weight_shape": [
+         1792,
+         5120
+        ]
+       },
+       {
+        "rank": 3,
+        "local_rank": 3,
+        "device": 3,
+        "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+        "device_name": "NVIDIA GeForce RTX 4090",
+        "cpu_max_rss_kib": 3665164,
+        "gpu_peak_allocated_bytes": 21742819328,
+        "gpu_peak_reserved_bytes": 21873295360,
+        "qkv_weight_shape": [
+         1792,
+         5120
+        ]
+       }
+      ]
+     }
+    },
+    "8b-draft": {
+     "repo": "AngelSlim/Qwen3-8B_eagle3",
+     "revision": "9629dfce7a4a10564dd48d3e5485c3976095653c",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--AngelSlim--Qwen3-8B_eagle3/snapshots/9629dfce7a4a10564dd48d3e5485c3976095653c",
+     "converted_path": "/data/syh/models/converted/AngelSlim/Qwen3-8B_eagle3/9629dfce7a4a10564dd48d3e5485c3976095653c",
+     "source_sha256": "048b9c4ada5fc26a7fe35086446f6013bb91ab9336c49ea38e519cffed43fe74",
+     "converted_sha256": "09db6691043506516dbb8086a6d0a35e65729f51cc6a8af0339c7f5863e10756",
+     "tensor_count": 15,
+     "tensor_manifest": "benchmarks/results/step090/convert_8b.json",
+     "real_gpu_execution": false,
+     "architectures": [
+      "LlamaForCausalLMEagle3"
+     ],
+     "source_float_dtype": "bfloat16",
+     "config_declared_dtype": "bfloat16",
+     "runtime_cpu_dtype": "bfloat16",
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "conversion_manifest": "/data/syh/models/converted/AngelSlim/Qwen3-8B_eagle3/9629dfce7a4a10564dd48d3e5485c3976095653c/conversion_manifest.json",
+     "mapping_audit": {
+      "draft_size": 32000,
+      "target_size": 151936,
+      "min_target_id": 0,
+      "max_target_id": 148442,
+      "target_members": 32000
+     },
+     "shared_embedding": {
+      "required": true,
+      "target_bound": false,
+      "forward_run": false
+     },
+     "cpu_load_manifest": "benchmarks/results/step090/draft_load_final_8b.json",
+     "cpu_peak_rss_kib": 3409932,
+     "tokenizer_source": "matching target fixed revision",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    "14b-draft": {
+     "repo": "AngelSlim/Qwen3-14B_eagle3",
+     "revision": "3d13517724e81cb409ddf1d4650772ec52f1e18e",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--AngelSlim--Qwen3-14B_eagle3/snapshots/3d13517724e81cb409ddf1d4650772ec52f1e18e",
+     "converted_path": "/data/syh/models/converted/AngelSlim/Qwen3-14B_eagle3/3d13517724e81cb409ddf1d4650772ec52f1e18e",
+     "source_sha256": "12d9f436fc08e6fffc580c5e4a71ecefcb44bef450e500df3fac698e9f530cbf",
+     "converted_sha256": "0089444e85b43484395e987fbe57713dbd99ec6fb46430734791122828347d37",
+     "tensor_count": 15,
+     "tensor_manifest": "benchmarks/results/step090/convert_14b.json",
+     "real_gpu_execution": false,
+     "architectures": [
+      "LlamaForCausalLMEagle3"
+     ],
+     "source_float_dtype": "float16",
+     "config_declared_dtype": "bfloat16",
+     "runtime_cpu_dtype": "bfloat16",
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "conversion_manifest": "/data/syh/models/converted/AngelSlim/Qwen3-14B_eagle3/3d13517724e81cb409ddf1d4650772ec52f1e18e/conversion_manifest.json",
+     "mapping_audit": {
+      "draft_size": 32000,
+      "target_size": 151936,
+      "min_target_id": 0,
+      "max_target_id": 148738,
+      "target_members": 32000
+     },
+     "shared_embedding": {
+      "required": true,
+      "target_bound": false,
+      "forward_run": false
+     },
+     "cpu_load_manifest": "benchmarks/results/step090/draft_load_final_14b.json",
+     "cpu_peak_rss_kib": 4530552,
+     "tokenizer_source": "matching target fixed revision",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    }
+   },
+   "status": "weights_downloaded / draft_converted / 090_acceptance_passed",
+   "source_cache": "/data/syh/.cache/huggingface/hub",
+   "converted_root": "/data/syh/models/converted",
+   "manifest": "learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/模型基线.json",
+   "real_model_run": true
+  }
+ },
  "current_package": {
   "root": "minivllm/",
   "python_files": 177,
-  "sha256": "0dfdbb66ba9a6d91ef986a23c82108ab94882f616fcadcd2aabff85bc588fd2c",
+  "sha256": "72d60e24993f38881b1cf558ff52b427aa2279706da202d44dd657bdf3f25ad5",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  }

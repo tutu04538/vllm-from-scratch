@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-4090×4 开发环境及启用方法见 [并行环境 001](../docs/parallel_001_4090_setup.md)，通信基线见 [step089](../docs/step089_alignment.md)，V1 Graph 生命周期修复见 [专项记录](../docs/step089_graph_lifecycle_fix.md)；不代表已实现模型并行。
+4090×4 开发环境及启用方法见 [并行环境 001](../docs/parallel_001_4090_setup.md)，通信基线见 [step089](../docs/step089_alignment.md)，V1 Graph 生命周期修复见 [专项记录](../docs/step089_graph_lifecycle_fix.md)；不代表已实现模型并行。 真实模型准备 [step090](../docs/step090_alignment.md) 已完成 8B 单卡短前向、14B CPU 审计与草稿转换；真实草稿前向和本项目多卡仍待后续验收。
 
 2026-11-01 attention 优化：K/V 最后维 stride 编译期特化，让连续 BF16 数据进入
 Triton async pipeline；配套调整 2D tile/query 分组，保留 FP32/SWA 的原计算布局。
