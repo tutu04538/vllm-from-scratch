@@ -339,3 +339,61 @@ class BlockHashToBlockMap:
         for blocks in self._cache.values():
             total += 1 if isinstance(blocks, KVCacheBlock) else len(blocks)
         return total
+
+
+def get_kv_cache_configs(worker_configs, available_memory, max_model_len: int,
+                         reserve_null_block: bool = False):
+    """统一单副本各 rank 的 KV 块容量（冻结上游 get_kv_cache_configs 子集）。
+
+    本关仅开放各 rank 同一全注意力组；项目的 num_gpu_blocks 是显式块数上限。
+    available_memory 是 Worker 报告的当前空闲显存上限，并非上游峰值 profiling。
+    """
+    import copy
+    import math
+    from .kv_cache_interface import FullAttentionSpec, KVCacheConfig
+
+    if not worker_configs or len(worker_configs) != len(available_memory):
+        raise ValueError("每个 Worker 必须提供 KV 配置及可用字节")
+    if type(max_model_len) is not int or max_model_len <= 0:
+        raise ValueError("max_model_len 必须是正整数")
+    first = worker_configs[0]
+    if not isinstance(first, KVCacheConfig):
+        raise TypeError("多 rank 容量协商要求 KVCacheConfig")
+    if len(first.kv_cache_groups) != 1 or not isinstance(first.kv_cache_groups[0].kv_cache_spec, FullAttentionSpec):
+        raise NotImplementedError("多 rank 容量协商当前只支持一个全注意力 KV group")
+    capacities = []
+    for rank, (cfg, available) in enumerate(zip(worker_configs, available_memory)):
+        if not isinstance(cfg, KVCacheConfig):
+            raise TypeError(f"rank {rank} 未返回 KVCacheConfig")
+        if (cfg.kv_cache_groups != first.kv_cache_groups
+                or cfg.enable_prefix_caching != first.enable_prefix_caching):
+            raise ValueError(f"rank {rank} 的 KV 层规格与其他 rank 不一致")
+        if cfg.num_gpu_blocks != first.num_gpu_blocks:
+            raise ValueError(f"rank {rank} 的 num_gpu_blocks 配置不一致")
+        if type(available) is not int or available <= 0:
+            raise ValueError(f"rank {rank} 没有可用的 KV 显存预算")
+        group = cfg.kv_cache_groups[0]
+        bytes_per_block = group.kv_cache_spec.page_size_bytes * len(group.layer_names)
+        rank_blocks = min(cfg.num_gpu_blocks, available // bytes_per_block)
+        required = math.ceil(max_model_len / group.kv_cache_spec.block_size) + int(reserve_null_block)
+        if rank_blocks < required:
+            raise ValueError(f"rank {rank} 的 KV 容量 {rank_blocks} 块无法容纳最大长度请求所需的 {required} 块")
+        capacities.append(rank_blocks)
+    common = min(capacities)
+    result = []
+    for cfg in worker_configs:
+        local = copy.deepcopy(cfg)
+        local.num_gpu_blocks = common
+        result.append(local)
+    return result
+
+
+def generate_scheduler_kv_cache_config(worker_configs):
+    """确认各 rank 块数一致后，复制一份 Scheduler 使用的逻辑配置。"""
+    import copy
+    if not worker_configs:
+        raise ValueError("没有 Worker KV 配置")
+    first = worker_configs[0]
+    if any(cfg.num_gpu_blocks != first.num_gpu_blocks for cfg in worker_configs):
+        raise ValueError("Worker 的 KV 块数不一致")
+    return copy.deepcopy(first)

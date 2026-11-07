@@ -1132,3 +1132,7 @@ Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续
 ### Merged/QKV 权重分片（097）
 
 `MergedColumnParallelLinear` 与 `QKVParallelLinear` 为每个逻辑 shard 分别取本 rank 的权重并打包；KV 头不足 TP 时按冻结 vLLM 复制，Qwen3 使用本地头数和显式 head_dim。Gemma TP、完整多卡模型及 Graph 仍未开放。证据见 [097 对齐报告](../docs/step097_alignment.md)。
+
+### 本地 Attention 与 KV 容量（098）
+
+多 rank 按本地 KV 头生成规格，Executor 汇总每卡空闲显存快照与配置上限，统一取最小块数。该快照不是峰值 profiling，不能保证后续不 OOM；真实模型多卡加载仍未开放。详见 [098 对齐报告](../docs/step098_alignment.md)。

@@ -148,4 +148,6 @@
 
 [096 TP 行列线性层](step096_alignment.md)：普通 Column/Row 的本地参数、权重切片与 GPU 通信；QKV/Merged 分片见 097，完整多卡模型仍属后续。
 
-[097 Merged/QKV 与 GQA 复制](step097_alignment.md)：逐逻辑 shard 的 TP 切片、本地 Q/K/V 布局和 KV 头复制；完整多卡模型、Attention/KV 与 Graph 仍属后续关卡。
+[097 Merged/QKV 与 GQA 复制](step097_alignment.md)：逐逻辑 shard 的 TP 切片、本地 Q/K/V 布局和 KV 头复制；完整多卡模型与 Graph 仍属后续关卡；本地 Attention/KV 容量协议见 098。
+
+[098 本地 Attention 与 KV 容量](step098_alignment.md)：按 rank 本地规格和显存快照协商公共块数，tiny TP1/2/4 对照；尚未实现上游峰值 profiling，真实多卡模型仍未开放。

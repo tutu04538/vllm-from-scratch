@@ -267,7 +267,7 @@ class GPUModelRunner:
     def get_kv_cache_spec(self):
         """返回按 Attention 层推导的真实 `KVCacheConfig`（对应上游 `get_kv_cache_spec()`）。
 
-        容量仍由配置给定（本仓库不做显存 profiling）；这里只回答**分组与每组形状**。
+        这里只回答**分组、每组形状及配置块数上限**；多 rank 容量由 Executor 汇总。
         分组键是 `(类型, head_size, num_kv_heads, sliding_window)`：同组层必须共用块表。
         Q-only 层不拥有 cache，不进入 group；它们的层名在 `build_kv_cache_config()` 后
         由 `_attn_metadata_layer_groups` 指向源层 group。

@@ -14050,8 +14050,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 185,
-  "sha256": "271b3b62cb83d796ae565de8e28bf9d2bda98db367183373e2244a7f667fb119",
+  "python_files": 186,
+  "sha256": "d0185833d866de99508027c7f0f151aa9b8bf5531a43abaca188538d4f55f04c",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -17046,6 +17046,144 @@
      "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18"
     }
    }
+  }
+ },
+ "step098": {
+  "results": {
+   "status": "passed scoped local KV protocol with tiny TP1/2/4; upstream peak-memory profiling not implemented",
+   "head": "ca375ee (parent before 098)",
+   "package_sha256": "d0185833d866de99508027c7f0f151aa9b8bf5531a43abaca188538d4f55f04c",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "v1/core/kv_cache_utils.py": "088f2201bee86fade694e78141b6e99a5cd0cdd23c5c7ab3526dd119f76e4aec",
+    "v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca",
+    "v1/worker/gpu_worker.py": "5e8faf3e00649289c81c2917dd4557a80b0b351c33295d8e0c4b204a304e6552",
+    "model_executor/models/qwen3.py": "ec8bc9c090f6f5242b2f572366644ef73573137b3e48b03b39c0f083fbb21ab4",
+    "v1/kv_cache_interface.py": "932e9175796706506c34c3014cc3c69b146e199426dbbacf19f24056f7332ec3"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step098 -q -s -ra",
+     "exit_code": 0,
+     "passed": 6,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 34.06,
+     "artifact": "benchmarks/results/step098/pytest_final.log"
+    },
+    {
+     "cmd": "python benchmarks/check_step098_acceptance.py --help",
+     "exit_code": 0
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step098_acceptance.py --case all --timeout 180 --output benchmarks/results/step098/acceptance_final.json",
+     "exit_code": 0,
+     "passed_cases": 4,
+     "failed_cases": 0,
+     "artifact": "benchmarks/results/step098/acceptance_final.json"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 97)) -q -ra",
+     "exit_code": 0,
+     "passed": 148,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 361.89,
+     "artifact": "benchmarks/results/step098/parallel_regression.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 1,
+     "passed": 1288,
+     "failed": 1,
+     "skipped": 23,
+     "duration_seconds": 100.77,
+     "artifact": "benchmarks/results/step098/single_regression.log",
+     "note": "首次运行时 current_package 包哈希尚未更新；随后更新并完整重跑"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 109.18,
+     "artifact": "benchmarks/results/step098/single_regression_final.log",
+     "note": "23 skipped 为旧真实权重缺失，非通过"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step098/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003,
+     "failed": 0,
+     "artifact": "benchmarks/results/step098/requirements_audit.json"
+    }
+   ],
+   "oracle": {
+    "capacity": "installed vllm 0.28.0 kv_cache_utils.py SHA256 matches frozen file; actual get_kv_cache_configs / generate_scheduler_kv_cache_config",
+    "kv": "project TP1 replay of same tiny weights and tokens; not a vLLM end-to-end oracle",
+    "dtype": "float32",
+    "atol": 1e-05,
+    "rtol": 1e-05
+   },
+   "cases": {
+    "tp2": {
+     "max_abs": 5.960464477539062e-07,
+     "relative_l2": 9.14845799e-08,
+     "worst": "reused request, layer 1, rank 1, position 2, flattened local KV element 9",
+     "actual": -1.1342331171035767,
+     "reference": -1.1342337131500244
+    },
+    "tp4": {
+     "max_abs": 7.152557373046875e-07,
+     "relative_l2": 1.07566045e-07,
+     "worst": "reused request, layer 1, rank 2, position 1, flattened local KV element 3",
+     "actual": -1.1423944234848022,
+     "reference": -1.142393708229065
+    },
+    "budget_blocks": [
+     8,
+     7,
+     6,
+     8
+    ],
+    "shared_blocks": 6,
+    "negative_budget_blocks": 3,
+    "required_blocks": 4,
+    "trace": "positions, input IDs, slot mappings and block tables equal across ranks and TP1; 17-token prefill, one decode, cancellation and reuse; -1 padding did not modify cache"
+   },
+   "not_run": [
+    "full Qwen3-8B/14B multi-rank inference (production Worker still rejects)",
+    "multi-rank CUDA Graph capture and replay (104/105)",
+    "upstream-style forward peak memory profiling; current value is a free-memory snapshot and cannot guarantee runtime headroom",
+    "full model end-to-end frozen vLLM numerical contract"
+   ],
+   "artifacts": "benchmarks/results/step098/"
+  },
+  "models": {
+   "real_model_run": false,
+   "tiny": {
+    "name": "tiny_gqa",
+    "source": "minivllm.testing.tiny_models.write_tiny_qwen3",
+    "seed": 0,
+    "revision": "synthetic",
+    "config_sha256": "e482b8407224b1ca56315bd30fa53a573deb1ae5d7f452a45fb67fa29af0dde0",
+    "weights_sha256": "a8cf1dc1877a3f602ba76f09276697aa71c7f882bdc80249be510480e4d1d276",
+    "dtype": "float32",
+    "layers": 2,
+    "q_heads": 4,
+    "kv_heads": 2,
+    "head_dim": 16
+   },
+   "production_model_multi_gpu": "not opened"
   }
  }
 }

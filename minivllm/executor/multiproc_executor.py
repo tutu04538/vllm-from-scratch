@@ -415,6 +415,16 @@ class MultiprocExecutor:
         if any(not info['model_loaded'] for info in self.ready_workers):
             raise NotImplementedError('无模型 Worker 不能初始化 KV 配置')
         configs = self.collective_rpc('get_cache_config')
+        from ..core.kv_cache_interface import KVCacheConfig
+        if all(isinstance(config, KVCacheConfig) for config in configs):
+            from ..core.kv_cache_utils import (get_kv_cache_configs,
+                                               generate_scheduler_kv_cache_config)
+            available = self.collective_rpc('determine_available_memory')
+            self.worker_kv_cache_configs = get_kv_cache_configs(
+                configs, available, self.vllm_config.model_config.max_model_len,
+                reserve_null_block=self.vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs())
+            self.worker_kv_available_memory = available
+            return generate_scheduler_kv_cache_config(self.worker_kv_cache_configs)
         if any(config != configs[0] for config in configs[1:]):
             raise ValueError('Worker KV 配置不一致，尚不支持聚合')
         return configs[0]

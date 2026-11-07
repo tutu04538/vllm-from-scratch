@@ -92,11 +92,19 @@ class Worker:
     def initialize_from_config(self, kv_cache_config) -> None:
         """按上层定下的 KV 规格分配物理缓存并绑定到每个 Attention 层。
 
-        容量（`num_gpu_blocks`）是**上层给的**：真实 vLLM 由 Runner 先做显存 profiling 定容、
-        再回报给引擎；本关按配置写死，所以顺序反过来也不影响——但"容量由执行侧决定"这条
-        设计意图保留在这里（`Executor.get_cache_config()` 问的就是 Worker 这边）。
+        容量由上层协商后给定。多 rank 路径核对本地规格，再按公共块数分配。
+        本项目用显存快照和配置上限定容，尚未实现上游的前向峰值 profiling。
         """
         self._check_open()
+        if self.rank is not None:
+            from ..core.kv_cache_interface import KVCacheConfig
+            if isinstance(kv_cache_config, KVCacheConfig):
+                local = self.get_cache_config()
+                if (not isinstance(local, KVCacheConfig)
+                        or local.kv_cache_groups != kv_cache_config.kv_cache_groups
+                        or local.enable_prefix_caching != kv_cache_config.enable_prefix_caching
+                        or kv_cache_config.num_gpu_blocks > local.num_gpu_blocks):
+                    raise ValueError(f"rank {self.rank} 的 KV 初始化方案与本地规格/块数上限不一致")
         self.kv_cache_config = kv_cache_config
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
@@ -107,6 +115,15 @@ class Worker:
             raise NotImplementedError('没有模型 Runner，KV 配置尚未开放')
         build = getattr(runner, 'build_kv_cache_config', None)
         return build() if build is not None else self.vllm_config.cache_config
+
+    def determine_available_memory(self) -> int:
+        """获取当前设备的空闲显存上限；未包含后续前向峰值 profiling。"""
+        self._check_open()
+        import torch
+        if not str(self.device).startswith("cuda"):
+            raise NotImplementedError("多 rank KV 容量协商需要 CUDA")
+        free_bytes, _ = torch.cuda.mem_get_info(self.device)
+        return int(free_bytes)
 
     def compile_or_warm_up_model(self) -> None:
         """捕获 CUDA Graph（69 关；对应上游 `Worker.compile_or_warm_up_model()`）。
