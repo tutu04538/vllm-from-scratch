@@ -6,10 +6,8 @@
     logits = logits[..., :org_vocab_size]    # 去掉词表 padding（TP 分片对齐用）
     logits = logits * scale                  # 有些模型的 logit 要缩放
 
-本仓库 **TP=1、不量化、无 LoRA**，所以只保留这三步里对得上号的部分：
-`org_vocab_size` 的切片、`scale` 与 `soft_cap`（78 关的 DFlash2 候选打分要用）。上游还会
-在这里做 TP 的 gather/all-gather（`lm_head.tp_size > 1`）与 `head_dtype` 的处理，本仓库
-没有第二条 rank，不存在。
+本仓库普通原始词表在 TP 路径按冻结 CUDA 平台 all-gather 恢复完整 logits，
+随后去掉 padding、soft cap、scale；不支持量化与 LoRA 词表分片。
 
 **调用方**：
 - 66 关的 Medusa（`models/medusa.py`）：每个 head 一个 `LogitsProcessor`，
@@ -42,6 +40,9 @@ class LogitsProcessor(nn.Module):
         logits = lm_head(hidden_states)
         if embedding_bias is not None:
             logits = logits + embedding_bias
+        # 冻结 CUDA 平台每个 rank 都获得完整词表 logits。
+        if getattr(lm_head, "tp_size", 1) > 1:
+            logits = lm_head.group.all_gather(logits, dim=-1)
         # 去掉词表 padding（上游 `logits[..., : self.org_vocab_size]`）
         logits = logits[..., : self.org_vocab_size]
         # 上游 forward 的顺序：先 soft cap、再 scale（与下面的 get_top_k_tokens 相反——
@@ -59,19 +60,21 @@ class LogitsProcessor(nn.Module):
 
         上游为什么要它：整份 `[B, V]` logits 的 all-gather 在 TP 下是 O(B·V) 通信，
         而候选选择器只需要 k 个候选；这条路径把通信量压到 O(B·2k·TP)。
-        本仓库 TP=1（没有通信），**保留它的语义**：先按 `lm_head` 原 dtype 选 top-k，
+        本仓库仅开放 TP=1 的候选选择：先按 `lm_head` 原 dtype 选 top-k，
         再 `float()`、乘 `scale`、过 soft cap —— 顺序与上游 `get_top_k_tokens` 逐行一致。
 
-        注意上游这里**不**切 `org_vocab_size`（只在 TP 分片尾部掩码 padding）；TP=1 时
-        `lm_head` 的宽度就是词表宽度，两者没有区别。
+        物理权重可能补齐到 64 行，选择之前按真实词表大小排除补齐行。
         """
         if self.scale <= 0.0 and self.scale != 1.0:
             raise ValueError(
                 "非正的 logit 缩放因子不支持 top-k 归约（上游同一句检查）："
                 f"scale={self.scale}")
+        if getattr(lm_head, "tp_size", 1) > 1:
+            raise NotImplementedError("多 rank 局部 top-k 归约不属于 099")
         logits = lm_head(hidden_states)
         if embedding_bias is not None:
             logits = logits + embedding_bias
+        logits = logits[..., :getattr(lm_head, "num_embeddings", logits.shape[-1])]
         values, ids = torch.topk(logits, k, dim=-1)
         values = values.float()
         if self.scale != 1.0:

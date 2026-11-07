@@ -41,6 +41,7 @@ hidden（与 EAGLE 的 `(h_i, t_{i+1}) → t_{i+2}` 配对同构）。
 import torch
 from torch import nn
 
+from ..layers.logits_processor import LogitsProcessor
 from ..layers import (ColumnParallelLinear, ParallelLMHead, RMSNorm, VocabParallelEmbedding)
 from .qwen3 import Qwen3DecoderLayer, Qwen3Model, maybe_prefix
 from .registry import register_model
@@ -144,6 +145,7 @@ class Qwen3MTP(nn.Module):
         self.model = Qwen3MultiTokenPredictor(config, prefix=maybe_prefix(prefix, "model"))
         self.lm_head = ParallelLMHead(int(config["vocab_size"]), int(config["hidden_size"]),
                                       prefix=maybe_prefix(prefix, "lm_head"))
+        self.logits_processor = LogitsProcessor(int(config["vocab_size"]))
 
     def embed_input_ids(self, input_ids):
         return self.model.embed_input_ids(input_ids)
@@ -155,9 +157,9 @@ class Qwen3MTP(nn.Module):
         """上游 `Qwen3NextMTP.compute_logits()` 的签名（`spec_step_idx` 保留）。
 
         上游在它上面套 `LogitsProcessor`（那是 TP/词表分片与 logits 后处理的位置）；本仓库
-        TP=1、无后处理，所以就是 `lm_head(hidden)`（与 `Qwen3ForCausalLM.compute_logits` 同款）。
+        通过 LogitsProcessor 去除词表补齐行，保留完整真实词表宽度。
         """
-        return self.lm_head(hidden_states)
+        return self.logits_processor(self.lm_head, hidden_states)
 
     # -------- 权重名识别与改写（对应上游的 remap_weight_names / _rewrite_spec_layer_name） --------
 

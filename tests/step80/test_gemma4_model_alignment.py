@@ -129,7 +129,7 @@ def _replace_shared_embedding(pair: ModelPair) -> None:
     backbone = pair.assistant_config.backbone_hidden_size
 
     ours_embed = VocabParallelEmbedding(VOCAB, backbone)
-    ours_embed.weight.data.copy_(torch.randn(
+    ours_embed.weight_loader(ours_embed.weight, torch.randn(
         VOCAB, backbone, generator=torch.Generator().manual_seed(19)))
     pair.ours.model.embed_tokens = ours_embed
 
@@ -139,7 +139,7 @@ def _replace_shared_embedding(pair: ModelPair) -> None:
 
     upstream_embed = UpEmbedding(VOCAB, backbone)
     # vLLM 的 embedding 会把词表 pad 到 64；只填真实行，padding 行清零。
-    upstream_embed.weight.data[:VOCAB].copy_(ours_embed.weight.data)
+    upstream_embed.weight.data.copy_(ours_embed.weight.data)
     upstream_embed.weight.data[VOCAB:].zero_()
     pair.upstream.model.embed_tokens = upstream_embed
 
@@ -248,7 +248,7 @@ def test_parameter_shapes_and_no_kv_projections(model_pair):
     assert ours.model.pre_projection.weight.shape == (HIDDEN, 2 * BACKBONE)
     # 共享 target embedding 后，lm_head 仍是 assistant 宽度的旧参数（上游
     # `_share_embeddings` 同样只替换 model.embed_tokens，不动 lm_head）。
-    assert ours.lm_head.weight.shape == (VOCAB, HIDDEN)
+    assert ours.lm_head.weight.shape == (64, HIDDEN)
 
     for layer in ours.model.layers:
         attn = layer.self_attn
@@ -318,7 +318,7 @@ def test_get_model_loads_registered_architecture(tmp_path):
         model=str(model_dir), dtype="float32", max_model_len=64, hf_config=hf)
     model = get_model(model_config, torch.device("cpu"))
     assert isinstance(model, Gemma4MTP)
-    assert model.model.embed_tokens.weight.shape == (VOCAB, HIDDEN)
+    assert model.model.embed_tokens.weight.shape == (64, HIDDEN)
     assert model.model.layers[0].layer_scalar.item() == pytest.approx(1.3)
     assert get_model_class("Gemma4MTPModel") is Gemma4MTP
 
@@ -399,7 +399,7 @@ def test_final_logit_softcap_is_applied():
     model = Gemma4MTP(assistant_config)
     weight = torch.randn(VOCAB, HIDDEN, generator=torch.Generator().manual_seed(71))
     with torch.no_grad():
-        model.lm_head.weight.copy_(weight)
+        model.lm_head.weight_loader(model.lm_head.weight, weight)
     hidden = torch.randn(3, HIDDEN, generator=torch.Generator().manual_seed(72))
     got = model.compute_logits(hidden)
     logits = hidden @ weight.T

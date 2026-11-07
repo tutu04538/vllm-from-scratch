@@ -164,7 +164,7 @@ def test_compute_logits_is_lm_head():
     with torch.inference_mode():
         logits = model.compute_logits(hidden)
         assert logits.shape == (3, VOCAB)
-        assert torch.equal(logits, model.lm_head(hidden))
+        assert torch.equal(logits, model.lm_head(hidden)[..., :VOCAB])
         assert torch.equal(model.compute_logits(hidden, spec_step_idx=1), logits)
 
 

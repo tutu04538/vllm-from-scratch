@@ -320,7 +320,9 @@ def test_three_weight_namings_load_identical_values(naming):
     # 逐参数与检查点里的源张量相同（不是"加载成功了但装错了行"）
     reference = load_file(str(Path(draft_dir()) / "model.safetensors"))
     assert torch.equal(params["blocks.1.layers.0.weight"], reference["1.0.linear.weight"])
-    assert torch.equal(params["lm_heads.1.weight"], reference["1.1.weight"])
+    expected = reference["1.1.weight"]
+    assert torch.equal(params["lm_heads.1.weight"][:len(expected)], expected)
+    assert torch.count_nonzero(params["lm_heads.1.weight"][len(expected):]) == 0
 
 
 def test_fc_bias_is_loaded_or_recorded_as_dropped():
@@ -401,7 +403,9 @@ def test_original_lm_head_shares_one_head_and_remaps_truncated_vocab():
     assert loaded == set(params) | {"token_map"}
     assert model.token_map.shape == (5,)
     # 检查点里的 lm_head 是整份词表（11 行）→ 加载时按 token_map 选出 5 行
-    assert torch.equal(params["lm_head.weight"], state["0.1.weight"][state["token_map"]])
+    expected = state["0.1.weight"][state["token_map"]]
+    assert torch.equal(params["lm_head.weight"][:len(expected)], expected)
+    assert torch.count_nonzero(params["lm_head.weight"][len(expected):]) == 0
     # 逐 head 的 lm 权重里只有第 0 份被用上，其余记账丢掉（共享 head 的意思）
     assert "lm_heads.1.weight" in model.dropped_weights
 

@@ -2,7 +2,7 @@
 
 名字保留 vLLM 的 `QKVParallelLinear` / `MergedColumnParallelLinear` / `RowParallelLinear` /
 `VocabParallelEmbedding` / `ParallelLMHead`，是为了**源码映射**：读 vLLM 的 qwen3.py 时能一对
-一找到这些类。普通行列层、QKV 和 Merged 支持 TP；词表及多卡模型仍未开放。
+一找到这些类。普通行列层、QKV、Merged 和普通词表层支持 TP；完整多卡模型仍未开放。
 
 它们存在的**真正理由**是权重加载：检查点里 q/k/v 是三个独立权重、gate/up 是两个，而模型里是
 打包的一个参数（少一次 GEMM 的 launch、少一次中间读写）。打包带来的问题就是"怎么把分片的
@@ -20,6 +20,8 @@
 签名统一为 `weight_loader(param, loaded_weight, shard_id=None)`：只有打包层会用到 `shard_id`；
 没打包的层收到它就直接报错（`_reject_shard_id`），因为那意味着加载器的打包映射指错了目标。
 """
+
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -374,60 +376,97 @@ class RowParallelLinear(nn.Module):
         return output, self.bias if self.skip_bias_add else None
 
 
+@dataclass(frozen=True)
+class VocabParallelEmbeddingShardIndices:
+    """本 rank 的真实原词表区间和补齐后的物理区间（结束索引不包含）。"""
+    padded_org_vocab_start_index: int
+    padded_org_vocab_end_index: int
+    org_vocab_start_index: int
+    org_vocab_end_index: int
+
+    @property
+    def num_org_elements(self):
+        return self.org_vocab_end_index - self.org_vocab_start_index
+
+    @property
+    def num_org_elements_padded(self):
+        return self.padded_org_vocab_end_index - self.padded_org_vocab_start_index
+
+    @property
+    def num_org_vocab_padding(self):
+        return self.num_org_elements_padded - self.num_org_elements
+
+
 class VocabParallelEmbedding(nn.Module):
-    """词表嵌入（TP=1：整张词表都在本卡）。"""
+    """按冻结 vLLM 的 64 行对齐与 TP 分片，当前只支持普通原词表。"""
 
     def __init__(self, num_embeddings: int, embedding_dim: int, prefix: str = "") -> None:
         super().__init__()
-        self.num_embeddings = num_embeddings
+        if type(num_embeddings) is not int or num_embeddings <= 0:
+            raise ValueError("词表大小必须为正整数")
+        if type(embedding_dim) is not int or embedding_dim <= 0:
+            raise ValueError("embedding_dim 必须为正整数")
+        self.group, self.tp_rank, self.tp_size = _linear_tp_group(False)
+        self.num_embeddings = self.org_vocab_size = num_embeddings
         self.embedding_dim = embedding_dim
-        self.weight = Parameter(torch.empty(num_embeddings, embedding_dim))
+        self.padding_size = 64
+        self.org_vocab_size_padded = ((num_embeddings + 63) // 64) * 64
+        self.num_embeddings_padded = self.org_vocab_size_padded
+        self.num_embeddings_per_partition = _parallel_dimension(
+            self.num_embeddings_padded, self.tp_size, "padded vocabulary")
+        start = self.tp_rank * self.num_embeddings_per_partition
+        end = start + self.num_embeddings_per_partition
+        self.shard_indices = VocabParallelEmbeddingShardIndices(
+            start, end, min(start, num_embeddings), min(end, num_embeddings))
+        self.num_org_embeddings_per_partition = self.shard_indices.num_org_elements
+        self.weight = Parameter(torch.empty(self.num_embeddings_per_partition, embedding_dim))
+        self.weight.output_dim = 0
         self.weight.weight_loader = self.weight_loader
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
                       shard_id=None) -> None:
         _reject_shard_id(type(self).__name__, shard_id)
-        if tuple(loaded_weight.shape) != tuple(param.shape):
-            raise ValueError(f"嵌入权重形状不匹配：目标 {tuple(param.shape)}，"
-                             f"收到 {tuple(loaded_weight.shape)}")
+        expected = (self.org_vocab_size,) + tuple(param.shape[1:])
+        if tuple(loaded_weight.shape) != expected:
+            raise ValueError(f"词表权重形状不匹配：期望 {expected}，收到 {tuple(loaded_weight.shape)}")
+        indices = self.shard_indices
+        shard = loaded_weight.narrow(0, indices.org_vocab_start_index, indices.num_org_elements)
         with torch.no_grad():
-            param.copy_(loaded_weight)
+            param[:indices.num_org_elements].copy_(shard)
+            param[indices.num_org_elements:].zero_()
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return F.embedding(input_ids, self.weight)
+        if self.tp_size == 1:
+            return F.embedding(input_ids, self.weight)
+        indices = self.shard_indices
+        valid = ((input_ids >= indices.org_vocab_start_index)
+                 & (input_ids < indices.org_vocab_end_index))
+        local_ids = torch.where(valid, input_ids - indices.org_vocab_start_index, 0)
+        output = F.embedding(local_ids.long(), self.weight)
+        output.masked_fill_(~valid.unsqueeze(-1), 0)
+        return self.group.all_reduce(output)
 
 
-class ParallelLMHead(nn.Module):
-    """输出头（TP=1）。`tie_word_embeddings` 时与嵌入**共享同一个 Parameter 对象**。"""
+class ParallelLMHead(VocabParallelEmbedding):
+    """本 rank 的词表输出权重；完整 logits 由 LogitsProcessor 聚合。"""
 
     def __init__(self, num_embeddings: int, embedding_dim: int, bias: bool = False,
                  prefix: str = "") -> None:
-        super().__init__()
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
-        self.weight = Parameter(torch.empty(num_embeddings, embedding_dim))
-        self.weight.weight_loader = self.weight_loader
-        self.register_parameter("bias", None)
+        super().__init__(num_embeddings, embedding_dim, prefix)
+        if bias:
+            self.bias = Parameter(torch.empty(self.num_embeddings_per_partition))
+            self.bias.output_dim = 0
+            self.bias.weight_loader = self.weight_loader
+        else:
+            self.register_parameter("bias", None)
 
     def tie_weights(self, embed_tokens: "VocabParallelEmbedding") -> "ParallelLMHead":
-        """与词嵌入共享权重（vLLM 同名方法：`layer.weight = embed_tokens.weight`）。
-
-        共享**对象**而不是复制数值：省一份显存（Qwen3-1.7B 的词表是 151936×2048 ≈ 1.2 GB），
-        而且保证两边永远一致。副作用是检查点里的 `lm_head.weight` 必须**跳过不加载**
-        （它是同一个参数的第二份拷贝，加载它只会做一次多余的覆盖）——见 `qwen3.py` 的
-        `skip_prefixes`，以及 `AutoWeightsLoader._check_coverage` 为什么需要豁免名单。
-        """
+        if (self.num_embeddings, self.embedding_dim, self.tp_rank, self.tp_size) != (
+                embed_tokens.num_embeddings, embed_tokens.embedding_dim,
+                embed_tokens.tp_rank, embed_tokens.tp_size):
+            raise ValueError("词表共享要求本 rank 的规格及分片一致")
         self.weight = embed_tokens.weight
         return self
-
-    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
-                      shard_id=None) -> None:
-        _reject_shard_id(type(self).__name__, shard_id)
-        if tuple(loaded_weight.shape) != tuple(param.shape):
-            raise ValueError(f"lm_head 权重形状不匹配：目标 {tuple(param.shape)}，"
-                             f"收到 {tuple(loaded_weight.shape)}")
-        with torch.no_grad():
-            param.copy_(loaded_weight)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return F.linear(hidden_states, self.weight, None)

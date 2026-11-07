@@ -14051,7 +14051,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 186,
-  "sha256": "d0185833d866de99508027c7f0f151aa9b8bf5531a43abaca188538d4f55f04c",
+  "sha256": "ee3c6ae042abd05880e6177aa1d51e34a2d10c3c333ff6e700ac1a4cb538b4c5",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -17183,6 +17183,164 @@
     "kv_heads": 2,
     "head_dim": 16
    },
+   "production_model_multi_gpu": "not opened"
+  }
+ },
+ "step099": {
+  "results": {
+   "status": "passed scoped ordinary vocab TP1/2/4 and complete CUDA logits; real-model multi-rank and rank-consistent sampling remain closed",
+   "head": "a5f1013 (parent before 099)",
+   "package_sha256": "ee3c6ae042abd05880e6177aa1d51e34a2d10c3c333ff6e700ac1a4cb538b4c5",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "model_executor/layers/vocab_parallel_embedding.py": "b3e8a07296607153424b4b7ca5f75f00dcec1bce0f49e54b5eff6262fdf80201",
+    "model_executor/layers/logits_processor.py": "e15cd9d2827fa3690ec683d73a6095a4be8189118e9a8e124fd21d4c58930ff2",
+    "platforms/interface.py": "31406ba149718fcafa3927c329a5a78bc2a48a34c8bf2cf151efcdffd4702ecf",
+    "platforms/cuda.py": "11909f77981dc5c385e97c5a9cd2d5d98e905a7b59187344f4b8e4f564015884"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "torchrun"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step099 -q -ra",
+     "exit_code": 0,
+     "passed": 4,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 35.77,
+     "artifact": "benchmarks/results/step099/pytest_release.log"
+    },
+    {
+     "cmd": "python benchmarks/check_step099_acceptance.py --help",
+     "exit_code": 0
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step099_acceptance.py --case all --timeout 240 --output benchmarks/results/step099/acceptance_release.json",
+     "exit_code": 0,
+     "passed_cases": 4,
+     "failed_cases": 0,
+     "artifact": "benchmarks/results/step099/acceptance_release.json"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 98)) -q -ra",
+     "exit_code": 1,
+     "passed": 153,
+     "failed": 1,
+     "skipped": 0,
+     "duration_seconds": 395.29,
+     "artifact": "benchmarks/results/step099/parallel_final.log",
+     "note": "step095 fresh: rank 1 未在既有清理时限内退出；本次未修改 Executor，单项重跑通过；无残留 Worker"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest 'tests/step095/test_step095_failure.py::test_failure_and_cleanup[fresh]' -q -ra",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 3.86,
+     "artifact": "benchmarks/results/step099/step095_fresh_retry1.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 98)) -q -ra",
+     "exit_code": 0,
+     "passed": 154,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 404.12,
+     "artifact": "benchmarks/results/step099/parallel_retry.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 1,
+     "passed": 1276,
+     "failed": 13,
+     "skipped": 23,
+     "duration_seconds": 117.76,
+     "artifact": "benchmarks/results/step099/single_initial.log",
+     "note": "旧测试直接比较未补齐词表或将 padding 行传给 DSpark 手算参考；已改为验证真实行加补齐零行"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step65/test_mtp_loader.py tests/step66/test_medusa.py tests/step77/test_dspark_sampling.py -q -ra",
+     "exit_code": 0,
+     "passed": 71,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 12.96,
+     "artifact": "benchmarks/results/step099/targeted_fixes.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 103.84,
+     "artifact": "benchmarks/results/step099/single_release.log",
+     "note": "23 skipped 为历史真实模型权重缺失，不算通过"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step099/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003,
+     "failed": 0,
+     "artifact": "benchmarks/results/step099/requirements_audit.json"
+    }
+   ],
+   "oracle": {
+    "embedding": "实际运行哈希匹配冻结 vLLM 的 VocabParallelEmbedding/ParallelLMHead；不同 rank 使用真实 NCCL all-reduce",
+    "logits": "实际运行哈希匹配冻结 vLLM LogitsProcessor；使用真实 NCCL all-gather；CUDA 平台源码哈希匹配",
+    "dtype": "float32",
+    "atol": 1e-05,
+    "rtol": 1e-05,
+    "discrete": "区间、权重、embedding、padding、token ids 精确比较"
+   },
+   "cases": {
+    "vocab_sizes": [
+     7,
+     129,
+     151936
+    ],
+    "tensor_parallel_sizes": [
+     1,
+     2,
+     4
+    ],
+    "max_abs_vs_frozen": 0.0,
+    "max_abs_vs_direct": 0.0,
+    "relative_l2": 0.0,
+    "top1": "V-1",
+    "top2": "V-2",
+    "margins_approx": [
+     0.0015,
+     0.00075
+    ],
+    "golden": [
+     "benchmarks/results/step099/acceptance_release_tp1_golden.json",
+     "benchmarks/results/step099/acceptance_release_tp2_golden.json",
+     "benchmarks/results/step099/acceptance_release_tp4_golden.json"
+    ],
+    "coverage": "所有 rank 源码实例规格、本地权重、边界输入、padding 高分反例、真实 embedding 与 logits、显式 bias、tied/untied；PID/GPU UUID 分别记录"
+   },
+   "not_run": [
+    "真实 Qwen3-8B/14B 全模型多 rank 执行（101）",
+    "跨 rank 采样一致性（100）",
+    "量化、LoRA 扩展词表",
+    "EAGLE3 多卡缩减词表及 d2t（114）",
+    "多 rank local top-k 优化，本关明确拒绝"
+   ],
+   "artifacts": "benchmarks/results/step099/"
+  },
+  "models": {
+   "real_model_run": false,
+   "workload": "合成确定性普通词表权重，维度 4，V=7/129/151936；不加载真实模型 checkpoint",
+   "dtype": "float32",
+   "revision": "synthetic",
    "production_model_multi_gpu": "not opened"
   }
  }

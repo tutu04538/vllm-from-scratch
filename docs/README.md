@@ -151,3 +151,5 @@
 [097 Merged/QKV 与 GQA 复制](step097_alignment.md)：逐逻辑 shard 的 TP 切片、本地 Q/K/V 布局和 KV 头复制；完整多卡模型与 Graph 仍属后续关卡；本地 Attention/KV 容量协议见 098。
 
 [098 本地 Attention 与 KV 容量](step098_alignment.md)：按 rank 本地规格和显存快照协商公共块数，tiny TP1/2/4 对照；尚未实现上游峰值 profiling，真实多卡模型仍未开放。
+
+[099 词表分片与完整 Logits](step099_alignment.md)：普通原始词表按冻结布局对齐和 TP 分片；Embedding 归约与 CUDA 全词表 logits 汇总经真实 rank 与冻结源码对照。真实模型多卡与跨 rank 采样仍由后续关卡完成。

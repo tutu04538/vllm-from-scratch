@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..attention import Attention
+from ..layers.logits_processor import LogitsProcessor
 from ..layers import (ColumnParallelLinear, GemmaRMSNorm, MergedColumnParallelLinear,
                       ParallelLMHead, QKVParallelLinear, RMSNorm, get_rope,
                       RowParallelLinear, SiluAndMul, SwigluStepAndMul,
@@ -343,6 +344,7 @@ class Step3p5ForCausalLM(nn.Module):
         self.lm_head = ParallelLMHead(
             int(config["vocab_size"]), int(config["hidden_size"]),
             prefix=maybe_prefix(prefix, "lm_head"))
+        self.logits_processor = LogitsProcessor(int(config["vocab_size"]))
 
     def embed_input_ids(self, input_ids):
         return self.model.embed_tokens(input_ids)
@@ -351,7 +353,7 @@ class Step3p5ForCausalLM(nn.Module):
         return self.model(input_ids, positions)
 
     def compute_logits(self, hidden_states):
-        return self.lm_head(hidden_states)
+        return self.logits_processor(self.lm_head, hidden_states)
 
     def load_weights(self, weights):
         return AutoWeightsLoader(self).load_weights(
@@ -367,9 +369,10 @@ class Step3p5SharedHead(nn.Module):
         self.head = ParallelLMHead(
             int(config["vocab_size"]), int(config["hidden_size"]),
             prefix=maybe_prefix(prefix, "head"))
+        self.logits_processor = LogitsProcessor(int(config["vocab_size"]))
 
     def forward(self, hidden_states):
-        return self.head(self.norm(hidden_states))
+        return self.logits_processor(self.head, self.norm(hidden_states))
 
 
 class Step3p5MTPLayer(nn.Module):

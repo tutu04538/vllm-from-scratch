@@ -33,7 +33,7 @@ VOCAB = 11
 
 def _markov_weights(speculator):
     head = speculator.model.model.markov_head
-    return head.markov_w1.weight, head.markov_w2.weight
+    return head.markov_w1.weight, head.markov_w2.weight[:head.markov_w2.num_embeddings]
 
 
 def _set_markov_weights(speculator, w1_rows: dict, w2_rows: dict) -> None:

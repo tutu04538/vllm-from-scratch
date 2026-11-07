@@ -1136,3 +1136,7 @@ Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续
 ### 本地 Attention 与 KV 容量（098）
 
 多 rank 按本地 KV 头生成规格，Executor 汇总每卡空闲显存快照与配置上限，统一取最小块数。该快照不是峰值 profiling，不能保证后续不 OOM；真实模型多卡加载仍未开放。详见 [098 对齐报告](../docs/step098_alignment.md)。
+
+### 词表分片与完整 Logits（099）
+
+普通原始词表按 64 行补齐并分片，本地 Embedding 以 TP all-reduce 汇总；输出头本地投影后由 `LogitsProcessor` 执行 TP all-gather、去补齐并按既有顺序处理 logits。量化、LoRA 扩展词表与多 rank 局部 top-k 不属于当前范围；完整多卡模型与采样尚未开放。详见 [099 对齐报告](../docs/step099_alignment.md)。

@@ -24,6 +24,7 @@ import torch
 from torch import nn
 
 from ..attention import Attention
+from ..layers.logits_processor import LogitsProcessor
 from ..layers import (MergedColumnParallelLinear, ParallelLMHead, QKVParallelLinear,
                       RMSNorm, RowParallelLinear, SiluAndMul, get_rope,
                       VocabParallelEmbedding)
@@ -351,6 +352,7 @@ class Qwen3ForCausalLM(nn.Module):
         self.model = Qwen3Model(config, prefix=maybe_prefix(prefix, "model"))
         self.lm_head = ParallelLMHead(config["vocab_size"], config["hidden_size"],
                                       prefix=maybe_prefix(prefix, "lm_head"))
+        self.logits_processor = LogitsProcessor(config["vocab_size"])
         self.tie_word_embeddings = bool(config.get("tie_word_embeddings", False))
         if self.tie_word_embeddings:
             # 共享同一个 Parameter（vLLM 在 __init__ 里就这么做）。**必须在加载权重之前完成**：
@@ -374,7 +376,7 @@ class Qwen3ForCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """只对**需要采样的行**调用（调用方先按行号选 hidden_states）——词表 GEMM 是最贵的一步。"""
-        return self.lm_head(hidden_states)
+        return self.logits_processor(self.lm_head, hidden_states)
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)

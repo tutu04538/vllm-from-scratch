@@ -20,6 +20,7 @@ forward 语义（**不能替换成普通 Qwen3**）：
 import torch
 from torch import nn
 
+from ..layers.logits_processor import LogitsProcessor
 from ..layers import ParallelLMHead, QKVParallelLinear, RMSNorm, RowParallelLinear, VocabParallelEmbedding
 from ..layers.rotary_embedding import get_rope
 from ..attention import Attention
@@ -242,6 +243,7 @@ class Eagle3ForCausalLM(nn.Module):
         self.target_vocab_size = int(config["vocab_size"])
         self.lm_head = ParallelLMHead(draft_vocab_size, config["hidden_size"],
                                       prefix=maybe_prefix(prefix, "lm_head"))
+        self.logits_processor = LogitsProcessor(draft_vocab_size)
         # 异构词表（TLI）：d2t = draft id → target id；t2d 标出 target 词表里哪些 id 属于 draft 空间。
         # 本关只用它把**采样出来的 draft id** 映射回 target id（完整 TLI 采样空间语义属 67 关）。
         self.d2t = None
@@ -312,7 +314,7 @@ class Eagle3ForCausalLM(nn.Module):
         （上游把两步写在一个方法里，本仓库拆开是为了让"映射前后"能分别断言；生产路径只有
         `compute_logits()` 被调用）。
         """
-        return self.lm_head(hidden_states)
+        return self.logits_processor(self.lm_head, hidden_states)
 
     def load_weights(self, weights) -> set[str]:
         """权重名映射 + 跳过/接收 `d2t`/`t2d`。

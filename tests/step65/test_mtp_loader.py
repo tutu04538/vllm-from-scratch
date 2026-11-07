@@ -113,8 +113,10 @@ def test_shared_embedding_and_lm_head_loaded(naming):
     model = Qwen3MTP({**config, "architectures": ["Qwen3MTPModel"]})
     model.load_weights(iter(state.items()))
     params = dict(model.named_parameters())
-    assert torch.equal(params["model.embed_tokens.weight"], state["model.embed_tokens.weight"])
-    assert torch.equal(params["lm_head.weight"], state["lm_head.weight"])
+    for name in ("model.embed_tokens.weight", "lm_head.weight"):
+        expected = state[name]
+        assert torch.equal(params[name][:len(expected)], expected)
+        assert torch.count_nonzero(params[name][len(expected):]) == 0
     # 两者是**各自**的参数（不是同一个对象）：上游 Qwen3NextMTP 也是这样各自建层、各自加载
     assert params["model.embed_tokens.weight"] is not params["lm_head.weight"]
 
