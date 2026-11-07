@@ -615,6 +615,8 @@ class MessageQueue:
         start_time = time.monotonic()
         n_warning = 1
         while True:
+            if self.shutting_down:
+                raise RuntimeError("消息队列正在关闭")
             with self.buffer.get_metadata(self.current_idx) as metadata_buffer:
 
                 def check():

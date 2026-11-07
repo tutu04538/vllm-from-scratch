@@ -33,6 +33,12 @@ class EngineCore:
         self.failure: str | None = None
         # 83 关：关闭态。shutdown 幂等；关闭后任何调度/执行入口在动手前拒绝。
         self._shutdown = False
+        register_failure_callback = getattr(executor, "register_failure_callback", None)
+        if register_failure_callback is not None:
+            def on_executor_failure():
+                if self.failure is None:
+                    self.failure = str(getattr(executor, "failure", "执行端失败"))
+            register_failure_callback(on_executor_failure)
         # Scheduler 与 KVCacheManager 由执行侧交回容量之后一起创建：容量来自执行侧，
         # 不能先建调度器再问容量（初始化顺序见 195 §8）。
         from ..core.kv_cache_manager import KVCacheManager
@@ -274,6 +280,10 @@ class EngineCore:
         """下一轮开始前先看关闭/失败标记：**在调度之前**拒绝，别让状态再往前走。"""
         if self._shutdown:
             raise RuntimeError("EngineCore 已经 shutdown，不再接受请求/step/执行调用")
+        if self.failure is None and self.model_executor is not None:
+            executor_failure = getattr(self.model_executor, "failure", None)
+            if executor_failure is not None:
+                self.failure = str(executor_failure)
         if self.failure is not None:
             raise RuntimeError(
                 f"EngineCore 已经失败，不再接受新的 step()：{self.failure}。"
@@ -291,8 +301,13 @@ class EngineCore:
         if self.async_scheduling:
             return
         if model_executed and self.speculative_config is not None:
-            draft_token_ids = self.model_executor.take_draft_token_ids()
-            self.scheduler.update_draft_token_ids(draft_token_ids)
+            try:
+                draft_token_ids = self.model_executor.take_draft_token_ids()
+                self.scheduler.update_draft_token_ids(draft_token_ids)
+            except Exception as exc:
+                if self.failure is None:
+                    self.failure = f"{type(exc).__name__}: {exc}"
+                raise
 
     def shutdown(self) -> None:
         """关闭本引擎的执行端；重复调用幂等（83 关）。

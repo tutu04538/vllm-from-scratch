@@ -1120,3 +1120,7 @@ V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和
 ### 进程间广播与 RPC（094）
 
 `MultiprocExecutor` 使用单机共享内存广播队列和逐 Worker 响应队列，按顺序返回 Future；已使用无模型探针验证 `EngineCore` 接线。多卡模型分片和 `async_scheduling=True` 仍未开放，详见 [094 对齐报告](../docs/step094_alignment.md)。
+
+### 多进程失败与清理（095）
+
+Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续执行并清理同一副本的 Worker；EngineCore 在调度前检查执行端失败。队列满时关闭会中断等待写入。真实多卡模型与端到端异步调度仍未开放，范围和证据见 [095 对齐报告](../docs/step095_alignment.md)。

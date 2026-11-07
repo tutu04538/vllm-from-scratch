@@ -143,3 +143,5 @@
 [093 多进程 Worker 启动](step093_alignment.md)：spawn Worker、设备和通信组所有权、readiness 与故障清理；093 时多卡模型加载及推理 RPC 尚未开放。
 
 [094 共享内存广播与 RPC](step094_alignment.md)：单机共享内存广播、响应队列和顺序 Future，经真实多进程探针验证；多卡模型权重和端到端异步调度仍未开放。
+
+[095 多进程失败传播与清理](step095_alignment.md)：监控 Worker 进程、传播在途 RPC 失败并有界清理；具体验证及尚未开放的真实多卡路径见报告。

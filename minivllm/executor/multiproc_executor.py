@@ -13,6 +13,7 @@ from pathlib import Path
 import pickle
 import tempfile
 import time
+import threading
 import traceback
 import uuid
 from multiprocessing import shared_memory
@@ -80,6 +81,7 @@ class UnreadyWorkerProcHandle:
     process: mp.Process
     ready_pipe: object
     death_writer: object
+    failure_reader: object
 
 
 class WorkerProc:
@@ -90,24 +92,28 @@ class WorkerProc:
                             input_handle, startup_timeout, ipc_dir, response_name):
         ready_reader, ready_writer = context.Pipe(duplex=False)
         death_reader, death_writer = context.Pipe(duplex=False)
+        failure_reader, failure_writer = context.Pipe(duplex=False)
         proc = context.Process(target=WorkerProc.worker_main,
             args=(vllm_config, rank, device_index, init_method, worker_cls, ready_writer, death_reader,
-                  input_handle, startup_timeout, ipc_dir, response_name),
+                  input_handle, startup_timeout, ipc_dir, response_name, failure_writer),
             name=f'MiniVllmWorker-{rank}', daemon=True)
         try:
             proc.start()
         except BaseException:
             ready_reader.close(); ready_writer.close(); death_reader.close(); death_writer.close()
+            failure_reader.close(); failure_writer.close()
             raise
         ready_writer.close()
         death_reader.close()
-        return UnreadyWorkerProcHandle(rank, proc, ready_reader, death_writer)
+        failure_writer.close()
+        return UnreadyWorkerProcHandle(rank, proc, ready_reader, death_writer, failure_reader)
 
     @staticmethod
     def worker_main(vllm_config, rank, device_index, init_method, worker_cls, ready, death,
-                    input_handle, startup_timeout, ipc_dir, response_name):
+                    input_handle, startup_timeout, ipc_dir, response_name, failure_writer):
         worker = None
         input_mq = response_mq = None
+        queue_lifecycle_lock = threading.Lock()
         phase = 'construct_worker'
         try:
             worker = worker_cls(vllm_config, rank=rank, local_rank=rank,
@@ -134,7 +140,19 @@ class WorkerProc:
             input_mq.wait_until_ready(timeout=startup_timeout)
             response_mq.wait_until_ready(timeout=startup_timeout)
             phase = 'worker_busy_loop'
-            WorkerProc.worker_busy_loop(worker, rank, input_mq, response_mq, death)
+            shutdown_requested = threading.Event()
+            def monitor_parent():
+                try:
+                    death.recv_bytes()
+                except (EOFError, OSError):
+                    shutdown_requested.set()
+                    with queue_lifecycle_lock:
+                        if not getattr(input_mq, '_closed', False):
+                            input_mq.shutdown()
+            threading.Thread(target=monitor_parent, daemon=True,
+                             name='DeathPipeMonitor').start()
+            WorkerProc.worker_busy_loop(worker, rank, input_mq, response_mq,
+                                        shutdown_requested, failure_writer)
         except BaseException as exc:
             if ready is not None:
                 try:
@@ -146,10 +164,12 @@ class WorkerProc:
             if ready is not None:
                 ready.close()
             death.close()
-            if input_mq is not None:
-                input_mq.close()
-            if response_mq is not None:
-                response_mq.close()
+            failure_writer.close()
+            with queue_lifecycle_lock:
+                if input_mq is not None:
+                    input_mq.close()
+                if response_mq is not None:
+                    response_mq.close()
             if worker is not None:
                 try:
                     worker.shutdown()
@@ -161,17 +181,16 @@ class WorkerProc:
         FAILURE = auto()
 
     @staticmethod
-    def worker_busy_loop(worker, rank, input_mq, response_mq, death):
-        while True:
-            if death.poll():
-                try:
-                    death.recv_bytes()
-                except EOFError:
-                    return
+    def worker_busy_loop(worker, rank, input_mq, response_mq, shutdown_requested, failure_writer):
+        while not shutdown_requested.is_set():
             try:
                 method, args, kwargs, output_rank = input_mq.dequeue(timeout=0.2, indefinite=True)
             except TimeoutError:
                 continue
+            except RuntimeError:
+                if shutdown_requested.is_set():
+                    return
+                raise
             try:
                 func = getattr(worker, method) if isinstance(method, str) else lambda *a, **k: cloudpickle.loads(method)(worker, *a, **k)
                 output = func(*args, **kwargs)
@@ -181,8 +200,14 @@ class WorkerProc:
                 response_mq.enqueue((WorkerProc.ResponseStatus.SUCCESS,
                                      output if output_rank is None or rank == output_rank else None))
             except Exception as exc:
-                response_mq.enqueue((WorkerProc.ResponseStatus.FAILURE,
-                                     f'rank {rank}: {type(exc).__name__}: {exc}\n{traceback.format_exc()}'))
+                error = (f'rank {rank} pid {os.getpid()} 阶段 {method}: '
+                         f'{type(exc).__name__}: {exc}\n{traceback.format_exc()}')
+                # 独立控制管道让 monitor 即使在等待较早 rank 的响应时也能发现原始异常。
+                try:
+                    failure_writer.send(error)
+                except (BrokenPipeError, EOFError, OSError):
+                    pass
+                response_mq.enqueue((WorkerProc.ResponseStatus.FAILURE, error))
                 return
 
     @staticmethod
@@ -234,6 +259,12 @@ class MultiprocExecutor:
         self._response_shm_names = [f'minivllm094_{uuid.uuid4().hex}' for _ in range(p.world_size)]
         self.futures_queue = deque()
         self.failure = None
+        self.failure_callback = None
+        self._state_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._response_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._monitor_thread = None
         self.output_rank = p.world_size - p.tensor_parallel_size
         self._closed = False
         self._rendezvous = tempfile.TemporaryDirectory(prefix='minivllm-mp-')
@@ -258,6 +289,7 @@ class MultiprocExecutor:
             self.rpc_broadcast_mq.wait_until_ready(timeout=_startup_timeout)
             for response_mq in self.response_mqs:
                 response_mq.wait_until_ready(timeout=_startup_timeout)
+            self.start_worker_monitor()
         except BaseException as exc:
             try:
                 self.shutdown()
@@ -265,48 +297,119 @@ class MultiprocExecutor:
                 raise RuntimeError(f'{exc}; Worker 清理失败: {cleanup_error}') from exc
             raise
 
+    def _mark_failure(self, message):
+        callback = None
+        with self._state_lock:
+            if self.failure is None and not self._closed:
+                self.failure = str(message)
+                callback, self.failure_callback = self.failure_callback, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                traceback.print_exc()
+        if self.failure is not None and not self._closed:
+            threading.Thread(target=self.shutdown, daemon=True,
+                             name='MultiprocFailureCleanup').start()
+
+    def register_failure_callback(self, callback):
+        with self._state_lock:
+            failed = self.failure is not None
+            if not failed:
+                self.failure_callback = callback
+        if failed:
+            callback()
+
+    def start_worker_monitor(self):
+        """观察所有 Worker，不能仅等待当前 rank 的响应。"""
+        def monitor():
+            watched = {h.process.sentinel: h for h in self.workers}
+            watched.update({h.failure_reader: h for h in self.workers})
+            while watched:
+                events = wait(list(watched))
+                # 优先读取 Worker 发来的原始异常，避免被退出码覆盖。
+                events.sort(key=lambda event: isinstance(event, int))
+                for event in events:
+                    handle = watched.get(event)
+                    if handle is None:
+                        continue
+                    if event is handle.failure_reader:
+                        try:
+                            message = event.recv()
+                        except (EOFError, OSError):
+                            watched.pop(event, None)
+                            continue
+                    else:
+                        handle.process.join(timeout=0.1)
+                        message = (f'Worker rank {handle.rank} pid {handle.process.pid} '
+                                   f'意外退出，exitcode={handle.process.exitcode}')
+                    with self._state_lock:
+                        closing = self._closed
+                    if not closing:
+                        self._mark_failure(message)
+                        self.shutdown()
+                    return
+
+        self._monitor_thread = threading.Thread(target=monitor, daemon=True,
+                                                name='MultiprocWorkerMonitor')
+        self._monitor_thread.start()
+
     def shutdown(self):
-        if self._closed:
-            return
-        self._closed = True
-        for handle in self.workers:
-            handle.death_writer.close()
-            handle.ready_pipe.close()
-        deadline = time.monotonic() + 5
-        for handle in self.workers:
-            handle.process.join(max(0, deadline - time.monotonic()))
-        for handle in self.workers:
-            if handle.process.is_alive():
-                handle.process.terminate()
-        deadline = time.monotonic() + 5
-        for handle in self.workers:
-            handle.process.join(max(0, deadline - time.monotonic()))
-        for handle in self.workers:
-            if handle.process.is_alive():
-                handle.process.kill()
-        deadline = time.monotonic() + 5
-        for handle in self.workers:
-            handle.process.join(max(0, deadline - time.monotonic()))
-        remaining = [h.rank for h in self.workers if h.process.is_alive()]
-        for response_mq in self.response_mqs:
-            response_mq.close()
-        if self.rpc_broadcast_mq is not None:
-            self.rpc_broadcast_mq.close()
-        # Worker 在创建 response SHM 后被强制终止时，其名字仍由本 Executor 持有。
-        for name in self._response_shm_names:
-            try:
-                with patch('multiprocessing.resource_tracker.register', lambda *args, **kwargs: None):
-                    orphan = shared_memory.SharedMemory(name=name)
-            except FileNotFoundError:
-                continue
-            try:
-                with suppress(FileNotFoundError):
-                    orphan.unlink()
-            finally:
-                orphan.close()
-        self._rendezvous.cleanup()
-        if remaining:
-            raise RuntimeError(f'Worker 终止超时，未退出 ranks={remaining}')
+        # monitor 和控制线程可能同时关闭；必须等首次清理完成，而非只检查标志后返回。
+        with self._shutdown_lock:
+            if self._closed:
+                return
+            with self._state_lock:
+                self._closed = True
+            if self.rpc_broadcast_mq is not None:
+                self.rpc_broadcast_mq.shutdown()
+            for handle in self.workers:
+                handle.death_writer.close()
+                handle.ready_pipe.close()
+            deadline = time.monotonic() + 5
+            for handle in self.workers:
+                handle.process.join(max(0, deadline - time.monotonic()))
+            for handle in self.workers:
+                if handle.process.is_alive():
+                    handle.process.terminate()
+            deadline = time.monotonic() + 5
+            for handle in self.workers:
+                handle.process.join(max(0, deadline - time.monotonic()))
+            for handle in self.workers:
+                if handle.process.is_alive():
+                    handle.process.kill()
+            deadline = time.monotonic() + 5
+            for handle in self.workers:
+                handle.process.join(max(0, deadline - time.monotonic()))
+            remaining = [h.rank for h in self.workers if h.process.is_alive()]
+            # 等待读响应的线程离开 dequeue，再释放底层 socket / SHM。
+            with self._response_lock:
+                for response_mq in self.response_mqs:
+                    response_mq.close()
+                with self._send_lock:
+                    if self.rpc_broadcast_mq is not None:
+                        self.rpc_broadcast_mq.close()
+            for handle in self.workers:
+                handle.failure_reader.close()
+            for name in self._response_shm_names:
+                try:
+                    with patch('multiprocessing.resource_tracker.register', lambda *args, **kwargs: None):
+                        orphan = shared_memory.SharedMemory(name=name)
+                except FileNotFoundError:
+                    continue
+                try:
+                    with suppress(FileNotFoundError):
+                        orphan.unlink()
+                finally:
+                    orphan.close()
+            self._rendezvous.cleanup()
+            if remaining:
+                raise RuntimeError(f'Worker 终止超时，未退出 ranks={remaining}')
+
+    def check_health(self):
+        if self.failure is not None:
+            raise RuntimeError(f'Executor 已失败: {self.failure}')
+        self.collective_rpc('check_health', timeout=10)
 
     def get_cache_config(self):
         if any(not info['model_loaded'] for info in self.ready_workers):
@@ -342,18 +445,23 @@ class MultiprocExecutor:
 
     def collective_rpc(self, method, timeout=None, args=(), kwargs=None, non_block=False,
                        unique_reply_rank=None):
-        if self._closed:
-            raise RuntimeError('Executor 已关闭')
         if self.failure is not None:
             raise RuntimeError(f'Executor 已失败: {self.failure}')
+        if self._closed:
+            raise RuntimeError('Executor 已关闭')
         if unique_reply_rank is not None and not 0 <= unique_reply_rank < len(self.workers):
             raise ValueError('unique_reply_rank 越界')
         deadline = None if timeout is None else time.monotonic() + timeout
         send_method = method if isinstance(method, str) else cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
         try:
-            self.rpc_broadcast_mq.enqueue((send_method, args, kwargs or {}, unique_reply_rank), timeout=timeout)
+            with self._send_lock:
+                if self.failure is not None:
+                    raise RuntimeError(f'Executor 已失败: {self.failure}')
+                if self._closed:
+                    raise RuntimeError('Executor 已关闭')
+                self.rpc_broadcast_mq.enqueue((send_method, args, kwargs or {}, unique_reply_rank), timeout=timeout)
         except Exception as exc:
-            self.failure = f'RPC {method} 发送失败: {exc}'
+            self._mark_failure(f'RPC {method} 发送失败: {exc}')
             raise
 
         def get_response():
@@ -367,7 +475,10 @@ class MultiprocExecutor:
                         if remaining is not None and remaining <= 0:
                             raise TimeoutError(f'RPC {method} 超时')
                         try:
-                            status, value = mq.dequeue(timeout=min(0.2, remaining) if remaining is not None else 0.2)
+                            with self._response_lock:
+                                if self.failure is not None:
+                                    raise RuntimeError(f'Executor 已失败: {self.failure}')
+                                status, value = mq.dequeue(timeout=min(0.2, remaining) if remaining is not None else 0.2)
                             break
                         except TimeoutError:
                             if not self.workers[rank].process.is_alive():
@@ -376,8 +487,10 @@ class MultiprocExecutor:
                         raise RuntimeError(f'Worker 失败: {value}')
                     responses.append(value)
             except Exception as exc:
-                self.failure = str(exc)
+                self._mark_failure(str(exc))
                 raise
+            if self.failure is not None:
+                raise RuntimeError(f'Executor 已失败: {self.failure}')
             return responses[unique_reply_rank] if unique_reply_rank is not None else responses
 
         future = FutureWrapper(self.futures_queue, get_response)

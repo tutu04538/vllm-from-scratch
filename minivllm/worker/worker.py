@@ -151,6 +151,10 @@ class Worker:
             return None
         return self.model_runner.take_draft_token_ids()
 
+    def check_health(self) -> None:
+        """确认 Worker 尚未关闭；进程存活由 Executor 的 monitor 检查。"""
+        self._check_open()
+
     def _check_open(self) -> None:
         if self._shutdown:
             raise RuntimeError("Worker 已经 shutdown，不再接受初始化/执行/采样调用")

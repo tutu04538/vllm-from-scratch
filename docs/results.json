@@ -38,7 +38,8 @@
   "step091": "已实现并验收配置矩阵与单卡执行器工厂；多卡仍拒绝",
   "step092": "已完成单机 eager 进程组与真实多 rank 原语；多卡模型执行仍未开放",
   "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放",
-  "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放"
+  "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放",
+  "step095": "已完成多进程故障监控、失败传播与有界幂等清理；仅测试 Worker，真实多卡模型仍未开放"
  },
  "step58": {
   "results": {
@@ -14048,7 +14049,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 185,
-  "sha256": "f75130b737904f96ed26b10f718a0dd577657124cfdac3ff9efb7ebf259f0f0a",
+  "sha256": "ca720066d43737f6e12a2b9241aeee47ffd4bb7f64f95789f1c8b581a79c436d",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -15988,6 +15989,251 @@
   "models": {
    "real_model_run": false,
    "reason": "仅运行 FakeRunner 多进程协议探针，不加载真实模型。"
+  }
+ },
+ "step095": {
+  "results": {
+   "status": "passed scoped worker-failure and cleanup; real multi-GPU models/Graph/speculation not opened",
+   "head": "7dedefc (parent before 095)",
+   "package_sha256": "ca720066d43737f6e12a2b9241aeee47ffd4bb7f64f95789f1c8b581a79c436d",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "upstream_executor_sha256": "d5ca86635611758c2bd543ffd1fe9ad200db62880ce1f47eda8e4c63847595ea",
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "transformers": "5.14.1",
+    "vllm": "0.28.0+cu129",
+    "pyzmq": "27.3.0",
+    "cloudpickle": "3.1.2",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step095 -q -ra",
+     "exit_code": 0,
+     "passed": 15,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 110.3,
+     "artifact": "benchmarks/results/step095/pytest_verified.log",
+     "note": "在增加 kill_escalation 测试之前执行，其余用例及生产代码与最终版一致"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest 'tests/step095/test_step095_failure.py::test_failure_and_cleanup[kill_escalation]' -q -ra",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 15.14,
+     "artifact": "benchmarks/results/step095/pytest_kill_escalation.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step095_acceptance.py --case all --timeout 120 --output benchmarks/results/step095/acceptance_verified.json",
+     "exit_code": 0,
+     "passed_cases": 13,
+     "note": "在增加 kill_escalation 案例之前执行；各故障注入子进程按预期返回非零"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step095_acceptance.py --case kill_escalation --timeout 120 --output benchmarks/results/step095/kill_escalation.json",
+     "exit_code": 0,
+     "passed_cases": 1,
+     "rank0_exitcode": -9
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step093 tests/step094 -q -ra",
+     "exit_code": 0,
+     "passed": 24,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 87.07,
+     "artifact": "benchmarks/results/step095/final_multiprocess_regression.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 tests/step091 tests/step092 tests/step093 tests/step094 -q -ra",
+     "exit_code": 0,
+     "passed": 112,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 158.13,
+     "artifact": "benchmarks/results/step095/parallel_regression.log",
+     "note": "在 death-pipe 队列生命周期锁的最后竞态修复之前；受影响 093/094 在最终代码重新通过"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 102.15,
+     "artifact": "benchmarks/results/step095/final_regression.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step095/requirements_audit_final.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "cases": [
+    {
+     "case": "init",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.537,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/init.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/init.log"
+    },
+    {
+     "case": "load",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 4.276,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/load.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/load.log"
+    },
+    {
+     "case": "initialize",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 9.139,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/initialize.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/initialize.log"
+    },
+    {
+     "case": "capture",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 9.039,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/capture.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/capture.log"
+    },
+    {
+     "case": "execute",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.436,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/execute.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/execute.log"
+    },
+    {
+     "case": "sample",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.788,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/sample.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/sample.log"
+    },
+    {
+     "case": "propose",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.539,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/propose.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/propose.log"
+    },
+    {
+     "case": "output",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.487,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/output.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/output.log"
+    },
+    {
+     "case": "abrupt",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 8.688,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/abrupt.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/abrupt.log"
+    },
+    {
+     "case": "abrupt4",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 9.29,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/abrupt4.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/abrupt4.log"
+    },
+    {
+     "case": "collective",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 9.837,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/collective.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/collective.log"
+    },
+    {
+     "case": "engine",
+     "exit_code": 0,
+     "expected_exit_code": 0,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 6.183,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/engine.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/engine.log"
+    },
+    {
+     "case": "fresh",
+     "exit_code": 0,
+     "expected_exit_code": 0,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 3.925,
+     "result_path": "benchmarks/results/step095/acceptance_verified_cases/fresh.json",
+     "log": "benchmarks/results/step095/acceptance_verified_cases/fresh.log"
+    },
+    {
+     "case": "kill_escalation",
+     "exit_code": 1,
+     "expected_exit_code": 1,
+     "passed": true,
+     "clean_threads": true,
+     "elapsed_seconds": 14.949,
+     "result_path": "benchmarks/results/step095/kill_escalation_cases/kill_escalation.json",
+     "log": "benchmarks/results/step095/kill_escalation_cases/kill_escalation.log"
+    }
+   ],
+   "upstream_differential": "实际调用安装版 start_worker_monitor；执行前核对源码 SHA256 与冻结文件一致，真实子进程退出触发上游关闭和 failure callback。",
+   "intentional_deviation": "额外使用每 Worker 故障管道传递原始异常，防止按 rank 等响应时遗漏其他 rank 失败；所有权和退出升级对照冻结实现。共享内存队列增加满槽关闭中断。",
+   "not_run": [
+    "真实多卡模型加载/前向及真实多 rank Graph 捕获未开放；initialize/capture/execute/sample/propose/output 为测试 Worker 注入。",
+    "真实多卡 EAGLE3 和端到端异步调度未开放。",
+    "旧真实权重 23 项 skipped，未计入通过。"
+   ],
+   "artifacts": [
+    "benchmarks/results/step095/acceptance_verified.json",
+    "benchmarks/results/step095/kill_escalation.json",
+    "benchmarks/results/step095/requirements_audit_final.json",
+    "benchmarks/results/step095/gpu_processes_after.log"
+   ]
+  },
+  "models": {
+   "real_model_run": false,
+   "reason": "FakeRunner 与测试 Worker 故障注入；不声称真实模型多卡验收。"
   }
  }
 }
