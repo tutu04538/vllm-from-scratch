@@ -24,9 +24,17 @@ from .gpu_model_runner import GPUModelRunner
 
 
 class Worker:
-    def __init__(self, vllm_config, model_runner=None) -> None:
+    def __init__(self, vllm_config, model_runner=None, *, rank=None, local_rank=None,
+                 device_index=None, distributed_init_method=None) -> None:
         self.vllm_config = vllm_config
         self.device = vllm_config.device_config.device
+        self.rank = rank
+        self.local_rank = local_rank
+        self.device_index = device_index
+        self.distributed_init_method = distributed_init_method
+        self._distributed_initialized = False
+        if rank is not None:
+            self.device = f"cuda:{device_index}"
         # 注入的 Runner（测试用）。None 表示走真实路径，在 load_model() 里建。
         self.model_runner = model_runner
         self.kv_cache_config = None
@@ -38,6 +46,16 @@ class Worker:
         """准备设备。本关只记下 device：显存 profiling、分布式、CUDA Graph 捕获都不在这里
         （57D 及以后）。"""
         self._check_open()
+        if self.rank is not None:
+            from datetime import timedelta
+            from ..distributed import init_distributed_environment, initialize_model_parallel
+            p = self.vllm_config.parallel_config
+            init_distributed_environment(p.world_size, self.rank, self.distributed_init_method,
+                                         self.local_rank, timeout=timedelta(seconds=120),
+                                         device_index=self.device_index)
+            self._distributed_initialized = True
+            initialize_model_parallel(p.tensor_parallel_size, p.pipeline_parallel_size,
+                                      timeout=timedelta(seconds=120))
         return None
 
     def load_model(self) -> None:
@@ -49,6 +67,8 @@ class Worker:
         Engine/Scheduler 协议，但**不互相调用对方的输入准备**（需求 073 §2）。
         """
         self._check_open()
+        if self.rank is not None and self.vllm_config.parallel_config.world_size > 1 and self.model_runner is None:
+            raise NotImplementedError("多卡模型参数分片尚未实现，不能加载完整模型")
         if self.model_runner is not None:
             return
         if self.vllm_config.use_v2_model_runner:
@@ -143,3 +163,10 @@ class Worker:
         finally:
             self.model_runner = None
             self.kv_cache_config = None
+            if self._distributed_initialized:
+                from ..distributed import destroy_distributed_environment, destroy_model_parallel
+                try:
+                    destroy_model_parallel()
+                finally:
+                    destroy_distributed_environment()
+                    self._distributed_initialized = False

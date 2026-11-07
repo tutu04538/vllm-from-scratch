@@ -36,7 +36,8 @@
   "step84": "implemented + self-verified（84 共享紧凑 RoPE + 原地 Triton Q/K；真实 target+assistant eager/graph 通过；FP32 复放 83 历史 64 token 相同，BF16 仅 near-tie 舍入变化；46 项单测 + 1200 全量；不跑完整性能矩阵）",
   "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；2D 修复后 198/0 spills；24 项 step88、全量 1297；2D 修复 198/0 spills，Graph 135.55 tok/s）",
   "step091": "已实现并验收配置矩阵与单卡执行器工厂；多卡仍拒绝",
-  "step092": "已完成单机 eager 进程组与真实多 rank 原语；多卡模型执行仍未开放"
+  "step092": "已完成单机 eager 进程组与真实多 rank 原语；多卡模型执行仍未开放",
+  "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放"
  },
  "step58": {
   "results": {
@@ -14045,8 +14046,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 181,
-  "sha256": "e59d783be54755430be22490994406e7df9c1e67781091d6099071f774d83e29",
+  "python_files": 183,
+  "sha256": "3f6a7c9b56c884dec6d2e66368afd3bda42146b57ac2d614edba3305995fe4c4",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -15279,6 +15280,460 @@
   "models": {
    "real_model_run": false,
    "reason": "092只验证真实GPU通信，不加载模型。"
+  }
+ },
+ "step093": {
+  "results": {
+   "status": "passed scoped worker lifecycle; no multi-GPU inference",
+   "head": "1abc29a (parent before 093)",
+   "package_sha256": "3f6a7c9b56c884dec6d2e66368afd3bda42146b57ac2d614edba3305995fe4c4",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "transformers": "5.14.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "multiprocessing_start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step093 -q -ra",
+     "exit_code": 0,
+     "passed": 13,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 45.42,
+     "artifact": "benchmarks/results/step093/pytest_final.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step093_acceptance.py --case all --timeout 120 --output benchmarks/results/step093/acceptance.json",
+     "exit_code": 0,
+     "passed_cases": 6,
+     "duration_seconds": 24.172542894026265
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 93.48,
+     "artifact": "benchmarks/results/step093/regression.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 tests/step091 tests/step092 -q -ra",
+     "exit_code": 0,
+     "passed": 88,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 74.62,
+     "artifact": "benchmarks/results/step093/parallel_regression.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step093/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "cases": [
+    {
+     "case": "2",
+     "workers": 2,
+     "status": "passed",
+     "attempts": [
+      {
+       "ready": [
+        {
+         "status": "READY",
+         "rank": 0,
+         "local_rank": 0,
+         "pid": 1862135,
+         "device_index": 0,
+         "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          0
+         ],
+         "group_local_rank": 0,
+         "group_device_index": 0,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 1,
+         "local_rank": 1,
+         "pid": 1862136,
+         "device_index": 1,
+         "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          1
+         ],
+         "group_local_rank": 1,
+         "group_device_index": 1,
+         "model_loaded": false
+        }
+       ],
+       "pids": [
+        1862135,
+        1862136
+       ],
+       "rendezvous_cleaned": true,
+       "children_reaped": true
+      },
+      {
+       "ready": [
+        {
+         "status": "READY",
+         "rank": 0,
+         "local_rank": 0,
+         "pid": 1862421,
+         "device_index": 0,
+         "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          0
+         ],
+         "group_local_rank": 0,
+         "group_device_index": 0,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 1,
+         "local_rank": 1,
+         "pid": 1862422,
+         "device_index": 1,
+         "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          1
+         ],
+         "group_local_rank": 1,
+         "group_device_index": 1,
+         "model_loaded": false
+        }
+       ],
+       "pids": [
+        1862421,
+        1862422
+       ],
+       "rendezvous_cleaned": true,
+       "children_reaped": true
+      }
+     ]
+    },
+    {
+     "case": "4",
+     "workers": 4,
+     "status": "passed",
+     "attempts": [
+      {
+       "ready": [
+        {
+         "status": "READY",
+         "rank": 0,
+         "local_rank": 0,
+         "pid": 1862662,
+         "device_index": 0,
+         "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          0
+         ],
+         "group_local_rank": 0,
+         "group_device_index": 0,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 1,
+         "local_rank": 1,
+         "pid": 1862663,
+         "device_index": 1,
+         "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          1
+         ],
+         "group_local_rank": 1,
+         "group_device_index": 1,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 2,
+         "local_rank": 2,
+         "pid": 1862664,
+         "device_index": 2,
+         "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          2
+         ],
+         "group_local_rank": 2,
+         "group_device_index": 2,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 3,
+         "local_rank": 3,
+         "pid": 1862665,
+         "device_index": 3,
+         "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          3
+         ],
+         "group_local_rank": 3,
+         "group_device_index": 3,
+         "model_loaded": false
+        }
+       ],
+       "pids": [
+        1862662,
+        1862663,
+        1862664,
+        1862665
+       ],
+       "rendezvous_cleaned": true,
+       "children_reaped": true
+      },
+      {
+       "ready": [
+        {
+         "status": "READY",
+         "rank": 0,
+         "local_rank": 0,
+         "pid": 1863254,
+         "device_index": 0,
+         "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          0
+         ],
+         "group_local_rank": 0,
+         "group_device_index": 0,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 1,
+         "local_rank": 1,
+         "pid": 1863256,
+         "device_index": 1,
+         "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          1
+         ],
+         "group_local_rank": 1,
+         "group_device_index": 1,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 2,
+         "local_rank": 2,
+         "pid": 1863259,
+         "device_index": 2,
+         "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          2
+         ],
+         "group_local_rank": 2,
+         "group_device_index": 2,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 3,
+         "local_rank": 3,
+         "pid": 1863263,
+         "device_index": 3,
+         "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+         "tp_ranks": [
+          0,
+          1,
+          2,
+          3
+         ],
+         "pp_ranks": [
+          3
+         ],
+         "group_local_rank": 3,
+         "group_device_index": 3,
+         "model_loaded": false
+        }
+       ],
+       "pids": [
+        1863254,
+        1863256,
+        1863259,
+        1863263
+       ],
+       "rendezvous_cleaned": true,
+       "children_reaped": true
+      }
+     ]
+    },
+    {
+     "case": "device-ids",
+     "workers": 2,
+     "status": "passed",
+     "attempts": [
+      {
+       "ready": [
+        {
+         "status": "READY",
+         "rank": 0,
+         "local_rank": 0,
+         "pid": 1866488,
+         "device_index": 1,
+         "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          0
+         ],
+         "group_local_rank": 0,
+         "group_device_index": 1,
+         "model_loaded": false
+        },
+        {
+         "status": "READY",
+         "rank": 1,
+         "local_rank": 1,
+         "pid": 1866489,
+         "device_index": 0,
+         "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "tp_ranks": [
+          0,
+          1
+         ],
+         "pp_ranks": [
+          1
+         ],
+         "group_local_rank": 1,
+         "group_device_index": 0,
+         "model_loaded": false
+        }
+       ],
+       "pids": [
+        1866488,
+        1866489
+       ],
+       "rendezvous_cleaned": true,
+       "children_reaped": true
+      }
+     ]
+    },
+    {
+     "case": "fail-device",
+     "workers": 2,
+     "status": "passed",
+     "attempts": [
+      {
+       "expected_error": "Worker rank 1 在 init_device 失败: RuntimeError: injected init_device failure\nTraceback (most recent call last):\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/executor/multiproc_executor.py\", line 76, in worker_main\n    worker.init_device()\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/testing/step093_probe.py\", line 17, in init_device\n    raise RuntimeError('injected init_device failure')\nRuntimeError: injected init_device failure\n",
+       "children_reaped": true,
+       "rendezvous_cleaned": true
+      }
+     ]
+    },
+    {
+     "case": "fail-load",
+     "workers": 2,
+     "status": "passed",
+     "attempts": [
+      {
+       "expected_error": "Worker rank 1 在 load_model 失败: RuntimeError: injected load_model failure\nTraceback (most recent call last):\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/executor/multiproc_executor.py\", line 78, in worker_main\n    worker.load_model()\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/testing/step093_probe.py\", line 24, in load_model\n    raise RuntimeError('injected load_model failure')\nRuntimeError: injected load_model failure\n",
+       "children_reaped": true,
+       "rendezvous_cleaned": true
+      }
+     ]
+    },
+    {
+     "case": "production",
+     "workers": 2,
+     "status": "passed",
+     "attempts": [
+      {
+       "expected_error": "Worker rank 0 在 load_model 失败: NotImplementedError: 多卡模型参数分片尚未实现，不能加载完整模型\nTraceback (most recent call last):\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/executor/multiproc_executor.py\", line 78, in worker_main\n    worker.load_model()\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/worker/worker.py\", line 71, in load_model\n    raise NotImplementedError(\"多卡模型参数分片尚未实现，不能加载完整模型\")\nNotImplementedError: 多卡模型参数分片尚未实现，不能加载完整模型\n",
+       "children_reaped": true,
+       "rendezvous_cleaned": true
+      }
+     ]
+    }
+   ],
+   "parent_cuda_initialized_before": false,
+   "parent_cuda_initialized_after": false,
+   "artifacts": [
+    "benchmarks/results/step093/acceptance.json",
+    "benchmarks/results/step093/requirements_audit.json"
+   ],
+   "not_run": [
+    "本关无模型探针；未实现或验收多卡模型加载、分片、KV 绑定与推理。",
+    "未实现 094 正式 shared-memory RPC 与 095 运行中故障监测。",
+    "旧回归23项 skipped 未计为通过。"
+   ],
+   "frozen_oracle": "安装版和冻结的 WorkerProc、WorkerWrapper、GPU Worker 和 system_utils 四文件 SHA256 逐字节一致；执行时序以对应上游源码为准。"
+  },
+  "models": {
+   "real_model_run": false,
+   "reason": "本关无模型部署探针；生产多卡模型加载明确拒绝。"
   }
  }
 }

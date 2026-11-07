@@ -10,16 +10,18 @@ import torch.distributed as dist
 _TP = None
 _PP = None
 _LOCAL_RANK = None
+_DEVICE_INDEX = None
 _OWNS_DEFAULT_GROUP = False
 
 
 class GroupCoordinator:
     """一组成员的 CUDA/Gloo 进程组；全体 rank 必须按同序创建各子组。"""
 
-    def __init__(self, group_ranks, local_rank: int, timeout: timedelta):
+    def __init__(self, group_ranks, local_rank: int, timeout: timedelta, device_index: int | None = None):
         self.rank = dist.get_rank()
         self.local_rank = local_rank
-        self.device = torch.device('cuda', local_rank)
+        self.device_index = local_rank if device_index is None else device_index
+        self.device = torch.device('cuda', self.device_index)
         self.device_group = None
         self.cpu_group = None
         self._destroyed = False
@@ -138,17 +140,24 @@ class GroupCoordinator:
 def init_distributed_environment(world_size: int = -1, rank: int = -1,
                                  distributed_init_method: str = 'env://',
                                  local_rank: int = -1, backend: str = 'nccl',
-                                 timeout: timedelta | None = None) -> None:
-    global _LOCAL_RANK, _OWNS_DEFAULT_GROUP
+                                 timeout: timedelta | None = None,
+                                 device_index: int | None = None) -> None:
+    global _LOCAL_RANK, _DEVICE_INDEX, _OWNS_DEFAULT_GROUP
     if backend != 'nccl':
         raise NotImplementedError('本专题设备组仅支持 NCCL')
     if local_rank == -1:
         local_rank = int(os.environ.get('LOCAL_RANK', rank))
-    if type(local_rank) is not int or not 0 <= local_rank < torch.cuda.device_count():
-        raise ValueError(f'local_rank {local_rank!r} 超出可见 GPU')
+    if type(local_rank) is not int or local_rank < 0:
+        raise ValueError(f'local_rank {local_rank!r} 必须是非负整数')
+    if world_size > 0 and local_rank >= world_size:
+        raise ValueError(f'local_rank {local_rank} 超出 world_size {world_size}')
+    if device_index is None:
+        device_index = local_rank
+    if type(device_index) is not int or not 0 <= device_index < torch.cuda.device_count():
+        raise ValueError(f'device_index {device_index!r} 超出可见 GPU')
     if _LOCAL_RANK is not None:
         raise RuntimeError('分布式环境已经初始化')
-    torch.cuda.set_device(local_rank)
+    torch.cuda.set_device(device_index)
     if dist.is_initialized():
         if (world_size != -1 and dist.get_world_size() != world_size) or (rank != -1 and dist.get_rank() != rank):
             raise ValueError('已存在的默认组与 rank/world_size 不匹配')
@@ -159,7 +168,7 @@ def init_distributed_environment(world_size: int = -1, rank: int = -1,
         dist.init_process_group(backend=backend, init_method=distributed_init_method,
                                 world_size=world_size, rank=rank, timeout=timeout)
         owned = True
-    _LOCAL_RANK, _OWNS_DEFAULT_GROUP = local_rank, owned
+    _LOCAL_RANK, _DEVICE_INDEX, _OWNS_DEFAULT_GROUP = local_rank, device_index, owned
 
 
 def initialize_model_parallel(tensor_model_parallel_size: int = 1,
@@ -178,8 +187,8 @@ def initialize_model_parallel(tensor_model_parallel_size: int = 1,
     tp_groups = [row.tolist() for row in ranks]
     pp_groups = [column.tolist() for column in ranks.transpose(0, 1)]
     try:
-        _TP = GroupCoordinator(tp_groups, _LOCAL_RANK, timeout)
-        _PP = GroupCoordinator(pp_groups, _LOCAL_RANK, timeout)
+        _TP = GroupCoordinator(tp_groups, _LOCAL_RANK, timeout, _DEVICE_INDEX)
+        _PP = GroupCoordinator(pp_groups, _LOCAL_RANK, timeout, _DEVICE_INDEX)
     except BaseException:
         if _TP is not None:
             _TP.destroy()
@@ -208,9 +217,9 @@ def destroy_model_parallel() -> None:
 
 
 def destroy_distributed_environment() -> None:
-    global _LOCAL_RANK, _OWNS_DEFAULT_GROUP
+    global _LOCAL_RANK, _DEVICE_INDEX, _OWNS_DEFAULT_GROUP
     if _TP is not None or _PP is not None:
         raise RuntimeError('销毁默认组前先销毁模型并行组')
     if _OWNS_DEFAULT_GROUP and dist.is_initialized():
         dist.destroy_process_group()
-    _LOCAL_RANK, _OWNS_DEFAULT_GROUP = None, False
+    _LOCAL_RANK, _DEVICE_INDEX, _OWNS_DEFAULT_GROUP = None, None, False

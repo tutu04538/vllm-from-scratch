@@ -4,6 +4,7 @@
 """
 
 from .uniproc_executor import UniProcExecutor
+from .multiproc_executor import MultiprocExecutor
 from .factory import create_executor, get_executor_class
 
-__all__ = ["UniProcExecutor", "create_executor", "get_executor_class"]
+__all__ = ["UniProcExecutor", "MultiprocExecutor", "create_executor", "get_executor_class"]

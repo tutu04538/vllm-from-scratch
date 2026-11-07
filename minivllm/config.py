@@ -1931,7 +1931,17 @@ class VllmConfig:
             import torch
             p.validate_devices(torch.cuda.device_count())
         if p.total_gpu_count > 1:
-            raise NotImplementedError("多卡并行尚未开放；V1/V2 均不能执行此布局")
+            if not self.use_v2_model_runner or not self.device_config.device.startswith("cuda"):
+                raise NotImplementedError("多卡并行仅开放 V2 CUDA Worker 启动")
+            if p.data_parallel_size != 1:
+                raise NotImplementedError("多卡 DP 尚未开放")
+            if p.resolved_backend != "mp":
+                raise NotImplementedError("多卡 Worker 启动需要 mp 后端")
+            if self.device_config.device != "cuda":
+                raise ValueError("多卡启动的 device 必须是 cuda，逐卡编号由 device_ids 指定")
+            if self.scheduler_config.async_scheduling is True:
+                raise NotImplementedError("async_scheduling=True 尚未开放")
+            return
         if p.resolved_backend != "uni":
             raise NotImplementedError(f"executor 后端 {p.resolved_backend!r} 尚未开放")
         if p.device_ids is not None:
