@@ -1927,6 +1927,12 @@ class VllmConfig:
         if p.pipeline_parallel_size > 1 and p.distributed_executor_backend == "external_launcher":
             raise NotImplementedError("不支持 external_launcher + PP>1")
         p.validate_model(self.model_config)
+        if p.tensor_parallel_size > 1:
+            hf = self.model_config._text_hf_config()
+            model_type = str(hf.get("model_type", "")).lower()
+            architectures = hf.get("architectures") or (self.model_config.hf_config or {}).get("architectures") or []
+            if model_type.startswith("gemma") or any("gemma" in str(name).lower() for name in architectures):
+                raise NotImplementedError("Gemma 多卡 TP 与共享 KV 暂不开放")
         if p.total_gpu_count > 1 and self.device_config.device.startswith("cuda"):
             import torch
             p.validate_devices(torch.cuda.device_count())

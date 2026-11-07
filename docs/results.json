@@ -40,7 +40,8 @@
   "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放",
   "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放",
   "step095": "已完成多进程故障监控、失败传播与有界幂等清理；仅测试 Worker，真实多卡模型仍未开放",
-  "step096": "已完成普通 TP 行列线性层的本地参数、CPU 权重切片加载和真实 GPU 差分；完整多卡模型仍未开放"
+  "step096": "已完成普通 TP 行列线性层的本地参数、CPU 权重切片加载和真实 GPU 差分；完整多卡模型仍未开放",
+  "step097": "已完成 Merged/QKV TP 本地分片、GQA KV 复制和 8B/14B 真实权重抽层验收；完整多卡模型未开放"
  },
  "step58": {
   "results": {
@@ -14050,7 +14051,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 185,
-  "sha256": "b038c61640da5f5d971d88d13beed1e0698b16d42cc3dc67cf440e248cc6bba5",
+  "sha256": "271b3b62cb83d796ae565de8e28bf9d2bda98db367183373e2244a7f667fb119",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -16471,6 +16472,580 @@
   "models": {
    "real_model_run": false,
    "reason": "使用手算权重和临时 safetensors，不加载真实 Qwen 权重。"
+  }
+ },
+ "step097": {
+  "results": {
+   "status": "passed scoped Merged/QKV TP slicing, GQA replication and real weight layer slices; full multi-GPU inference not opened",
+   "head": "7fde605 (parent before 097)",
+   "package_sha256": "271b3b62cb83d796ae565de8e28bf9d2bda98db367183373e2244a7f667fb119",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "model_executor/layers/linear.py": "fc4e96ba5e36895513b801b99e746e2b07959d402e36d56aae7d8ad3f124cfe7",
+    "model_executor/parameter.py": "ff6054fbd19ec932c548d562c6f4cc4506383b71cbe411fcfd554c8b1d87b510",
+    "model_executor/models/qwen3.py": "ec8bc9c090f6f5242b2f572366644ef73573137b3e48b03b39c0f083fbb21ab4"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "torchrun"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step097 -q -ra",
+     "exit_code": 0,
+     "passed": 15,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 71.87,
+     "artifact": "benchmarks/results/step097/pytest_release.log",
+     "note": "新增非法复制因子反例前执行，后者单独运行"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step097/test_step097_packed.py::test_illegal_replication_factor_rejected -q -ra",
+     "exit_code": 0,
+     "passed": 1,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 1.62,
+     "artifact": "benchmarks/results/step097/pytest_invalid_replication.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step097_acceptance.py --case all --timeout 180 --output benchmarks/results/step097/acceptance_release.json",
+     "exit_code": 0,
+     "passed_cases": 7,
+     "artifact": "benchmarks/results/step097/acceptance_release.json"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 tests/step091 tests/step092 tests/step093 tests/step094 tests/step095 tests/step096 -q -ra",
+     "exit_code": 0,
+     "passed": 132,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 306.45,
+     "artifact": "benchmarks/results/step097/parallel_regression_release.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 98.84,
+     "artifact": "benchmarks/results/step097/regression.log",
+     "note": "在最终生产源码下运行；后续只改测试与文档"
+    },
+    {
+     "cmd": "sha256sum 8B 与 14B 的 model-00001 safetensors",
+     "exit_code": 0,
+     "artifact": "benchmarks/results/step097/real_weights_sha256.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step097/requirements_audit_final.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "cases": [
+    {
+     "case": "tiny1",
+     "world": 1,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 8.385,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 0,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 8,
+        "kv_heads": 2,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 8
+       }
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/tiny1/torchrun.log"
+    },
+    {
+     "case": "tiny2",
+     "world": 2,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 10.742,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 0,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 4,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 4
+       }
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 1,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 4,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 4
+       }
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/tiny2/torchrun.log"
+    },
+    {
+     "case": "tiny4",
+     "world": 4,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 11.043,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 0,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 2,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 2
+       }
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 0,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 2,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 2
+       }
+      },
+      {
+       "rank": 2,
+       "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 1,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 2,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 2
+       }
+      },
+      {
+       "rank": 3,
+       "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "qkv_cases": 12,
+       "merged_cases": 4,
+       "kv2_source_head": 1,
+       "qwen": {
+        "explicit_head_dim": 8,
+        "hidden_size": 32,
+        "heads": 2,
+        "kv_heads": 1,
+        "attention_pre_shapes": true
+       },
+       "mlp": {
+        "max_abs": 3.725290298461914e-09,
+        "local_intermediate": 2
+       }
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/tiny4/torchrun.log"
+    },
+    {
+     "case": "8b2",
+     "world": 2,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 9.238,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        3072,
+        4096
+       ],
+       "merged_shape": [
+        12288,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 16,
+       "local_kv_heads": 4,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        3072,
+        4096
+       ],
+       "merged_shape": [
+        12288,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 16,
+       "local_kv_heads": 4,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/8b2/torchrun.log"
+    },
+    {
+     "case": "8b4",
+     "world": 4,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 9.389,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        1536,
+        4096
+       ],
+       "merged_shape": [
+        6144,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 8,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        1536,
+        4096
+       ],
+       "merged_shape": [
+        6144,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 8,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 2,
+       "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        1536,
+        4096
+       ],
+       "merged_shape": [
+        6144,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 8,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 3,
+       "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "model": "Qwen3-8B",
+       "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218/model-00001-of-00005.safetensors",
+       "qkv_shape": [
+        1536,
+        4096
+       ],
+       "merged_shape": [
+        6144,
+        4096
+       ],
+       "head_dim": 128,
+       "total_q_heads": 32,
+       "total_kv_heads": 8,
+       "local_q_heads": 8,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/8b4/torchrun.log"
+    },
+    {
+     "case": "14b2",
+     "world": 2,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 9.441,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        3584,
+        5120
+       ],
+       "merged_shape": [
+        17408,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 20,
+       "local_kv_heads": 4,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        3584,
+        5120
+       ],
+       "merged_shape": [
+        17408,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 20,
+       "local_kv_heads": 4,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/14b2/torchrun.log"
+    },
+    {
+     "case": "14b4",
+     "world": 4,
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 10.495,
+     "ranks": [
+      {
+       "rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        1792,
+        5120
+       ],
+       "merged_shape": [
+        8704,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 10,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        1792,
+        5120
+       ],
+       "merged_shape": [
+        8704,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 10,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 2,
+       "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        1792,
+        5120
+       ],
+       "merged_shape": [
+        8704,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 10,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      },
+      {
+       "rank": 3,
+       "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "model": "Qwen3-14B",
+       "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+       "source_file": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18/model-00001-of-00008.safetensors",
+       "qkv_shape": [
+        1792,
+        5120
+       ],
+       "merged_shape": [
+        8704,
+        5120
+       ],
+       "head_dim": 128,
+       "total_q_heads": 40,
+       "total_kv_heads": 8,
+       "local_q_heads": 10,
+       "local_kv_heads": 2,
+       "norm_elements": 128,
+       "real_checkpoint_slices": true
+      }
+     ],
+     "log": "benchmarks/results/step097/acceptance_release_ranks/14b4/torchrun.log"
+    }
+   ],
+   "oracle": "安装版 vLLM linear.py 与 parameter.py 的 SHA256 与冻结源码相符；真实 GPU 上直接调用冻结层 weight_loader 和 forward，rank/size 查询指向同一测试组；各逻辑 shard 源切片另按全局配置独立计算。",
+   "intentional_deviation": "沿用项目原本构造接口；项目要求加载对账，增加 Qwen3 每层 QKV/Merged 及 weight/bias 独立缺失、重复校验；Gemma TP>1 配置期拒绝。",
+   "not_run": [
+    "完整 Qwen 多卡模型加载、KV cache/Attention 端到端、EAGLE3 多卡和多 rank CUDA Graph 均为后续关卡；真实权重只抽第 0 层。",
+    "旧真实权重 23 项 skipped，不计入通过。"
+   ],
+   "artifacts": [
+    "benchmarks/results/step097/acceptance_release.json",
+    "benchmarks/results/step097/requirements_audit_final.json",
+    "benchmarks/results/step097/real_weights_sha256.log",
+    "benchmarks/results/step097/gpu_processes_after.log"
+   ]
+  },
+  "models": {
+   "real_model_run": false,
+   "real_weight_slice_run": true,
+   "scope": "仅第 0 层 q/k/v、gate/up 与 q/k norm；不加载或运行完整模型",
+   "identities": {
+    "8b": {
+     "repo": "Qwen/Qwen3-8B",
+     "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "dtype": "bfloat16",
+     "source_file": "model-00001-of-00005.safetensors",
+     "sha256": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    "14b": {
+     "repo": "Qwen/Qwen3-14B",
+     "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "dtype": "bfloat16",
+     "source_file": "model-00001-of-00008.safetensors",
+     "sha256": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18"
+    }
+   }
   }
  }
 }

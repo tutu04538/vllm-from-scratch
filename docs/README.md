@@ -146,4 +146,6 @@
 
 [095 多进程失败传播与清理](step095_alignment.md)：监控 Worker 进程、传播在途 RPC 失败并有界清理；具体验证及尚未开放的真实多卡路径见报告。
 
-[096 TP 行列线性层](step096_alignment.md)：普通 Column/Row 的本地参数、权重切片与 GPU 通信；QKV/Merged 和完整多卡模型仍由后续关卡完成。
+[096 TP 行列线性层](step096_alignment.md)：普通 Column/Row 的本地参数、权重切片与 GPU 通信；QKV/Merged 分片见 097，完整多卡模型仍属后续。
+
+[097 Merged/QKV 与 GQA 复制](step097_alignment.md)：逐逻辑 shard 的 TP 切片、本地 Q/K/V 布局和 KV 头复制；完整多卡模型、Attention/KV 与 Graph 仍属后续关卡。

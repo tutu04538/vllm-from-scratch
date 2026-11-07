@@ -1127,4 +1127,8 @@ Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续
 
 ### TP 行列线性层（096）
 
-普通 `ColumnParallelLinear` 和 `RowParallelLinear` 支持 TP 本地权重及对应 all-gather/all-reduce，支持单卡兼容和显式拒绝不支持的量化。QKV/Merged、词表及完整模型并行仍未开放，细节和实测见 [096 对齐报告](../docs/step096_alignment.md)。
+普通 `ColumnParallelLinear` 和 `RowParallelLinear` 支持 TP 本地权重及对应 all-gather/all-reduce，支持单卡兼容和显式拒绝不支持的量化。QKV/Merged 分片随后在 097 实现；词表及完整模型并行仍未开放，细节和实测见 [096 对齐报告](../docs/step096_alignment.md)。
+
+### Merged/QKV 权重分片（097）
+
+`MergedColumnParallelLinear` 与 `QKVParallelLinear` 为每个逻辑 shard 分别取本 rank 的权重并打包；KV 头不足 TP 时按冻结 vLLM 复制，Qwen3 使用本地头数和显式 head_dim。Gemma TP、完整多卡模型及 Graph 仍未开放。证据见 [097 对齐报告](../docs/step097_alignment.md)。

@@ -2,7 +2,7 @@
 
 名字保留 vLLM 的 `QKVParallelLinear` / `MergedColumnParallelLinear` / `RowParallelLinear` /
 `VocabParallelEmbedding` / `ParallelLMHead`，是为了**源码映射**：读 vLLM 的 qwen3.py 时能一对
-一找到这些类。普通行列层支持 TP；QKV、Merged 和词表层仍只有 TP=1，多卡模型尚未开放。
+一找到这些类。普通行列层、QKV 和 Merged 支持 TP；词表及多卡模型仍未开放。
 
 它们存在的**真正理由**是权重加载：检查点里 q/k/v 是三个独立权重、gate/up 是两个，而模型里是
 打包的一个参数（少一次 GEMM 的 launch、少一次中间读写）。打包带来的问题就是"怎么把分片的
@@ -54,71 +54,79 @@ def _copy_into(param: Parameter, loaded_weight: torch.Tensor, offset: int, size:
 
 
 class QKVParallelLinear(nn.Module):
-    """把 q/k/v 三个投影打成一次 GEMM（TP=1）。
-
-    GQA 下 q 与 k/v 的头数不同，**不能假定三等分**：输出维按
-    `[num_heads*head_dim, num_kv_heads*head_dim, num_kv_heads*head_dim]` 切。
-    """
+    """Q/K/V 独立分片后按 [Q_local,K_local,V_local] 打包。"""
 
     def __init__(self, hidden_size: int, head_size: int, total_num_heads: int,
                  total_num_kv_heads: int | None = None, bias: bool = False,
                  prefix: str = "") -> None:
         super().__init__()
-        self.hidden_size = hidden_size
-        self.head_size = head_size
-        self.v_head_size = head_size
-        self.num_heads = total_num_heads
-        self.num_kv_heads = total_num_heads if total_num_kv_heads is None else total_num_kv_heads
-        self.q_size = self.num_heads * self.head_size
-        self.kv_size = self.num_kv_heads * self.head_size
-        # 三段输出维（q / k / v）。shard 的偏移与大小都由它推出来。
-        self.output_sizes = [self.q_size, self.kv_size, self.kv_size]
-
-        self.weight = Parameter(torch.empty(sum(self.output_sizes), hidden_size))
+        self.group, self.tp_rank, self.tp_size = _linear_tp_group(False)
+        for name, value in (("hidden_size", hidden_size), ("head_size", head_size)):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} 必须是正整数")
+        kv_heads = total_num_heads if total_num_kv_heads is None else total_num_kv_heads
+        self.num_heads = _parallel_dimension(total_num_heads, self.tp_size, "total_num_heads")
+        if type(kv_heads) is not int or kv_heads <= 0:
+            raise ValueError("total_num_kv_heads 必须是正整数")
+        if self.tp_size >= kv_heads:
+            self.num_kv_heads = 1
+            self.num_kv_head_replicas = _parallel_dimension(self.tp_size, kv_heads, "TP")
+        else:
+            self.num_kv_heads = _parallel_dimension(kv_heads, self.tp_size, "total_num_kv_heads")
+            self.num_kv_head_replicas = 1
+        self.hidden_size, self.head_size, self.v_head_size = hidden_size, head_size, head_size
+        self.total_num_heads, self.total_num_kv_heads = total_num_heads, kv_heads
+        self.q_size = self.num_heads * head_size
+        self.kv_size = self.num_kv_heads * head_size
+        self.output_sizes = [self.q_size * self.tp_size, self.kv_size * self.tp_size,
+                             self.kv_size * self.tp_size]
+        self.prefix = prefix
+        local_size = self.q_size + 2 * self.kv_size
+        self.weight = Parameter(torch.empty(local_size, hidden_size))
+        self.weight.output_dim = 0
         self.weight.weight_loader = self.weight_loader
         if bias:
-            self.bias = Parameter(torch.empty(sum(self.output_sizes)))
+            self.bias = Parameter(torch.empty(local_size))
+            self.bias.output_dim = 0
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
-        # 需求 85：加载结束后按“本层实际需要的 shard 集合”对账。只记录 weight 的
-        # 加载次数；bias 复用同一个 loader，不能算成重复覆盖。
         self._shard_load_counts: dict[str, int] = {}
+        self._bias_shard_load_counts: dict[str, int] = {}
 
     def reset_load_state(self) -> None:
-        """开始一次新的权重加载前清空 shard 记账。"""
         self._shard_load_counts.clear()
+        self._bias_shard_load_counts.clear()
 
     def validate_loaded_shards(self, required: set[str]) -> None:
-        """缺 shard / 同一 shard 被覆盖时明确报错，而不是留下未初始化行。"""
         required = set(required)
         invalid = required - {"q", "k", "v"}
         if invalid:
             raise ValueError(f"未知的必需 QKV shard: {sorted(invalid)}")
-        missing = sorted(shard for shard in required
-                         if self._shard_load_counts.get(shard, 0) == 0)
-        duplicated = sorted(shard for shard, count in self._shard_load_counts.items()
-                            if count > 1)
-        if missing or duplicated:
-            detail = []
+        detail = []
+        counts = [("weight", self._shard_load_counts)]
+        if self.bias is not None:
+            counts.append(("bias", self._bias_shard_load_counts))
+        for name, loaded in counts:
+            missing = sorted(shard for shard in required if loaded.get(shard, 0) == 0)
+            duplicated = sorted(shard for shard, count in loaded.items() if count > 1)
             if missing:
-                detail.append(f"缺少 {missing}")
+                detail.append(f"{name} 缺少 {missing}")
             if duplicated:
-                detail.append(f"重复覆盖 {duplicated}")
-            raise ValueError(
-                f"QKVParallelLinear（输出 {self.output_sizes}）的 shard 加载不完整："
-                + "，".join(detail))
+                detail.append(f"{name} 重复覆盖 {duplicated}")
+        if detail:
+            raise ValueError(f"QKVParallelLinear（输出 {self.output_sizes}）的 shard 加载不完整：" + "，".join(detail))
 
     def _mark_shard_loaded(self, param: Parameter, shard_id: str | None) -> None:
-        if param is not self.weight:
+        if param is self.weight:
+            counts = self._shard_load_counts
+        elif self.bias is not None and param is self.bias:
+            counts = self._bias_shard_load_counts
+        else:
             return
         shards = ("q", "k", "v") if shard_id is None else (shard_id,)
         for shard in shards:
-            if shard not in ("q", "k", "v"):
-                raise ValueError(
-                    f"未知的 shard_id {shard!r}（qkv 只接受 'q' / 'k' / 'v'）")
-            self._shard_load_counts[shard] = (
-                self._shard_load_counts.get(shard, 0) + 1)
+            counts[shard] = counts.get(shard, 0) + 1
 
     def _shard_range(self, shard_id: str) -> tuple[int, int]:
         offsets = {"q": 0, "k": self.q_size, "v": self.q_size + self.kv_size}
@@ -129,58 +137,104 @@ class QKVParallelLinear(nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
                       shard_id: str | None = None) -> None:
+        if type(param) is not Parameter:
+            raise NotImplementedError("QKV 暂不支持特殊或量化 Parameter")
+        source_sizes = {"q": self.total_num_heads * self.head_size,
+                        "k": self.total_num_kv_heads * self.head_size,
+                        "v": self.total_num_kv_heads * self.v_head_size}
         if shard_id is None:
-            # 检查点本身已经是打包好的（或者只有一个分片）：整块写入
-            if loaded_weight.shape[0] != param.shape[0]:
-                raise ValueError(f"打包权重行数不匹配：目标 {param.shape[0]}，"
-                                 f"收到 {loaded_weight.shape[0]}")
-            with torch.no_grad():
-                param.copy_(loaded_weight)
-            self._mark_shard_loaded(param, None)
+            if loaded_weight.ndim != param.ndim or loaded_weight.shape[0] != sum(source_sizes.values()) or loaded_weight.shape[1:] != param.shape[1:]:
+                raise ValueError(f"打包权重形状不匹配：收到 {tuple(loaded_weight.shape)}")
+            offset = 0
+            for name in ("q", "k", "v"):
+                width = source_sizes[name]
+                self.weight_loader(param, loaded_weight.narrow(0, offset, width), name)
+                offset += width
             return
-        offset, size = self._shard_range(shard_id)
-        _copy_into(param, loaded_weight, offset, size)
+        target_offset, size = self._shard_range(shard_id)
+        if loaded_weight.ndim != param.ndim or loaded_weight.shape[0] != source_sizes[shard_id] or loaded_weight.shape[1:] != param.shape[1:]:
+            raise ValueError(f"{shard_id} 权重形状不匹配：收到 {tuple(loaded_weight.shape)}")
+        source_rank = self.tp_rank if shard_id == "q" else self.tp_rank // self.num_kv_head_replicas
+        _copy_into(param, loaded_weight.narrow(0, source_rank * size, size), target_offset, size)
         self._mark_shard_loaded(param, shard_id)
 
     def forward(self, x: torch.Tensor):
-        # 返回值对齐 vLLM 的 (output, output_bias) 约定
         return F.linear(x, self.weight, self.bias), None
 
 
 class MergedColumnParallelLinear(nn.Module):
-    """把 gate/up 打成一次 GEMM（TP=1）。`shard_id` 是分片下标（0=gate，1=up）。"""
+    """每个逻辑输出分别分片，打包顺序保持 [shard0_local, shard1_local, ...]。"""
 
     def __init__(self, input_size: int, output_sizes: list[int], bias: bool = False,
                  prefix: str = "") -> None:
         super().__init__()
-        self.input_size = input_size
-        self.output_sizes = list(output_sizes)
-        self.weight = Parameter(torch.empty(sum(self.output_sizes), input_size))
+        self.group, self.tp_rank, self.tp_size = _linear_tp_group(False)
+        if type(input_size) is not int or input_size <= 0 or not output_sizes:
+            raise ValueError("input_size 必须为正且 output_sizes 不能为空")
+        self.input_size, self.output_sizes, self.prefix = input_size, list(output_sizes), prefix
+        self.local_output_sizes = [_parallel_dimension(v, self.tp_size, "output_size") for v in self.output_sizes]
+        self.weight = Parameter(torch.empty(sum(self.local_output_sizes), input_size))
+        self.weight.output_dim = 0
         self.weight.weight_loader = self.weight_loader
         if bias:
-            self.bias = Parameter(torch.empty(sum(self.output_sizes)))
+            self.bias = Parameter(torch.empty(sum(self.local_output_sizes)))
+            self.bias.output_dim = 0
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
+        self._shard_load_counts: dict[int, int] = {}
+        self._bias_shard_load_counts: dict[int, int] = {}
+
+    def reset_load_state(self) -> None:
+        self._shard_load_counts.clear()
+        self._bias_shard_load_counts.clear()
+
+    def validate_loaded_shards(self, required: set[int]) -> None:
+        required = set(required)
+        if not required <= set(range(len(self.output_sizes))):
+            raise ValueError("未知的 Merged shard")
+        detail = []
+        counts = [("weight", self._shard_load_counts)]
+        if self.bias is not None:
+            counts.append(("bias", self._bias_shard_load_counts))
+        for name, loaded in counts:
+            missing = sorted(i for i in required if loaded.get(i, 0) == 0)
+            duplicate = sorted(i for i, count in loaded.items() if count > 1)
+            if missing:
+                detail.append(f"{name} 缺少 {missing}")
+            if duplicate:
+                detail.append(f"{name} 重复覆盖 {duplicate}")
+        if detail:
+            raise ValueError("Merged shard 加载不完整：" + "；".join(detail))
 
     def _shard_range(self, shard_id: int) -> tuple[int, int]:
-        if not 0 <= shard_id < len(self.output_sizes):
-            raise ValueError(f"shard_id {shard_id} 越界（这个合并层有 "
-                             f"{len(self.output_sizes)} 个分片）")
-        offset = sum(self.output_sizes[:shard_id])
-        return offset, self.output_sizes[shard_id]
+        if type(shard_id) is not int or not 0 <= shard_id < len(self.output_sizes):
+            raise ValueError(f"shard_id {shard_id!r} 越界")
+        return sum(self.local_output_sizes[:shard_id]), self.local_output_sizes[shard_id]
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
                       shard_id: int | None = None) -> None:
+        if type(param) is not Parameter:
+            raise NotImplementedError("Merged 暂不支持特殊或量化 Parameter")
         if shard_id is None:
-            if loaded_weight.shape[0] != param.shape[0]:
-                raise ValueError(f"打包权重行数不匹配：目标 {param.shape[0]}，"
-                                 f"收到 {loaded_weight.shape[0]}")
-            with torch.no_grad():
-                param.copy_(loaded_weight)
+            if loaded_weight.ndim != param.ndim or loaded_weight.shape[0] != sum(self.output_sizes) or loaded_weight.shape[1:] != param.shape[1:]:
+                raise ValueError(f"打包权重形状不匹配：收到 {tuple(loaded_weight.shape)}")
+            offset = 0
+            for index, width in enumerate(self.output_sizes):
+                self.weight_loader(param, loaded_weight.narrow(0, offset, width), index)
+                offset += width
             return
-        offset, size = self._shard_range(shard_id)
-        _copy_into(param, loaded_weight, offset, size)
+        target_offset, size = self._shard_range(shard_id)
+        if loaded_weight.ndim != param.ndim or loaded_weight.shape[0] != self.output_sizes[shard_id] or loaded_weight.shape[1:] != param.shape[1:]:
+            raise ValueError(f"shard {shard_id} 权重形状不匹配：收到 {tuple(loaded_weight.shape)}")
+        _copy_into(param, loaded_weight.narrow(0, self.tp_rank * size, size), target_offset, size)
+        if param is self.weight:
+            counts = self._shard_load_counts
+        elif self.bias is not None and param is self.bias:
+            counts = self._bias_shard_load_counts
+        else:
+            return
+        counts[shard_id] = counts.get(shard_id, 0) + 1
 
     def forward(self, x: torch.Tensor):
         return F.linear(x, self.weight, self.bias), None
