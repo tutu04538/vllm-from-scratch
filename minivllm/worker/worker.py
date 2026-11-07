@@ -23,6 +23,18 @@
 from .gpu_model_runner import GPUModelRunner
 
 
+def _set_random_seed(seed: int) -> None:
+    """按冻结 vLLM 同序设置进程随机状态；各 rank 使用相同 seed。"""
+    import random
+    import numpy as np
+    import torch
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 class Worker:
     def __init__(self, vllm_config, model_runner=None, *, rank=None, local_rank=None,
                  device_index=None, distributed_init_method=None) -> None:
@@ -58,6 +70,7 @@ class Worker:
             self._distributed_initialized = True
             initialize_model_parallel(p.tensor_parallel_size, p.pipeline_parallel_size,
                                       timeout=timedelta(seconds=120))
+            _set_random_seed(self.vllm_config.model_config.seed)
         return None
 
     def load_model(self) -> None:
@@ -138,6 +151,9 @@ class Worker:
         capture_model = getattr(self.model_runner, "capture_model", None)
         if capture_model is not None:
             capture_model()
+        if self.rank is not None:
+            # 与上游一致，模型加载和 warmup 的随机消耗不影响请求的 None seed。
+            _set_random_seed(self.vllm_config.model_config.seed)
 
     # -------- 执行 --------
 

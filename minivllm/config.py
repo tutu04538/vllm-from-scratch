@@ -148,8 +148,12 @@ class ModelConfig:
     # `VllmConfig._resolve_cudagraph_config`：只有 CUDA + 没开 enforce_eager + 模式含 FULL
     # 才真的会建图。
     enforce_eager: bool = False
+    # 与冻结 vLLM 一致：各 Worker 使用相同模型 seed，不叠加 rank。
+    seed: int = 0
 
     def __post_init__(self):
+        if type(self.seed) is not int or not 0 <= self.seed < 2**32:
+            raise ValueError("model seed 必须是 [0, 2**32) 内的整数")
         if self.max_model_len <= 0:
             raise ValueError(f"max_model_len 必须为正，收到 {self.max_model_len}")
         if self.logprobs_mode not in LOGPROBS_MODES:

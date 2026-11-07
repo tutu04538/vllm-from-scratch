@@ -1140,3 +1140,7 @@ Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续
 ### 词表分片与完整 Logits（099）
 
 普通原始词表按 64 行补齐并分片，本地 Embedding 以 TP all-reduce 汇总；输出头本地投影后由 `LogitsProcessor` 执行 TP all-gather、去补齐并按既有顺序处理 logits。量化、LoRA 扩展词表与多 rank 局部 top-k 不属于当前范围；完整多卡模型与采样尚未开放。详见 [099 对齐报告](../docs/step099_alignment.md)。
+
+### TP 采样与请求镜像（100）
+
+多进程 Worker 在组初始化后与 warmup 后使用相同 `ModelConfig.seed` 重置随机状态，不给 seed 叠加 rank；各 TP rank 仍各自采样并维护本地镜像，仅 output rank 向 Scheduler 返回结果。tiny TP2/4 的 greedy、随机约束、seed=None、取消复用与抢占恢复已验证；`logit_bias` 仍明确拒绝，真实模型多卡、投机多卡及 Graph 属后续。详见 [100 对齐报告](../docs/step100_alignment.md)。
