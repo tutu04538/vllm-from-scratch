@@ -196,6 +196,11 @@ def initialize_model_parallel(tensor_model_parallel_size: int = 1,
         raise
 
 
+def get_tp_group_if_initialized() -> GroupCoordinator | None:
+    """返回本进程的 TP 组；无分布式环境的既有单卡调用可检查 None。"""
+    return _TP
+
+
 def get_tp_group() -> GroupCoordinator:
     if _TP is None:
         raise RuntimeError('TP 组尚未初始化')

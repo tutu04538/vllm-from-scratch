@@ -1124,3 +1124,7 @@ V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和
 ### 多进程失败与清理（095）
 
 Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续执行并清理同一副本的 Worker；EngineCore 在调度前检查执行端失败。队列满时关闭会中断等待写入。真实多卡模型与端到端异步调度仍未开放，范围和证据见 [095 对齐报告](../docs/step095_alignment.md)。
+
+### TP 行列线性层（096）
+
+普通 `ColumnParallelLinear` 和 `RowParallelLinear` 支持 TP 本地权重及对应 all-gather/all-reduce，支持单卡兼容和显式拒绝不支持的量化。QKV/Merged、词表及完整模型并行仍未开放，细节和实测见 [096 对齐报告](../docs/step096_alignment.md)。

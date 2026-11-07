@@ -39,7 +39,8 @@
   "step092": "已完成单机 eager 进程组与真实多 rank 原语；多卡模型执行仍未开放",
   "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放",
   "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放",
-  "step095": "已完成多进程故障监控、失败传播与有界幂等清理；仅测试 Worker，真实多卡模型仍未开放"
+  "step095": "已完成多进程故障监控、失败传播与有界幂等清理；仅测试 Worker，真实多卡模型仍未开放",
+  "step096": "已完成普通 TP 行列线性层的本地参数、CPU 权重切片加载和真实 GPU 差分；完整多卡模型仍未开放"
  },
  "step58": {
   "results": {
@@ -14049,7 +14050,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 185,
-  "sha256": "ca720066d43737f6e12a2b9241aeee47ffd4bb7f64f95789f1c8b581a79c436d",
+  "sha256": "b038c61640da5f5d971d88d13beed1e0698b16d42cc3dc67cf440e248cc6bba5",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -16234,6 +16235,242 @@
   "models": {
    "real_model_run": false,
    "reason": "FakeRunner 与测试 Worker 故障注入；不声称真实模型多卡验收。"
+  }
+ },
+ "step096": {
+  "results": {
+   "status": "passed scoped ordinary TP linear layers; QKV/Merged and complete multi-GPU models remain unopened",
+   "head": "823f96d (parent before 096)",
+   "package_sha256": "b038c61640da5f5d971d88d13beed1e0698b16d42cc3dc67cf440e248cc6bba5",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_linear_sha256": "fc4e96ba5e36895513b801b99e746e2b07959d402e36d56aae7d8ad3f124cfe7",
+   "frozen_parameter_sha256": "ff6054fbd19ec932c548d562c6f4cc4506383b71cbe411fcfd554c8b1d87b510",
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "torchrun"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step096 -q -ra",
+     "exit_code": 0,
+     "passed": 4,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 30.81,
+     "artifact": "benchmarks/results/step096/pytest_release.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step096_acceptance.py --case all --timeout 180 --output benchmarks/results/step096/acceptance_release.json",
+     "exit_code": 0,
+     "passed_cases": 3,
+     "artifact": "benchmarks/results/step096/acceptance_release.json"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 tests/step091 tests/step092 tests/step093 tests/step094 tests/step095 -q -ra",
+     "exit_code": 0,
+     "passed": 128,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 274.33,
+     "artifact": "benchmarks/results/step096/parallel_regression.log"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 103.71,
+     "artifact": "benchmarks/results/step096/regression.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step096/requirements_audit_final.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "cases": [
+    {
+     "world": 1,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=1",
+      "/data/syh/infra/vllm-from-scratch/tests/step096/step096_rank_worker.py",
+      "--out",
+      "benchmarks/results/step096/acceptance_release_ranks/tp1"
+     ],
+     "exit_code": 0,
+     "passed": true,
+     "ranks": [
+      {
+       "rank": 0,
+       "world": 1,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "column_local_elements": 16,
+       "row_local_elements": 16,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": false,
+       "nondivisible_rejected": false,
+       "bf16_oracle": true,
+       "exact_step096_fixture": false
+      }
+     ],
+     "elapsed_seconds": 8.984773653093725,
+     "log": "benchmarks/results/step096/acceptance_release_ranks/tp1/torchrun.log"
+    },
+    {
+     "world": 2,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=2",
+      "/data/syh/infra/vllm-from-scratch/tests/step096/step096_rank_worker.py",
+      "--out",
+      "benchmarks/results/step096/acceptance_release_ranks/tp2"
+     ],
+     "exit_code": 0,
+     "passed": true,
+     "ranks": [
+      {
+       "rank": 0,
+       "world": 2,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "column_local_elements": 8,
+       "row_local_elements": 8,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": true
+      },
+      {
+       "rank": 1,
+       "world": 2,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "column_local_elements": 8,
+       "row_local_elements": 8,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": true
+      }
+     ],
+     "elapsed_seconds": 10.588989784941077,
+     "log": "benchmarks/results/step096/acceptance_release_ranks/tp2/torchrun.log"
+    },
+    {
+     "world": 4,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=4",
+      "/data/syh/infra/vllm-from-scratch/tests/step096/step096_rank_worker.py",
+      "--out",
+      "benchmarks/results/step096/acceptance_release_ranks/tp4"
+     ],
+     "exit_code": 0,
+     "passed": true,
+     "ranks": [
+      {
+       "rank": 0,
+       "world": 4,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 0,
+       "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "column_local_elements": 4,
+       "row_local_elements": 4,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": false
+      },
+      {
+       "rank": 1,
+       "world": 4,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 1,
+       "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "column_local_elements": 4,
+       "row_local_elements": 4,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": false
+      },
+      {
+       "rank": 2,
+       "world": 4,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 2,
+       "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "column_local_elements": 4,
+       "row_local_elements": 4,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": false
+      },
+      {
+       "rank": 3,
+       "world": 4,
+       "complete": true,
+       "cases": 46,
+       "tp_rank": 3,
+       "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "column_local_elements": 4,
+       "row_local_elements": 4,
+       "real_safetensors_cpu_stream": true,
+       "missing_tp_group_rejected": true,
+       "nondivisible_rejected": true,
+       "bf16_oracle": true,
+       "exact_step096_fixture": false
+      }
+     ],
+     "elapsed_seconds": 11.593577677151188,
+     "log": "benchmarks/results/step096/acceptance_release_ranks/tp4/torchrun.log"
+    }
+   ],
+   "oracle": "逐 rank 核对安装版 linear.py、parameter.py 与冻结源码 SHA256；直接实例化上游层，rank/world 和 collective 调用接入实际 NCCL 组，比较 44 个 FP32 开关组合和 2 个 BF16 fixture；另外校验 disable_tp、CPU safetensors 流、参数 storage、不可整除和缺失 TP 组。",
+   "intentional_deviation": "保留本项目原有 bias 默认值及构造位置参数，以兼容 TP1 调用方；无分布式单卡组时沿用 TP1；不支持的量化 Parameter 显式拒绝。",
+   "not_run": [
+    "完整 Qwen 多卡模型加载、真实推理和 Graph 属于 097 及后续关卡；本关只验证 tiny 线性层。",
+    "旧真实权重 23 项 skipped，不计入通过。"
+   ],
+   "artifacts": [
+    "benchmarks/results/step096/acceptance_release.json",
+    "benchmarks/results/step096/requirements_audit_final.json"
+   ]
+  },
+  "models": {
+   "real_model_run": false,
+   "reason": "使用手算权重和临时 safetensors，不加载真实 Qwen 权重。"
   }
  }
 }

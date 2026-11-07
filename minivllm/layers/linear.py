@@ -1,9 +1,8 @@
-"""并行线性层（**只实现 TP=1 子集**，没有通信）——对应 vLLM `model_executor/layers/linear.py`。
+"""线性层对应 vLLM `model_executor/layers/linear.py`；普通行列层支持 TP。
 
 名字保留 vLLM 的 `QKVParallelLinear` / `MergedColumnParallelLinear` / `RowParallelLinear` /
 `VocabParallelEmbedding` / `ParallelLMHead`，是为了**源码映射**：读 vLLM 的 qwen3.py 时能一对
-一找到这些类。但这里没有 TP/EP/量化，也没有通信——文档与配置都必须写明这一点，不能让人以为
-换 tp_size 就能跑。
+一找到这些类。普通行列层支持 TP；QKV、Merged 和词表层仍只有 TP=1，多卡模型尚未开放。
 
 它们存在的**真正理由**是权重加载：检查点里 q/k/v 是三个独立权重、gate/up 是两个，而模型里是
 打包的一个参数（少一次 GEMM 的 launch、少一次中间读写）。打包带来的问题就是"怎么把分片的
@@ -187,74 +186,138 @@ class MergedColumnParallelLinear(nn.Module):
         return F.linear(x, self.weight, self.bias), None
 
 
+def _linear_tp_group(disable_tp: bool):
+    """兼容无分布式初始化的单卡；多进程默认组存在时不可静默当成 TP=1。"""
+    if disable_tp:
+        return None, 0, 1
+    from ..distributed.parallel_state import get_tp_group_if_initialized
+    group = get_tp_group_if_initialized()
+    if group is None:
+        if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
+            raise RuntimeError("分布式环境已初始化但 TP 组尚未初始化")
+        return None, 0, 1
+    return group, group.rank_in_group, group.world_size
+
+
+def _parallel_dimension(size: int, tp_size: int, name: str) -> int:
+    if type(size) is not int or size <= 0 or size % tp_size:
+        raise ValueError(f"{name}={size} 必须为正且能被 TP={tp_size} 整除")
+    return size // tp_size
+
+
+def _load_parallel_parameter(param: Parameter, loaded_weight: torch.Tensor,
+                             dim: int | None, rank: int, shard_id) -> None:
+    _reject_shard_id("并行线性层", shard_id)
+    if type(param) is not Parameter:
+        raise NotImplementedError("并行线性层暂不支持特殊或量化 Parameter")
+    if dim is not None and not getattr(param, "is_sharded_weight", False):
+        expected = list(param.shape)
+        expected[dim] *= param.tp_size
+        if tuple(loaded_weight.shape) != tuple(expected):
+            raise ValueError(f"完整权重形状不匹配：期望 {tuple(expected)}，收到 {tuple(loaded_weight.shape)}")
+        size = param.shape[dim]
+        loaded_weight = loaded_weight.narrow(dim, rank * size, size)
+    if tuple(loaded_weight.shape) != tuple(param.shape):
+        raise ValueError(f"权重形状不匹配：目标 {tuple(param.shape)}，收到 {tuple(loaded_weight.shape)}")
+    with torch.no_grad():
+        param.copy_(loaded_weight)
+
+
 class ColumnParallelLinear(nn.Module):
-    """按输出维分片的线性层（TP=1 时就是普通 Linear；对应 vLLM 同名类）。
-
-    存在的理由与 `MergedColumnParallelLinear` 一样（权重加载 + 源码映射），但它是**单个**输出片，
-    所以不需要 `shard_id`。65 关的 MTP `fc`（`2H → H` 的拼接投影）用的是它——上游
-    `Qwen3NextMultiTokenPredictor` 就是 `ColumnParallelLinear(..., return_bias=False)`。
-
-    `return_bias` 与上游同义：默认 `True` 时返回 `(output, bias)`（vLLM 的 LinearBase 约定），
-    置 `False` 时只返回 output——MTP 的调用点要写成 `hidden = self.fc(x)`（与上游逐字一致）。
-    """
+    """输出维分片；PyTorch 权重布局为 [out/TP, in]。"""
 
     def __init__(self, input_size: int, output_size: int, bias: bool = False,
-                 return_bias: bool = True, prefix: str = "") -> None:
+                 return_bias: bool = True, prefix: str = "", *,
+                 gather_output: bool = False, skip_bias_add: bool = False,
+                 params_dtype: torch.dtype | None = None, quant_config=None,
+                 disable_tp: bool = False) -> None:
         super().__init__()
+        if quant_config is not None:
+            raise NotImplementedError("并行线性层暂不支持量化参数")
+        self.group, self.tp_rank, self.tp_size = _linear_tp_group(disable_tp)
         self.input_size = input_size
         self.output_size = output_size
-        self.return_bias = return_bias
-        self.weight = Parameter(torch.empty(output_size, input_size))
+        if type(input_size) is not int or input_size <= 0:
+            raise ValueError("input_size 必须为正整数")
+        self.input_size_per_partition = input_size
+        self.output_size_per_partition = _parallel_dimension(output_size, self.tp_size, "output_size")
+        self.output_partition_sizes = [self.output_size_per_partition]
+        self.gather_output, self.skip_bias_add = gather_output, skip_bias_add
+        self.return_bias, self.prefix = return_bias, prefix
+        self.weight = Parameter(torch.empty(self.output_size_per_partition, input_size, dtype=params_dtype))
+        self.weight.output_dim = 0
+        self.weight.tp_size = self.tp_size
         self.weight.weight_loader = self.weight_loader
         if bias:
-            self.bias = Parameter(torch.empty(output_size))
+            self.bias = Parameter(torch.empty(self.output_size_per_partition, dtype=params_dtype))
+            self.bias.output_dim = 0
+            self.bias.tp_size = self.tp_size
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
 
-    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
-                      shard_id=None) -> None:
-        _reject_shard_id(type(self).__name__, shard_id)
-        if tuple(loaded_weight.shape) != tuple(param.shape):
-            raise ValueError(f"权重形状不匹配：目标 {tuple(param.shape)}，"
-                             f"收到 {tuple(loaded_weight.shape)}")
-        with torch.no_grad():
-            param.copy_(loaded_weight)
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
+        _load_parallel_parameter(param, loaded_weight, getattr(param, "output_dim", None), self.tp_rank, shard_id)
 
     def forward(self, x: torch.Tensor):
-        output = F.linear(x, self.weight, self.bias)
+        bias = None if self.skip_bias_add else self.bias
+        output = F.linear(x, self.weight, bias)
+        if self.gather_output and self.tp_size > 1:
+            output = self.group.all_gather(output, dim=-1)
         if not self.return_bias:
             return output
-        return output, None
+        return output, self.bias if self.skip_bias_add else None
 
 
 class RowParallelLinear(nn.Module):
-    """按输入维分片的线性层（TP=1 时就是普通 Linear）。没有通信，没有 all-reduce。"""
+    """输入维分片；PyTorch 权重布局为 [out, in/TP]。"""
 
     def __init__(self, input_size: int, output_size: int, bias: bool = False,
-                 prefix: str = "") -> None:
+                 prefix: str = "", *, input_is_parallel: bool = True,
+                 skip_bias_add: bool = False, params_dtype: torch.dtype | None = None,
+                 reduce_results: bool = True, quant_config=None,
+                 return_bias: bool = True, disable_tp: bool = False) -> None:
         super().__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self.weight = Parameter(torch.empty(output_size, input_size))
+        if quant_config is not None:
+            raise NotImplementedError("并行线性层暂不支持量化参数")
+        self.group, self.tp_rank, self.tp_size = _linear_tp_group(disable_tp)
+        self.input_size, self.output_size = input_size, output_size
+        self.input_size_per_partition = _parallel_dimension(input_size, self.tp_size, "input_size")
+        if type(output_size) is not int or output_size <= 0:
+            raise ValueError("output_size 必须为正整数")
+        if not reduce_results and bias and not skip_bias_add:
+            raise ValueError("不归约时不能在线性层中加入 bias")
+        self.output_size_per_partition = output_size
+        self.output_partition_sizes = [output_size]
+        self.input_is_parallel, self.skip_bias_add = input_is_parallel, skip_bias_add
+        self.reduce_results, self.return_bias, self.prefix = reduce_results, return_bias, prefix
+        self.weight = Parameter(torch.empty(output_size, self.input_size_per_partition, dtype=params_dtype))
+        self.weight.input_dim = 1
+        self.weight.tp_size = self.tp_size
         self.weight.weight_loader = self.weight_loader
         if bias:
-            self.bias = Parameter(torch.empty(output_size))
+            self.bias = Parameter(torch.empty(output_size, dtype=params_dtype))
+            self.bias.tp_size = self.tp_size
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
 
-    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
-                      shard_id=None) -> None:
-        _reject_shard_id(type(self).__name__, shard_id)
-        if tuple(loaded_weight.shape) != tuple(param.shape):
-            raise ValueError(f"权重形状不匹配：目标 {tuple(param.shape)}，"
-                             f"收到 {tuple(loaded_weight.shape)}")
-        with torch.no_grad():
-            param.copy_(loaded_weight)
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
+        _load_parallel_parameter(param, loaded_weight, getattr(param, "input_dim", None), self.tp_rank, shard_id)
 
     def forward(self, x: torch.Tensor):
-        return F.linear(x, self.weight, self.bias), None
+        if not self.input_is_parallel:
+            if x.shape[-1] != self.input_size:
+                raise ValueError(f"输入维度应为 {self.input_size}，收到 {x.shape[-1]}")
+            x = x.narrow(-1, self.tp_rank * self.input_size_per_partition,
+                         self.input_size_per_partition).contiguous()
+        bias = None if self.tp_rank > 0 or self.skip_bias_add else self.bias
+        output = F.linear(x, self.weight, bias)
+        if self.reduce_results and self.tp_size > 1:
+            output = self.group.all_reduce(output)
+        if not self.return_bias:
+            return output
+        return output, self.bias if self.skip_bias_add else None
 
 
 class VocabParallelEmbedding(nn.Module):
