@@ -138,6 +138,8 @@
 
 并行专题：[091 并行配置与支持矩阵](step091_alignment.md)：提供 TP/PP/DP 布局校验和单卡执行器工厂；多卡执行尚未开放。
 
-[092 进程组与通信原语](step092_alignment.md)：单机 NCCL/Gloo 通信组和真实多 rank 原语；正式多卡执行器仍属后续关卡。
+[092 进程组与通信原语](step092_alignment.md)：单机 NCCL/Gloo 通信组和真实多 rank 原语；多卡执行器在后续 093/094 分阶段接入。
 
-[093 多进程 Worker 启动](step093_alignment.md)：spawn Worker、设备和通信组所有权、readiness 与故障清理；多卡模型加载及推理 RPC 尚未开放。
+[093 多进程 Worker 启动](step093_alignment.md)：spawn Worker、设备和通信组所有权、readiness 与故障清理；093 时多卡模型加载及推理 RPC 尚未开放。
+
+[094 共享内存广播与 RPC](step094_alignment.md)：单机共享内存广播、响应队列和顺序 Future，经真实多进程探针验证；多卡模型权重和端到端异步调度仍未开放。

@@ -37,7 +37,8 @@
   "step88": "implemented + self-verified（16+4 公平矩阵；mini eager/Graph 全一致；vLLM B=1 一致、B=4 run-to-run 非确定；6 trace；真实 assistant 拒绝后差分；attention microbenchmark 22 case；同 2D kernel 对照定位 spill；2D 修复后 198/0 spills；24 项 step88、全量 1297；2D 修复 198/0 spills，Graph 135.55 tok/s）",
   "step091": "已实现并验收配置矩阵与单卡执行器工厂；多卡仍拒绝",
   "step092": "已完成单机 eager 进程组与真实多 rank 原语；多卡模型执行仍未开放",
-  "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放"
+  "step093": "Worker spawn、设备组和 readiness 生命周期已验收；仅无模型探针，多卡模型加载和RPC未开放",
+  "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放"
  },
  "step58": {
   "results": {
@@ -14046,8 +14047,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 183,
-  "sha256": "3f6a7c9b56c884dec6d2e66368afd3bda42146b57ac2d614edba3305995fe4c4",
+  "python_files": 185,
+  "sha256": "f410df178ca9d865300c075f89953b5f376d9c251eb0694dc07cdb5ae23c59be",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -15734,6 +15735,259 @@
   "models": {
    "real_model_run": false,
    "reason": "本关无模型部署探针；生产多卡模型加载明确拒绝。"
+  }
+ },
+ "step094": {
+  "results": {
+   "status": "passed scoped single-node shared-memory RPC; no multi-GPU model inference",
+   "head": "8794271 (parent before 094)",
+   "package_sha256": "f410df178ca9d865300c075f89953b5f376d9c251eb0694dc07cdb5ae23c59be",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "transformers": "5.14.1",
+    "vllm": "0.28.0+cu129",
+    "pyzmq": "27.3.0",
+    "cloudpickle": "3.1.2",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "multiprocessing_start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step094 -q -ra",
+     "exit_code": 0,
+     "passed": 11,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 36.37,
+     "artifact": "benchmarks/results/step094/pytest_format_final.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step094_acceptance.py --case all --timeout 180 --output benchmarks/results/step094/acceptance.json",
+     "exit_code": 0,
+     "passed_cases": 4,
+     "duration_seconds": 38.91377833602019
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 98.64,
+     "artifact": "benchmarks/results/step094/regression.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 tests/step090 tests/step091 tests/step092 tests/step093 -q -ra",
+     "exit_code": 0,
+     "passed": 101,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 126.77,
+     "artifact": "benchmarks/results/step094/parallel_regression.log"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step094/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003
+    }
+   ],
+   "cases": [
+    {
+     "case": "rpc",
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 4.376803086139262,
+     "result_path": "benchmarks/results/step094/acceptance_cases/rpc.json",
+     "log_path": "benchmarks/results/step094/acceptance_cases/rpc.log",
+     "result": {
+      "status": "passed",
+      "case": "rpc",
+      "world_size": 4,
+      "output_rank": 2,
+      "future_pending": true,
+      "reverse_wait_order": true,
+      "snapshot_equal_all_ranks": true,
+      "sample_source_rank": 2,
+      "sample_req_ids": [
+       "A",
+       "B"
+      ],
+      "sampled_token_ids": [
+       [
+        7
+       ],
+       [
+        5
+       ]
+      ],
+      "overflow_bytes": 25169920,
+      "ranks": [
+       {
+        "status": "READY",
+        "rank": 0,
+        "local_rank": 0,
+        "pid": 2261436,
+        "device_index": 0,
+        "device_uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+        "tp_ranks": [
+         0,
+         1
+        ],
+        "pp_ranks": [
+         0,
+         2
+        ],
+        "group_local_rank": 0,
+        "group_device_index": 0,
+        "model_loaded": true
+       },
+       {
+        "status": "READY",
+        "rank": 1,
+        "local_rank": 1,
+        "pid": 2261437,
+        "device_index": 1,
+        "device_uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+        "tp_ranks": [
+         0,
+         1
+        ],
+        "pp_ranks": [
+         1,
+         3
+        ],
+        "group_local_rank": 1,
+        "group_device_index": 1,
+        "model_loaded": true
+       },
+       {
+        "status": "READY",
+        "rank": 2,
+        "local_rank": 2,
+        "pid": 2261438,
+        "device_index": 2,
+        "device_uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+        "tp_ranks": [
+         2,
+         3
+        ],
+        "pp_ranks": [
+         0,
+         2
+        ],
+        "group_local_rank": 2,
+        "group_device_index": 2,
+        "model_loaded": true
+       },
+       {
+        "status": "READY",
+        "rank": 3,
+        "local_rank": 3,
+        "pid": 2261439,
+        "device_index": 3,
+        "device_uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+        "tp_ranks": [
+         2,
+         3
+        ],
+        "pp_ranks": [
+         1,
+         3
+        ],
+        "group_local_rank": 3,
+        "group_device_index": 3,
+        "model_loaded": true
+       }
+      ],
+      "worker_pids": [
+       2261436,
+       2261437,
+       2261438,
+       2261439
+      ],
+      "worker_exit_codes": [
+       0,
+       0,
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "case": "failure",
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 6.831727791810408,
+     "result_path": "benchmarks/results/step094/acceptance_cases/failure.json",
+     "log_path": "benchmarks/results/step094/acceptance_cases/failure.log",
+     "result": {
+      "status": "passed",
+      "case": "failure",
+      "failed_rank": 1,
+      "output_rank": 2,
+      "error": "Worker 失败: rank 1: RuntimeError: injected RPC failure on rank 1\nTraceback (most recent call last):\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/executor/multiproc_executor.py\", line 177, in worker_busy_loop\n    output = func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/data/syh/infra/vllm-from-scratch/minivllm/testing/step094_probe.py\", line 49, in fail_rank\n    raise RuntimeError(f'injected RPC failure on rank {self.rank}')\nRuntimeError: injected RPC failure on rank 1\n",
+      "abrupt_exit_error": "Worker rank 1 在 RPC exit_rank 中退出",
+      "orphan_shm_cleaned": true,
+      "ipc_directory_cleaned": true,
+      "abrupt_worker_exit_codes": [
+       0,
+       72,
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "case": "engine",
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 5.729103730991483,
+     "result_path": "benchmarks/results/step094/acceptance_cases/engine.json",
+     "log_path": "benchmarks/results/step094/acceptance_cases/engine.log",
+     "result": {
+      "status": "passed",
+      "case": "engine",
+      "output_token_ids": [
+       7,
+       8
+      ],
+      "fixture": "FakeRunner，非真实模型",
+      "nonoutput_failure_stops_before_next_schedule": true
+     }
+    },
+    {
+     "case": "queue",
+     "exit_code": 0,
+     "passed": true,
+     "elapsed_seconds": 21.971071382053196,
+     "result_path": "benchmarks/results/step094/acceptance_cases/queue.json",
+     "log_path": "benchmarks/results/step094/acceptance_cases/queue.log",
+     "result": {
+      "status": "passed",
+      "pytest_output": ".......                                                                  [100%]\n7 passed in 20.67s\n"
+     }
+    }
+   ],
+   "upstream_differential": "核验五份相关源码快照与安装版 SHA256；共享内存消息由冻结上游读者读取、本项目读者读取冻结上游写者，均验证单槽复用和 overflow。直接调用冻结上游 worker_busy_loop 复现非 output rank 异常未发送。",
+   "intentional_deviation": "为满足094不能忽略非输出 rank 失败，所有 rank 在原 SUCCESS/FAILURE response queue 返回状态，非输出 rank 成功仅发送空回执；对外只交 output rank 结果。",
+   "not_run": [
+    "生产多卡模型权重加载、TP分片和真实模型推理未实现。",
+    "async_scheduling=True 和多机/Ray 不开放。",
+    "23个旧权重缺失案例 skipped，未计入通过。"
+   ],
+   "artifacts": [
+    "benchmarks/results/step094/acceptance.json",
+    "benchmarks/results/step094/requirements_audit.json"
+   ],
+   "pre_final_format_package_sha256": "1ce63dbdd07aacf0f45796c12c149be3d13674c455afce49e3098303c411c3a1",
+   "format_note": "58—88、089—093 与验收先于 shm_broadcast.py 删除文件末尾空白行；无运行语义变化，最终包摘要如上，094 测试在最终格式后重跑通过。"
+  },
+  "models": {
+   "real_model_run": false,
+   "reason": "仅运行 FakeRunner 多进程协议探针，不加载真实模型。"
   }
  }
 }

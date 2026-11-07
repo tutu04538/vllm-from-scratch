@@ -98,6 +98,14 @@ class Worker:
         self.kv_cache_config = kv_cache_config
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
+    def get_cache_config(self):
+        self._check_open()
+        runner = self.model_runner
+        if runner is None:
+            raise NotImplementedError('没有模型 Runner，KV 配置尚未开放')
+        build = getattr(runner, 'build_kv_cache_config', None)
+        return build() if build is not None else self.vllm_config.cache_config
+
     def compile_or_warm_up_model(self) -> None:
         """捕获 CUDA Graph（69 关；对应上游 `Worker.compile_or_warm_up_model()`）。
 

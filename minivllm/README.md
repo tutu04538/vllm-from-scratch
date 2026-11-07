@@ -1115,4 +1115,8 @@ python benchmarks/trace_step57.py                       # 一条覆盖五种事�
 
 ### 多进程 Worker 启动（093）
 
-V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和显式 readiness 握手；当前正式 Worker 明确拒绝多卡模型权重加载，多卡调度、RPC 和分片尚未开放。无模型部署探针只用于验证启动与清理，详见 [093 对齐报告](../docs/step093_alignment.md)。
+V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和显式 readiness 握手；当前正式 Worker 明确拒绝多卡模型权重加载，093 时多卡调度、RPC 和分片尚未开放。无模型部署探针只用于验证启动与清理，详见 [093 对齐报告](../docs/step093_alignment.md)。
+
+### 进程间广播与 RPC（094）
+
+`MultiprocExecutor` 使用单机共享内存广播队列和逐 Worker 响应队列，按顺序返回 Future；已使用无模型探针验证 `EngineCore` 接线。多卡模型分片和 `async_scheduling=True` 仍未开放，详见 [094 对齐报告](../docs/step094_alignment.md)。
