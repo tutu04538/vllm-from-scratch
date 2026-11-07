@@ -2,7 +2,7 @@
 
 它回答的问题是"这个执行端怎么把设备和模型准备好"，而不是"这一轮算什么"：
 
-    init_device()                 把设备准备好（本关：只记下 device，不做显存 profiling）
+    init_device()                 多进程 Worker 绑定设备并初始化通信组；不做显存 profiling
     load_model()                  建 Runner、装模型（57B 起是真的装）
     initialize_from_config(kv)    按 KV 规格建物理缓存并绑定到 Attention 层
     execute_model(packet)         转发给 Runner
@@ -43,8 +43,10 @@ class Worker:
     # -------- 初始化 --------
 
     def init_device(self) -> None:
-        """准备设备。本关只记下 device：显存 profiling、分布式、CUDA Graph 捕获都不在这里
-        （57D 及以后）。"""
+        """准备设备：多进程 Worker 绑定 GPU 并初始化分布式环境和 TP/PP 通信组。
+
+        单进程路径沿用既有初始化方式；显存 profiling 和 CUDA Graph 捕获不在这里执行。
+        """
         self._check_open()
         if self.rank is not None:
             from datetime import timedelta
