@@ -157,3 +157,5 @@
 [100 TP 采样与请求镜像](step100_alignment.md)：Worker 随机状态初始化与 warmup 重置、TP2/4 各 rank 采样和本地镜像一致性；`logit_bias` 仍显式拒绝，真实模型多卡和投机多卡属后续。
 
 [101 Qwen3 TP 模型接线与加载峰值](step101_alignment.md)：V2 eager 普通 Qwen3 target 接入生产多进程 Worker；8B TP1/2/4 短前向及 14B TP2 权重加载已实测。固定 D=8 tiny 的冻结上游 GPU 参考仍有后端限制，D=32 的 IEEE 精度条件下另做逐层对照；详见报告。
+
+[102 多卡 KV 生命周期与请求调度](step102_alignment.md)：V2 TP 抢占通知与 resident slot 清理按冻结上游接通，并限定开放普通 Qwen3 TP prefix caching；TP2/4 验证抢占、恢复、前缀复用、取消和 rank 失败。

@@ -58,7 +58,8 @@ def test_real_model_architecture_guard():
     cache_config=N(enable_prefix_caching=changes.pop('prefix',False)))
   return Worker(config,rank=0,device_index=0)
  make()._validate_tp_model()
- for worker in (make(pp=2),make(spec=object()),make(graph=CUDAGraphMode.FULL),make(hf={'model_type':'qwen3_moe'}),make(hf={'sliding_window':128}),make(hf={'quantization_config':{'quant_method':'fp8'}}),make(hf={'intermediate_size':47}),make(backend='torch'),make(prefix=True)):
+ make(prefix=True)._validate_tp_model()  # 102 验证并开放 Qwen3 TP 前缀缓存
+ for worker in (make(pp=2),make(spec=object()),make(graph=CUDAGraphMode.FULL),make(hf={'model_type':'qwen3_moe'}),make(hf={'sliding_window':128}),make(hf={'quantization_config':{'quant_method':'fp8'}}),make(hf={'intermediate_size':47}),make(backend='torch')):
   with pytest.raises((ValueError,NotImplementedError)):worker._validate_tp_model()
 
 

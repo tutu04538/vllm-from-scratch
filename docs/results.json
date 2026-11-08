@@ -14051,7 +14051,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 187,
-  "sha256": "d5f833806166eee214f6d33d8f074eb59c1cf740d49215bbb2ec4a6f73eee808",
+  "sha256": "b40dc1b594cabb3a63379671dc703ae4c2f863f2e3b0d804d327180e58976e17",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -17680,6 +17680,136 @@
     "tp": [
      1,
      2
+    ]
+   }
+  }
+ },
+ "step102": {
+  "results": {
+   "status": "passed scoped ordinary Qwen3 target TP lifecycle and prefix caching",
+   "head": "8cbcc03 (parent before 102)",
+   "package_sha256": "b40dc1b594cabb3a63379671dc703ae4c2f863f2e3b0d804d327180e58976e17",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "v1/core/sched/scheduler.py": "4b79ab760c3864af6838d555c01335deea3aac97c9be2be415fa0e5dab32f07e",
+    "v1/core/sched/output.py": "51643386fab3a56b7747aa784ad657833966ebe823acee1f37222e33c1e5696a",
+    "v1/core/kv_cache_manager.py": "2d20c3d98845cfd8d88a2f66b8fc6402ea1fcfbee16879d2364a4a9e45b8fa47",
+    "v1/core/kv_cache_utils.py": "088f2201bee86fade694e78141b6e99a5cd0cdd23c5c7ab3526dd119f76e4aec",
+    "v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca",
+    "v1/worker/gpu/states.py": "99418f5df43ca612ded72609fee011620b065b2cab2f249ccb387096bf4ae71a"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra (initial)",
+     "exit_code": 1,
+     "passed": 1288,
+     "failed": 1,
+     "skipped": 23,
+     "artifact": "benchmarks/results/step102/single_regression_initial_hash_failure.log",
+     "note": "current_package hash not updated before initial run; corrected and full suite rerun below"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step102 -q -ra",
+     "passed": 17,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 211.1,
+     "exit_code": 0,
+     "artifact": "benchmarks/results/step102/pytest_complete.log"
+    },
+    {
+     "cmd": "python benchmarks/check_step102_acceptance.py --help",
+     "exit_code": 0
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step102_acceptance.py --case all --timeout 900 --output benchmarks/results/step102/acceptance_final.json",
+     "exit_code": 0,
+     "passed_cases": 6,
+     "failed_cases": 0,
+     "artifact": "benchmarks/results/step102/acceptance_final.json"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 104.13,
+     "exit_code": 0,
+     "artifact": "benchmarks/results/step102/single_regression.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 101)) -q -ra",
+     "passed": 169,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 523.64,
+     "exit_code": 0,
+     "artifact": "benchmarks/results/step102/parallel_regression.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step101_acceptance.py --case all --timeout 1800 --output benchmarks/results/step102/step101_real_regression.json",
+     "exit_code": 0,
+     "passed_cases": 5,
+     "artifact": "benchmarks/results/step102/step101_real_regression.json"
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step102/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003,
+     "failed": 0
+    }
+   ],
+   "cases": {
+    "tp": [
+     2,
+     4
+    ],
+    "block_size": 4,
+    "prefix": [
+     false,
+     true
+    ],
+    "modes": [
+     "prefix hit and cold output",
+     "actual preemption and restoration",
+     "cancellation before execution",
+     "cancellation before result commit",
+     "rank 1 sample failure",
+     "unequal rank capacity"
+    ],
+    "prefix_hit_tokens": 8,
+    "independent_oracle": "position // block_size and block table determine physical slot; live authoritative block references independently recomputed",
+    "valid_kv": "each rank local heads vs same-history TP1 with TP4 replicated GQA heads, atol=rtol=1e-5",
+    "upstream": "actual frozen Scheduler._preempt_request, SHA-verified",
+    "traces": "benchmarks/results/step102/acceptance_final_traces/"
+   },
+   "known_difference": "cache publication happens after output processing; frozen vLLM may publish earlier during allocation",
+   "not_run": [
+    "跨 DP 副本 prefix 共享、KV transfer、在线迁移",
+    "TP 多 rank Graph、EAGLE3 多卡和端到端异步调度",
+    "真实模型 32 token 端到端由 103 验收"
+   ],
+   "artifacts": "benchmarks/results/step102/"
+  },
+  "models": {
+   "real_model_run": "102 tiny lifecycle; previous step101 real cases separately rerun",
+   "tiny": {
+    "name": "tiny_gqa",
+    "source": "minivllm.testing.tiny_models",
+    "dtype": "float32",
+    "block_size": 4,
+    "tp": [
+     1,
+     2,
+     4
     ]
    }
   }

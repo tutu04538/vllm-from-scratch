@@ -118,8 +118,6 @@ class Worker:
             raise NotImplementedError("101 多卡模型仅支持稠密 Qwen3ForCausalLM")
         if c.attention_backend != "triton":
             raise NotImplementedError("101 多卡模型仅支持 TRITON_ATTN")
-        if c.cache_config.enable_prefix_caching:
-            raise NotImplementedError("101 多卡模型尚未开放 prefix caching")
         if hf.get("hidden_act", "silu") != "silu":
             raise NotImplementedError("101 Qwen3 TP 仅支持 silu MLP")
         if hf.get("sliding_window") is not None or hf.get("use_sliding_window", False):

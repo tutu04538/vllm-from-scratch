@@ -132,6 +132,7 @@ class Scheduler:
         # 已经结束、但还没送到执行侧的请求 ID。**下一轮**的 SchedulerOutput 才带走它
         # （执行侧据此删掉缓存的请求状态），所以"最后一个请求结束"之后还需要一轮清理。
         self.finished_req_ids: set[str] = set()
+        self.reset_preempted_req_ids: set[str] = set()
         # 上一轮被调度的请求：不在里面的请求要带上完整 token 历史（执行侧可能没有它的状态）
         self.prev_step_scheduled_req_ids: set[str] = set()
         # 73 关：执行路径是 V2 还是 V1。差别只有两处打包口径（上游 `scheduler.py` 同样只在
@@ -407,6 +408,7 @@ class Scheduler:
             # 注意是**引用**当前的集合，下面 `_update_after_schedule()` 会把它绑定到新对象上；
             # 清空（而不是重新绑定）会让这里已经发出去的快照跟着变空。
             finished_req_ids=self.finished_req_ids,
+            preempted_req_ids=self.reset_preempted_req_ids,
             num_spec_tokens_to_schedule=num_spec_tokens_to_schedule,
         )
 
@@ -510,6 +512,7 @@ class Scheduler:
         self.num_preemptions += 1
         # 放到 waiting **队首**：它已经有一条历史了，应该比新来的先得到机会
         self.waiting.prepend_request(request)
+        self.reset_preempted_req_ids.add(request.request_id)
 
     # -------- 空转保护 --------
 
@@ -560,6 +563,7 @@ class Scheduler:
         self.prev_step_scheduled_req_ids = set(scheduler_output.num_scheduled_tokens)
         # 重新绑定（不是 clear）：上面那个快照还引用着旧集合，它必须保持"本轮要清理的 ID"
         self.finished_req_ids = set()
+        self.reset_preempted_req_ids = set()
 
     # -------- 结构化输出（68 关）--------
 

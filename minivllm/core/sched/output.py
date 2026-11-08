@@ -93,6 +93,8 @@ class SchedulerOutput:
     total_num_scheduled_tokens: int
     scheduled_spec_decode_tokens: dict[str, list[int]]      # 57E 才非空
     finished_req_ids: set[str]
+    # 抢占在本轮发生，V2 Worker 必须删除对应的常驻请求状态。
+    preempted_req_ids: set[str] | None = None
     #: 68 关：这一轮有没有"已经在解码阶段的结构化输出请求"。没有的话引擎连掩码都不必算
     #: （上游同名字段，在 `_update_after_schedule()` 里置位）。
     has_structured_output_requests: bool = False

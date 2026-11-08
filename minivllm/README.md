@@ -1148,3 +1148,7 @@ Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续
 ### Qwen3 TP 模型与加载峰值（101）
 
 V2 生产 Worker 在 eager、单副本、无投机的限定条件下支持普通 Qwen3 target 的 TP；真实 8B 的 TP1/2/4 短前向和 14B 的 TP2 权重加载均有实测。PP、Graph、投机多卡等仍不开放；固定 D=8 tiny 的上游 GPU 参考限制及替代对照见 [101 对齐报告](../docs/step101_alignment.md)。
+
+### 多卡 KV 与请求生命周期（102）
+
+Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP eager 的 prefix caching 在限定范围开放。TP2/4 的块表、有效 KV、抢占恢复、请求取消与失败传播验证见 [102 对齐报告](../docs/step102_alignment.md)。
