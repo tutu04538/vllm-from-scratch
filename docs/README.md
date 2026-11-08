@@ -1,6 +1,6 @@
 > **交付物位置（有意偏离需求总纲 §4）**：总纲点名 `docs/stepNN_results.json` 与
 
-并行环境基线与通信测量见 [step089](step089_alignment.md)；V1 Graph 热身问题及修复见 [生命周期分析](step089_graph_lifecycle_fix.md)，环境通过不代表 TP/PP/DP 已实现。 [step090](step090_alignment.md) 已完成真实权重固定、草稿转换与限定范围验收；项目多卡和草稿真实前向仍属后续关卡。
+并行环境基线与通信测量见 [step089](step089_alignment.md)；V1 Graph 热身问题及修复见 [生命周期分析](step089_graph_lifecycle_fix.md)，环境通过不代表 TP/PP/DP 已实现。 [step090](step090_alignment.md) 已完成真实权重固定、草稿转换与限定范围验收；真实草稿前向仍属后续关卡；项目 Qwen3 target 的 TP 多卡实测见 101。
 > `docs/stepNN_models.json` 两份文件；为了让 `docs/` 根目录只留一个机器可读件，本项目把它们
 > （以及 61 关的依赖锁定记录）**合并成一份 [`docs/results.json`](results.json)**，按关分键：
 > `stepNN.results` / `stepNN.models` / `stepNN.dependencies`，字段口径与逐字内容不变。
@@ -155,3 +155,5 @@
 [099 词表分片与完整 Logits](step099_alignment.md)：普通原始词表按冻结布局对齐和 TP 分片；Embedding 归约与 CUDA 全词表 logits 汇总经真实 rank 与冻结源码对照。真实模型多卡与跨 rank 采样仍由后续关卡完成。
 
 [100 TP 采样与请求镜像](step100_alignment.md)：Worker 随机状态初始化与 warmup 重置、TP2/4 各 rank 采样和本地镜像一致性；`logit_bias` 仍显式拒绝，真实模型多卡和投机多卡属后续。
+
+[101 Qwen3 TP 模型接线与加载峰值](step101_alignment.md)：V2 eager 普通 Qwen3 target 接入生产多进程 Worker；8B TP1/2/4 短前向及 14B TP2 权重加载已实测。固定 D=8 tiny 的冻结上游 GPU 参考仍有后端限制，D=32 的 IEEE 精度条件下另做逐层对照；详见报告。

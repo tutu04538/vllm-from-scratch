@@ -1,6 +1,6 @@
 # minivllm：对齐 vLLM V1 架构的文本生成子集
 
-4090×4 开发环境及启用方法见 [并行环境 001](../docs/parallel_001_4090_setup.md)，通信基线见 [step089](../docs/step089_alignment.md)，V1 Graph 生命周期修复见 [专项记录](../docs/step089_graph_lifecycle_fix.md)；不代表已实现模型并行。 真实模型准备 [step090](../docs/step090_alignment.md) 已完成 8B 单卡短前向、14B CPU 审计与草稿转换；真实草稿前向和本项目多卡仍待后续验收。
+4090×4 开发环境及启用方法见 [并行环境 001](../docs/parallel_001_4090_setup.md)，通信基线见 [step089](../docs/step089_alignment.md)，V1 Graph 生命周期修复见 [专项记录](../docs/step089_graph_lifecycle_fix.md)；不代表已实现模型并行。 真实模型准备 [step090](../docs/step090_alignment.md) 已完成 8B 单卡短前向、14B CPU 审计与草稿转换；真实草稿前向仍待后续验收；Qwen3 target 的多卡实测见 101。
 
 2026-11-01 attention 优化：K/V 最后维 stride 编译期特化，让连续 BF16 数据进入
 Triton async pipeline；配套调整 2D tile/query 分组，保留 FP32/SWA 的原计算布局。
@@ -1115,32 +1115,36 @@ python benchmarks/trace_step57.py                       # 一条覆盖五种事�
 
 ### 多进程 Worker 启动（093）
 
-V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和显式 readiness 握手；当前正式 Worker 明确拒绝多卡模型权重加载，093 时多卡调度、RPC 和分片尚未开放。无模型部署探针只用于验证启动与清理，详见 [093 对齐报告](../docs/step093_alignment.md)。
+V2 CUDA 单副本配置可选择多进程 Worker 生命周期，使用 spawn 和显式 readiness 握手；093 时正式 Worker 明确拒绝多卡模型权重加载，多卡调度、RPC 和分片尚未开放；101 已限定开放 Qwen3 TP。无模型部署探针只用于验证启动与清理，详见 [093 对齐报告](../docs/step093_alignment.md)。
 
 ### 进程间广播与 RPC（094）
 
-`MultiprocExecutor` 使用单机共享内存广播队列和逐 Worker 响应队列，按顺序返回 Future；已使用无模型探针验证 `EngineCore` 接线。多卡模型分片和 `async_scheduling=True` 仍未开放，详见 [094 对齐报告](../docs/step094_alignment.md)。
+`MultiprocExecutor` 使用单机共享内存广播队列和逐 Worker 响应队列，按顺序返回 Future；已使用无模型探针验证 `EngineCore` 接线。094 时多卡模型分片尚未开放，`async_scheduling=True` 仍未开放，详见 [094 对齐报告](../docs/step094_alignment.md)。
 
 ### 多进程失败与清理（095）
 
-Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续执行并清理同一副本的 Worker；EngineCore 在调度前检查执行端失败。队列满时关闭会中断等待写入。真实多卡模型与端到端异步调度仍未开放，范围和证据见 [095 对齐报告](../docs/step095_alignment.md)。
+Executor 监控 Worker 进程与错误控制管道，致命失败后拒绝继续执行并清理同一副本的 Worker；EngineCore 在调度前检查执行端失败。队列满时关闭会中断等待写入。095 时真实多卡模型尚未开放，端到端异步调度仍未开放，范围和证据见 [095 对齐报告](../docs/step095_alignment.md)。
 
 ### TP 行列线性层（096）
 
-普通 `ColumnParallelLinear` 和 `RowParallelLinear` 支持 TP 本地权重及对应 all-gather/all-reduce，支持单卡兼容和显式拒绝不支持的量化。QKV/Merged 分片随后在 097 实现；词表及完整模型并行仍未开放，细节和实测见 [096 对齐报告](../docs/step096_alignment.md)。
+普通 `ColumnParallelLinear` 和 `RowParallelLinear` 支持 TP 本地权重及对应 all-gather/all-reduce，支持单卡兼容和显式拒绝不支持的量化。QKV/Merged 分片随后在 097 实现；096 时词表及完整模型并行尚未开放，细节和实测见 [096 对齐报告](../docs/step096_alignment.md)。
 
 ### Merged/QKV 权重分片（097）
 
-`MergedColumnParallelLinear` 与 `QKVParallelLinear` 为每个逻辑 shard 分别取本 rank 的权重并打包；KV 头不足 TP 时按冻结 vLLM 复制，Qwen3 使用本地头数和显式 head_dim。Gemma TP、完整多卡模型及 Graph 仍未开放。证据见 [097 对齐报告](../docs/step097_alignment.md)。
+`MergedColumnParallelLinear` 与 `QKVParallelLinear` 为每个逻辑 shard 分别取本 rank 的权重并打包；KV 头不足 TP 时按冻结 vLLM 复制，Qwen3 使用本地头数和显式 head_dim。Gemma TP 及多 rank Graph 仍未开放，完整 Qwen3 TP 见 101。证据见 [097 对齐报告](../docs/step097_alignment.md)。
 
 ### 本地 Attention 与 KV 容量（098）
 
-多 rank 按本地 KV 头生成规格，Executor 汇总每卡空闲显存快照与配置上限，统一取最小块数。该快照不是峰值 profiling，不能保证后续不 OOM；真实模型多卡加载仍未开放。详见 [098 对齐报告](../docs/step098_alignment.md)。
+多 rank 按本地 KV 头生成规格，Executor 汇总每卡空闲显存快照与配置上限，统一取最小块数。该快照不是峰值 profiling，不能保证后续不 OOM；098 时真实模型多卡加载尚未开放。详见 [098 对齐报告](../docs/step098_alignment.md)。
 
 ### 词表分片与完整 Logits（099）
 
-普通原始词表按 64 行补齐并分片，本地 Embedding 以 TP all-reduce 汇总；输出头本地投影后由 `LogitsProcessor` 执行 TP all-gather、去补齐并按既有顺序处理 logits。量化、LoRA 扩展词表与多 rank 局部 top-k 不属于当前范围；完整多卡模型与采样尚未开放。详见 [099 对齐报告](../docs/step099_alignment.md)。
+普通原始词表按 64 行补齐并分片，本地 Embedding 以 TP all-reduce 汇总；输出头本地投影后由 `LogitsProcessor` 执行 TP all-gather、去补齐并按既有顺序处理 logits。量化、LoRA 扩展词表与多 rank 局部 top-k 不属于当前范围；099 时完整多卡模型与采样尚未开放。详见 [099 对齐报告](../docs/step099_alignment.md)。
 
 ### TP 采样与请求镜像（100）
 
-多进程 Worker 在组初始化后与 warmup 后使用相同 `ModelConfig.seed` 重置随机状态，不给 seed 叠加 rank；各 TP rank 仍各自采样并维护本地镜像，仅 output rank 向 Scheduler 返回结果。tiny TP2/4 的 greedy、随机约束、seed=None、取消复用与抢占恢复已验证；`logit_bias` 仍明确拒绝，真实模型多卡、投机多卡及 Graph 属后续。详见 [100 对齐报告](../docs/step100_alignment.md)。
+多进程 Worker 在组初始化后与 warmup 后使用相同 `ModelConfig.seed` 重置随机状态，不给 seed 叠加 rank；各 TP rank 仍各自采样并维护本地镜像，仅 output rank 向 Scheduler 返回结果。tiny TP2/4 的 greedy、随机约束、seed=None、取消复用与抢占恢复已验证；`logit_bias` 仍明确拒绝，真实模型多卡见 101，投机多卡及 Graph 属后续。详见 [100 对齐报告](../docs/step100_alignment.md)。
+
+### Qwen3 TP 模型与加载峰值（101）
+
+V2 生产 Worker 在 eager、单副本、无投机的限定条件下支持普通 Qwen3 target 的 TP；真实 8B 的 TP1/2/4 短前向和 14B 的 TP2 权重加载均有实测。PP、Graph、投机多卡等仍不开放；固定 D=8 tiny 的上游 GPU 参考限制及替代对照见 [101 对齐报告](../docs/step101_alignment.md)。

@@ -71,7 +71,7 @@ def main():
                     item['attempts'].append({'ready':info,'pids':pids,'rendezvous_cleaned':True})
                 except (RuntimeError, NotImplementedError) as exc:
                     expected={'fail-device':('rank 1','init_device'), 'fail-load':('rank 1','load_model'),
-                              'production':('load_model','参数分片')}.get(case)
+                              'production':('load_model','仅支持稠密 Qwen3ForCausalLM')}.get(case)
                     if expected is None or not all(s in str(exc) for s in expected): raise
                     item['attempts'].append({'expected_error':str(exc)})
                 finally:

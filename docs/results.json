@@ -14051,7 +14051,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 187,
-  "sha256": "d168245992e1841f587fdba20dc711b66acd66b56f5de468c246adc414b1b1c2",
+  "sha256": "d5f833806166eee214f6d33d8f074eb59c1cf740d49215bbb2ec4a6f73eee808",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -17483,6 +17483,205 @@
     "vocab_size": 11
    },
    "production_model_multi_gpu": "not opened"
+  }
+ },
+ "step101": {
+  "results": {
+   "status": "passed scoped Qwen3 target eager TP; D8 tiny single-card reference and D32 IEEE frozen reference",
+   "head": "f12502a (parent before 101)",
+   "package_sha256": "d5f833806166eee214f6d33d8f074eb59c1cf740d49215bbb2ec4a6f73eee808",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "model_executor/models/qwen3.py": "ec8bc9c090f6f5242b2f572366644ef73573137b3e48b03b39c0f083fbb21ab4",
+    "model_executor/models/qwen2.py": "b6d9042a0a386c1ecaf3196ff45d3b73ff8e5f102f1ffc31ac01a2d11e92610c",
+    "model_executor/models/utils.py": "a93f50ddf56cac4992dcb7699da48cf70207c8fb0e533beea8818c8f48b1e2d8",
+    "model_executor/model_loader/default_loader.py": "9c9d54b1b650bf5affc924ebb8b8c73711e187ae7486cadd9f737bb1279cc7b8",
+    "v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0+cu129",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step101 -q -ra",
+     "passed": 3,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 49.75,
+     "artifact": "benchmarks/results/step101/pytest_step101.log",
+     "exit_code": 0
+    },
+    {
+     "cmd": "python benchmarks/check_step101_acceptance.py --help",
+     "exit_code": 0,
+     "artifact": "benchmarks/results/step101/help.log"
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step101_acceptance.py --case all --timeout 1800 --output benchmarks/results/step101/acceptance_release.json",
+     "exit_code": 0,
+     "passed_cases": 5,
+     "failed_cases": 0,
+     "artifact": "benchmarks/results/step101/acceptance_release.json"
+    },
+    {
+     "cmd": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "passed": 1289,
+     "failed": 0,
+     "skipped": 23,
+     "duration_seconds": 101.84,
+     "artifact": "benchmarks/results/step101/single_regression.log",
+     "exit_code": 0
+    },
+    {
+     "cmd": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 100)) -q -ra",
+     "passed": 166,
+     "failed": 0,
+     "skipped": 0,
+     "duration_seconds": 485.52,
+     "artifact": "benchmarks/results/step101/parallel_regression.log",
+     "exit_code": 0
+    },
+    {
+     "cmd": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py --output benchmarks/results/step101/requirements_audit.json",
+     "exit_code": 0,
+     "checks": 8003,
+     "failed": 0,
+     "artifact": "benchmarks/results/step101/requirements_audit.json"
+    }
+   ],
+   "tiny": {
+    "shape": "4 layers H=32 Q=4 KV=2 D=8 I=64 V=129",
+    "dtype": "float32",
+    "tp": 2,
+    "reference": "TP1 same weights; four steps; per-layer QKV, local attention, norms, residual, hidden and logits",
+    "tolerance": {
+     "atol": 1e-05,
+     "rtol": 1e-05
+    },
+    "pause": "test hook at layer 2; every traced tensor bitwise equal",
+    "frozen_vllm_d8": "TRITON_ATTN rejects D<32; FLEX_ATTENTION initialization timed out after 180s; logs retained",
+    "additional_frozen_reference": "4-layer D=32 TP2 with TRITON_F32_DEFAULT=ieee, max abs 1.4901161193847656e-6, all four steps",
+    "default_tf32_vs_cpu_float64": "mini max abs 2.9802322387695312e-8, vllm default 0.0001588761806488037"
+   },
+   "8b": {
+    "prompt_tokens": 128,
+    "output_tokens": 1,
+    "dtype": "bfloat16",
+    "tp_metrics": {
+     "1": {
+      "qkv": {
+       "max_abs": 0.0078125,
+       "relative_l2": 0.002195140579715371
+      },
+      "attention": {
+       "max_abs": 0.015625,
+       "relative_l2": 0.0033968251664191484
+      },
+      "hidden": {
+       "max_abs": 10.375,
+       "relative_l2": 0.03521273285150528
+      },
+      "raw_logits": {
+       "max_abs": 0.625,
+       "relative_l2": 0.03593071177601814
+      }
+     },
+     "2": {
+      "qkv": {
+       "max_abs": 0.00390625,
+       "relative_l2": 0.0023206628393381834
+      },
+      "attention": {
+       "max_abs": 0.015625,
+       "relative_l2": 0.003954552114009857
+      },
+      "hidden": {
+       "max_abs": 6.9609375,
+       "relative_l2": 0.031978849321603775
+      },
+      "raw_logits": {
+       "max_abs": 0.625,
+       "relative_l2": 0.036093372851610184
+      }
+     },
+     "4": {
+      "qkv": {
+       "max_abs": 0.00390625,
+       "relative_l2": 0.00251565664075315
+      },
+      "attention": {
+       "max_abs": 0.015625,
+       "relative_l2": 0.004252553451806307
+      },
+      "hidden": {
+       "max_abs": 13.62109375,
+       "relative_l2": 0.04326462373137474
+      },
+      "raw_logits": {
+       "max_abs": 0.509765625,
+       "relative_l2": 0.029111318290233612
+      }
+     }
+    },
+    "reference": "step090 frozen contract and vLLM references",
+    "contract_sha256": "29bcbf64f1212cf100845387ff46ddcd43981b3d9fd4487c044a455ec28d0e7c",
+    "source_tensors_per_rank": 399,
+    "local_parameters_per_rank": 291
+   },
+   "14b_tp2": {
+    "source_checkpoint_tensor_bytes": 29536614400,
+    "per_rank_parameter_bytes": 14768732160,
+    "per_rank_peak_allocated_bytes": 14905982464,
+    "per_rank_peak_reserved_bytes": 14948499456,
+    "source_tensors_per_rank": 443,
+    "local_parameters_per_rank": 323,
+    "scope": "load only"
+   },
+   "not_run": [
+    "D=8 冻结 vLLM GPU reference：TRITON 不支持该维度，FLEX 初始化超时；本关固定例用 TP1 单卡参考",
+    "真实 14B 前向、长序列调度生命周期",
+    "PP、EAGLE3 多卡、multi-rank CUDA Graph 与端到端异步调度",
+    "吞吐比较"
+   ],
+   "artifacts": "benchmarks/results/step101/"
+  },
+  "models": {
+   "real_model_run": true,
+   "8b": {
+    "name": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "dtype": "bfloat16",
+    "tp": [
+     1,
+     2,
+     4
+    ],
+    "mode": "128-token prefill, one output"
+   },
+   "14b": {
+    "name": "Qwen/Qwen3-14B",
+    "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+    "dtype": "bfloat16",
+    "tp": [
+     2
+    ],
+    "mode": "load only"
+   },
+   "tiny": {
+    "seed": 0,
+    "dtype": "float32",
+    "layers": 4,
+    "head_dim": 8,
+    "tp": [
+     1,
+     2
+    ]
+   }
   }
  }
 }

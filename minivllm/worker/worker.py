@@ -83,7 +83,7 @@ class Worker:
         """
         self._check_open()
         if self.rank is not None and self.vllm_config.parallel_config.world_size > 1 and self.model_runner is None:
-            raise NotImplementedError("多卡模型参数分片尚未实现，不能加载完整模型")
+            self._validate_tp_model()
         if self.model_runner is not None:
             return
         if self.vllm_config.use_v2_model_runner:
@@ -101,6 +101,49 @@ class Worker:
         self.model_runner.async_scheduling = resolve_async_scheduling(
             self.vllm_config, self.supports_async_scheduling())
         self.model_runner.load_model()
+
+    def _validate_tp_model(self) -> None:
+        """101 开放单副本 Qwen3 V2 eager TP；未验组合在加载前拒绝。"""
+        c = self.vllm_config
+        p = c.parallel_config
+        hf = c.model_config._text_hf_config()
+        arch = hf.get("architectures") or (c.model_config.hf_config or {}).get("architectures") or []
+        if not c.use_v2_model_runner or p.pipeline_parallel_size != 1 or p.data_parallel_size != 1:
+            raise NotImplementedError("101 多卡模型仅支持 V2 单副本、PP=DP=1")
+        if c.speculative_config is not None:
+            raise NotImplementedError("101 尚未开放多卡投机模型")
+        if c.compilation_config.cudagraph_mode:
+            raise NotImplementedError("101 尚未开放多 rank CUDA Graph")
+        if hf.get("model_type") != "qwen3" or arch != ["Qwen3ForCausalLM"]:
+            raise NotImplementedError("101 多卡模型仅支持稠密 Qwen3ForCausalLM")
+        if c.attention_backend != "triton":
+            raise NotImplementedError("101 多卡模型仅支持 TRITON_ATTN")
+        if c.cache_config.enable_prefix_caching:
+            raise NotImplementedError("101 多卡模型尚未开放 prefix caching")
+        if hf.get("hidden_act", "silu") != "silu":
+            raise NotImplementedError("101 Qwen3 TP 仅支持 silu MLP")
+        if hf.get("sliding_window") is not None or hf.get("use_sliding_window", False):
+            raise NotImplementedError("101 Qwen3 TP 暂不支持滑动窗口")
+        types = hf.get("layer_types")
+        if types is not None and (len(types) != hf.get("num_hidden_layers") or any(t != "full_attention" for t in types)):
+            raise NotImplementedError("101 Qwen3 TP 仅支持全注意力层")
+        rope = hf.get("rope_parameters") or {}
+        if rope.get("rope_type", rope.get("type", "default")) != "default" or hf.get("rope_scaling"):
+            raise NotImplementedError("101 Qwen3 TP 暂不支持非默认 RoPE")
+        for name in ("hidden_size", "intermediate_size", "vocab_size", "max_position_embeddings"):
+            if type(hf.get(name)) is not int or hf[name] <= 0:
+                raise ValueError(f"Qwen3 配置 {name} 必须是正整数")
+        if hf["intermediate_size"] % p.tensor_parallel_size:
+            raise ValueError("Qwen3 intermediate_size 必须能被 TP 整除")
+        if hf["max_position_embeddings"] < c.model_config.max_model_len:
+            raise ValueError("max_model_len 超出 Qwen3 位置编码范围")
+        head_dim = hf.get("head_dim", hf["hidden_size"] // hf["num_attention_heads"])
+        if type(head_dim) is not int or head_dim <= 0:
+            raise ValueError("Qwen3 head_dim 必须是正整数")
+        if c.model_config.dtype not in ("float32", "fp32", "float16", "half", "bfloat16", "bf16"):
+            raise NotImplementedError("101 Qwen3 TP 不支持量化")
+        if hf.get("quantization_config"):
+            raise NotImplementedError("101 Qwen3 TP 不支持量化 checkpoint")
 
     def initialize_from_config(self, kv_cache_config) -> None:
         """按上层定下的 KV 规格分配物理缓存并绑定到每个 Attention 层。
