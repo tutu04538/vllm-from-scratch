@@ -71,6 +71,9 @@ if triton is not None:
                     1.0 + tl.erf(gate * 0.7071067811865476))
         else:
             activated = gate * tl.sigmoid(gate)
+            # 冻结 vLLM CUDA silu_and_mul 先将 SiLU 结果舍入到输入 dtype，
+            # 再与 up 相乘；直接保留 FP32 会改变 BF16 的输出。
+            activated = activated.to(x_ptr.dtype.element_ty).to(tl.float32)
 
         value = activated * up
         tl.store(

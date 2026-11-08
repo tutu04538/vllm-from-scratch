@@ -14050,8 +14050,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 187,
-  "sha256": "b40dc1b594cabb3a63379671dc703ae4c2f863f2e3b0d804d327180e58976e17",
+  "python_files": 188,
+  "sha256": "8fcccbe86ad2e7db8db0fcef208f3fe835af8a1ed6b0a9672f544933e8e4f253",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -17812,6 +17812,2987 @@
      4
     ]
    }
+  }
+ },
+ "step103": {
+  "results": {
+   "status": "passed scoped eager real Qwen3 TP matrix",
+   "head": "efb44eb (parent before 103)",
+   "package_sha256": "8fcccbe86ad2e7db8db0fcef208f3fe835af8a1ed6b0a9672f544933e8e4f253",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca",
+    "model_executor/models/qwen3.py": "ec8bc9c090f6f5242b2f572366644ef73573137b3e48b03b39c0f083fbb21ab4",
+    "v1/executor/multiproc_executor.py": "d5ca86635611758c2bd543ffd1fe9ad200db62880ce1f47eda8e4c63847595ea"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm_module": "0.28.0",
+    "transformers": "5.14.1",
+    "devices": "4 × NVIDIA GeForce RTX 4090",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "name": "reference",
+     "command": "python benchmarks/step103_collect_reference.py",
+     "exit_code": 0
+    },
+    {
+     "name": "register",
+     "command": "python benchmarks/step103_register_contract.py",
+     "exit_code": 0
+    },
+    {
+     "name": "main",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step103_tp_e2e.py --case all --timeout 1800 --output benchmarks/results/step103/matrix_production.json",
+     "exit_code": 0
+    },
+    {
+     "name": "aux",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/step103_aux_matrix.py --mode all --timeout 1800 --output benchmarks/results/step103/aux_matrix.json",
+     "exit_code": 0
+    },
+    {
+     "name": "aux_validate",
+     "command": "python benchmarks/step103_validate_aux.py --input benchmarks/results/step103/aux_matrix.json --output benchmarks/results/step103/aux_validation.json",
+     "exit_code": 0
+    },
+    {
+     "name": "forced",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/step103_aux_matrix.py --mode forced --timeout 1800 --output benchmarks/results/step103/forced_matrix.json",
+     "exit_code": 0
+    },
+    {
+     "name": "forced_compare",
+     "command": "python benchmarks/step103_compare_forced.py --input benchmarks/results/step103/forced_matrix.json --output benchmarks/results/step103/forced_compare.json",
+     "exit_code": 0
+    },
+    {
+     "name": "pytest",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step103 -q -ra",
+     "exit_code": 0
+    },
+    {
+     "name": "old_regression",
+     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0
+    },
+    {
+     "name": "parallel_regression",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 102)) -q -ra",
+     "exit_code": 0
+    },
+    {
+     "name": "requirements",
+     "command": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py",
+     "exit_code": 0
+    }
+   ],
+   "pytest": {
+    "step103": "5 passed",
+    "step58_88": "1289 passed, 23 skipped",
+    "step089_102": "186 passed"
+   },
+   "contract_sha256": "863ca136b18661b4f3d966d69bd1c3f64a482cd29c2314ac3c1e644107ec0558",
+   "contract": {
+    "definition": "2x max frozen repeat/cross-TP error; floor 1e-5, pre-registered before mini results",
+    "old_contract_sha256": "29bcbf64f1212cf100845387ff46ddcd43981b3d9fd4487c044a455ec28d0e7c",
+    "thresholds": {
+     "8b_b1_step0_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0027654774146144635,
+      "comparisons": 6,
+      "max_abs": 2.0,
+      "relative_l2": 0.005530954829228927
+     },
+     "8b_b1_step0_hidden": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.032496724247566694,
+      "comparisons": 6,
+      "max_abs": 2.0,
+      "relative_l2": 0.06499344849513339
+     },
+     "8b_b1_step0_raw_logits": {
+      "observed_max_abs": 0.59375,
+      "observed_relative_l2": 0.04294490988502424,
+      "comparisons": 6,
+      "max_abs": 1.1875,
+      "relative_l2": 0.08588981977004848
+     },
+     "8b_b1_step1_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0027542091964284157,
+      "comparisons": 6,
+      "max_abs": 2.0,
+      "relative_l2": 0.0055084183928568314
+     },
+     "8b_b1_step1_hidden": {
+      "observed_max_abs": 0.4375,
+      "observed_relative_l2": 0.01192556233287413,
+      "comparisons": 6,
+      "max_abs": 0.875,
+      "relative_l2": 0.02385112466574826
+     },
+     "8b_b1_step1_raw_logits": {
+      "observed_max_abs": 0.1875,
+      "observed_relative_l2": 0.00882428291989345,
+      "comparisons": 6,
+      "max_abs": 0.375,
+      "relative_l2": 0.0176485658397869
+     },
+     "8b_b1_step2_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0027388064643160625,
+      "comparisons": 6,
+      "max_abs": 2.0,
+      "relative_l2": 0.005477612928632125
+     },
+     "8b_b1_step2_hidden": {
+      "observed_max_abs": 0.75,
+      "observed_relative_l2": 0.017463587797436883,
+      "comparisons": 6,
+      "max_abs": 1.5,
+      "relative_l2": 0.034927175594873766
+     },
+     "8b_b1_step2_raw_logits": {
+      "observed_max_abs": 0.25,
+      "observed_relative_l2": 0.026262834229873196,
+      "comparisons": 6,
+      "max_abs": 0.5,
+      "relative_l2": 0.05252566845974639
+     },
+     "8b_b1_step3_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0027262191921195635,
+      "comparisons": 6,
+      "max_abs": 2.0,
+      "relative_l2": 0.005452438384239127
+     },
+     "8b_b1_step3_hidden": {
+      "observed_max_abs": 2.75,
+      "observed_relative_l2": 0.06745890738441845,
+      "comparisons": 6,
+      "max_abs": 5.5,
+      "relative_l2": 0.1349178147688369
+     },
+     "8b_b1_step3_raw_logits": {
+      "observed_max_abs": 1.375,
+      "observed_relative_l2": 0.07564373440071476,
+      "comparisons": 6,
+      "max_abs": 2.75,
+      "relative_l2": 0.15128746880142951
+     },
+     "8b_b4_step0_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0032283772938976156,
+      "comparisons": 24,
+      "max_abs": 2.0,
+      "relative_l2": 0.006456754587795231
+     },
+     "8b_b4_step0_hidden": {
+      "observed_max_abs": 1.5,
+      "observed_relative_l2": 0.032496724247566694,
+      "comparisons": 24,
+      "max_abs": 3.0,
+      "relative_l2": 0.06499344849513339
+     },
+     "8b_b4_step0_raw_logits": {
+      "observed_max_abs": 0.59375,
+      "observed_relative_l2": 0.04294490988502424,
+      "comparisons": 24,
+      "max_abs": 1.1875,
+      "relative_l2": 0.08588981977004848
+     },
+     "8b_b4_step1_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.003212330134518548,
+      "comparisons": 24,
+      "max_abs": 2.0,
+      "relative_l2": 0.006424660269037096
+     },
+     "8b_b4_step1_hidden": {
+      "observed_max_abs": 1.25,
+      "observed_relative_l2": 0.025129463318277007,
+      "comparisons": 24,
+      "max_abs": 2.5,
+      "relative_l2": 0.05025892663655401
+     },
+     "8b_b4_step1_raw_logits": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.03006618604889615,
+      "comparisons": 24,
+      "max_abs": 1.0,
+      "relative_l2": 0.0601323720977923
+     },
+     "8b_b4_step2_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.003189695045032784,
+      "comparisons": 24,
+      "max_abs": 2.0,
+      "relative_l2": 0.006379390090065568
+     },
+     "8b_b4_step2_hidden": {
+      "observed_max_abs": 1.9375,
+      "observed_relative_l2": 0.027555045571020908,
+      "comparisons": 24,
+      "max_abs": 3.875,
+      "relative_l2": 0.055110091142041816
+     },
+     "8b_b4_step2_raw_logits": {
+      "observed_max_abs": 0.46875,
+      "observed_relative_l2": 0.04532341443500798,
+      "comparisons": 24,
+      "max_abs": 0.9375,
+      "relative_l2": 0.09064682887001596
+     },
+     "8b_b4_step3_kv": {
+      "observed_max_abs": 1.0,
+      "observed_relative_l2": 0.0031737610433088498,
+      "comparisons": 24,
+      "max_abs": 2.0,
+      "relative_l2": 0.0063475220866176995
+     },
+     "8b_b4_step3_hidden": {
+      "observed_max_abs": 2.25,
+      "observed_relative_l2": 0.05678295017426674,
+      "comparisons": 24,
+      "max_abs": 4.5,
+      "relative_l2": 0.11356590034853348
+     },
+     "8b_b4_step3_raw_logits": {
+      "observed_max_abs": 1.15625,
+      "observed_relative_l2": 0.060093941196222904,
+      "comparisons": 24,
+      "max_abs": 2.3125,
+      "relative_l2": 0.12018788239244581
+     },
+     "14b_b1_step0_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018558455576308838,
+      "comparisons": 4,
+      "max_abs": 1.0,
+      "relative_l2": 0.0037116911152617676
+     },
+     "14b_b1_step0_hidden": {
+      "observed_max_abs": 0.75,
+      "observed_relative_l2": 0.05381844257746729,
+      "comparisons": 4,
+      "max_abs": 1.5,
+      "relative_l2": 0.10763688515493458
+     },
+     "14b_b1_step0_raw_logits": {
+      "observed_max_abs": 0.90625,
+      "observed_relative_l2": 0.0501509851554019,
+      "comparisons": 4,
+      "max_abs": 1.8125,
+      "relative_l2": 0.1003019703108038
+     },
+     "14b_b1_step1_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018494357788123121,
+      "comparisons": 4,
+      "max_abs": 1.0,
+      "relative_l2": 0.0036988715576246243
+     },
+     "14b_b1_step1_hidden": {
+      "observed_max_abs": 0.71875,
+      "observed_relative_l2": 0.014249736221672762,
+      "comparisons": 4,
+      "max_abs": 1.4375,
+      "relative_l2": 0.028499472443345525
+     },
+     "14b_b1_step1_raw_logits": {
+      "observed_max_abs": 0.25,
+      "observed_relative_l2": 0.023252801267266202,
+      "comparisons": 4,
+      "max_abs": 0.5,
+      "relative_l2": 0.046505602534532405
+     },
+     "14b_b1_step2_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.001839431450518497,
+      "comparisons": 4,
+      "max_abs": 1.0,
+      "relative_l2": 0.003678862901036994
+     },
+     "14b_b1_step2_hidden": {
+      "observed_max_abs": 0.4375,
+      "observed_relative_l2": 0.010154372470174556,
+      "comparisons": 4,
+      "max_abs": 0.875,
+      "relative_l2": 0.02030874494034911
+     },
+     "14b_b1_step2_raw_logits": {
+      "observed_max_abs": 0.1875,
+      "observed_relative_l2": 0.0168052265699941,
+      "comparisons": 4,
+      "max_abs": 0.375,
+      "relative_l2": 0.0336104531399882
+     },
+     "14b_b1_step3_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018323452100123306,
+      "comparisons": 4,
+      "max_abs": 1.0,
+      "relative_l2": 0.0036646904200246613
+     },
+     "14b_b1_step3_hidden": {
+      "observed_max_abs": 0.25,
+      "observed_relative_l2": 0.010503506602730757,
+      "comparisons": 4,
+      "max_abs": 0.5,
+      "relative_l2": 0.021007013205461514
+     },
+     "14b_b1_step3_raw_logits": {
+      "observed_max_abs": 0.1875,
+      "observed_relative_l2": 0.015425347735447462,
+      "comparisons": 4,
+      "max_abs": 0.375,
+      "relative_l2": 0.030850695470894925
+     },
+     "14b_b4_step0_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018558455576308838,
+      "comparisons": 16,
+      "max_abs": 1.0,
+      "relative_l2": 0.0037116911152617676
+     },
+     "14b_b4_step0_hidden": {
+      "observed_max_abs": 0.875,
+      "observed_relative_l2": 0.05381844257746729,
+      "comparisons": 16,
+      "max_abs": 1.75,
+      "relative_l2": 0.10763688515493458
+     },
+     "14b_b4_step0_raw_logits": {
+      "observed_max_abs": 0.90625,
+      "observed_relative_l2": 0.0501509851554019,
+      "comparisons": 16,
+      "max_abs": 1.8125,
+      "relative_l2": 0.1003019703108038
+     },
+     "14b_b4_step1_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018500509265717403,
+      "comparisons": 16,
+      "max_abs": 1.0,
+      "relative_l2": 0.0037001018531434807
+     },
+     "14b_b4_step1_hidden": {
+      "observed_max_abs": 0.75,
+      "observed_relative_l2": 0.039780545828900574,
+      "comparisons": 16,
+      "max_abs": 1.5,
+      "relative_l2": 0.07956109165780115
+     },
+     "14b_b4_step1_raw_logits": {
+      "observed_max_abs": 0.640625,
+      "observed_relative_l2": 0.03599429897346688,
+      "comparisons": 16,
+      "max_abs": 1.28125,
+      "relative_l2": 0.07198859794693376
+     },
+     "14b_b4_step2_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018408790842790687,
+      "comparisons": 16,
+      "max_abs": 1.0,
+      "relative_l2": 0.0036817581685581373
+     },
+     "14b_b4_step2_hidden": {
+      "observed_max_abs": 1.25,
+      "observed_relative_l2": 0.022810028149329763,
+      "comparisons": 16,
+      "max_abs": 2.5,
+      "relative_l2": 0.04562005629865953
+     },
+     "14b_b4_step2_raw_logits": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.03016764582140365,
+      "comparisons": 16,
+      "max_abs": 1.0,
+      "relative_l2": 0.0603352916428073
+     },
+     "14b_b4_step3_kv": {
+      "observed_max_abs": 0.5,
+      "observed_relative_l2": 0.0018484211199910814,
+      "comparisons": 16,
+      "max_abs": 1.0,
+      "relative_l2": 0.0036968422399821627
+     },
+     "14b_b4_step3_hidden": {
+      "observed_max_abs": 0.75,
+      "observed_relative_l2": 0.017353474478494217,
+      "comparisons": 16,
+      "max_abs": 1.5,
+      "relative_l2": 0.034706948956988434
+     },
+     "14b_b4_step3_raw_logits": {
+      "observed_max_abs": 0.375,
+      "observed_relative_l2": 0.016125729326749605,
+      "comparisons": 16,
+      "max_abs": 0.75,
+      "relative_l2": 0.03225145865349921
+     }
+    },
+    "reference_history_mismatches": [],
+    "raw": "benchmarks/results/step103/numerics_contract.json"
+   },
+   "cases": [
+    {
+     "case": "8b_tp1_b1",
+     "status": "passed",
+     "comparisons": 12,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 1,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_8b_tp1_b1/compare.json"
+    },
+    {
+     "case": "8b_tp1_b4",
+     "status": "passed",
+     "comparisons": 48,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 4,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32,
+      33,
+      34,
+      35
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_8b_tp1_b4/compare.json"
+    },
+    {
+     "case": "8b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 1,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_8b_tp2_b1/compare.json"
+    },
+    {
+     "case": "8b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 4,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32,
+      33,
+      34,
+      35
+     ],
+     "max_abs": 1.0,
+     "max_relative_l2": 0.024981024937651974,
+     "raw": "benchmarks/results/step103/mini_8b_tp2_b4/compare.json"
+    },
+    {
+     "case": "8b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 1,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_8b_tp4_b1/compare.json"
+    },
+    {
+     "case": "8b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 4,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32,
+      33,
+      34,
+      35
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_8b_tp4_b4/compare.json"
+    },
+    {
+     "case": "14b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 1,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_14b_tp2_b1/compare.json"
+    },
+    {
+     "case": "14b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 4,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32,
+      33,
+      34,
+      35
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_14b_tp2_b4/compare.json"
+    },
+    {
+     "case": "14b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 1,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_14b_tp4_b1/compare.json"
+    },
+    {
+     "case": "14b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "history_mismatches": [],
+     "generation": {
+      "all_exact": true,
+      "requests": 4,
+      "tokens_per_request": 32
+     },
+     "finish_steps": [
+      32,
+      33,
+      34,
+      35
+     ],
+     "max_abs": 0.0,
+     "max_relative_l2": 0.0,
+     "raw": "benchmarks/results/step103/mini_14b_tp4_b4/compare.json"
+    }
+   ],
+   "forced_replay": {
+    "status": "passed",
+    "cases": [
+     {
+      "model": "8b",
+      "tp": 1,
+      "batch": 1,
+      "status": "passed",
+      "comparisons": 12,
+      "input_rows": 131
+     },
+     {
+      "model": "8b",
+      "tp": 1,
+      "batch": 4,
+      "status": "passed",
+      "comparisons": 48,
+      "input_rows": 476
+     },
+     {
+      "model": "8b",
+      "tp": 2,
+      "batch": 1,
+      "status": "passed",
+      "comparisons": 24,
+      "input_rows": 131
+     },
+     {
+      "model": "8b",
+      "tp": 2,
+      "batch": 4,
+      "status": "passed",
+      "comparisons": 96,
+      "input_rows": 476
+     },
+     {
+      "model": "8b",
+      "tp": 4,
+      "batch": 1,
+      "status": "passed",
+      "comparisons": 48,
+      "input_rows": 131
+     },
+     {
+      "model": "8b",
+      "tp": 4,
+      "batch": 4,
+      "status": "passed",
+      "comparisons": 192,
+      "input_rows": 476
+     },
+     {
+      "model": "14b",
+      "tp": 2,
+      "batch": 1,
+      "status": "passed",
+      "comparisons": 24,
+      "input_rows": 131
+     },
+     {
+      "model": "14b",
+      "tp": 2,
+      "batch": 4,
+      "status": "passed",
+      "comparisons": 96,
+      "input_rows": 476
+     },
+     {
+      "model": "14b",
+      "tp": 4,
+      "batch": 1,
+      "status": "passed",
+      "comparisons": 48,
+      "input_rows": 131
+     },
+     {
+      "model": "14b",
+      "tp": 4,
+      "batch": 4,
+      "status": "passed",
+      "comparisons": 192,
+      "input_rows": 476
+     }
+    ],
+    "raw": "benchmarks/results/step103/forced_compare.json"
+   },
+   "random_validation": {
+    "status": "passed",
+    "rank_token_checks": 192,
+    "scope": "8b TP2 B4 and 14b TP4 B4, both engines; within TP group",
+    "raw": "benchmarks/results/step103/aux_validation.json"
+   },
+   "memory": [
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 1,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 16861634048,
+       "reserved_bytes": 16875782144,
+       "peak_allocated_bytes": 16863791104,
+       "peak_reserved_bytes": 16875782144
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 16861634560,
+       "reserved_bytes": 16898850816,
+       "peak_allocated_bytes": 16875661312,
+       "peak_reserved_bytes": 16898850816
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp1_b1/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 1,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 16885462528,
+       "reserved_bytes": 16915628032,
+       "peak_allocated_bytes": 16885462528,
+       "peak_reserved_bytes": 16915628032
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 16898242560,
+       "reserved_bytes": 16921919488,
+       "peak_allocated_bytes": 16908664832,
+       "peak_reserved_bytes": 16921919488
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp1_b1/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 1,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 16863627776,
+       "reserved_bytes": 16884170752,
+       "peak_allocated_bytes": 16872596992,
+       "peak_reserved_bytes": 16884170752
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 16863628288,
+       "reserved_bytes": 16884170752,
+       "peak_allocated_bytes": 16877264896,
+       "peak_reserved_bytes": 16884170752
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp1_b4/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 1,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 16887404032,
+       "reserved_bytes": 16915628032,
+       "peak_allocated_bytes": 16887404032,
+       "peak_reserved_bytes": 16915628032
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 16381470720,
+       "kv_tensor_bytes": 452984832,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 16900184064,
+       "reserved_bytes": 16921919488,
+       "peak_allocated_bytes": 16910607872,
+       "peak_reserved_bytes": 16921919488
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp1_b4/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 2,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8443665920,
+       "reserved_bytes": 8485076992,
+       "peak_allocated_bytes": 8445822976,
+       "peak_reserved_bytes": 8485076992
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8443665920,
+       "reserved_bytes": 8485076992,
+       "peak_allocated_bytes": 8445822976,
+       "peak_reserved_bytes": 8485076992
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8443666432,
+       "reserved_bytes": 8487174144,
+       "peak_allocated_bytes": 8454023168,
+       "peak_reserved_bytes": 8487174144
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8443666432,
+       "reserved_bytes": 8487174144,
+       "peak_allocated_bytes": 8454023168,
+       "peak_reserved_bytes": 8487174144
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp2_b1/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 2,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8448620032,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8448620032,
+       "peak_reserved_bytes": 8499757056
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8448620032,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8448620032,
+       "peak_reserved_bytes": 8499757056
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8461400064,
+       "reserved_bytes": 8508145664,
+       "peak_allocated_bytes": 8469725184,
+       "peak_reserved_bytes": 8508145664
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8461400064,
+       "reserved_bytes": 8508145664,
+       "peak_allocated_bytes": 8469725184,
+       "peak_reserved_bytes": 8508145664
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp2_b1/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 2,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445659648,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456117760,
+       "peak_reserved_bytes": 8506048512
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445659648,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456117760,
+       "peak_reserved_bytes": 8506048512
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445660160,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456151040,
+       "peak_reserved_bytes": 8506048512
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445660160,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456151040,
+       "peak_reserved_bytes": 8506048512
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp2_b4/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 2,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8450561536,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8450561536,
+       "peak_reserved_bytes": 8499757056
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8450561536,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8450561536,
+       "peak_reserved_bytes": 8499757056
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8463341568,
+       "reserved_bytes": 8508145664,
+       "peak_allocated_bytes": 8471334400,
+       "peak_reserved_bytes": 8508145664
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8463341568,
+       "reserved_bytes": 8508145664,
+       "peak_allocated_bytes": 8471334400,
+       "peak_reserved_bytes": 8508145664
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp2_b4/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 4,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745088,
+       "reserved_bytes": 4259315712,
+       "peak_allocated_bytes": 4240902144,
+       "peak_reserved_bytes": 4259315712
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745088,
+       "reserved_bytes": 4259315712,
+       "peak_allocated_bytes": 4240902144,
+       "peak_reserved_bytes": 4259315712
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745088,
+       "reserved_bytes": 4259315712,
+       "peak_allocated_bytes": 4240902144,
+       "peak_reserved_bytes": 4259315712
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745088,
+       "reserved_bytes": 4259315712,
+       "peak_allocated_bytes": 4240902144,
+       "peak_reserved_bytes": 4259315712
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745600,
+       "reserved_bytes": 4261412864,
+       "peak_allocated_bytes": 4246874112,
+       "peak_reserved_bytes": 4261412864
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745600,
+       "reserved_bytes": 4261412864,
+       "peak_allocated_bytes": 4246874112,
+       "peak_reserved_bytes": 4261412864
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745600,
+       "reserved_bytes": 4261412864,
+       "peak_allocated_bytes": 4246874112,
+       "peak_reserved_bytes": 4261412864
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4238745600,
+       "reserved_bytes": 4261412864,
+       "peak_allocated_bytes": 4246874112,
+       "peak_reserved_bytes": 4261412864
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp4_b1/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 4,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4229674496,
+       "reserved_bytes": 4253024256,
+       "peak_allocated_bytes": 4229674496,
+       "peak_reserved_bytes": 4253024256
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4229674496,
+       "reserved_bytes": 4253024256,
+       "peak_allocated_bytes": 4229674496,
+       "peak_reserved_bytes": 4253024256
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4229674496,
+       "reserved_bytes": 4253024256,
+       "peak_allocated_bytes": 4229674496,
+       "peak_reserved_bytes": 4253024256
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4229674496,
+       "reserved_bytes": 4253024256,
+       "peak_allocated_bytes": 4229674496,
+       "peak_reserved_bytes": 4253024256
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4242454528,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4247371776,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4242454528,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4247371776,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4242454528,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4247371776,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4242454528,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4247371776,
+       "peak_reserved_bytes": 4280287232
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp4_b1/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 4,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821312,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821312,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821312,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821312,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821824,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821824,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821824,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 4239821824,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp4_b4/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 4,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4231616000,
+       "reserved_bytes": 4271898624,
+       "peak_allocated_bytes": 4231616000,
+       "peak_reserved_bytes": 4271898624
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4231616000,
+       "reserved_bytes": 4271898624,
+       "peak_allocated_bytes": 4231616000,
+       "peak_reserved_bytes": 4271898624
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4231616000,
+       "reserved_bytes": 4271898624,
+       "peak_allocated_bytes": 4231616000,
+       "peak_reserved_bytes": 4271898624
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 4231616000,
+       "reserved_bytes": 4271898624,
+       "peak_allocated_bytes": 4231616000,
+       "peak_reserved_bytes": 4271898624
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4244396032,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4244396032,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4244396032,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 4095830016,
+       "kv_tensor_bytes": 113246208,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 4244396032,
+       "reserved_bytes": 4280287232,
+       "peak_allocated_bytes": 4249314816,
+       "peak_reserved_bytes": 4280287232
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp4_b4/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "14b",
+     "tp": 2,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15172638208,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15174801408,
+       "peak_reserved_bytes": 15227420672
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15172638208,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15174801408,
+       "peak_reserved_bytes": 15227420672
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15172638720,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15190335488,
+       "peak_reserved_bytes": 15227420672
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15172638720,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15190335488,
+       "peak_reserved_bytes": 15227420672
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_14b_tp2_b1/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "14b",
+     "tp": 2,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 15183859200,
+       "reserved_bytes": 15229517824,
+       "peak_allocated_bytes": 15183859200,
+       "peak_reserved_bytes": 15229517824
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 15183859200,
+       "reserved_bytes": 15229517824,
+       "peak_allocated_bytes": 15183859200,
+       "peak_reserved_bytes": 15229517824
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 15197704192,
+       "reserved_bytes": 15252586496,
+       "peak_allocated_bytes": 15211255808,
+       "peak_reserved_bytes": 15252586496
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 15197704192,
+       "reserved_bytes": 15252586496,
+       "peak_allocated_bytes": 15211255808,
+       "peak_reserved_bytes": 15252586496
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_14b_tp2_b1/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "14b",
+     "tp": 2,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15174631936,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15184340480,
+       "peak_reserved_bytes": 15227420672
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15174631936,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15184340480,
+       "peak_reserved_bytes": 15227420672
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15174632448,
+       "reserved_bytes": 15229517824,
+       "peak_allocated_bytes": 15192201216,
+       "peak_reserved_bytes": 15229517824
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 15174632448,
+       "reserved_bytes": 15229517824,
+       "peak_allocated_bytes": 15192201216,
+       "peak_reserved_bytes": 15229517824
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_14b_tp2_b4/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "14b",
+     "tp": 2,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 15185800704,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15185800704,
+       "peak_reserved_bytes": 15227420672
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 15185800704,
+       "reserved_bytes": 15227420672,
+       "peak_allocated_bytes": 15185800704,
+       "peak_reserved_bytes": 15227420672
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 15199645696,
+       "reserved_bytes": 15256780800,
+       "peak_allocated_bytes": 15212865024,
+       "peak_reserved_bytes": 15256780800
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 14768732160,
+       "kv_tensor_bytes": 251658240,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 15199645696,
+       "reserved_bytes": 15256780800,
+       "peak_allocated_bytes": 15212865024,
+       "peak_reserved_bytes": 15256780800
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_14b_tp2_b4/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "14b",
+     "tp": 4,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665751552,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7667914752,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665751552,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7667914752,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665751552,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7667914752,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665751552,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7667914752,
+       "peak_reserved_bytes": 7761559552
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665752064,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7677419520,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665752064,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7677419520,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665752064,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7677419520,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7665752064,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7677419520,
+       "peak_reserved_bytes": 7761559552
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_14b_tp4_b1/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "14b",
+     "tp": 4,
+     "batch": 1,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7599377920,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7599377920,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7599377920,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7599377920,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7599377920,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7599377920,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7599377920,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7599377920,
+       "peak_reserved_bytes": 7751073792
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7613222912,
+       "reserved_bytes": 7772045312,
+       "peak_allocated_bytes": 7621072896,
+       "peak_reserved_bytes": 7772045312
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7613222912,
+       "reserved_bytes": 7772045312,
+       "peak_allocated_bytes": 7621072896,
+       "peak_reserved_bytes": 7772045312
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7613222912,
+       "reserved_bytes": 7772045312,
+       "peak_allocated_bytes": 7621072896,
+       "peak_reserved_bytes": 7772045312
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7613222912,
+       "reserved_bytes": 7772045312,
+       "peak_allocated_bytes": 7621072896,
+       "peak_reserved_bytes": 7772045312
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_14b_tp4_b1/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "14b",
+     "tp": 4,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7763656704,
+       "peak_allocated_bytes": 7678498816,
+       "peak_reserved_bytes": 7763656704
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7763656704,
+       "peak_allocated_bytes": 7678498816,
+       "peak_reserved_bytes": 7763656704
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7763656704,
+       "peak_allocated_bytes": 7678498816,
+       "peak_reserved_bytes": 7763656704
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7763656704,
+       "peak_allocated_bytes": 7678498816,
+       "peak_reserved_bytes": 7763656704
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_14b_tp4_b4/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "14b",
+     "tp": 4,
+     "batch": 4,
+     "random": false,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7778336768,
+       "peak_allocated_bytes": 7622813184,
+       "peak_reserved_bytes": 7778336768
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7778336768,
+       "peak_allocated_bytes": 7622813184,
+       "peak_reserved_bytes": 7778336768
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7778336768,
+       "peak_allocated_bytes": 7622813184,
+       "peak_reserved_bytes": 7778336768
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7778336768,
+       "peak_allocated_bytes": 7622813184,
+       "peak_reserved_bytes": 7778336768
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_14b_tp4_b4/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "8b",
+     "tp": 2,
+     "batch": 4,
+     "random": true,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445659648,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456117760,
+       "peak_reserved_bytes": 8506048512
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445659648,
+       "reserved_bytes": 8506048512,
+       "peak_allocated_bytes": 8456117760,
+       "peak_reserved_bytes": 8506048512
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445660160,
+       "reserved_bytes": 8527020032,
+       "peak_allocated_bytes": 8479192064,
+       "peak_reserved_bytes": 8527020032
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 4194304,
+        "attn_group0_0_builder0_softmax_segm_max": 32768,
+        "attn_group0_0_builder0_softmax_segm_expsum": 32768
+       },
+       "allocated_bytes": 8445660160,
+       "reserved_bytes": 8527020032,
+       "peak_allocated_bytes": 8479192064,
+       "peak_reserved_bytes": 8527020032
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_8b_tp2_b4_random/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "8b",
+     "tp": 2,
+     "batch": 4,
+     "random": true,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8450561536,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8450561536,
+       "peak_reserved_bytes": 8499757056
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 8450561536,
+       "reserved_bytes": 8499757056,
+       "peak_allocated_bytes": 8450561536,
+       "peak_reserved_bytes": 8499757056
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8463341568,
+       "reserved_bytes": 8550088704,
+       "peak_allocated_bytes": 8494893056,
+       "peak_reserved_bytes": 8550088704
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 8191043584,
+       "kv_tensor_bytes": 226492416,
+       "known_workspace_bytes": 4259840,
+       "workspace_storage": {
+        "attn_workspace_0_0": 4194304,
+        "attn_workspace_0_1": 32768,
+        "attn_workspace_0_2": 32768
+       },
+       "allocated_bytes": 8463341568,
+       "reserved_bytes": 8550088704,
+       "peak_allocated_bytes": 8494893056,
+       "peak_reserved_bytes": 8550088704
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_8b_tp2_b4_random/summary.json"
+    },
+    {
+     "engine": "frozen",
+     "model": "14b",
+     "tp": 4,
+     "batch": 4,
+     "random": true,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666827776,
+       "reserved_bytes": 7761559552,
+       "peak_allocated_bytes": 7675821568,
+       "peak_reserved_bytes": 7761559552
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7786725376,
+       "peak_allocated_bytes": 7699403776,
+       "peak_reserved_bytes": 7786725376
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7786725376,
+       "peak_allocated_bytes": 7699403776,
+       "peak_reserved_bytes": 7786725376
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7786725376,
+       "peak_allocated_bytes": 7699403776,
+       "peak_reserved_bytes": 7786725376
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_group0_0_builder0_softmax_segm_output": 5242880,
+        "attn_group0_0_builder0_softmax_segm_max": 40960,
+        "attn_group0_0_builder0_softmax_segm_expsum": 40960
+       },
+       "allocated_bytes": 7666828288,
+       "reserved_bytes": 7786725376,
+       "peak_allocated_bytes": 7699403776,
+       "peak_reserved_bytes": 7786725376
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_frozen_14b_tp4_b4_random/summary.json"
+    },
+    {
+     "engine": "mini",
+     "model": "14b",
+     "tp": 4,
+     "batch": 4,
+     "random": true,
+     "before": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 0,
+       "workspace_storage": {},
+       "allocated_bytes": 7601509888,
+       "reserved_bytes": 7751073792,
+       "peak_allocated_bytes": 7601509888,
+       "peak_reserved_bytes": 7751073792
+      }
+     ],
+     "after": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7799308288,
+       "peak_allocated_bytes": 7647410176,
+       "peak_reserved_bytes": 7799308288
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7799308288,
+       "peak_allocated_bytes": 7647410176,
+       "peak_reserved_bytes": 7799308288
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7799308288,
+       "peak_allocated_bytes": 7647410176,
+       "peak_reserved_bytes": 7799308288
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "parameter_bytes": 7384791040,
+       "kv_tensor_bytes": 125829120,
+       "known_workspace_bytes": 5324800,
+       "workspace_storage": {
+        "attn_workspace_0_0": 5242880,
+        "attn_workspace_0_1": 40960,
+        "attn_workspace_0_2": 40960
+       },
+       "allocated_bytes": 7615354880,
+       "reserved_bytes": 7799308288,
+       "peak_allocated_bytes": 7647410176,
+       "peak_reserved_bytes": 7799308288
+      }
+     ],
+     "raw": "/data/syh/infra/vllm-from-scratch/benchmarks/results/step103/aux_mini_14b_tp4_b4_random/summary.json"
+    }
+   ],
+   "previous_failures": "invalid_reference_layout discarded before mini results; initial production 3/10, after_norm 6/10, after_ops 6/10; retained as diagnostics and separately rerun",
+   "not_run": [
+    "all-layer KV comparisons (only layer 0)",
+    "multi-rank Graph",
+    "TP EAGLE3",
+    "PP/DP",
+    "async_scheduling",
+    "performance benchmark"
+   ],
+   "artifacts": "benchmarks/results/step103/"
+  },
+  "models": {
+   "identities": {
+    "8b": {
+     "repo": "Qwen/Qwen3-8B",
+     "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+     "dtype": "bfloat16",
+     "weight_count": 399,
+     "tensor_bytes": 16381470720,
+     "weights_sha256": {
+      "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+      "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+      "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+      "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+      "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_8b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    },
+    "14b": {
+     "repo": "Qwen/Qwen3-14B",
+     "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "dtype": "bfloat16",
+     "weight_count": 443,
+     "tensor_bytes": 29536614400,
+     "weights_sha256": {
+      "model-00001-of-00008.safetensors": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+      "model-00002-of-00008.safetensors": "f7c9c6eee628f5ad831d2d1d292e120505e5fcadeb38f88b4d3c4cb86306ccf9",
+      "model-00003-of-00008.safetensors": "dfb8c5df9404b41ad6ae74e8b6b367135f017b4467b884cf71b17c71954f18a9",
+      "model-00004-of-00008.safetensors": "eab286fec759e3e59ab228621aefa0fef14ed56039e06f959e67257d5af7604d",
+      "model-00005-of-00008.safetensors": "97f0dc2992e59da95c466eff6f4fd0c8335843bbc36ed5c913a6f5150748c0e6",
+      "model-00006-of-00008.safetensors": "9e8e76a013cd5e253865b792991e0b410f869b136b3c500079b531b09198e99e",
+      "model-00007-of-00008.safetensors": "0aee70ee6e91dc00d818804fb47f124d13ee4ad5b4a64553e09dbf9391cd5750",
+      "model-00008-of-00008.safetensors": "0d6b92296e326d39bbbaeb32c3ec454ac606da843d4c8ffa8edf010b62b8c9e0"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_14b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    }
+   },
+   "source_cache": "/data/syh/.cache/huggingface/hub",
+   "real_model_run": true
   }
  }
 }

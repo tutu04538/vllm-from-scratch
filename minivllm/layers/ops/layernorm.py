@@ -7,7 +7,8 @@
 
 本文件只做**一个 logical row 的 RMSNorm**，不把模型结构塞进来。CUDA 路径用本地
 Triton kernel：一行一个 program，FP32 归约、一次写回；CPU 路径用显式 Torch 参考。
-两条路径共享同一套 shape/stride/dtype 契约。
+两条路径共享 shape/stride/dtype 契约。匹配 dtype 的普通 CUDA RMSNorm 按冻结
+vLLM 的 vllm_c kernel 舍入；CPU native 与 Gemma 路径按 IR native 计算。
 
 支持的行布局（最后一维必须是连续的）：
 
@@ -55,6 +56,7 @@ if triton is not None:
         HAS_RESIDUAL: tl.constexpr,
         HAS_WEIGHT: tl.constexpr,
         ADD_ONE: tl.constexpr,
+        CUDA_NATIVE_OP: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
         row = tl.program_id(0)
@@ -82,6 +84,10 @@ if triton is not None:
                 x.to(residual_out_ptr.dtype.element_ty),
                 mask=mask,
             )
+            # vLLM CUDA fused_add_rms_norm 先把残差和写回原 dtype，再用该值归一化。
+            # native IR 的参考实现使用未舍入的 FP32 和，两条路径不能混淆。
+            if CUDA_NATIVE_OP:
+                x = x.to(residual_out_ptr.dtype.element_ty).to(tl.float32)
 
         variance = tl.sum(x * x, axis=0) / D
         x = x * tl.rsqrt(variance + eps)
@@ -91,6 +97,9 @@ if triton is not None:
                 # GemmaRMSNorm 在上游先把 weight.float()+1，再走 rms_norm；
                 # 即使参数被模型 `.to(bf16)`，有效权重仍是 FP32。
                 x = x * (weight.to(tl.float32) + 1.0)
+            elif CUDA_NATIVE_OP:
+                # vLLM CUDA kernel 在 FP32 中乘权重，最后写回输出 dtype。
+                x = x * weight.to(tl.float32)
             else:
                 # 上游 native 的次序是 `x.to(weight.dtype) * weight`。先把归一化
                 # 结果 cast 到 weight dtype，乘法结果也落回该 dtype，最后才写
@@ -231,6 +240,11 @@ def rms_norm(
 
     if not x.is_cuda:
         return rms_norm_native(x, weight, eps, residual, add_one=add_one)
+    # 匹配冻结 CUDA 算子的 BF16 向量归约顺序，避免跨层舍入差异累积。
+    # 其他 dtype/布局仍由现有 Triton kernel 处理。
+    from . import rms_norm_cuda
+    if rms_norm_cuda.supports(x, weight, residual, add_one):
+        return rms_norm_cuda.run(x, weight, eps, residual, rows)
     if triton is None:
         raise RuntimeError(
             "CUDA 上的融合 RMSNorm 需要 triton；当前环境没有 triton。"
@@ -272,6 +286,7 @@ def rms_norm(
         HAS_RESIDUAL=residual is not None,
         HAS_WEIGHT=weight is not None,
         ADD_ONE=add_one,
+        CUDA_NATIVE_OP=not add_one and (weight is None or weight.dtype == x.dtype),
         BLOCK=block,
         num_warps=num_warps,
         num_stages=1,

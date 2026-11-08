@@ -3,7 +3,7 @@
 覆盖：
 * 2D/3D、FP32/BF16、有/无 residual、有/无 weight；
 * CPU native 与上游 `vllm.ir.ops.rms_norm` 逐值对照；
-* CUDA Triton 与同一 native 参考对照；
+* CUDA Triton 与冻结 vLLM CUDA 算子直接对照；
 * packed QKV 切片式的带洞 view、Q/K norm 式 3D view；
 * residual 输入不被原地改写；
 * CUDA Graph capture/replay 基础兼容。
@@ -48,12 +48,14 @@ def _reference(
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("shape", [(5, 64), (3, 4, 64)])
 @requires_cuda
-def test_cuda_rms_norm_matches_native(dtype, shape):
+def test_cuda_rms_norm_matches_frozen_cuda(dtype, shape):
     generator = torch.Generator(device="cuda").manual_seed(101)
     x = torch.randn(*shape, dtype=dtype, device="cuda", generator=generator)
     weight = torch.randn(shape[-1], dtype=dtype, device="cuda", generator=generator)
     got = rms_norm(x, weight, 1e-6)
-    want = rms_norm_native(x, weight, 1e-6)
+    from vllm import _custom_ops as upstream
+    want = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+    upstream.rms_norm(want, x, weight, 1e-6)
     atol = 2e-6 if dtype == torch.float32 else 0.0
     torch.testing.assert_close(got, want, rtol=0, atol=atol)
     assert got.is_contiguous()
@@ -61,7 +63,7 @@ def test_cuda_rms_norm_matches_native(dtype, shape):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @requires_cuda
-def test_cuda_fused_residual_matches_native_and_does_not_mutate(dtype):
+def test_cuda_fused_residual_matches_frozen_cuda_and_does_not_mutate(dtype):
     generator = torch.Generator(device="cuda").manual_seed(102)
     x = torch.randn(7, 128, dtype=dtype, device="cuda", generator=generator)
     residual = torch.randn(7, 128, dtype=dtype, device="cuda", generator=generator)
@@ -70,7 +72,9 @@ def test_cuda_fused_residual_matches_native_and_does_not_mutate(dtype):
     x_before = x.clone()
 
     got, got_residual = rms_norm(x, weight, 1e-6, residual)
-    want, want_residual = rms_norm_native(x, weight, 1e-6, residual)
+    from vllm import _custom_ops as upstream
+    want, want_residual = x.clone(), residual.clone()
+    upstream.fused_add_rms_norm(want, want_residual, weight, 1e-6)
     atol = 2e-6 if dtype == torch.float32 else 0.0
     torch.testing.assert_close(got, want, rtol=0, atol=atol)
     torch.testing.assert_close(got_residual, want_residual, rtol=0, atol=0)
@@ -107,7 +111,9 @@ def test_cuda_packed_qkv_slice_and_3d_head_view():
     weight = torch.randn(128, dtype=torch.bfloat16, device="cuda",
                          generator=generator)
     got = rms_norm(q, weight, 1e-6)
-    want = rms_norm_native(q, weight, 1e-6)
+    from vllm import _custom_ops as upstream
+    want = torch.empty(q.shape, device=q.device, dtype=q.dtype)
+    upstream.rms_norm(want, q, weight, 1e-6)
     torch.testing.assert_close(got, want, rtol=0, atol=0)
     assert got.is_contiguous()
     assert got.stride() == (512, 128, 1)

@@ -1,7 +1,7 @@
 """需求 85：共享 GeluAndMul / SiluAndMul 的数值与契约测试。
 
 GELU 的 exact erf 与 tanh 近似不能互换；这里分别对照上游 `forward_native`，
-CUDA 再对照“FP32 计算后按输入 dtype 写回”的参考。
+CUDA GELU 对照 FP32 参考，SiLU 对照冻结 vLLM CUDA 算子。
 """
 
 from __future__ import annotations
@@ -28,10 +28,13 @@ def _upstream_gelu(x: torch.Tensor, approximate: str) -> torch.Tensor:
 
 def _fp32_reference(x: torch.Tensor, *, gelu: bool,
                     approximate: str) -> torch.Tensor:
+    if not gelu:
+        import vllm._custom_ops  # 注册冻结 CUDA 算子
+        out = torch.empty((*x.shape[:-1], x.shape[-1] // 2), dtype=x.dtype, device=x.device)
+        torch.ops._C.silu_and_mul(out, x.contiguous())
+        return out
     gate, up = x.float().chunk(2, dim=-1)
-    value = (F.gelu(gate, approximate=approximate) if gelu
-             else F.silu(gate)) * up
-    return value.to(x.dtype)
+    return (F.gelu(gate, approximate=approximate) * up).to(x.dtype)
 
 
 def test_cpu_matches_upstream_native():

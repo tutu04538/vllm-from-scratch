@@ -1152,3 +1152,7 @@ V2 生产 Worker 在 eager、单副本、无投机的限定条件下支持普通
 ### 多卡 KV 与请求生命周期（102）
 
 Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP eager 的 prefix caching 在限定范围开放。TP2/4 的块表、有效 KV、抢占恢复、请求取消与失败传播验证见 [102 对齐报告](../docs/step102_alignment.md)。
+
+### Qwen3 TP 真实端到端（103）
+
+普通 Qwen3 8B TP1/2/4 和 14B TP2/4 在 V2 eager、BF16、TRITON_ATTN 下完成真实权重对照；BF16 RMSNorm 使用项目本地 CUDA/CUB 算子以对齐冻结 CUDA 的数值行为，首次使用需配置 nvcc。具体矩阵、内存口径和覆盖边界见 [103 对齐报告](../docs/step103_alignment.md)。多 rank Graph 和投机仍需后续关卡验收。

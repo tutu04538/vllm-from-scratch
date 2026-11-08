@@ -9,8 +9,9 @@ vLLM 的约定是 `forward(x, residual=None) -> out | (out, residual)`：
 那份。省掉一次显式的加法 kernel，也让模型结构（`layers[i].forward(pos, hidden, residual)`）
 天然把“残差流”表达成一个独立参数。
 
-数值上对齐 HF/上游 native：方差在 **float32** 里归约；权重乘法的 cast 次序在
-`layers/ops/layernorm.py` 里逐项对照。CUDA 走本地 Triton 融合 kernel，CPU 走 Torch 参考。
+方差在 **float32** 里归约；CUDA 普通 RMSNorm 按冻结 vLLM 的 CUDA 算子处理舍入，
+CPU 与 Gemma 分支按上游 native IR，cast 次序见 `layers/ops/layernorm.py`。
+CUDA 走本地 Triton 融合 kernel，CPU 走 Torch 参考。
 `residual` 分支返回**新的** residual 张量，不原地改写调用方的输入（上游 native 同义；
 上游 CUDA 的自定义 op 会原地写，差异记在 `docs/step85_alignment.md`）。
 """
