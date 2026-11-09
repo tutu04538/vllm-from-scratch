@@ -25,6 +25,7 @@ LoRA 数展开）、breakable CUDA graph（没有 torch.compile）、varlen deco
 """
 
 from collections import defaultdict
+from contextlib import nullcontext
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product
@@ -309,7 +310,12 @@ class CudaGraphManager:
         （分段图由模型层的包装器自己负责），不在这里建 `CUDAGraph`——与上游"PIECEWISE 不进
         `self.graphs`"一致。
         """
-        with graph_capture(self.device):
+        from ...distributed.parallel_state import get_tp_group_if_initialized
+        tp_group = get_tp_group_if_initialized()
+        communication_capture = (tp_group.graph_capture()
+                                 if tp_group is not None and tp_group.world_size > 1
+                                 else nullcontext(None))
+        with graph_capture(self.device), communication_capture as capture_context:
             for mode in (CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL):
                 if mode not in self._capture_descs:
                     continue
@@ -329,7 +335,8 @@ class CudaGraphManager:
                     # 本仓库的 Torch 后端靠 forward 上下文里的运行模式决定（`_graph_dispatched()`），
                     # 传 NONE 会把**逐请求 eager 路径录进图**（那里有 `int(张量)` 同步，捕获当场
                     # 就会炸）。所以这里传 FULL ——差异记在 `docs/step74_alignment.md`。
-                    with torch.cuda.graph(graph, _get_graph_pool()):
+                    with torch.cuda.graph(graph, _get_graph_pool(),
+                                          stream=capture_context.stream if capture_context else None):
                         forward_fn(CUDAGraphMode.FULL)
                     self.graphs[desc] = graph
         self._graphs_captured = True

@@ -163,3 +163,5 @@
 [103 Qwen3 TP 真实端到端验收](step103_alignment.md)：8B TP1/2/4 与 14B TP2/4、B1/4 的真实权重与冻结 vLLM 对照；记录 32 token、各 rank 的 hidden/logits/第 0 层有效 KV 与内存，并修正 BF16 RMSNorm/SiLU 的 CUDA 数值语义。多 rank Graph 等仍由后续关卡验收。
 
 [104 可捕获通信与后端选择](step104_alignment.md)：本项目独立的 PyNccl communicator、Graph 捕获 stream 和真实 TP2/4 通信 replay；多卡整模型 Graph 仍由 105 接入。
+
+[105 TP 整模型 CUDA Graph 接入](step105_alignment.md)：普通 Qwen3 V2 FULL decode 的多 rank 捕获和重放已实现，真实模型矩阵和动态 tiny 场景已验证；曾出现一次 14B TP2 Worker 关闭超时，50 次专项复现未重现、根因未确定，因此暂不标记完全关闭。

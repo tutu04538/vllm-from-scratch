@@ -112,8 +112,12 @@ class Worker:
             raise NotImplementedError("101 多卡模型仅支持 V2 单副本、PP=DP=1")
         if c.speculative_config is not None:
             raise NotImplementedError("101 尚未开放多卡投机模型")
-        if c.compilation_config.cudagraph_mode:
-            raise NotImplementedError("101 尚未开放多 rank CUDA Graph")
+        from ..config import CUDAGraphMode
+        if c.compilation_config.cudagraph_mode not in (CUDAGraphMode.NONE, CUDAGraphMode.FULL_DECODE_ONLY):
+            raise NotImplementedError("105 多 rank 仅支持 FULL_DECODE_ONLY CUDA Graph")
+        if (c.compilation_config.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+                and c.cache_config.enable_prefix_caching):
+            raise NotImplementedError("105 多 rank CUDA Graph 暂不支持 prefix caching")
         if hf.get("model_type") != "qwen3" or arch != ["Qwen3ForCausalLM"]:
             raise NotImplementedError("101 多卡模型仅支持稠密 Qwen3ForCausalLM")
         if c.attention_backend != "triton":

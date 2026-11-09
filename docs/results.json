@@ -14051,7 +14051,7 @@
  "current_package": {
   "root": "minivllm/",
   "python_files": 192,
-  "sha256": "34543201a3374d524412bec60ded8849418012954c7df21c69379c619eb93886",
+  "sha256": "b69824f7f877145d2373a4522624b577e8bf5ebb3ff4c913d9ef6c41714b7f44",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -21447,6 +21447,725 @@
     "performance measurement"
    ],
    "artifacts": "benchmarks/results/step104"
+  },
+  "models": {
+   "real_model_run": true,
+   "identities": {
+    "8b": {
+     "repo": "Qwen/Qwen3-8B",
+     "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+     "dtype": "bfloat16",
+     "weight_count": 399,
+     "tensor_bytes": 16381470720,
+     "weights_sha256": {
+      "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+      "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+      "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+      "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+      "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_8b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    },
+    "14b": {
+     "repo": "Qwen/Qwen3-14B",
+     "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "dtype": "bfloat16",
+     "weight_count": 443,
+     "tensor_bytes": 29536614400,
+     "weights_sha256": {
+      "model-00001-of-00008.safetensors": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+      "model-00002-of-00008.safetensors": "f7c9c6eee628f5ad831d2d1d292e120505e5fcadeb38f88b4d3c4cb86306ccf9",
+      "model-00003-of-00008.safetensors": "dfb8c5df9404b41ad6ae74e8b6b367135f017b4467b884cf71b17c71954f18a9",
+      "model-00004-of-00008.safetensors": "eab286fec759e3e59ab228621aefa0fef14ed56039e06f959e67257d5af7604d",
+      "model-00005-of-00008.safetensors": "97f0dc2992e59da95c466eff6f4fd0c8335843bbc36ed5c913a6f5150748c0e6",
+      "model-00006-of-00008.safetensors": "9e8e76a013cd5e253865b792991e0b410f869b136b3c500079b531b09198e99e",
+      "model-00007-of-00008.safetensors": "0aee70ee6e91dc00d818804fb47f124d13ee4ad5b4a64553e09dbf9391cd5750",
+      "model-00008-of-00008.safetensors": "0d6b92296e326d39bbbaeb32c3ec454ac606da843d4c8ffa8edf010b62b8c9e0"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_14b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    }
+   }
+  }
+ },
+ "step105": {
+  "results": {
+   "status": "partial: implementation and reruns pass; intermittent worker shutdown timeout root cause unresolved",
+   "head": "ed51b70 (parent before 105)",
+   "package_sha256": "b69824f7f877145d2373a4522624b577e8bf5ebb3ff4c913d9ef6c41714b7f44",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "v1/worker/gpu/cudagraph_utils.py": "ee1f6eb37bc2f456a3e7e9142d5a53455afed2250a57f52780546cf1aef27e2c",
+    "v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca",
+    "compilation/cuda_graph.py": "cbc474f9098386d2eef2e3ff61364c611fbc1338d9c259ad5a24439aa7f06412",
+    "config/compilation.py": "6e57a553093753856baaf7987e37ff24a15b73c95730e397e74d22c539d440ec",
+    "distributed/parallel_state.py": "c6d65b96a260ea0d779da1073d1799392813eee74c9ed44753dfa56f4e7a9e4c"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0",
+    "devices": "4 × RTX 4090",
+    "nccl": "2.29.7",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "name": "pytest",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step105 -q -ra",
+     "exit_code": 0,
+     "result": "9 passed"
+    },
+    {
+     "name": "acceptance",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step105_acceptance.py --case all --timeout 300 --output benchmarks/results/step105/acceptance_final.json",
+     "exit_code": 0,
+     "result": "7 cases passed"
+    },
+    {
+     "name": "single",
+     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "result": "1289 passed, 23 skipped"
+    },
+    {
+     "name": "parallel",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 104)) -q -ra",
+     "exit_code": 0,
+     "result": "197 passed"
+    },
+    {
+     "name": "repeat",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python - <<'PY'\nimport pytest\nfor i in range(2):\n    result=pytest.main(['tests/step105/test_step105_graph.py','-q','-ra'])\n    print(f'cycle={i} exit={result}',flush=True)\n    if result:raise SystemExit(int(result))\nPY",
+     "exit_code": 0,
+     "result": "same process 2 × 9 passed"
+    },
+    {
+     "name": "real",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step105_models.py --timeout 1800 --output benchmarks/results/step105/real_models.json",
+     "exit_code": 0,
+     "result": "10 cases passed"
+    },
+    {
+     "name": "forced",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step105_forced.py --timeout 1800 --output benchmarks/results/step105/forced_models.json",
+     "exit_code": 0,
+     "result": "10 cases passed"
+    },
+    {
+     "name": "eager",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step105_compare_eager.py --output benchmarks/results/step105/graph_vs_eager.json",
+     "exit_code": 0,
+     "result": "10 cases passed"
+    },
+    {
+     "name": "requirements",
+     "command": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py",
+     "exit_code": 0,
+     "result": "8003 static checks passed"
+    }
+   ],
+   "acceptance": [
+    {
+     "status": "passed",
+     "tp": 1,
+     "dynamic": false,
+     "steps": 7,
+     "comparisons": 108,
+     "max_abs": 0.0,
+     "case": "tp1"
+    },
+    {
+     "status": "passed",
+     "tp": 2,
+     "dynamic": false,
+     "steps": 7,
+     "comparisons": 216,
+     "max_abs": 0.0,
+     "case": "tp2"
+    },
+    {
+     "status": "passed",
+     "tp": 4,
+     "dynamic": false,
+     "steps": 7,
+     "comparisons": 432,
+     "max_abs": 9.5367431640625e-07,
+     "case": "tp4"
+    },
+    {
+     "status": "passed",
+     "tp": 2,
+     "dynamic": true,
+     "steps": 22,
+     "comparisons": 756,
+     "max_abs": 0.0,
+     "case": "dynamic"
+    },
+    {
+     "status": "passed",
+     "case": "random",
+     "rank_token_checks": 36
+    },
+    {
+     "status": "passed",
+     "case": "engine_lifecycle"
+    },
+    {
+     "status": "passed",
+     "case": "capture_failure"
+    }
+   ],
+   "real_models": [
+    {
+     "case": "8b_tp1_b1",
+     "status": "passed",
+     "comparisons": 12,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp1_b1"
+    },
+    {
+     "case": "8b_tp1_b4",
+     "status": "passed",
+     "comparisons": 48,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp1_b4"
+    },
+    {
+     "case": "8b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp2_b1"
+    },
+    {
+     "case": "8b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp2_b4"
+    },
+    {
+     "case": "8b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp4_b1"
+    },
+    {
+     "case": "8b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/8b_tp4_b4"
+    },
+    {
+     "case": "14b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/14b_tp2_b1"
+    },
+    {
+     "case": "14b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/14b_tp2_b4"
+    },
+    {
+     "case": "14b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 1,
+       "buckets": [
+        1
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/14b_tp4_b1"
+    },
+    {
+     "case": "14b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "all_tokens_exact": true,
+     "rank_graph": [
+      {
+       "rank": 0,
+       "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 1,
+       "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 2,
+       "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      },
+      {
+       "rank": 3,
+       "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+       "mode": "FULL_DECODE_ONLY",
+       "captured": 3,
+       "buckets": [
+        1,
+        2,
+        4
+       ],
+       "replays": 31
+      }
+     ],
+     "raw": "benchmarks/results/step105/graph_models/14b_tp4_b4"
+    }
+   ],
+   "fixed_history": [
+    {
+     "case": "8b_tp1_b1",
+     "status": "passed",
+     "comparisons": 12,
+     "input_rows": 131
+    },
+    {
+     "case": "8b_tp1_b4",
+     "status": "passed",
+     "comparisons": 48,
+     "input_rows": 476
+    },
+    {
+     "case": "8b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "input_rows": 131
+    },
+    {
+     "case": "8b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "input_rows": 476
+    },
+    {
+     "case": "8b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "input_rows": 131
+    },
+    {
+     "case": "8b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "input_rows": 476
+    },
+    {
+     "case": "14b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "input_rows": 131
+    },
+    {
+     "case": "14b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "input_rows": 476
+    },
+    {
+     "case": "14b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "input_rows": 131
+    },
+    {
+     "case": "14b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "input_rows": 476
+    }
+   ],
+   "graph_vs_eager": [
+    {
+     "case": "8b_tp1_b1",
+     "status": "passed",
+     "comparisons": 12,
+     "max_abs": 0.0
+    },
+    {
+     "case": "8b_tp1_b4",
+     "status": "passed",
+     "comparisons": 48,
+     "max_abs": 0.0
+    },
+    {
+     "case": "8b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "max_abs": 0.0
+    },
+    {
+     "case": "8b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "max_abs": 0.0
+    },
+    {
+     "case": "8b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "max_abs": 0.0
+    },
+    {
+     "case": "8b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "max_abs": 0.0
+    },
+    {
+     "case": "14b_tp2_b1",
+     "status": "passed",
+     "comparisons": 24,
+     "max_abs": 0.0
+    },
+    {
+     "case": "14b_tp2_b4",
+     "status": "passed",
+     "comparisons": 96,
+     "max_abs": 0.0
+    },
+    {
+     "case": "14b_tp4_b1",
+     "status": "passed",
+     "comparisons": 48,
+     "max_abs": 0.0
+    },
+    {
+     "case": "14b_tp4_b4",
+     "status": "passed",
+     "comparisons": 192,
+     "max_abs": 0.0
+    }
+   ],
+   "numerics_contract_sha256": "863ca136b18661b4f3d966d69bd1c3f64a482cd29c2314ac3c1e644107ec0558",
+   "prior_failures": [
+    {
+     "case": "dynamic_first",
+     "reason": "benchmark counted scheduler-only cleanup as sampling; corrected test and reran, production unchanged"
+    },
+    {
+     "case": "14b_tp2_b1_first_full_matrix",
+     "reason": "32 tokens generated but rank 1 did not exit within shutdown escalation; exit code 1; root cause undetermined",
+     "raw": "benchmarks/results/step105/real_models_shutdown_timeout.json",
+     "diagnostic_cycles": 50,
+     "diagnostic_successes": 50,
+     "diagnostic_command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout 1800 python benchmarks/step105_model_probe.py --model 14b --tp 2 --batch 1 --shutdown-diagnostics --output benchmarks/results/step105/shutdown_diagnostic_N",
+     "shutdown_sampled_seconds_min": 1.11,
+     "shutdown_sampled_seconds_max": 1.31,
+     "uninterruptible_waits": [
+      "nvidia_close_callback",
+      "os_acquire_mutex",
+      "os_acquire_rwlock_write",
+      "_raw_q_flush"
+     ],
+     "note": "successful later samples cannot establish the earlier failure cause"
+    }
+   ],
+   "not_run": [
+    "all-layer KV on real 8B/14B (layer 0 only)",
+    "real model random distribution comparison",
+    "multi-rank Graph with prefix caching",
+    "TP draft/EAGLE3 Graph",
+    "PP Graph",
+    "async scheduling",
+    "performance benchmark"
+   ],
+   "artifacts": "benchmarks/results/step105"
   },
   "models": {
    "real_model_run": true,

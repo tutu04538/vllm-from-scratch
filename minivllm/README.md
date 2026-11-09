@@ -1160,3 +1160,7 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 ### Graph 可捕获通信（104）
 
 多 rank 的 all-reduce/all-gather 使用本项目的 PyNccl communicator；CPU 进程组仅负责初始化元数据通信，CUDA collective 使用当前 stream。真实 TP2/4 的捕获、重复 replay 和失败清理见 [104 对齐报告](../docs/step104_alignment.md)。其他原语不在本关图内验收范围；多 rank 整模型 Graph 由 105 验证。
+
+### Qwen3 TP 的 FULL decode Graph（105）
+
+普通 Qwen3 V2 TP 的 `FULL_DECODE_ONLY` 已接入本地 Graph 通信流；prefill 走 eager，多 rank Graph + prefix caching、投机和 PP 仍明确拒绝。真实模型与 tiny 对照见 [105 对齐报告](../docs/step105_alignment.md)。一次 14B TP2 Worker 关闭超时尚未定位，后续 50 次专项复现未重现；105 暂不标记完全关闭。
