@@ -1156,3 +1156,7 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 ### Qwen3 TP 真实端到端（103）
 
 普通 Qwen3 8B TP1/2/4 和 14B TP2/4 在 V2 eager、BF16、TRITON_ATTN 下完成真实权重对照；BF16 RMSNorm 使用项目本地 CUDA/CUB 算子以对齐冻结 CUDA 的数值行为，首次使用需配置 nvcc。具体矩阵、内存口径和覆盖边界见 [103 对齐报告](../docs/step103_alignment.md)。多 rank Graph 和投机仍需后续关卡验收。
+
+### Graph 可捕获通信（104）
+
+多 rank 的 all-reduce/all-gather 使用本项目的 PyNccl communicator；CPU 进程组仅负责初始化元数据通信，CUDA collective 使用当前 stream。真实 TP2/4 的捕获、重复 replay 和失败清理见 [104 对齐报告](../docs/step104_alignment.md)。其他原语不在本关图内验收范围；多 rank 整模型 Graph 由 105 验证。

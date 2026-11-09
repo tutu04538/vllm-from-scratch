@@ -1,6 +1,8 @@
 """单机稠密 TP/PP 进程组；对应冻结 vLLM distributed.parallel_state。"""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 import os
 
@@ -14,6 +16,11 @@ _DEVICE_INDEX = None
 _OWNS_DEFAULT_GROUP = False
 
 
+@dataclass
+class GraphCaptureContext:
+    stream: torch.cuda.Stream
+
+
 class GroupCoordinator:
     """一组成员的 CUDA/Gloo 进程组；全体 rank 必须按同序创建各子组。"""
 
@@ -25,6 +32,7 @@ class GroupCoordinator:
         self.device_group = None
         self.cpu_group = None
         self._destroyed = False
+        self.device_communicator = None
         owned = []
         try:
             for ranks in group_ranks:
@@ -40,6 +48,9 @@ class GroupCoordinator:
                     self.device_group, self.cpu_group = dg, cg
             if self.device_group is None or self.cpu_group is None:
                 raise ValueError('当前 rank 不属于任何子组')
+            if self.world_size > 1:
+                from .device_communicators.cuda_communicator import CudaCommunicator
+                self.device_communicator = CudaCommunicator(self.cpu_group, self.device)
         except BaseException:
             for group in reversed(owned):
                 dist.destroy_process_group(group)
@@ -60,9 +71,7 @@ class GroupCoordinator:
         self._check(input_)
         if self.world_size == 1:
             return input_
-        result = input_.clone(memory_format=torch.contiguous_format)
-        dist.all_reduce(result, group=self.device_group)
-        return result
+        return self.device_communicator.all_reduce(input_.contiguous())
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         self._check(input_)
@@ -73,7 +82,7 @@ class GroupCoordinator:
         dim %= input_.ndim
         size = input_.size()
         output = torch.empty((size[0] * self.world_size,) + size[1:], dtype=input_.dtype, device=input_.device)
-        dist.all_gather_into_tensor(output, input_.contiguous(), group=self.device_group)
+        self.device_communicator.all_gather(output, input_.contiguous())
         output = output.reshape((self.world_size,) + size).movedim(0, dim)
         return output.reshape(size[:dim] + (self.world_size * size[dim],) + size[dim + 1:])
 
@@ -126,10 +135,26 @@ class GroupCoordinator:
         dist.recv(output, src=self._peer(src), group=self.device_group)
         return output
 
+    @contextmanager
+    def graph_capture(self, graph_capture_context: GraphCaptureContext | None = None):
+        """Capture on a shared explicit stream after initialization has completed."""
+        if self._destroyed:
+            raise RuntimeError('进程组已销毁')
+        with torch.cuda.device(self.device):
+            context = graph_capture_context or GraphCaptureContext(torch.cuda.Stream(device=self.device))
+            current = torch.cuda.current_stream(self.device)
+            if current != context.stream:
+                context.stream.wait_stream(current)
+            with torch.cuda.stream(context.stream):
+                yield context
+
     def destroy(self) -> None:
         if self._destroyed:
             return
         self._destroyed = True
+        if self.device_communicator is not None:
+            self.device_communicator.destroy()
+            self.device_communicator = None
         for name in ('device_group', 'cpu_group'):
             group = getattr(self, name)
             if group is not None:

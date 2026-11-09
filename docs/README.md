@@ -161,3 +161,5 @@
 [102 多卡 KV 生命周期与请求调度](step102_alignment.md)：V2 TP 抢占通知与 resident slot 清理按冻结上游接通，并限定开放普通 Qwen3 TP prefix caching；TP2/4 验证抢占、恢复、前缀复用、取消和 rank 失败。
 
 [103 Qwen3 TP 真实端到端验收](step103_alignment.md)：8B TP1/2/4 与 14B TP2/4、B1/4 的真实权重与冻结 vLLM 对照；记录 32 token、各 rank 的 hidden/logits/第 0 层有效 KV 与内存，并修正 BF16 RMSNorm/SiLU 的 CUDA 数值语义。多 rank Graph 等仍由后续关卡验收。
+
+[104 可捕获通信与后端选择](step104_alignment.md)：本项目独立的 PyNccl communicator、Graph 捕获 stream 和真实 TP2/4 通信 replay；多卡整模型 Graph 仍由 105 接入。

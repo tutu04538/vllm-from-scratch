@@ -14050,8 +14050,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 188,
-  "sha256": "8fcccbe86ad2e7db8db0fcef208f3fe835af8a1ed6b0a9672f544933e8e4f253",
+  "python_files": 192,
+  "sha256": "34543201a3374d524412bec60ded8849418012954c7df21c69379c619eb93886",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -20793,6 +20793,712 @@
    },
    "source_cache": "/data/syh/.cache/huggingface/hub",
    "real_model_run": true
+  }
+ },
+ "step104": {
+  "results": {
+   "status": "passed scoped TP graph collectives",
+   "head": "e3fb462 (parent before 104)",
+   "package_sha256": "34543201a3374d524412bec60ded8849418012954c7df21c69379c619eb93886",
+   "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+   "frozen_sources": {
+    "distributed/parallel_state.py": "c6d65b96a260ea0d779da1073d1799392813eee74c9ed44753dfa56f4e7a9e4c",
+    "distributed/device_communicators/pynccl.py": "28596817ee9fb842026624a8a6c32b0637630b6b908ddb2a79ecccbeac531e35",
+    "distributed/device_communicators/pynccl_wrapper.py": "aa2b35f3afd25a31981925f4389865124febf2340a778c13efdc4b7c71e1da04",
+    "distributed/device_communicators/cuda_communicator.py": "a9a0242175c3d3e0d46d586a38cb76139e6e4e92d15032d5b1e33237af2f6757",
+    "distributed/device_communicators/custom_all_reduce.py": "2394c50ab64fc070a7ed3b6a333e51337a89474954762d2df8ae89c1d201f9e0"
+   },
+   "environment": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu129",
+    "triton": "3.7.1",
+    "vllm": "0.28.0",
+    "devices": "4 × RTX 4090",
+    "nccl": "2.29.7",
+    "start_method": "spawn"
+   },
+   "commands": [
+    {
+     "name": "pytest",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step104 -q -ra",
+     "exit_code": 0,
+     "result": "6 passed"
+    },
+    {
+     "name": "acceptance",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step104_acceptance.py --case all --timeout 120 --output benchmarks/results/step104/acceptance_final.json",
+     "exit_code": 0,
+     "result": "5 cases passed, expected injected failure exit=1"
+    },
+    {
+     "name": "single",
+     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+     "exit_code": 0,
+     "result": "1289 passed, 23 skipped"
+    },
+    {
+     "name": "parallel",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 103)) -q -ra",
+     "exit_code": 0,
+     "result": "191 passed"
+    },
+    {
+     "name": "model",
+     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step104_model_regression.py --timeout 1800 --output benchmarks/results/step104/model_regression.json",
+     "exit_code": 0,
+     "result": "10 cases passed"
+    },
+    {
+     "name": "lifecycle",
+     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python - <<'PY'\nimport pytest\nfor i in range(3):\n    result=pytest.main(['tests/step69/test_spec_cudagraph.py','-q','-ra'])\n    print(f'cycle={i} exit={result}',flush=True)\n    if result:raise SystemExit(int(result))\nPY",
+     "exit_code": 0,
+     "result": "same process 3 × 19 passed; actual heredoc exits on any failure"
+    },
+    {
+     "name": "requirements",
+     "command": "python learning_notes/14_vllm_from_scratch/分布式并行完整需求/参考资料/check_requirements.py",
+     "exit_code": 0,
+     "result": "8003 checks passed"
+    }
+   ],
+   "cases": [
+    {
+     "world": 2,
+     "failure": false,
+     "passed": true,
+     "exit_code": 0,
+     "seconds": 9.49,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=2",
+      "/data/syh/infra/vllm-from-scratch/tests/step104/step104_rank_worker.py",
+      "--out",
+      "/data/syh/infra/vllm-from-scratch/benchmarks/results/step104/acceptance_final_ranks/tp2"
+     ],
+     "ranks": [
+      {
+       "rank": 0,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 0,
+         "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "1": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139736018583552,
+            139735630610432,
+            139735630610944
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139736018583552,
+            139735630610432,
+            139735630610944
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 0,
+         "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "1": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139735653679104,
+            139735651581952,
+            139735651582464
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139735653679104,
+            139735651581952,
+            139735651582464
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      },
+      {
+       "rank": 1,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 1,
+         "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140562967560192,
+            140562579587072,
+            140562579587584
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140562967560192,
+            140562579587072,
+            140562579587584
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 1,
+         "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140562602655744,
+            140562600558592,
+            140562600559104
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140562602655744,
+            140562600558592,
+            140562600559104
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      }
+     ],
+     "log": "benchmarks/results/step104/acceptance_final_ranks/tp2/torchrun.log"
+    },
+    {
+     "world": 4,
+     "failure": false,
+     "passed": true,
+     "exit_code": 0,
+     "seconds": 9.741,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=4",
+      "/data/syh/infra/vllm-from-scratch/tests/step104/step104_rank_worker.py",
+      "--out",
+      "/data/syh/infra/vllm-from-scratch/benchmarks/results/step104/acceptance_final_ranks/tp4"
+     ],
+     "ranks": [
+      {
+       "rank": 0,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 0,
+         "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "1": false,
+          "2": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139694478196736,
+            139694090223616,
+            139694090224128
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139694478196736,
+            139694090223616,
+            139694090224128
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 0,
+         "uuid": "9024d349-5dea-a096-461c-814151a37a6c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "1": false,
+          "2": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139694113292288,
+            139694111195136,
+            139694111195648
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139694113292288,
+            139694111195136,
+            139694111195648
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      },
+      {
+       "rank": 1,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 1,
+         "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "2": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140579275014144,
+            140578887041024,
+            140578887041536
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140579275014144,
+            140578887041024,
+            140578887041536
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 1,
+         "uuid": "deb35ff6-c14d-e1d9-5b24-8a7e4eb1bbd9",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "2": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140578910109696,
+            140578908012544,
+            140578908013056
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140578910109696,
+            140578908012544,
+            140578908013056
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      },
+      {
+       "rank": 2,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 2,
+         "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "1": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140592294133760,
+            140591906160640,
+            140591906161152
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140592294133760,
+            140591906160640,
+            140591906161152
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 2,
+         "uuid": "b173b7a3-a395-80b6-9c50-3cebe441c9f4",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "1": false,
+          "3": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            140591929229312,
+            140591927132160,
+            140591927132672
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            140591929229312,
+            140591927132160,
+            140591927132672
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      },
+      {
+       "rank": 3,
+       "complete": true,
+       "cycles": [
+        {
+         "rank": 3,
+         "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "1": false,
+          "2": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139965564452864,
+            139965176479744,
+            139965176480256
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139965564452864,
+            139965176479744,
+            139965176480256
+           ]
+          }
+         ],
+         "oracle": true
+        },
+        {
+         "rank": 3,
+         "uuid": "4b94902f-c58e-c720-ac41-a2336fd4827c",
+         "backend": "pynccl",
+         "custom_reason": "本项目未实现 custom all-reduce 后端",
+         "peer_access": {
+          "0": false,
+          "1": false,
+          "2": false
+         },
+         "graphs": [
+          {
+           "graph": 0,
+           "replays": 100,
+           "addresses": [
+            139965199548416,
+            139965197451264,
+            139965197451776
+           ]
+          },
+          {
+           "graph": 1,
+           "replays": 100,
+           "addresses": [
+            139965199548416,
+            139965197451264,
+            139965197451776
+           ]
+          }
+         ],
+         "oracle": true
+        }
+       ]
+      }
+     ],
+     "log": "benchmarks/results/step104/acceptance_final_ranks/tp4/torchrun.log"
+    },
+    {
+     "world": 2,
+     "failure": true,
+     "passed": true,
+     "exit_code": 1,
+     "seconds": 4.578,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "-m",
+      "torch.distributed.run",
+      "--standalone",
+      "--nproc-per-node=2",
+      "/data/syh/infra/vllm-from-scratch/tests/step104/step104_rank_worker.py",
+      "--out",
+      "/data/syh/infra/vllm-from-scratch/benchmarks/results/step104/acceptance_final_ranks/tp2_failure",
+      "--failure"
+     ],
+     "ranks": [
+      {
+       "rank": 1,
+       "complete": false,
+       "cycles": [],
+       "error": "Traceback (most recent call last):\n  File \"/data/syh/infra/vllm-from-scratch/tests/step104/step104_rank_worker.py\", line 81, in main\n    for i in range(2):result['cycles'].append(cycle(rank,world,a.out,i,a.failure))\n                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/data/syh/infra/vllm-from-scratch/tests/step104/step104_rank_worker.py\", line 33, in cycle\n    raise RuntimeError('step104 injected rank failure during graph capture')\nRuntimeError: step104 injected rank failure during graph capture\n"
+      }
+     ],
+     "log": "benchmarks/results/step104/acceptance_final_ranks/tp2_failure/torchrun.log"
+    },
+    {
+     "case": "executor_failure",
+     "passed": true,
+     "exit_code": 0,
+     "seconds": 4.928,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "/data/syh/infra/vllm-from-scratch/tests/step104/step104_executor_failure.py"
+     ],
+     "log": "benchmarks/results/step104/acceptance_final_ranks/executor_failure.log"
+    },
+    {
+     "case": "engine_lifecycle",
+     "passed": true,
+     "exit_code": 0,
+     "seconds": 8.136,
+     "command": [
+      "/data/syh/infra/vllm-from-scratch/.venv/bin/python",
+      "/data/syh/infra/vllm-from-scratch/tests/step104/step104_engine_lifecycle.py"
+     ],
+     "log": "benchmarks/results/step104/acceptance_final_ranks/engine_lifecycle.log"
+    }
+   ],
+   "model_regression": {
+    "cases": [
+     {
+      "case": "8b_tp1_b1",
+      "status": "passed",
+      "comparisons": 12,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp1_b1/compare.json"
+     },
+     {
+      "case": "8b_tp1_b4",
+      "status": "passed",
+      "comparisons": 48,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp1_b4/compare.json"
+     },
+     {
+      "case": "8b_tp2_b1",
+      "status": "passed",
+      "comparisons": 24,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp2_b1/compare.json"
+     },
+     {
+      "case": "8b_tp2_b4",
+      "status": "passed",
+      "comparisons": 96,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp2_b4/compare.json"
+     },
+     {
+      "case": "8b_tp4_b1",
+      "status": "passed",
+      "comparisons": 48,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp4_b1/compare.json"
+     },
+     {
+      "case": "8b_tp4_b4",
+      "status": "passed",
+      "comparisons": 192,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/8b_tp4_b4/compare.json"
+     },
+     {
+      "case": "14b_tp2_b1",
+      "status": "passed",
+      "comparisons": 24,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/14b_tp2_b1/compare.json"
+     },
+     {
+      "case": "14b_tp2_b4",
+      "status": "passed",
+      "comparisons": 96,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/14b_tp2_b4/compare.json"
+     },
+     {
+      "case": "14b_tp4_b1",
+      "status": "passed",
+      "comparisons": 48,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/14b_tp4_b1/compare.json"
+     },
+     {
+      "case": "14b_tp4_b4",
+      "status": "passed",
+      "comparisons": 192,
+      "all_32_tokens_exact": true,
+      "raw": "benchmarks/results/step104/real_model_regression/14b_tp4_b4/compare.json"
+     }
+    ],
+    "contract_sha256": "863ca136b18661b4f3d966d69bd1c3f64a482cd29c2314ac3c1e644107ec0558",
+    "raw": "benchmarks/results/step104/model_regression.json"
+   },
+   "not_run": [
+    "multi-rank complete model graph (105)",
+    "reduce_scatter, broadcast and send/recv graph capture",
+    "custom all-reduce backend",
+    "performance measurement"
+   ],
+   "artifacts": "benchmarks/results/step104"
+  },
+  "models": {
+   "real_model_run": true,
+   "identities": {
+    "8b": {
+     "repo": "Qwen/Qwen3-8B",
+     "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+     "dtype": "bfloat16",
+     "weight_count": 399,
+     "tensor_bytes": 16381470720,
+     "weights_sha256": {
+      "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+      "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+      "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+      "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+      "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_8b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    },
+    "14b": {
+     "repo": "Qwen/Qwen3-14B",
+     "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+     "dtype": "bfloat16",
+     "weight_count": 443,
+     "tensor_bytes": 29536614400,
+     "weights_sha256": {
+      "model-00001-of-00008.safetensors": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+      "model-00002-of-00008.safetensors": "f7c9c6eee628f5ad831d2d1d292e120505e5fcadeb38f88b4d3c4cb86306ccf9",
+      "model-00003-of-00008.safetensors": "dfb8c5df9404b41ad6ae74e8b6b367135f017b4467b884cf71b17c71954f18a9",
+      "model-00004-of-00008.safetensors": "eab286fec759e3e59ab228621aefa0fef14ed56039e06f959e67257d5af7604d",
+      "model-00005-of-00008.safetensors": "97f0dc2992e59da95c466eff6f4fd0c8335843bbc36ed5c913a6f5150748c0e6",
+      "model-00006-of-00008.safetensors": "9e8e76a013cd5e253865b792991e0b410f869b136b3c500079b531b09198e99e",
+      "model-00007-of-00008.safetensors": "0aee70ee6e91dc00d818804fb47f124d13ee4ad5b4a64553e09dbf9391cd5750",
+      "model-00008-of-00008.safetensors": "0d6b92296e326d39bbbaeb32c3ec454ac606da843d4c8ffa8edf010b62b8c9e0"
+     },
+     "tensor_manifest": "benchmarks/results/step090/audit_14b.json",
+     "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+     "architectures": [
+      "Qwen3ForCausalLM"
+     ],
+     "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified",
+     "real_gpu_execution": true
+    }
+   }
   }
  }
 }
