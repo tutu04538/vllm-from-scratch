@@ -238,6 +238,11 @@ def get_pp_group() -> GroupCoordinator:
     return _PP
 
 
+def get_pp_group_if_initialized() -> GroupCoordinator | None:
+    """保留未初始化分布式环境时的单阶段模型路径。"""
+    return _PP
+
+
 def destroy_model_parallel() -> None:
     global _TP, _PP
     for group in (_TP, _PP):

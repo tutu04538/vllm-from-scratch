@@ -1164,3 +1164,7 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 ### Qwen3 TP 的 FULL decode Graph（105）
 
 普通 Qwen3 V2 TP 的 `FULL_DECODE_ONLY` 已接入本地 Graph 通信流；prefill 走 eager，多 rank Graph + prefix caching、投机和 PP 仍明确拒绝。真实模型与 tiny 对照见 [105 对齐报告](../docs/step105_alignment.md)。一次 14B TP2 Worker 关闭超时尚未定位，后续 50 次专项复现未重现；105 暂不标记完全关闭。
+
+### Qwen3 PP 模型切层（106）
+
+Qwen3 模型支持按 PP 阶段持有本地层并以 `IntermediateTensors` 交接 hidden/residual。当前仅验证 tiny CPU 顺序阶段，Worker 仍拒绝多进程 PP；跨阶段通信和完整模型执行属于后续关卡。见 [106 对齐报告](../docs/step106_alignment.md)。

@@ -12,8 +12,9 @@
         norm              RMSNorm
       lm_head             ParallelLMHead
 
-**forward 的签名里没有 Request / KV 池 / sampling_params**（198 §6）：`forward(input_ids, positions)
--> hidden_states`。为什么先给 hidden 再单独 `compute_logits()`？因为 hidden 还能给别的路径用
+**forward 的签名里没有 Request / KV 池 / sampling_params**（198 §6）：`forward(input_ids, positions,
+intermediate_tensors=None, inputs_embeds=None)`。非末流水线阶段返回中间张量，末阶段返回 hidden。
+为什么先给 hidden 再单独 `compute_logits()`？因为 hidden 还能给别的路径用
 （投机、pooling），而 LM head 是词表大小的一次 GEMM——只在需要采样的行上做。
 
 Qwen3 相对 Qwen2 的两处区别（都在这里实现）：**q/k 各有一个 RMSNorm**（作用在 head 维上，
@@ -29,6 +30,10 @@ from ..layers import (MergedColumnParallelLinear, ParallelLMHead, QKVParallelLin
                       RMSNorm, RowParallelLinear, SiluAndMul, get_rope,
                       VocabParallelEmbedding)
 from ..model_loader.auto_weights_loader import WeightsMapper
+from ..distributed.parallel_state import get_pp_group_if_initialized
+from ..sequence import IntermediateTensors
+from .utils import (PPMissingLayer, make_layers, make_empty_intermediate_tensors_factory,
+                    is_pp_missing_parameter)
 
 
 def maybe_prefix(prefix: str, name: str) -> str:
@@ -247,14 +252,23 @@ class Qwen3Model(nn.Module):
         super().__init__()
         self.config = config
         self.vocab_size = config["vocab_size"]
-        self.embed_tokens = VocabParallelEmbedding(config["vocab_size"],
-                                                   config["hidden_size"],
-                                                   prefix=maybe_prefix(prefix, "embed_tokens"))
-        self.layers = nn.ModuleList([
-            Qwen3DecoderLayer(config, prefix=maybe_prefix(prefix, f"layers.{index}"))
-            for index in range(config["num_hidden_layers"])
-        ])
-        self.norm = RMSNorm(config["hidden_size"], eps=config.get("rms_norm_eps", 1e-6))
+        group = get_pp_group_if_initialized()
+        self.pp_rank = group.rank_in_group if group is not None else 0
+        self.pp_size = group.world_size if group is not None else 1
+        self.is_first_stage = self.pp_rank == 0
+        self.is_last_stage = self.pp_rank == self.pp_size - 1
+        if self.is_first_stage or (self.is_last_stage and config.get("tie_word_embeddings", False)):
+            self.embed_tokens = VocabParallelEmbedding(config["vocab_size"], config["hidden_size"],
+                                                       prefix=maybe_prefix(prefix, "embed_tokens"))
+        else:
+            self.embed_tokens = PPMissingLayer()
+        self.start_layer, self.end_layer, self.layers = make_layers(
+            config["num_hidden_layers"], lambda layer_prefix: Qwen3DecoderLayer(config, prefix=layer_prefix),
+            maybe_prefix(prefix, "layers"), self.pp_rank, self.pp_size)
+        self.norm = (RMSNorm(config["hidden_size"], eps=config.get("rms_norm_eps", 1e-6))
+                     if self.is_last_stage else PPMissingLayer())
+        self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
+            ["hidden_states", "residual"], config["hidden_size"])
         # 63 关（EAGLE3）：要输出的辅助层编号。空 tuple = 不采集（默认，零开销）。
         self.aux_hidden_state_layers: tuple[int, ...] = ()
         # 分段图（PIECEWISE）：embedding 的输出要拷进这块静态缓冲，才能当第一段图的输入。
@@ -273,7 +287,7 @@ class Qwen3Model(nn.Module):
         dtype = self.embed_tokens.weight.dtype
         self._hidden_in_stage = torch.zeros(max_num_tokens, hidden_size,
                                             dtype=dtype, device=device)
-        for layer in self.layers:
+        for layer in self.layers[self.start_layer:self.end_layer]:
             layer.enable_piecewise_pieces(vllm_config, max_num_tokens, hidden_size)
 
     def set_aux_hidden_state_layers(self, layers) -> None:
@@ -292,28 +306,37 @@ class Qwen3Model(nn.Module):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
-        """`forward(input_ids, positions)` —— 签名**不带**任何开关（上游同款）。
-
-        要不要输出辅助层由 `set_aux_hidden_state_layers()` 决定的**模块状态**表达，
-        所以不需要给 forward 加参数（`check_step57_model_logits` 也在盯这个签名）。
-        """
+    def forward(self, input_ids: torch.Tensor | None, positions: torch.Tensor,
+                intermediate_tensors: IntermediateTensors | None = None,
+                inputs_embeds: torch.Tensor | None = None):
+        """首阶段读取 token/embedding；后续阶段从流水线边界接续。"""
         capture_aux = bool(self.aux_hidden_state_layers)
-        hidden_states = self.embed_input_ids(input_ids)
+        if capture_aux and self.pp_size > 1:
+            raise NotImplementedError("PP 暂不支持 EAGLE 辅助隐藏状态")
+        if self.is_first_stage:
+            hidden_states = inputs_embeds if inputs_embeds is not None else self.embed_input_ids(input_ids)
+            residual = None
+        else:
+            if intermediate_tensors is None:
+                raise ValueError("非首个 PP 阶段必须接收中间张量")
+            hidden_states = intermediate_tensors["hidden_states"]
+            residual = intermediate_tensors["residual"]
         if self._hidden_in_stage is not None:
             # 分段图：embedding 的输出必须落在静态缓冲上（第一段图的输入地址要稳定）
             rows = hidden_states.shape[0]
             staged = self._hidden_in_stage[:rows]
             staged.copy_(hidden_states)
             hidden_states = staged
-        residual = None
         aux_hidden_states: list[torch.Tensor] = []
-        for index, layer in enumerate(self.layers):
+        for index in range(self.start_layer, self.end_layer):
+            layer = self.layers[index]
             hidden_states, residual = layer(positions, hidden_states, residual)
             if capture_aux and index in self.aux_hidden_state_layers:
                 # 上游 `interfaces.py:1506`：采的是**残差流**（hidden + residual），不是裸 hidden
                 aux_hidden_states.append(
                     hidden_states + residual if residual is not None else hidden_states)
+        if not self.is_last_stage:
+            return IntermediateTensors({"hidden_states": hidden_states, "residual": residual})
         hidden_states, _ = self.norm(hidden_states, residual)
         if capture_aux:
             return hidden_states, aux_hidden_states
@@ -325,12 +348,14 @@ class Qwen3Model(nn.Module):
         """
         from ..model_loader.auto_weights_loader import AutoWeightsLoader
 
-        for layer in self.layers:
+        for layer in self.layers[self.start_layer:self.end_layer]:
             layer.self_attn.qkv_proj.reset_load_state()
             layer.mlp.gate_up_proj.reset_load_state()
+        weights = ((name, data) for name, data in weights if not is_pp_missing_parameter(name, self))
         loader = AutoWeightsLoader(self)
         loaded = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
-        for index, layer in enumerate(self.layers):
+        for index in range(self.start_layer, self.end_layer):
+            layer = self.layers[index]
             try:
                 layer.self_attn.qkv_proj.validate_loaded_shards({"q", "k", "v"})
                 layer.mlp.gate_up_proj.validate_loaded_shards({0, 1})
@@ -350,19 +375,23 @@ class Qwen3ForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.model = Qwen3Model(config, prefix=maybe_prefix(prefix, "model"))
-        self.lm_head = ParallelLMHead(config["vocab_size"], config["hidden_size"],
+        self.lm_head = (ParallelLMHead(config["vocab_size"], config["hidden_size"],
                                       prefix=maybe_prefix(prefix, "lm_head"))
+                        if self.model.is_last_stage else PPMissingLayer())
         self.logits_processor = LogitsProcessor(config["vocab_size"])
         self.tie_word_embeddings = bool(config.get("tie_word_embeddings", False))
-        if self.tie_word_embeddings:
+        if self.tie_word_embeddings and self.model.is_last_stage:
             # 共享同一个 Parameter（vLLM 在 __init__ 里就这么做）。**必须在加载权重之前完成**：
             # 之后 lm_head.weight 就是 embed_tokens.weight，检查点里那份 lm_head.weight 要跳过。
             self.lm_head = self.lm_head.tie_weights(self.model.embed_tokens)
+        self.make_empty_intermediate_tensors = self.model.make_empty_intermediate_tensors
 
     # -------- 计算接口（198 §6）--------
 
-    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor):
-        return self.model(input_ids, positions)
+    def forward(self, input_ids: torch.Tensor | None, positions: torch.Tensor,
+                intermediate_tensors: IntermediateTensors | None = None,
+                inputs_embeds: torch.Tensor | None = None):
+        return self.model(input_ids, positions, intermediate_tensors, inputs_embeds)
 
     def enable_piecewise_pieces(self, vllm_config, max_num_tokens: int) -> None:
         """开分段图（Runner 在图初始化时调；见 `Qwen3Model.enable_piecewise_pieces`）。"""
@@ -411,4 +440,5 @@ class Qwen3ForCausalLM(nn.Module):
         skip_prefixes = ["lm_head."] if self.tie_word_embeddings else []
         skip_prefixes.append("mtp.")
         weights = skip_spec_layer_weights(self.config, weights)
+        weights = ((name, data) for name, data in weights if not is_pp_missing_parameter(name, self))
         return AutoWeightsLoader(self, skip_prefixes=skip_prefixes).load_weights(weights)
