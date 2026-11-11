@@ -33,6 +33,7 @@
 
 | 文档 | 对应代码 | 主题 |
 |---|---|---|
+| [parallel_003_tp_scope.md](parallel_003_tp_scope.md) | 私有需求与本地AGENTS，无生产改动 | 2026-11-11：仅保留TP；撤销PP/DP及混合8关，更新依赖、验收和性能矩阵 |
 | [parallel_001_4090_setup.md](parallel_001_4090_setup.md) | 开发环境 + `benchmarks/check_parallel_environment.py` | 4090×4 仓库/需求迁移，CUDA 12.9 独立环境及 NCCL 验收 |
 | [parallel_002_requirements.md](parallel_002_requirements.md) | 私有需求与本地AGENTS，无生产改动 | Qwen3-8B/14B及EAGLE3并行专题089—120、旧需求三位编号迁移、冻结源码与文档校验 |
 | [step88_attention_async_resolution.md](step88_attention_async_resolution.md) | `attention/ops/triton_unified_attention.py` + `benchmarks/check_step88_async_stride.py` | 2026-11-01：K/V 内层 stride 的 constexpr 根因；AxisInfo→Coalesce→Pipeline 证据；22-case 零差、946 次真实层对照、SWA/FP32 数值保护与性能边界 |
