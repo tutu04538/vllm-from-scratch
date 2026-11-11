@@ -22223,7 +22223,7 @@
  "step106": {
   "results": {
    "status": "feature implemented and dedicated real-model acceptance passed; historical step73 stream race and 103 GPU0 memory failure remain, not fully closed",
-   "head": "4b20129 (before 106)",
+   "head": "57df283 (before 106)",
    "package_sha256": "77c7f2f6881ad08645fccd9ac8a92b5e2186f9bf32e5708d1af81596240dc94f",
    "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
    "environment": {
