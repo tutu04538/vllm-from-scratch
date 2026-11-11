@@ -308,9 +308,12 @@ class Qwen3Model(nn.Module):
             hidden_states = staged
         residual = None
         aux_hidden_states: list[torch.Tensor] = []
+        # 冻结上游的层编号表示层边界：0 是 embedding，i+1 是第 i 层之后。
+        if capture_aux and 0 in self.aux_hidden_state_layers:
+            aux_hidden_states.append(hidden_states)
         for index, layer in enumerate(self.layers):
             hidden_states, residual = layer(positions, hidden_states, residual)
-            if capture_aux and index in self.aux_hidden_state_layers:
+            if capture_aux and index + 1 in self.aux_hidden_state_layers:
                 # 上游 `interfaces.py:1506`：采的是**残差流**（hidden + residual），不是裸 hidden
                 aux_hidden_states.append(
                     hidden_states + residual if residual is not None else hidden_states)

@@ -167,3 +167,5 @@
 [104 可捕获通信与后端选择](step104_alignment.md)：本项目独立的 PyNccl communicator、Graph 捕获 stream 和真实 TP2/4 通信 replay；多卡整模型 Graph 仍由 105 接入。
 
 [105 TP 整模型 CUDA Graph 接入](step105_alignment.md)：普通 Qwen3 V2 FULL decode 的多 rank 捕获和重放已实现，真实模型矩阵和动态 tiny 场景已验证；曾出现一次 14B TP2 Worker 关闭超时，50 次专项复现未重现、根因未确定，因此暂不标记完全关闭。
+
+[106 真实 EAGLE3 单卡对照](step106_alignment.md)：修正 Qwen3 辅助层边界，真实 8B K0/1/2/4 与冻结参考对照、14B 草稿局部对照通过；历史回归有已知 stream 竞争与 GPU0 显存不足，暂不完全关闭。

@@ -244,6 +244,9 @@ class Eagle3ForCausalLM(nn.Module):
         self.lm_head = ParallelLMHead(draft_vocab_size, config["hidden_size"],
                                       prefix=maybe_prefix(prefix, "lm_head"))
         self.logits_processor = LogitsProcessor(draft_vocab_size)
+        # 与上游 process_eagle_weight 对应：只在实际加载过相应权重后置 True。
+        self.has_own_embed_tokens = False
+        self.has_own_lm_head = False
         # 异构词表（TLI）：d2t = draft id → target id；t2d 标出 target 词表里哪些 id 属于 draft 空间。
         # 本关只用它把**采样出来的 draft id** 映射回 target id（完整 TLI 采样空间语义属 67 关）。
         self.d2t = None
@@ -357,6 +360,8 @@ class Eagle3ForCausalLM(nn.Module):
         # `embed_tokens` 不在检查点里 → 与 target 共享（上游 `_maybe_share_embeddings` 同款条件：
         # 不是"shape 相同就共享"，而是"检查点里没有这一份"）
         self.model.tie_embeddings = not has_embed
+        self.has_own_embed_tokens = has_embed
+        self.has_own_lm_head = any("lm_head" in name for name, _ in head_weights)
         loaded = set()
         if model_weights:
             loaded |= {f"model.{name}" for name in self.model.load_weights(iter(model_weights))}

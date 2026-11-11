@@ -29,13 +29,13 @@ PROMPTS = [("a", [1, 2, 3, 4, 1, 2, 3, 4]), ("b", [5, 6, 5, 6])]
 
 
 def make_engine(*, spec_k=2, with_spec=True, max_num_seqs=2, budget=64, max_model_len=64,
-                proposer=None):
+                proposer=None, draft_seed=0):
     target_dir = tiny_qwen3_dir("tiny_gqa")
     target_hf = tiny_qwen3_config("tiny_gqa")
     spec = None
     if with_spec:
         draft_dir = tiny_eagle3_dir("tiny_gqa", num_aux_layers=len(AUX_LAYERS),
-                                    aux_layers=AUX_LAYERS)
+                                    aux_layers=AUX_LAYERS, seed=draft_seed)
         import json
 
         draft_hf = json.loads((Path(draft_dir) / "config.json").read_text())
@@ -114,10 +114,12 @@ def test_first_pass_inputs_follow_eagle_alignment():
 
     直接看提议者写进工作区的内容（工作区是定长缓冲，只读有效前缀）。
     """
-    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1)
+    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1, draft_seed=2)
     try:
+        # 辅助层边界按上游修正后，tiny 草稿的接受序列改变；允许更多轮，仍必须观察到
+        # 至少一个候选被接受后又发生拒绝，以下逐行断言保持不变。
         engine.add_request("a", [1, 2, 3, 4, 1, 2, 3, 4],
-                           SamplingParams(max_tokens=8, temperature=0.0, eos_token_id=999))
+                           SamplingParams(max_tokens=16, temperature=0.0, eos_token_id=999))
         captured = []
         original = runner.proposer.set_inputs_first_pass
 

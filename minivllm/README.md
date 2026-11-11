@@ -1164,3 +1164,7 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 ### Qwen3 TP 的 FULL decode Graph（105）
 
 普通 Qwen3 V2 TP 的 `FULL_DECODE_ONLY` 已接入本地 Graph 通信流；prefill 走 eager，多 rank Graph + prefix caching、投机和 PP 仍明确拒绝。真实模型与 tiny 对照见 [105 对齐报告](../docs/step105_alignment.md)。一次 14B TP2 Worker 关闭超时尚未定位，后续 50 次专项复现未重现；105 暂不标记完全关闭。
+
+### 真实 EAGLE3 单卡对照（106）
+
+Qwen3 辅助层按上游层边界采集；V2 共享 embedding 和 LM head 按权重存在性及逐值相等判断。真实 8B target + EAGLE3 的 eager K1/2/4 正常生成与固定历史对照已验证；草稿 TP 尚未开放。历史回归的遗留失败及实际覆盖见 [106 对齐报告](../docs/step106_alignment.md)。
