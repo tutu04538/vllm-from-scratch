@@ -14050,8 +14050,8 @@
  },
  "current_package": {
   "root": "minivllm/",
-  "python_files": 193,
-  "sha256": "bb2392479443d2236fd444b4e2ee1c937893963ca001201b5abec640eda61af6",
+  "python_files": 192,
+  "sha256": "b69824f7f877145d2373a4522624b577e8bf5ebb3ff4c913d9ef6c41714b7f44",
   "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
   "note": "当前包摘要；历史各关结果中的摘要保留当次值"
  },
@@ -22218,79 +22218,6 @@
      "real_gpu_execution": true
     }
    }
-  }
- },
- "step106": {
-  "results": {
-   "status": "partial: model slicing and CPU tiny acceptance pass; historical structured-output race and 8B regression blocked by shared GPU memory",
-   "parent": "6185a6a",
-   "package_sha256": "bb2392479443d2236fd444b4e2ee1c937893963ca001201b5abec640eda61af6",
-   "frozen_sources": {
-    "model_executor/models/qwen3.py": "ec8bc9c090f6f5242b2f572366644ef73573137b3e48b03b39c0f083fbb21ab4",
-    "model_executor/models/qwen2.py": "b6d9042a0a386c1ecaf3196ff45d3b73ff8e5f102f1ffc31ac01a2d11e92610c",
-    "model_executor/models/utils.py": "a93f50ddf56cac4992dcb7699da48cf70207c8fb0e533beea8818c8f48b1e2d8",
-    "distributed/utils.py": "792146b357139e705064a68d3b66858de8a0baaca4dc7db1232fa217d45db231",
-    "sequence.py": "0985436a1720a1def868cb7e7b74fd40b6aa5631923ad8521eb6037bae4b6e05"
-   },
-   "environment": {
-    "python": "3.12.13",
-    "gpu": "4 × RTX 4090; shared with other users",
-    "torch": "2.13.0+cu129",
-    "triton": "3.7.1"
-   },
-   "commands": [
-    {
-     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step106_acceptance.py --output benchmarks/results/step106/acceptance.json",
-     "exit_code": 0,
-     "result": "15 passed; CPU tiny sequential stage tests"
-    },
-    {
-     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
-     "exit_code": 1,
-     "result": "1287 passed, 2 failed, 23 skipped",
-     "log": "benchmarks/results/step106/legacy_regression.log",
-     "failures": [
-      "step73 structured outputs bitmask result incorrect; root cause unknown",
-      "step81 current_package hash not yet updated"
-     ]
-    },
-    {
-     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step73/test_v2_sample_states.py::test_structured_outputs_worker_apply_grammar_bitmask tests/step81/test_spec_metrics_pipeline.py::test_current_package_hash_matches_results -q -ra",
-     "exit_code": 0,
-     "result": "2 passed; hash corrected, structured output passed alone"
-    },
-    {
-     "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 105)) -q -ra",
-     "exit_code": 1,
-     "result": "205 passed, 1 failed",
-     "failure": "103 real 8B TP1 frozen reference startup: GPU0 10.78 GiB free, 20.34 GiB required; minivllm not reached",
-     "log": "benchmarks/results/step106/parallel_regression.log"
-    },
-    {
-     "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
-     "exit_code": 1,
-     "result": "1288 passed, 1 failed, 23 skipped",
-     "log": "benchmarks/results/step106/legacy_regression_rerun.log",
-     "failure": "step73 structured outputs stream race reproduced in mini and matching frozen upstream"
-    },
-    {
-     "command": "CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python vllm_bugs/structured_outputs_stream_probe.py",
-     "exit_code": 0,
-     "result": "delay without dependency: mini 4/5 and vLLM 5/5 incorrect; explicit copy-stream dependency: both 0/5 incorrect",
-     "log": "benchmarks/results/step106/structured_stream_fence_final.log"
-    }
-   ],
-   "limitations": [
-    "empty PP stage helper compared only; execution not validated",
-    "multi-process PP transport belongs to step107",
-    "real PP model belongs to step108",
-    "103 8B TP1 regression not completed due shared GPU memory",
-    "step73 historical regression fails due suspected upstream stream race; production unchanged"
-   ]
-  },
-  "models": {
-   "tiny": "4/5-layer synthetic Qwen3, FP32 CPU; PP1/2/4; no multiprocess transport",
-   "real": "not run; real PP execution is step108"
   }
  }
 }

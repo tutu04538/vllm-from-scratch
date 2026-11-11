@@ -165,5 +165,3 @@
 [104 可捕获通信与后端选择](step104_alignment.md)：本项目独立的 PyNccl communicator、Graph 捕获 stream 和真实 TP2/4 通信 replay；多卡整模型 Graph 仍由 105 接入。
 
 [105 TP 整模型 CUDA Graph 接入](step105_alignment.md)：普通 Qwen3 V2 FULL decode 的多 rank 捕获和重放已实现，真实模型矩阵和动态 tiny 场景已验证；曾出现一次 14B TP2 Worker 关闭超时，50 次专项复现未重现、根因未确定，因此暂不标记完全关闭。
-
-[106 PP 层切分](step106_alignment.md)：Qwen3 模型按全局层号划分阶段，交接 hidden/residual；tiny CPU 顺序阶段验证，不代表多进程 PP 已接通。
