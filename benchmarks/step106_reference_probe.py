@@ -107,22 +107,29 @@ def install(worker, upstream=True, forced_history=None, forced_drafts=None, head
         record['output'] = snapshot(result)
         # 每请求的有效上下文，不包含本轮被拒的末尾行。按逻辑位置读取各自 KV；
         # 两端允许物理块不同，因此不能直接比较整个 cache 或 block 编号。
-        if int(input_batch.num_reqs) != 1:
-            raise RuntimeError('固定历史探针目前只支持 B1')
-        length = int(input_batch.seq_lens[0]) - int(num_rejected[0])
-        if length < 0:
-            raise RuntimeError('有效上下文长度为负')
-        table = runner._step106_block_table[0].to(input_batch.positions.device).long()
-        logical = torch.arange(length, device=input_batch.positions.device)
-        blocks = table[torch.div(logical, 16, rounding_mode='floor')]
-        offsets = logical % 16
-        def read_kv(cache):
-            if upstream:
-                return cache[blocks, :, offsets, :].reshape(length, -1, 2, head_size).permute(0, 2, 1, 3)
-            return cache[:, blocks, offsets, :, :].permute(1, 0, 2, 3)
-        record['valid_context_length'] = length
-        record['target_valid_kv'] = snapshot(read_kv(runner.model.model.layers[0].self_attn.attn.kv_cache))
-        record['draft_valid_kv'] = snapshot(read_kv(draft.model.layers[0].self_attn.attn.kv_cache))
+        all_target, all_draft, lengths = [], [], []
+        for row in range(int(input_batch.num_reqs)):
+            length = int(input_batch.seq_lens[row]) - int(num_rejected[row])
+            if length < 0:
+                raise RuntimeError('有效上下文长度为负')
+            table = runner._step106_block_table[row].to(input_batch.positions.device).long()
+            logical = torch.arange(length, device=input_batch.positions.device)
+            blocks = table[torch.div(logical, 16, rounding_mode='floor')]
+            offsets = logical % 16
+            def read_kv(cache):
+                if upstream:
+                    return cache[blocks, :, offsets, :].reshape(length, -1, 2, head_size).permute(0, 2, 1, 3)
+                return cache[:, blocks, offsets, :, :].permute(1, 0, 2, 3)
+            lengths.append(length)
+            all_target.append(snapshot(read_kv(runner.model.model.layers[0].self_attn.attn.kv_cache)))
+            all_draft.append(snapshot(read_kv(draft.model.layers[0].self_attn.attn.kv_cache)))
+        record['valid_context_lengths'] = lengths
+        record['target_valid_kv_per_request'] = all_target
+        record['draft_valid_kv_per_request'] = all_draft
+        if len(lengths) == 1:
+            record['valid_context_length'] = lengths[0]
+            record['target_valid_kv'] = all_target[0]
+            record['draft_valid_kv'] = all_draft[0]
         if forced_drafts is not None:
             if forced_index >= len(forced_drafts):
                 raise RuntimeError('固定草稿历史不足')

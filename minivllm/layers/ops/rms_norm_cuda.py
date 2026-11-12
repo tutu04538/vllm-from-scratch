@@ -71,8 +71,10 @@ __global__ void fused(const __nv_bfloat16* x, const __nv_bfloat16* residual,
       v[j] = __bfloat162float(rounded);
       residual_out[(int64_t)row * d + col] = rounded;
     }
+    float chunk_sum = 0.f;
     #pragma unroll
-    for (int j = 0; j < 8; j += 2) sum += v[j] * v[j] + v[j + 1] * v[j + 1];
+    for (int j = 0; j < 8; j += 2) chunk_sum += v[j] * v[j] + v[j + 1] * v[j + 1];
+    sum += chunk_sum;
   }
   using Reduce = cub::BlockReduce<float, 1024>;
   __shared__ Reduce::TempStorage scratch;
@@ -92,7 +94,8 @@ __global__ void fused(const __nv_bfloat16* x, const __nv_bfloat16* residual,
 
 extern "C" int minivllm_rms_plain(void* x, void* w, void* out, int rows, int d, float eps,
                                   int height, int64_t s0, int64_t s1, cudaStream_t stream) {
-  int threads = d / 8 < 1024 ? d / 8 : 1024;
+  int max_threads = rows < 256 ? 1024 : 256;
+  int threads = d / 8 < max_threads ? d / 8 : max_threads;
   plain<<<rows, threads, 0, stream>>>((__nv_bfloat16*)x, (__nv_bfloat16*)w, (__nv_bfloat16*)out,
                                       d, eps, height, s0, s1);
   return (int)cudaGetLastError();
@@ -101,7 +104,8 @@ extern "C" int minivllm_rms_fused(void* x, void* r, void* w, void* out, void* ro
                                   int rows, int d, float eps, int height,
                                   int64_t xs0, int64_t xs1, int64_t rs0, int64_t rs1,
                                   cudaStream_t stream) {
-  int threads = d < 1024 ? d : 1024;
+  int max_threads = rows < 256 ? 1024 : 256;
+  int threads = d < max_threads ? d : max_threads;
   fused<<<rows, threads, 0, stream>>>((__nv_bfloat16*)x, (__nv_bfloat16*)r, (__nv_bfloat16*)w,
       (__nv_bfloat16*)out, (__nv_bfloat16*)ro, d, eps, height, xs0, xs1, rs0, rs1);
   return (int)cudaGetLastError();

@@ -24,10 +24,9 @@ def config(monkeypatch, *, mode='none', **spec_args):
                       compilation_config=CompilationConfig(cudagraph_mode=mode), attention_backend='triton')
 
 
-def test_eager_config_and_graph_guard(monkeypatch):
+def test_eager_and_full_decode_config(monkeypatch):
     assert config(monkeypatch).effective_draft_tensor_parallel_size == 2
-    with pytest.raises(NotImplementedError, match='Graph'):
-        config(monkeypatch, mode='full_decode_only')
+    assert config(monkeypatch, mode='full_decode_only').effective_draft_tensor_parallel_size == 2
 
 
 @pytest.mark.parametrize('args', [

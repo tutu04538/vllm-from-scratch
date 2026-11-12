@@ -47,6 +47,8 @@
 
 固定历史重放以冻结参考 run 0 的 token 序列为共同输入，20 个独立进程覆盖两引擎 × 十组；记录并核对每个 rank 的 token、position 与本地 block table → slot 映射，再比较采样前的 hidden、logits、有效 KV，共 780 项全部通过。自由生成矩阵同样为 780 项，其中九组张量逐值相同、8B TP2 B4 有差异但位于事先登记的阈值内。
 
+109 的并行全量回归中，历史独立真实测试在上游启动前因可用 19.35 GiB 低于 0.82 预留所需 19.39 GiB 而失败（`benchmarks/results/step109/parallel_after_stream_fix.log`）。测试显式调整参考预留为 0.78，双方仍断言 192 个 KV 块，输入和数值门槛未改；保留 pytest 父进程 CUDA context 的单项复测通过，见 `benchmarks/results/step109/step103_reservation_078.log`。
+
 实跑命令及结果（先 `source scripts/activate-4090.sh`，日志与 JSON 位于本地 `benchmarks/results/step103/`）：
 
 ```bash

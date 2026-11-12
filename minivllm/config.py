@@ -1915,10 +1915,6 @@ class VllmConfig:
         self._validate_parallel_speculation()
         self._validate_attention_backend()
         self._resolve_cudagraph_config()
-        if (self.parallel_config.tensor_parallel_size > 1
-                and self.speculative_config is not None
-                and self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE):
-            raise NotImplementedError("108 多卡 EAGLE3 暂只支持 eager；Graph 留 109")
         # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
         # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
         self.validate_v2_model_runner()

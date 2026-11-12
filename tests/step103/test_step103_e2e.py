@@ -42,11 +42,11 @@ def test_real_8b_tp1_32_token_generation_without_prior_103_benchmark(tmp_path):
  common=['--model','8b','--tp','1','--batch','1']
  # Parent pytest may retain a CUDA context from earlier tests. Fixed KV capacity
  # stays at 192 blocks on both sides; this lowers only the startup reservation.
- command(['benchmarks/step103_frozen_probe.py',*common,'--gpu-memory-utilization','0.82','--output',str(ref)])
+ command(['benchmarks/step103_frozen_probe.py',*common,'--gpu-memory-utilization','0.78','--output',str(ref)])
  command(['benchmarks/step103_mini_probe.py',*common,'--output',str(mini)])
  a=json.loads((mini/'summary.json').read_text());b=json.loads((ref/'summary.json').read_text())
  assert a['kv_num_blocks_requested']==b['kv_num_blocks_requested']==192
- assert b['gpu_memory_utilization']==0.82
+ assert b['gpu_memory_utilization']==0.78
  assert a['prompts']==b['prompts'] and len(a['prompts'][0])==128
  assert len(a['runs'][0]['outputs'][0]['tokens'])==32
  assert a['runs'][0]['outputs'][0]['tokens']==b['runs'][0]['outputs'][0]['tokens']

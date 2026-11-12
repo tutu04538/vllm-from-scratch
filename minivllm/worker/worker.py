@@ -111,10 +111,8 @@ class Worker:
         if not c.use_v2_model_runner or p.pipeline_parallel_size != 1 or p.data_parallel_size != 1:
             raise NotImplementedError("101 多卡模型仅支持 V2 单副本、PP=DP=1")
         from ..config import CUDAGraphMode
-        if c.speculative_config is not None and (
-                getattr(c.speculative_config, 'method', None) != 'eagle3'
-                or c.compilation_config.cudagraph_mode != CUDAGraphMode.NONE):
-            raise NotImplementedError("108 多卡投机仅支持 eager EAGLE3")
+        if c.speculative_config is not None and getattr(c.speculative_config, 'method', None) != 'eagle3':
+            raise NotImplementedError("多卡投机仅支持 EAGLE3")
         if c.compilation_config.cudagraph_mode not in (CUDAGraphMode.NONE, CUDAGraphMode.FULL_DECODE_ONLY):
             raise NotImplementedError("105 多 rank 仅支持 FULL_DECODE_ONLY CUDA Graph")
         if (c.compilation_config.cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY

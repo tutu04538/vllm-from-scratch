@@ -1163,7 +1163,7 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 
 ### Qwen3 TP 的 FULL decode Graph（105）
 
-普通 Qwen3 V2 TP 的 `FULL_DECODE_ONLY` 已接入本地 Graph 通信流；prefill 走 eager，多 rank Graph + prefix caching、投机和 PP 仍明确拒绝。真实模型与 tiny 对照见 [105 对齐报告](../docs/step105_alignment.md)。一次 14B TP2 Worker 关闭超时尚未定位，后续 50 次专项复现未重现；105 暂不标记完全关闭。
+普通 Qwen3 V2 TP 的 `FULL_DECODE_ONLY` 已接入本地 Graph 通信流；prefill 走 eager，多 rank Graph + prefix caching 和 PP 仍明确拒绝。真实模型与 tiny 对照见 [105 对齐报告](../docs/step105_alignment.md)，EAGLE3 Graph 的后续进展见 109。一次 14B TP2 Worker 关闭超时尚未定位，后续 50 次专项复现未重现；105 暂不标记完全关闭。
 
 ### 真实 EAGLE3 单卡对照（106）
 
@@ -1175,4 +1175,8 @@ Qwen3 辅助层按上游层边界采集；V2 共享 embedding 和 LM head 按权
 
 ### 多卡 EAGLE3 eager 投机（108）
 
-V2 支持限定的同 TP、固定 K EAGLE3 eager 执行；各 rank 独立执行与采样，Scheduler 只接收一份输出。接受、拒绝后的有效状态与缓存、缩减词表概率以及 rank 失败检查见 [108 对齐报告](../docs/step108_alignment.md)。多卡 EAGLE3 Graph 与真实模型整链矩阵尚待 109。
+V2 支持限定的同 TP、固定 K EAGLE3 eager 执行；各 rank 独立执行与采样，Scheduler 只接收一份输出。接受、拒绝后的有效状态与缓存、缩减词表概率以及 rank 失败检查见 [108 对齐报告](../docs/step108_alignment.md)。多卡 EAGLE3 Graph 与真实模型整链结果见 109。
+
+### 多卡 EAGLE3 的 FULL decode Graph（109）
+
+Qwen3 + EAGLE3 的 V2 同 TP 路径支持 `FULL_DECODE_ONLY`：target、draft prefill 和 draft decode 分别捕获与重放，普通 prefill 走 eager。真实 8B/14B 矩阵、固定历史和容量边界见 [109 对齐报告](../docs/step109_alignment.md)；PP/DP、多卡 Graph + prefix caching、动态 K 和异步调度仍不在支持范围内。

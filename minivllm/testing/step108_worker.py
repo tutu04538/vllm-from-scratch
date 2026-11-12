@@ -80,8 +80,9 @@ class Step108Worker(Worker):
             return result
 
         def prefill_trace(num_reqs, num_tokens, *args, **kwargs):
-            self.step108_trace.append({'kind': 'prefill_hidden',
-                                       'draft_hidden': _cpu(speculator.hidden_states[:num_tokens])})
+            if not torch.cuda.is_current_stream_capturing():
+                self.step108_trace.append({'kind': 'prefill_hidden',
+                                           'draft_hidden': _cpu(speculator.hidden_states[:num_tokens])})
             return prefill(num_reqs, num_tokens, *args, **kwargs)
 
         speculator.model.combine_hidden_states = combine_trace

@@ -11,9 +11,9 @@ vLLM 的约定是 `forward(x, residual=None) -> out | (out, residual)`：
 
 方差在 **float32** 里归约；CUDA 普通 RMSNorm 按冻结 vLLM 的 CUDA 算子处理舍入，
 CPU 与 Gemma 分支按上游 native IR，cast 次序见 `layers/ops/layernorm.py`。
-CUDA 走本地 Triton 融合 kernel，CPU 走 Torch 参考。
-`residual` 分支返回**新的** residual 张量，不原地改写调用方的输入（上游 native 同义；
-上游 CUDA 的自定义 op 会原地写，差异记在 `docs/step85_alignment.md`）。
+CUDA 走本地融合 kernel，CPU 走 Torch 参考。普通 `RMSNorm` 在 CUDA 的 residual
+分支原地更新输入和 residual，与冻结上游 CUDA 算子的别名语义一致；CPU native 与
+`GemmaRMSNorm` 仍返回新张量。低层 `rms_norm` 的 `inplace` 参数控制这一行为。
 """
 
 import torch

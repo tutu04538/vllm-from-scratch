@@ -16,9 +16,9 @@ vLLM 的 vllm_c kernel 舍入；CPU native 与 Gemma 路径按 IR native 计算�
     2D  [rows, D]            任意正的 row stride（packed QKV 切片就是这种）
     3D  [batch, heads, D]    Q/K norm；任意正的 batch/head stride
 
-`residual` 与 `x` 同形同 dtype；融合分支先算 `x + residual`，再把结果写到
-**新的 residual 张量**并归一化。返回值与上游 `forward_native` 一样是新张量，
-不改 caller 的输入；这样调用方不会因为某层原地写 residual 而拿到半更新状态。
+`residual` 与 `x` 同形同 dtype；融合分支先算 `x + residual`，再归一化。
+默认返回新张量；调用者显式设置 `inplace=True` 且输入位于 CUDA 时，按上游 CUDA
+算子将结果写回原输入和 residual。CPU native 路径保持功能式结果。
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ if triton is not None:
                 residual_ptr + r_offset + offsets, mask=mask, other=0.0
             ).to(tl.float32)
             x = x + residual
-            # residual_out 是新建的连续张量：按 logical row 写，不能复用输入
-            # residual 的 stride（输入可能是带洞视图）。
+            # residual_out 要么是新建连续张量，要么是已确认连续的原位输出；
+            # 带洞视图使用前者，再由外层按原视图写回。
             tl.store(
                 residual_out_ptr + row * D + offsets,
                 x.to(residual_out_ptr.dtype.element_ty),

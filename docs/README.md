@@ -172,4 +172,6 @@
 
 [107 EAGLE3 草稿分片与词表映射](step107_alignment.md)：FC 复制、attention head 和词表分片，以及 8B/14B TP2/4 固定 prefill 与同 TP 冻结参考的对照；完整多卡投机及 Graph 的后续进展见 108/109。
 
-[108 TP 投机状态与拒绝后修复](step108_alignment.md)：限定开放 V2 多卡 EAGLE3 eager；逐 rank 检查同源输入、接受和拒绝、有效 KV、缓存复用及失败传播。TP 投机 Graph 和真实模型整链矩阵待 109。
+[108 TP 投机状态与拒绝后修复](step108_alignment.md)：限定开放 V2 多卡 EAGLE3 eager；逐 rank 检查同源输入、接受和拒绝、有效 KV、缓存复用及失败传播。TP 投机 Graph 和真实模型整链矩阵见 109。
+
+[109 真实 EAGLE3 TP 与 Graph](step109_alignment.md)：Qwen3 8B/14B 同 TP 的 target 与 draft FULL decode 图、真实权重逐 rank 参考对照、固定历史和概率草稿；记录大批次 BF16 归约修正、显存容量差异和历史风险。
