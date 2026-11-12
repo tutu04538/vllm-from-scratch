@@ -114,10 +114,10 @@ def test_first_pass_inputs_follow_eagle_alignment():
 
     直接看提议者写进工作区的内容（工作区是定长缓冲，只读有效前缀）。
     """
-    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1, draft_seed=2)
+    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1, draft_seed=0)
     try:
-        # 辅助层边界按上游修正后，tiny 草稿的接受序列改变；允许更多轮，仍必须观察到
-        # 至少一个候选被接受后又发生拒绝，以下逐行断言保持不变。
+        # 边界 0 的残差引用按上游改成原地更新后，tiny 草稿接受序列改变；seed=0
+        # 仍能观察到先接受再拒绝，以下逐行断言和最长轮次均保持不变。
         engine.add_request("a", [1, 2, 3, 4, 1, 2, 3, 4],
                            SamplingParams(max_tokens=16, temperature=0.0, eos_token_id=999))
         captured = []

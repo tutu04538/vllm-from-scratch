@@ -16,7 +16,8 @@ from benchmarks.check_step090_reference import verify_oracle
 from benchmarks.step103_workload import prompts
 
 
-def install(worker, upstream=True, forced_history=None, forced_drafts=None):
+def install(worker, upstream=True, forced_history=None, forced_drafts=None, head_size=128,
+            forced_first=None):
     import torch
     runner = worker.model_runner
     spec = runner.speculator
@@ -72,7 +73,7 @@ def install(worker, upstream=True, forced_history=None, forced_drafts=None):
             block = torch.div(valid, 16, rounding_mode='floor')
             offset = valid % 16
             if upstream:
-                kv = cache[block, :, offset, :].reshape(len(valid), -1, 2, 128).permute(0, 2, 1, 3)
+                kv = cache[block, :, offset, :].reshape(len(valid), -1, 2, head_size).permute(0, 2, 1, 3)
             else:
                 kv = cache[:, block, offset, :, :].permute(1, 0, 2, 3)
         records.append({'event': 'draft_layer', 'inputs': snapshot(args),
@@ -117,7 +118,7 @@ def install(worker, upstream=True, forced_history=None, forced_drafts=None):
         offsets = logical % 16
         def read_kv(cache):
             if upstream:
-                return cache[blocks, :, offsets, :].reshape(length, -1, 2, 128).permute(0, 2, 1, 3)
+                return cache[blocks, :, offsets, :].reshape(length, -1, 2, head_size).permute(0, 2, 1, 3)
             return cache[:, blocks, offsets, :, :].permute(1, 0, 2, 3)
         record['valid_context_length'] = length
         record['target_valid_kv'] = snapshot(read_kv(runner.model.model.layers[0].self_attn.attn.kv_cache))
@@ -128,6 +129,13 @@ def install(worker, upstream=True, forced_history=None, forced_drafts=None):
             forced = torch.as_tensor(forced_drafts[forced_index], dtype=result.dtype, device=result.device)
             if forced.shape != result.shape:
                 raise RuntimeError('固定草稿形状不匹配')
+            result.copy_(forced)
+            record['forced_output'] = snapshot(result)
+            forced_index += 1
+        elif forced_first is not None and forced_index == 0:
+            forced = torch.as_tensor(forced_first, dtype=result.dtype, device=result.device)
+            if forced.shape != result.shape:
+                raise RuntimeError('首轮固定草稿形状不匹配')
             result.copy_(forced)
             record['forced_output'] = snapshot(result)
             forced_index += 1

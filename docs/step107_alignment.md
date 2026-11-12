@@ -29,3 +29,7 @@ Scheduler 仍拥有 Request 和逻辑 KV；每个 worker 仅拥有本地模型�
 - 对 103 真实回归提供显式参考预留比例参数，在测试中指定 0.82；两侧仍按固定 192 KV 块执行，新增块数对账，其余 token/KV/logits 断言不变。刻意令父 pytest 保留 CUDA context 后重跑该测试，1 passed（`benchmarks/results/step107/step103_persistent_context_final.log`）。旧 0.86 失败记录保留；这是环境容量调整，不改变精度或模型输入。
 - 最新包完整并行回归：`CUDA_VISIBLE_DEVICES=2,3,0,1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 106)) -q -ra`，236 passed、0 failed、0 skipped；日志 `benchmarks/results/step107/parallel_hash6c_20261112.log`。完整旧回归 1289 passed、0 failed、23 skipped；skip 不算验收通过。
 - **边界**：这些检查覆盖真实草稿固定 prefill 模块；本项目完整多卡投机仍在初始化时拒绝，跨轮拒绝状态与 Graph 分别留给 108/109。106 的历史 stream 竞争与 105 曾有的关闭超时不因本次通过自动消除。
+
+## 108 修改 RMSNorm 后的复验
+
+108 将 CUDA 融合 RMSNorm 的 residual 原地行为与冻结实现对齐后，重新运行真实草稿模块比较：8B TP2 与 14B TP2 使用参考默认的 0.75 显存预留，8B/14B TP4 因物理 GPU1 受其他进程占用，显式使用 `--gpu-memory-utilization 0.60`；四组同 TP 对照均通过，记录在 `benchmarks/results/step108/step107*_after_inplace.json`。首次按 0.75 跑 TP4 时因可用显存低于参考引擎初始化门槛而失败，保留在 `step107_after_inplace.json`；调整只改变参考 KV 显存预留，不改变模型、输入和数值比较。

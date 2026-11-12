@@ -170,4 +170,6 @@
 
 [106 真实 EAGLE3 单卡对照](step106_alignment.md)：修正 Qwen3 辅助层边界，真实 8B K0/1/2/4 与冻结参考对照、14B 草稿局部对照通过；历史回归有已知 stream 竞争与 GPU0 显存不足，暂不完全关闭。
 
-[107 EAGLE3 草稿分片与词表映射](step107_alignment.md)：FC 复制、attention head 和词表分片，以及 8B/14B TP2/4 固定 prefill 与同 TP 冻结参考的对照；完整多卡投机和 Graph 仍待 108/109。
+[107 EAGLE3 草稿分片与词表映射](step107_alignment.md)：FC 复制、attention head 和词表分片，以及 8B/14B TP2/4 固定 prefill 与同 TP 冻结参考的对照；完整多卡投机及 Graph 的后续进展见 108/109。
+
+[108 TP 投机状态与拒绝后修复](step108_alignment.md)：限定开放 V2 多卡 EAGLE3 eager；逐 rank 检查同源输入、接受和拒绝、有效 KV、缓存复用及失败传播。TP 投机 Graph 和真实模型整链矩阵待 109。

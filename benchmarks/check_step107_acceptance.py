@@ -18,6 +18,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--case', choices=['unit', '8b-tp2', '8b-tp4', '14b-tp2', '14b-tp4', 'all'], required=True)
     p.add_argument('--timeout', type=int, default=1800, help='per subprocess timeout in seconds')
+    p.add_argument('--gpu-memory-utilization', type=float, default=.75,
+                   help='explicit frozen reference memory reservation fraction')
     p.add_argument('--output', type=Path, required=True)
     args = p.parse_args()
     if args.timeout <= 0:
@@ -63,6 +65,7 @@ def main():
             reference, mini = folder / f'{case}_ref', folder / f'{case}_mini'
             fixture, contract = folder / f'{case}_fixture.pt', folder / f'{case}_contract.json'
             run(f'{case}_reference', script('step107_frozen_probe.py', '--model', model, '--tp', tp_string,
+                                            '--gpu-memory-utilization', args.gpu_memory_utilization,
                                             '--output', reference))
             run(f'{case}_register', script('step107_register_reference.py', '--reference', reference,
                                            '--draft', DRAFT/REVISIONS[model],

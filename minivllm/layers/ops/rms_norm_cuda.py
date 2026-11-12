@@ -157,10 +157,10 @@ def supports(x: torch.Tensor, weight: torch.Tensor | None,
 
 
 def run(x: torch.Tensor, weight: torch.Tensor, eps: float,
-        residual: torch.Tensor | None, rows: int) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    out = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+        residual: torch.Tensor | None, rows: int, *, inplace: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    out = x if inplace else torch.empty(x.shape, device=x.device, dtype=x.dtype)
     if rows == 0:
-        return out if residual is None else (out, torch.empty_like(out))
+        return out if residual is None else (out, residual if inplace else torch.empty_like(out))
     height = x.shape[1] if x.ndim == 3 else 0
     xs0 = x.stride(0) if x.ndim > 1 else 0
     xs1 = x.stride(1) if x.ndim == 3 else 0
@@ -173,7 +173,7 @@ def run(x: torch.Tensor, weight: torch.Tensor, eps: float,
             if error:
                 raise RuntimeError(f'BF16 CUDA RMSNorm 启动失败，CUDA error={error}')
             return out
-        residual_out = torch.empty(residual.shape, device=residual.device, dtype=residual.dtype)
+        residual_out = residual if inplace else torch.empty(residual.shape, device=residual.device, dtype=residual.dtype)
         rs0 = residual.stride(0) if residual.ndim > 1 else 0
         rs1 = residual.stride(1) if residual.ndim == 3 else 0
         error = lib.minivllm_rms_fused(x.data_ptr(), residual.data_ptr(), weight.data_ptr(),

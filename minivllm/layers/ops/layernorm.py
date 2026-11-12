@@ -234,33 +234,44 @@ def rms_norm(
     residual: torch.Tensor | None = None,
     *,
     add_one: bool = False,
+    inplace: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """生产入口：CUDA 用一行一 program 的 Triton kernel，CPU 用 native 参考。"""
     rows, dim, stride0, stride1 = _validate(x, weight, residual, eps, add_one)
 
     if not x.is_cuda:
         return rms_norm_native(x, weight, eps, residual, add_one=add_one)
+    inplace = inplace and residual is not None
+    if inplace and torch._C._overlaps(x, residual):
+        raise ValueError("原地 RMSNorm 的 x 与 residual 不能共享存储")
+    direct_inplace = bool(inplace and x.is_contiguous() and residual.is_contiguous())
     # 匹配冻结 CUDA 算子的 BF16 向量归约顺序，避免跨层舍入差异累积。
     # 其他 dtype/布局仍由现有 Triton kernel 处理。
     from . import rms_norm_cuda
     if rms_norm_cuda.supports(x, weight, residual, add_one):
-        return rms_norm_cuda.run(x, weight, eps, residual, rows)
+        result = rms_norm_cuda.run(x, weight, eps, residual, rows, inplace=direct_inplace)
+        if inplace and not direct_inplace:
+            x.copy_(result[0]); residual.copy_(result[1])
+            return x, residual
+        return result
     if triton is None:
         raise RuntimeError(
             "CUDA 上的融合 RMSNorm 需要 triton；当前环境没有 triton。"
             "没有静默回退到 Torch，请安装 triton 或显式调用 rms_norm_native")
 
-    out = torch.empty(x.shape, dtype=x.dtype, device=x.device)
+    out = x if direct_inplace else torch.empty(x.shape, dtype=x.dtype, device=x.device)
     if residual is None:
         residual_out = out  # 占位；HAS_RESIDUAL=False 时 kernel 不会读写它
         r_stride0 = 0
         r_stride1 = 0
     else:
-        residual_out = torch.empty(residual.shape, dtype=residual.dtype,
-                                   device=residual.device)
+        residual_out = residual if direct_inplace else torch.empty(
+            residual.shape, dtype=residual.dtype, device=residual.device)
         r_stride0, r_stride1 = _row_layout(residual, "RMSNorm 的 residual")[2:]
 
     if rows == 0:
+        if inplace:
+            return x, residual
         return out if residual is None else (out, residual_out)
 
     height = x.shape[1] if x.ndim == 3 else 1
@@ -293,6 +304,9 @@ def rms_norm(
     )
     if residual is None:
         return out
+    if inplace and not direct_inplace:
+        x.copy_(out); residual.copy_(residual_out)
+        return x, residual
     return out, residual_out
 
 

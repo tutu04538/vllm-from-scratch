@@ -150,6 +150,9 @@ class EngineCore:
                     f"（引擎配置）。上游同样在请求期拒绝：静默少给几个会让下游以为"
                     f"拿到的是完整的前 k 名")
         if sampling_params.structured_outputs is not None:
+            if (self.vllm_config.parallel_config.tensor_parallel_size > 1
+                    and self.speculative_config is not None):
+                raise NotImplementedError("108 多卡投机尚不支持结构化输出")
             from ..structured_output import validate_structured_output
 
             validate_structured_output(sampling_params,

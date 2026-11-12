@@ -1912,11 +1912,34 @@ class VllmConfig:
 
     def __post_init__(self):
         self._validate_parallel_config()
+        self._validate_parallel_speculation()
         self._validate_attention_backend()
         self._resolve_cudagraph_config()
+        if (self.parallel_config.tensor_parallel_size > 1
+                and self.speculative_config is not None
+                and self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE):
+            raise NotImplementedError("108 多卡 EAGLE3 暂只支持 eager；Graph 留 109")
         # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
         # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
         self.validate_v2_model_runner()
+
+    def _validate_parallel_speculation(self) -> None:
+        spec = self.speculative_config
+        if self.parallel_config.tensor_parallel_size <= 1 or spec is None:
+            return
+        if spec.method != "eagle3":
+            raise NotImplementedError("108 多卡投机仅支持 EAGLE3")
+        if (spec.parallel_drafting or spec.uses_dynamic_speculative_decoding()
+                or spec.enable_adaptive_verification
+                or spec.rejection_sample_method != "standard"):
+            raise NotImplementedError("108 多卡 EAGLE3 仅支持固定 K、串行提议与标准验证")
+        draft = spec.draft_model_config
+        if draft is None:
+            raise ValueError("多卡 EAGLE3 需要草稿模型配置")
+        arch = (draft.hf_config or {}).get("architectures") or []
+        if len(arch) != 1 or arch[0] not in (
+                "Eagle3Qwen3ForCausalLM", "Eagle3LlamaForCausalLM", "LlamaForCausalLMEagle3"):
+            raise NotImplementedError("108 多卡仅支持 Qwen3 配套 EAGLE3 草稿架构")
 
     def _validate_parallel_config(self) -> None:
         p = self.parallel_config

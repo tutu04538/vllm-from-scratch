@@ -44,6 +44,7 @@ class RMSNorm(nn.Module):
             self.variance_epsilon,
             residual,
             add_one=False,
+            inplace=True,
         )
 
     def extra_repr(self) -> str:

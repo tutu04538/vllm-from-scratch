@@ -1171,4 +1171,8 @@ Qwen3 辅助层按上游层边界采集；V2 共享 embedding 和 LM head 按权
 
 ### EAGLE3 草稿分片（107）
 
-草稿注意力按各 rank 的本地 Q/KV head 计算，特征融合 FC 在每个 rank 复制，缩减词表 logits 汇总并去除 padding 后再映射到目标词表。真实 8B/14B 的 TP2/4 固定 prefill 模块对照见 [107 对齐报告](../docs/step107_alignment.md)；完整多卡投机执行仍未开放，跨轮状态与 Graph 分别由 108/109 验收。
+草稿注意力按各 rank 的本地 Q/KV head 计算，特征融合 FC 在每个 rank 复制，缩减词表 logits 汇总并去除 padding 后再映射到目标词表。真实 8B/14B 的 TP2/4 固定 prefill 模块对照见 [107 对齐报告](../docs/step107_alignment.md)；跨轮状态与 Graph 的后续进展见 108/109。
+
+### 多卡 EAGLE3 eager 投机（108）
+
+V2 支持限定的同 TP、固定 K EAGLE3 eager 执行；各 rank 独立执行与采样，Scheduler 只接收一份输出。接受、拒绝后的有效状态与缓存、缩减词表概率以及 rank 失败检查见 [108 对齐报告](../docs/step108_alignment.md)。多卡 EAGLE3 Graph 与真实模型整链矩阵尚待 109。
