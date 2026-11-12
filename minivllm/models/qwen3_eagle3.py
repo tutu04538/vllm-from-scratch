@@ -21,7 +21,8 @@ import torch
 from torch import nn
 
 from ..layers.logits_processor import LogitsProcessor
-from ..layers import ParallelLMHead, QKVParallelLinear, RMSNorm, RowParallelLinear, VocabParallelEmbedding
+from ..layers import (ParallelLMHead, QKVParallelLinear, ReplicatedLinear, RMSNorm,
+                      RowParallelLinear, VocabParallelEmbedding)
 from ..layers.rotary_embedding import get_rope
 from ..attention import Attention
 from ..model_loader.auto_weights_loader import AutoWeightsLoader, WeightsMapper
@@ -39,12 +40,12 @@ class Eagle3Attention(nn.Module):
         num_kv_heads = config.get("num_key_value_heads", num_heads)
         head_dim = config.get("head_dim", hidden_size // num_heads)
         self.head_dim = head_dim
-        self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
-        self.q_size = num_heads * head_dim
         self.qkv_proj = QKVParallelLinear(qkv_input_size, head_dim, num_heads, num_kv_heads,
                                           bias=config.get("attention_bias", False),
                                           prefix=maybe_prefix(prefix, "qkv_proj"))
+        self.total_num_heads, self.total_num_kv_heads = num_heads, num_kv_heads
+        self.num_heads, self.num_kv_heads = self.qkv_proj.num_heads, self.qkv_proj.num_kv_heads
+        self.q_size = self.qkv_proj.q_size
         self.o_proj = RowParallelLinear(num_heads * head_dim, hidden_size, bias=False,
                                         prefix=maybe_prefix(prefix, "o_proj"))
         rope_parameters = dict(config.get("rope_parameters") or {})
@@ -55,8 +56,8 @@ class Eagle3Attention(nn.Module):
             max_position=config["max_position_embeddings"],
             is_neox_style=True,
             rope_parameters=rope_parameters)
-        self.attn = Attention(num_heads=num_heads, head_size=head_dim,
-                              num_kv_heads=num_kv_heads, layer_name=maybe_prefix(prefix, "attn"))
+        self.attn = Attention(num_heads=self.num_heads, head_size=head_dim,
+                              num_kv_heads=self.num_kv_heads, layer_name=maybe_prefix(prefix, "attn"))
         eps = config.get("rms_norm_eps", 1e-6)
         # q/k norm 只在 Qwen3 风格的头里（真实 EAGLE3-Llama checkpoint 的权重里没有 q_norm/k_norm）
         if use_qk_norm:
@@ -170,7 +171,8 @@ class Eagle3Model(nn.Module):
 
         if self.use_aux_hidden_state:
             fc_input_size = self.target_hidden_size * self.num_aux_layers
-            self.fc = nn.Linear(fc_input_size, self.hidden_size, bias=False)
+            self.fc = ReplicatedLinear(fc_input_size, self.hidden_size, bias=False,
+                                       prefix=maybe_prefix(prefix, "fc"), return_bias=False)
             self.input_norm = (RMSNorm(fc_input_size, eps=config.get("rms_norm_eps", 1e-6))
                                if self.norm_before_fc else None)
             if config.get("fc_norm", False):
@@ -219,8 +221,18 @@ class Eagle3Model(nn.Module):
         from ..model_loader.auto_weights_loader import AutoWeightsLoader
 
         skip = ["embed_tokens."] if self.tie_embeddings else None
-        return AutoWeightsLoader(self, skip_prefixes=skip).load_weights(
+        for layer in self.layers:
+            layer.self_attn.qkv_proj.reset_load_state()
+            layer.mlp.gate_up_proj.reset_load_state()
+        loaded = AutoWeightsLoader(self, skip_prefixes=skip).load_weights(
             weights, mapper=self.hf_to_vllm_mapper)
+        for index, layer in enumerate(self.layers):
+            try:
+                layer.self_attn.qkv_proj.validate_loaded_shards({'q', 'k', 'v'})
+                layer.mlp.gate_up_proj.validate_loaded_shards({0, 1})
+            except ValueError as exc:
+                raise ValueError(f'EAGLE3 第 {index} 层：{exc}') from exc
+        return loaded
 
 
 @register_model("Eagle3Qwen3ForCausalLM")
@@ -332,7 +344,11 @@ class Eagle3ForCausalLM(nn.Module):
         model_weights, head_weights = [], []
         has_embed = False
         includes_mask_hidden = False
+        seen = set()
         for name, tensor in weights:
+            if name in seen:
+                raise ValueError(f'EAGLE3 权重重复：{name}')
+            seen.add(name)
             if name in ("d2t", "t2d"):
                 buffers[name] = tensor
                 continue
@@ -362,9 +378,9 @@ class Eagle3ForCausalLM(nn.Module):
         self.model.tie_embeddings = not has_embed
         self.has_own_embed_tokens = has_embed
         self.has_own_lm_head = any("lm_head" in name for name, _ in head_weights)
-        loaded = set()
-        if model_weights:
-            loaded |= {f"model.{name}" for name in self.model.load_weights(iter(model_weights))}
+        # Even an empty model checkpoint must pass the coverage check; silently
+        # keeping an uninitialized draft would turn missing weights into inference.
+        loaded = {f"model.{name}" for name in self.model.load_weights(iter(model_weights))}
         if head_weights:
             loader = AutoWeightsLoader(self, skip_prefixes=["model."] if model_weights else None)
             loaded |= loader.load_weights(iter(head_weights))

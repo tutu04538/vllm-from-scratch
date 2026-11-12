@@ -29,3 +29,9 @@ Scheduler 唯一拥有 Request 与逻辑提交位置；Runner/Worker 持有本�
 - 14B 只加载 draft，以固定特征执行 FC 与映射 logits；参考重复、局部 FP32 测量后与项目输出逐值相同。未执行 14B target 或 14B draft attention。验收驱动 `CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step106_acceptance.py --case all --timeout 1800 --output benchmarks/results/step106/acceptance_final.json`：33 子步骤通过；后续独立重比对修正了固定历史的结果标签，结果仍通过。
 - 受影响目录首次回归 123 passed / 2 failed / 10 skipped：旧 step63 样本不再产生所需接受/拒绝组合，已调整确定性 seed 后单项重跑通过；step73 structured-output stream 竞争为先前上游同源已记录问题，生产路径未修改。58—88 完整回归 1288 passed / 1 failed / 23 skipped，失败仍为该 step73；089—105 回归 205 passed / 1 failed，103 上游参考在 GPU0 初始化时仅有 10.75 GiB 可用，小于其要求的 20.34 GiB，本项目模型尚未运行。两个失败均不计通过；23 个历史 skip 不计验收。
 - 在 GPU1 单独重跑该 103 真正 8B 用例：`CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step103/test_step103_e2e.py::test_real_8b_tp1_32_token_generation_without_prior_103_benchmark -q -ra`，1 passed；这不抹去完整回归中的 GPU0 失败。
+
+## 2026-11-12 补充复验
+
+- 在已包含进行中的 107 改动、包 hash `79cb8c0275cedf78789b640bd344ff67448a8dfd4b78933bc4001cde4a0e7e71` 的工作区，`CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra`：1289 passed、0 failed、23 skipped，日志为 `benchmarks/results/step107/legacy_final_20261112.log`。step73 曾复现的 stream 竞争也在本次回归及单项重跑通过，仍不能单凭通过证明竞争根因消失。
+- `CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step103/test_step103_e2e.py::test_real_8b_tp1_32_token_generation_without_prior_103_benchmark -q -ra`：1 failed；冻结参考启动时实际剩余 20.01 GiB，低于该测试固定要求 20.34 GiB，项目模型未运行，见 `benchmarks/results/step106/step103_gpu0_20261112.log`。相同测试改用空闲物理 GPU2 并保持其余参数不变：1 passed，见 `benchmarks/results/step106/step103_gpu2_20261112.log`。两次结果分别保留，不以补跑覆盖失败。
+- 随后 107 的加载检查变更后，最新包 hash `6c63b3ca0f81ebdbf8ec214c3e1fd150f80db570d692667a9ede805d94ee0fe3` 下同命令重跑 58—88：1289 passed、0 failed、23 skipped，见 `benchmarks/results/step107/legacy_hash6c_20261112.log`。

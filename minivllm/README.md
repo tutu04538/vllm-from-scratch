@@ -1167,4 +1167,8 @@ Scheduler 将抢占请求通知 V2 Worker 清理常驻状态；普通 Qwen3 TP e
 
 ### 真实 EAGLE3 单卡对照（106）
 
-Qwen3 辅助层按上游层边界采集；V2 共享 embedding 和 LM head 按权重存在性及逐值相等判断。真实 8B target + EAGLE3 的 eager K1/2/4 正常生成与固定历史对照已验证；草稿 TP 尚未开放。历史回归的遗留失败及实际覆盖见 [106 对齐报告](../docs/step106_alignment.md)。
+Qwen3 辅助层按上游层边界采集；V2 共享 embedding 和 LM head 按权重存在性及逐值相等判断。真实 8B target + EAGLE3 的 eager K1/2/4 正常生成与固定历史对照已验证；完整多卡投机尚未开放。历史回归的遗留失败及实际覆盖见 [106 对齐报告](../docs/step106_alignment.md)。
+
+### EAGLE3 草稿分片（107）
+
+草稿注意力按各 rank 的本地 Q/KV head 计算，特征融合 FC 在每个 rank 复制，缩减词表 logits 汇总并去除 padding 后再映射到目标词表。真实 8B/14B 的 TP2/4 固定 prefill 模块对照见 [107 对齐报告](../docs/step107_alignment.md)；完整多卡投机执行仍未开放，跨轮状态与 Graph 分别由 108/109 验收。

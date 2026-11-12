@@ -55,6 +55,39 @@ def _copy_into(param: Parameter, loaded_weight: torch.Tensor, offset: int, size:
         param[offset:offset + size].copy_(loaded_weight)
 
 
+class ReplicatedLinear(nn.Module):
+    """不分片的线性层；每个 TP rank 拥有完整参数，对应冻结上游的非量化路径。"""
+
+    def __init__(self, input_size: int, output_size: int, bias: bool = True,
+                 skip_bias_add: bool = False, params_dtype: torch.dtype | None = None,
+                 prefix: str = '', *, return_bias: bool = True) -> None:
+        super().__init__()
+        if input_size <= 0 or output_size <= 0:
+            raise ValueError('线性层输入和输出维度必须为正')
+        self.input_size, self.output_size, self.prefix = input_size, output_size, prefix
+        self.skip_bias_add, self.return_bias = skip_bias_add, return_bias
+        self.weight = Parameter(torch.empty(output_size, input_size, dtype=params_dtype))
+        self.weight.weight_loader = self.weight_loader
+        if bias:
+            self.bias = Parameter(torch.empty(output_size, dtype=params_dtype))
+            self.bias.weight_loader = self.weight_loader
+        else:
+            self.register_parameter('bias', None)
+
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
+        _reject_shard_id('ReplicatedLinear', shard_id)
+        if param.shape != loaded_weight.shape:
+            raise ValueError(f'复制权重形状不匹配：{tuple(param.shape)} != {tuple(loaded_weight.shape)}')
+        with torch.no_grad():
+            param.copy_(loaded_weight)
+
+    def forward(self, x: torch.Tensor):
+        result = F.linear(x, self.weight, None if self.skip_bias_add else self.bias)
+        if not self.return_bias:
+            return result
+        return result, self.bias if self.skip_bias_add else None
+
+
 class QKVParallelLinear(nn.Module):
     """Q/K/V 独立分片后按 [Q_local,K_local,V_local] 打包。"""
 

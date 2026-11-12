@@ -13,7 +13,8 @@ from benchmarks.check_step090_models import resolve_snapshot
 def main():
     p=argparse.ArgumentParser();p.add_argument('--model',choices=['8b','14b'],required=True)
     p.add_argument('--tp',type=int,choices=[1,2,4],required=True);p.add_argument('--batch',type=int,choices=[1,4],required=True)
-    p.add_argument('--output',type=Path,required=True);p.add_argument('--repeats',type=int,default=2);a=p.parse_args()
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--repeats',type=int,default=2)
+    p.add_argument('--gpu-memory-utilization',type=float,default=.86);a=p.parse_args()
     if a.model=='14b' and a.tp==1:p.error('14B TP1 exceeds card memory')
     if a.repeats<2:p.error('reference needs two repeats')
     a.output.mkdir(parents=True,exist_ok=True)
@@ -24,7 +25,7 @@ def main():
     start=time.monotonic()
     llm=LLM(model=str(path),skip_tokenizer_init=True,dtype='bfloat16',tensor_parallel_size=a.tp,
             enforce_eager=True,max_model_len=2048,max_num_seqs=a.batch,max_num_batched_tokens=128,
-            kv_cache_memory_bytes=budget,gpu_memory_utilization=.86,
+            kv_cache_memory_bytes=budget,gpu_memory_utilization=a.gpu_memory_utilization,
             attention_config={'backend':'TRITON_ATTN'},enable_prefix_caching=False,disable_log_stats=True,seed=0)
     initial=llm.collective_rpc(install,args=(True,))
     prompt_ids=prompts(a.model,a.batch);runs=[]
@@ -35,7 +36,8 @@ def main():
         runs.append({'outputs':[{'request_id':o.request_id,'tokens':list(o.outputs[0].token_ids),
                                   'finish_reason':o.outputs[0].finish_reason} for o in generated],'ranks':ranks})
     result={'status':'passed','model':a.model,'tp':a.tp,'batch':a.batch,'prompts':prompt_ids,
-            'kv_budget_bytes_per_rank':budget,'initial_ranks':initial,'runs':runs,'oracle':oracle,
+            'kv_budget_bytes_per_rank':budget,'kv_num_blocks_requested':192,
+            'gpu_memory_utilization':a.gpu_memory_utilization,'initial_ranks':initial,'runs':runs,'oracle':oracle,
             'elapsed_seconds':time.monotonic()-start}
     (a.output/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps({'status':'passed','model':a.model,'tp':a.tp,'batch':a.batch}))

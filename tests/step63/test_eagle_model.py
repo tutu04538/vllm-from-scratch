@@ -106,8 +106,8 @@ def test_combine_hidden_states_is_noop_without_aux():
 
 def test_fc_input_size_is_target_hidden_times_aux_layers():
     model = tiny_model(target_hidden_size=16, num_aux_layers=3)
-    assert model.model.fc.in_features == 48
-    assert model.model.fc.out_features == model.model.hidden_size
+    assert model.model.fc.input_size == 48
+    assert model.model.fc.output_size == model.model.hidden_size
 
 
 # ---------------------------------------------------------------------------

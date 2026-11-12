@@ -17,12 +17,12 @@ from .activation import (GeluAndMul, SiluAndMul, SwigluStepAndMul,
                          get_act_and_mul_fn)
 from .layernorm import GemmaRMSNorm, RMSNorm
 from .linear import (ColumnParallelLinear, MergedColumnParallelLinear, ParallelLMHead,
-                     QKVParallelLinear, RowParallelLinear, VocabParallelEmbedding)
+                     QKVParallelLinear, ReplicatedLinear, RowParallelLinear, VocabParallelEmbedding)
 from .logits_processor import LogitsProcessor
 from .rotary_embedding import (Gemma4RotaryEmbedding, RotaryEmbedding,
                               get_rope, get_rope_cache_stats)
 
-__all__ = ["QKVParallelLinear", "MergedColumnParallelLinear", "ColumnParallelLinear",
+__all__ = ["QKVParallelLinear", "MergedColumnParallelLinear", "ColumnParallelLinear", "ReplicatedLinear",
            "RowParallelLinear", "VocabParallelEmbedding", "ParallelLMHead", "RMSNorm",
            "RotaryEmbedding", "Gemma4RotaryEmbedding", "get_rope",
            "get_rope_cache_stats", "GeluAndMul", "SiluAndMul",

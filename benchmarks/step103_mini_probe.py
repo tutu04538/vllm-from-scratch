@@ -44,6 +44,7 @@ def main():
   ordered=[{'request_id':str(i),'tokens':outputs[str(i)],'finish_step':finished[str(i)]} for i in range(a.batch)]
   assert all(len(o['tokens'])==32 for o in ordered)
   result={'status':'passed','model':a.model,'tp':a.tp,'batch':a.batch,'prompts':prompt_ids,
+          'kv_num_blocks_requested':cfg.cache_config.num_gpu_blocks,
           'initial_ranks':initial,'runs':[{'outputs':ordered,'ranks':ranks}],
           'scheduler_steps':steps,'elapsed_seconds':time.monotonic()-start}
   (a.output/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
