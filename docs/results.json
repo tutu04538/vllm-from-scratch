@@ -14051,7 +14051,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 193,
-    "sha256": "a7b3f8a919cd6343c8ed6d0740860b12a40b9ac261061f1d5d85b6c9a8e310b3",
+    "sha256": "3f27e724194aad2969ef835b7cfbcc1c58c8bdad0817757b68f9cb6845b86e1b",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；历史各关结果中的摘要保留当次值"
   },
@@ -22301,7 +22301,21 @@
         "23 historical skips not counted as passed",
         "step73 upstream-same structured output stream race unresolved",
         "GPU0 8B reference run did not start due shared memory usage"
-      ]
+      ],
+      "stream_race_fix_20261112": {
+        "status": "fixed; upstream suspected bug documented and initialized-stream dependency added",
+        "targeted": "18 passed, 0 failed",
+        "targeted_log": "benchmarks/results/step109/step106_stream_fix_targeted.log",
+        "legacy": "1289 passed, 0 failed, 23 skipped",
+        "legacy_log": "benchmarks/results/step109/legacy_after_stream_fix.log",
+        "real_acceptance": "33 subprocesses passed",
+        "real_acceptance_json": "benchmarks/results/step109/step106_after_stream_fix.json",
+        "parallel": "304 passed, 1 failed because reference startup reservation exceeded available GPU memory; isolated retry passed at explicit 0.78 with unchanged 192 KV blocks",
+        "parallel_log": "benchmarks/results/step109/parallel_after_stream_fix.log",
+        "retry_log": "benchmarks/results/step109/step103_reservation_078.log",
+        "worktree_package_sha256": "cd740418e06b910c879788d93cfa24c66319e5e3d13c5ed7555254a06ce29dda",
+        "note": "Measurements include uncommitted step109 work; do not attribute them to the standalone step106 commit hash."
+      }
     },
     "models": {
       "8b_target": {

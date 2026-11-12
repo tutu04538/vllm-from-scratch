@@ -18,7 +18,9 @@
   （本项目自有，字段与上游一致；本文件只读 `req_ids` / `cu_num_logits_np` / `num_draft_tokens_per_req`
   / `cu_num_logits` 四个）。
 
-没有删除任何上游 import，内核与 mapping 构造逻辑一行未改。
+没有删除任何上游 import，内核与 mapping 构造逻辑一行未改。冻结上游遗漏了初始化流与
+复制流的依赖：本项目在创建复制流后增加等待，避免初始化清零覆盖首轮拷贝；复现和
+差异见 `vllm_bugs/UPSTREAM_SUSPECTED_BUGS.md`。
 """
 import numpy as np
 import torch
@@ -73,6 +75,9 @@ class StructuredOutputsWorker:
         )
         self.device = device
         self.copy_stream = torch.cuda.Stream()
+        # The mask buffers were initialized on the caller's current stream.
+        # Their first copy must not race those initial writes.
+        self.copy_stream.wait_stream(torch.cuda.current_stream(device))
         self.mask_stride = mask_stride
         self.num_bonus_tokens = num_bonus_tokens
 

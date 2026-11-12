@@ -168,7 +168,7 @@
 
 [105 TP 整模型 CUDA Graph 接入](step105_alignment.md)：普通 Qwen3 V2 FULL decode 的多 rank 捕获和重放已实现，真实模型矩阵和动态 tiny 场景已验证；曾出现一次 14B TP2 Worker 关闭超时，50 次专项复现未重现、根因未确定，因此暂不标记完全关闭。
 
-[106 真实 EAGLE3 单卡对照](step106_alignment.md)：修正 Qwen3 辅助层边界，真实 8B K0/1/2/4 与冻结参考对照、14B 草稿局部对照通过；历史回归有已知 stream 竞争与 GPU0 显存不足，暂不完全关闭。
+[106 真实 EAGLE3 单卡对照](step106_alignment.md)：修正 Qwen3 辅助层边界，真实 8B K0/1/2/4 与冻结参考对照、14B 草稿局部对照通过；历史 stream 竞争已修复，显存不足和修复前回归失败保留在报告。
 
 [107 EAGLE3 草稿分片与词表映射](step107_alignment.md)：FC 复制、attention head 和词表分片，以及 8B/14B TP2/4 固定 prefill 与同 TP 冻结参考的对照；完整多卡投机及 Graph 的后续进展见 108/109。
 

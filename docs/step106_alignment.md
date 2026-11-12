@@ -1,6 +1,6 @@
 # 106：真实 EAGLE3 单卡身份与逐轮差分
 
-状态：106 功能及单卡专门验收已完成；全量回归中有历史结构化输出 stream 问题和 GPU0 显存不足的失败，暂不将整个关卡标记为完全关闭。107 可基于已实测的单卡草稿协议继续，但这些回归异常仍须单独保留。
+状态：106 限定范围实现及验收完成；此前的结构化输出 stream 竞争已按实际依赖修复。历史显存不足与修复前失败保留。
 
 ## 冻结源码与职责
 
@@ -36,3 +36,5 @@ Scheduler 唯一拥有 Request 与逻辑提交位置；Runner/Worker 持有本�
 - `CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step103/test_step103_e2e.py::test_real_8b_tp1_32_token_generation_without_prior_103_benchmark -q -ra`：1 failed；冻结参考启动时实际剩余 20.01 GiB，低于该测试固定要求 20.34 GiB，项目模型未运行，见 `benchmarks/results/step106/step103_gpu0_20261112.log`。相同测试改用空闲物理 GPU2 并保持其余参数不变：1 passed，见 `benchmarks/results/step106/step103_gpu2_20261112.log`。两次结果分别保留，不以补跑覆盖失败。
 - 随后 107 的加载检查变更后，最新包 hash `6c63b3ca0f81ebdbf8ec214c3e1fd150f80db570d692667a9ede805d94ee0fe3` 下同命令重跑 58—88：1289 passed、0 failed、23 skipped，见 `benchmarks/results/step107/legacy_hash6c_20261112.log`。
 - 108 对齐 CUDA RMSNorm 原地别名语义后，包 hash `a7b3f8a919cd6343c8ed6d0740860b12a40b9ac261061f1d5d85b6c9a8e310b3` 下以 `CUDA_VISIBLE_DEVICES=3 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step106_acceptance.py --case all --timeout 1800 --output benchmarks/results/step108/step106_after_inplace.json` 复跑 106 真实模型及专项测试：33 子步骤通过；58—88 复跑为 1289 passed、0 failed、23 skipped，见 `benchmarks/results/step108/legacy_a7b.log`。本次不改变历史 stream 问题的根因结论。
+- 109 回归再次复现结构化输出错误后，确认缓冲在初始化流清零，而首轮复制在独立流上可提前执行。冻结上游同样可复现，见私有 `vllm_bugs/UPSTREAM_SUSPECTED_BUGS.md` 及对应最小差分。本项目在创建 copy stream 后令其等待初始化流，后续仍沿用原有每轮 copy→计算→copy 的依赖；这是明确记录的上游差异，不是声称冻结上游已修复。
+- 在同时包含进行中的 109 和本修复的工作区，包 hash `cd740418e06b910c879788d93cfa24c66319e5e3d13c5ed7555254a06ce29dda`：`CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step106/test_step106_structured_stream.py tests/step73/test_v2_sample_states.py -q -ra` 为 18 passed；延迟初始化流的专项覆盖 5 次，实际输出掩码断言不变。58—88 全量重跑为 1289 passed、0 failed、23 skipped，日志 `benchmarks/results/step109/legacy_after_stream_fix.log`；`CUDA_VISIBLE_DEVICES=3 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step106_acceptance.py --case all --timeout 1800 --output benchmarks/results/step109/step106_after_stream_fix.json` 为 33 子步骤通过。089—108 回归 304 passed、1 failed：103 参考引擎启动时可用 19.35 GiB 略低于 0.82 预留的 19.39 GiB，未开始模型推理；明确调至 0.78 后保持 192 KV 块和断言的单项复测通过。不能把上述混合工作区记录写成独立 106 提交版本的全量实测。
