@@ -177,3 +177,5 @@
 [109 真实 EAGLE3 TP 与 Graph](step109_alignment.md)：Qwen3 8B/14B 同 TP 的 target 与 draft FULL decode 图、真实权重逐 rank 参考对照、固定历史和概率草稿；记录大批次 BF16 归约修正、显存容量差异和历史风险。
 
 [110 支持边界](step110_alignment.md)：TP 支持矩阵、配置期 PP/DP 拒绝、同 TP 草稿及多卡模型初始化前置检查；冻结上游限制与项目范围分别列明。
+
+[111 四卡性能矩阵与通信归因](step111_alignment.md)：50 组初测中 43 组严格通过、4 组平局观察、3 组失败；已采集代表点与 NUMA trace。逐层诊断定位到 RoPE 建表设备差异，修复和最终重测仍在 112 进行，不能把初测当作最终代码性能。

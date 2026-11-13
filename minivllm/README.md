@@ -1184,3 +1184,7 @@ Qwen3 + EAGLE3 的 V2 同 TP 路径支持 `FULL_DECODE_ONLY`：target、draft pr
 ### TP 支持边界（110）
 
 本专题仅开放 TP=1/2/4，PP 或 DP 大于 1 在配置期拒绝；多卡 EAGLE3 要求草稿和目标使用相同 TP，模型配置不匹配会提前报错。项目限制与冻结 vLLM 自身限制、真实模型证据及未验范围见 [110 对齐报告](../docs/step110_alignment.md)。
+
+### 四卡性能矩阵（111）
+
+8B TP1/2/4 与 14B TP2/4 的初次矩阵、逐 rank trace 和 NUMA 对照见 [111 对齐报告](../docs/step111_alignment.md)。初测有 3 组混合负载未通过数值/输出门禁；发现的 RoPE 建表设备差异和后续修复验证见 112，不将未过门禁的性能计入主表。
