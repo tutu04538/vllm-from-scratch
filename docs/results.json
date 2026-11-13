@@ -41,7 +41,8 @@
     "step094": "已完成单机共享内存广播、顺序 RPC/Future 和无模型 EngineCore 探针；多卡模型和异步调度未开放",
     "step095": "已完成多进程故障监控、失败传播与有界幂等清理；仅测试 Worker，真实多卡模型仍未开放",
     "step096": "已完成普通 TP 行列线性层的本地参数、CPU 权重切片加载和真实 GPU 差分；完整多卡模型仍未开放",
-    "step097": "已完成 Merged/QKV TP 本地分片、GQA KV 复制和 8B/14B 真实权重抽层验收；完整多卡模型未开放"
+    "step097": "已完成 Merged/QKV TP 本地分片、GQA KV 复制和 8B/14B 真实权重抽层验收；完整多卡模型未开放",
+    "step110": "passed: specified TP support boundary; historical step105 shutdown risk retained"
   },
   "step58": {
     "results": {
@@ -14051,7 +14052,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 193,
-    "sha256": "324aa1fa47ca5240f6ee75181c05807aeeb91eef38b15ef0cc6e725d534a5786",
+    "sha256": "dfedce8d6e73039072766c3c0b364de106dc75a01b11616d76b3be353bdab4a9",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；历史各关结果中的摘要保留当次值"
   },
@@ -28898,6 +28899,165 @@
         "converted_sha256": "0089444e85b43484395e987fbe57713dbd99ec6fb46430734791122828347d37",
         "manifest_sha256": "c3fc4826e0bc36a8dabe94930365df711a4b396f14eaef95f05ba52cff8779e7"
       }
+    }
+  },
+  "step110": {
+    "results": {
+      "status": "passed: specified TP support-boundary acceptance",
+      "baseline_head": "bfd80e67faa3da258739d27b9d475a8dc8bd7ef5",
+      "package_sha256": "dfedce8d6e73039072766c3c0b364de106dc75a01b11616d76b3be353bdab4a9",
+      "source_manifest_sha256": "b37356d29313680953f67fc1ceacf10c83e726931efaed87fe9c06f7dc67bea7",
+      "environment": {
+        "python": "3.12.13",
+        "torch": "2.13.0+cu129",
+        "triton": "3.7.1",
+        "vllm": "0.28.0+cu129",
+        "transformers": "5.14.1",
+        "devices": "4 x NVIDIA RTX 4090",
+        "device_order": "CUDA_VISIBLE_DEVICES=2,3,0,1"
+      },
+      "commands": [
+        {
+          "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step110_acceptance.py --case boundary --output benchmarks/results/step110/boundary_reformatted.json",
+          "exit_code": 0,
+          "passed": 49,
+          "failed": 0,
+          "skipped": 0,
+          "log": "benchmarks/results/step110/boundary_reformatted.log"
+        },
+        {
+          "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step110_acceptance.py --case frozen --output benchmarks/results/step110/frozen_complete.json",
+          "exit_code": 0,
+          "passed": 2,
+          "failed": 0,
+          "skipped": 0,
+          "log": "benchmarks/results/step110/frozen_complete.log"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=2,3,0,1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step110_acceptance.py --case all --output benchmarks/results/step110/acceptance_complete.json",
+          "exit_code": 0,
+          "passed": 113,
+          "failed": 0,
+          "skipped": 0,
+          "log": "benchmarks/results/step110/acceptance_complete.log"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=2,3,0,1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest 'tests/step095/test_step095_failure.py::test_failure_and_cleanup[abrupt4]' -q -ra",
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "skipped": 0,
+          "log": "benchmarks/results/step110/abrupt4_revised.log"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%s ' $(seq 58 88)) -q -ra",
+          "exit_code": 0,
+          "passed": 1289,
+          "failed": 0,
+          "skipped": 23,
+          "log": "benchmarks/results/step110/legacy_final.log"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=2,3,0,1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest $(printf 'tests/step%03d ' $(seq 89 109)) -q -ra",
+          "exit_code": 0,
+          "passed": 321,
+          "failed": 0,
+          "skipped": 0,
+          "seconds": 2064.87,
+          "log": "benchmarks/results/step110/parallel_final3.log"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=2,3 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step109_eagle3_tp.py --model 8b --tp 2 --batch 1 --k 2 --mode graph --gpu-memory-utilization 0.50 --timeout 1800 --output benchmarks/results/step110/real_8b_graph.json",
+          "exit_code": 0,
+          "cases_passed": 1,
+          "subprocesses_passed": 5,
+          "continuous_comparisons": 240,
+          "result": "benchmarks/results/step110/real_8b_graph.json"
+        },
+        {
+          "command": "CUDA_VISIBLE_DEVICES=2,3 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step109_eagle3_tp.py --model 14b --tp 2 --batch 1 --k 2 --mode graph --gpu-memory-utilization 0.50 --timeout 1800 --output benchmarks/results/step110/real_14b_graph.json",
+          "exit_code": 0,
+          "cases_passed": 1,
+          "subprocesses_passed": 5,
+          "continuous_comparisons": 232,
+          "result": "benchmarks/results/step110/real_14b_graph.json"
+        }
+      ],
+      "earlier_regression": {
+        "exit_code": 1,
+        "passed": 320,
+        "failed": 1,
+        "reason": "095 abrupt4 used withdrawn TP2×PP2; updated to TP4, then reran",
+        "log": "benchmarks/results/step110/parallel_final2.log"
+      },
+      "static_requirements_check": {
+        "passed": 7911,
+        "failed": 0,
+        "log": "benchmarks/results/step110/requirements_final.log"
+      },
+      "limitations": [
+        "105 historical worker shutdown timeout remains unexplained",
+        "23 historical skipped tests are not model acceptance",
+        "PP/DP and other unauthorized parallel axes are excluded"
+      ]
+    },
+    "models": {
+      "8b_target": {
+        "repo": "Qwen/Qwen3-8B",
+        "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+        "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+        "dtype": "bfloat16",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "weights_sha256": {
+          "model-00001-of-00005.safetensors": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f",
+          "model-00002-of-00005.safetensors": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282",
+          "model-00003-of-00005.safetensors": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836",
+          "model-00004-of-00005.safetensors": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a",
+          "model-00005-of-00005.safetensors": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+        },
+        "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified"
+      },
+      "14b_target": {
+        "repo": "Qwen/Qwen3-14B",
+        "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+        "local_path": "/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+        "dtype": "bfloat16",
+        "architectures": [
+          "Qwen3ForCausalLM"
+        ],
+        "tokenizer_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "weights_sha256": {
+          "model-00001-of-00008.safetensors": "e942bdbdf08857d16a8fef7d1dae9fceabeb4e84def6043485fe2f6f085dab0e",
+          "model-00002-of-00008.safetensors": "f7c9c6eee628f5ad831d2d1d292e120505e5fcadeb38f88b4d3c4cb86306ccf9",
+          "model-00003-of-00008.safetensors": "dfb8c5df9404b41ad6ae74e8b6b367135f017b4467b884cf71b17c71954f18a9",
+          "model-00004-of-00008.safetensors": "eab286fec759e3e59ab228621aefa0fef14ed56039e06f959e67257d5af7604d",
+          "model-00005-of-00008.safetensors": "97f0dc2992e59da95c466eff6f4fd0c8335843bbc36ed5c913a6f5150748c0e6",
+          "model-00006-of-00008.safetensors": "9e8e76a013cd5e253865b792991e0b410f869b136b3c500079b531b09198e99e",
+          "model-00007-of-00008.safetensors": "0aee70ee6e91dc00d818804fb47f124d13ee4ad5b4a64553e09dbf9391cd5750",
+          "model-00008-of-00008.safetensors": "0d6b92296e326d39bbbaeb32c3ec454ac606da843d4c8ffa8edf010b62b8c9e0"
+        },
+        "weight_source": "Hub snapshot fixed revision; LFS SHA256 verified"
+      },
+      "8b_draft": {
+        "revision": "9629dfce7a4a10564dd48d3e5485c3976095653c",
+        "source": "/data/syh/.cache/huggingface/hub/models--AngelSlim--Qwen3-8B_eagle3/snapshots/9629dfce7a4a10564dd48d3e5485c3976095653c",
+        "converted": "/data/syh/models/converted/AngelSlim/Qwen3-8B_eagle3/9629dfce7a4a10564dd48d3e5485c3976095653c",
+        "source_sha256": "048b9c4ada5fc26a7fe35086446f6013bb91ab9336c49ea38e519cffed43fe74",
+        "converted_sha256": "09db6691043506516dbb8086a6d0a35e65729f51cc6a8af0339c7f5863e10756",
+        "manifest_sha256": "0ca5bd8df30edaf579ddd033edb9f9dddde7e6035e1ebdde299768facec3b22b"
+      },
+      "14b_draft": {
+        "revision": "3d13517724e81cb409ddf1d4650772ec52f1e18e",
+        "source": "/data/syh/.cache/huggingface/hub/models--AngelSlim--Qwen3-14B_eagle3/snapshots/3d13517724e81cb409ddf1d4650772ec52f1e18e",
+        "converted": "/data/syh/models/converted/AngelSlim/Qwen3-14B_eagle3/3d13517724e81cb409ddf1d4650772ec52f1e18e",
+        "source_sha256": "12d9f436fc08e6fffc580c5e4a71ecefcb44bef450e500df3fac698e9f530cbf",
+        "converted_sha256": "0089444e85b43484395e987fbe57713dbd99ec6fb46430734791122828347d37",
+        "manifest_sha256": "c3fc4826e0bc36a8dabe94930365df711a4b396f14eaef95f05ba52cff8779e7"
+      },
+      "evidence": "docs/step103_alignment.md, docs/step105_alignment.md, docs/step109_alignment.md; focused rerun in benchmarks/results/step110/"
     }
   }
 }

@@ -109,7 +109,7 @@ def run(case):
         raise AssertionError('startup failure not propagated')
 
     os.environ['MINIVLLM_STEP095_CASE'] = case
-    cfg = config(tp=2, pp=2 if case == 'abrupt4' else 1)
+    cfg = config(tp=4 if case == 'abrupt4' else 2, pp=1)
     ex = MultiprocExecutor(cfg, _worker_cls=Step095Worker, _startup_timeout=60)
     try:
         if case in ('initialize', 'capture'):

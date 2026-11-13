@@ -175,3 +175,5 @@
 [108 TP 投机状态与拒绝后修复](step108_alignment.md)：限定开放 V2 多卡 EAGLE3 eager；逐 rank 检查同源输入、接受和拒绝、有效 KV、缓存复用及失败传播。TP 投机 Graph 和真实模型整链矩阵见 109。
 
 [109 真实 EAGLE3 TP 与 Graph](step109_alignment.md)：Qwen3 8B/14B 同 TP 的 target 与 draft FULL decode 图、真实权重逐 rank 参考对照、固定历史和概率草稿；记录大批次 BF16 归约修正、显存容量差异和历史风险。
+
+[110 支持边界](step110_alignment.md)：TP 支持矩阵、配置期 PP/DP 拒绝、同 TP 草稿及多卡模型初始化前置检查；冻结上游限制与项目范围分别列明。

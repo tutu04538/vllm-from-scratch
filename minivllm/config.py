@@ -1936,6 +1936,14 @@ class VllmConfig:
         if len(arch) != 1 or arch[0] not in (
                 "Eagle3Qwen3ForCausalLM", "Eagle3LlamaForCausalLM", "LlamaForCausalLMEagle3"):
             raise NotImplementedError("108 多卡仅支持 Qwen3 配套 EAGLE3 草稿架构")
+        target_hf = self.model_config._text_hf_config()
+        draft_hf = draft.hf_config or {}
+        target_hidden = target_hf.get("hidden_size")
+        draft_target_hidden = draft_hf.get("target_hidden_size", draft_hf.get("hidden_size"))
+        if (target_hidden is not None and draft_target_hidden is not None
+                and target_hidden != draft_target_hidden):
+            raise ValueError(f"EAGLE3 draft target_hidden_size={draft_target_hidden} 与 "
+                             f"target hidden_size={target_hidden} 不匹配")
 
     def _validate_parallel_config(self) -> None:
         p = self.parallel_config
@@ -1949,6 +1957,12 @@ class VllmConfig:
             raise NotImplementedError("V2 不支持 EAGLE3 + PP>1")
         if p.pipeline_parallel_size > 1 and p.distributed_executor_backend == "external_launcher":
             raise NotImplementedError("不支持 external_launcher + PP>1")
+        if p.pipeline_parallel_size != 1 or p.data_parallel_size != 1:
+            raise NotImplementedError(
+                f"多卡仅支持 TP：PP={p.pipeline_parallel_size}、DP={p.data_parallel_size} "
+                "超出本专题范围")
+        if p.tensor_parallel_size not in (1, 2, 4):
+            raise NotImplementedError(f"本专题仅支持 TP=1/2/4，收到 TP={p.tensor_parallel_size}")
         p.validate_model(self.model_config)
         if p.tensor_parallel_size > 1:
             hf = self.model_config._text_hf_config()
@@ -1962,8 +1976,6 @@ class VllmConfig:
         if p.total_gpu_count > 1:
             if not self.use_v2_model_runner or not self.device_config.device.startswith("cuda"):
                 raise NotImplementedError("多卡并行仅开放 V2 CUDA Worker 启动")
-            if p.data_parallel_size != 1:
-                raise NotImplementedError("多卡 DP 尚未开放")
             if p.resolved_backend != "mp":
                 raise NotImplementedError("多卡 Worker 启动需要 mp 后端")
             if self.device_config.device != "cuda":

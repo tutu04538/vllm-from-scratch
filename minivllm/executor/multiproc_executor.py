@@ -250,6 +250,11 @@ class MultiprocExecutor:
         if type(_startup_timeout) not in (int, float) or _startup_timeout <= 0:
             raise ValueError('启动超时必须为正')
         _check_config_for_cuda(vllm_config)
+        # The normal production Worker can validate model/backend metadata in
+        # the parent, before spawning workers or creating process groups. Test
+        # workers deliberately exercising the RPC lifecycle may have no model.
+        if _worker_cls is None:
+            Worker(vllm_config)._validate_tp_model()
         pickle.dumps(vllm_config)
         self.vllm_config = vllm_config
         self.workers = []

@@ -37,6 +37,9 @@ def test_real_visible_device_budget_rejected_before_worker():
     assert 0 < count < 8
     parallel = ParallelConfig(tensor_parallel_size=4, data_parallel_size=2)
     with pytest.raises(ValueError, match='需要 8 张 GPU'):
+        parallel.validate_devices(count)
+    # The project now rejects DP before querying devices or starting workers.
+    with pytest.raises(NotImplementedError, match='DP'):
         VllmConfig(ModelConfig('unused', hf_config={
             'num_attention_heads': 32, 'num_key_value_heads': 8, 'num_hidden_layers': 36}),
             device_config=DeviceConfig('cuda'), parallel_config=parallel)

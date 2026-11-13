@@ -25,7 +25,7 @@ class FailingExecuteProbe(RPCProbeWorker):
         return super().execute_model(scheduler_output, non_block=non_block)
 
 
-def config(tp=2,pp=2):
+def config(tp=4,pp=1):
     return VllmConfig(ModelConfig('unused',hf_config={'num_attention_heads':4,'num_key_value_heads':2,
                        'num_hidden_layers':4},max_model_len=64,enforce_eager=True),
                       cache_config=CacheConfig(num_gpu_blocks=16),
@@ -52,7 +52,7 @@ def do_rpc(outdir):
     cfg=config(); ex=MultiprocExecutor(cfg,_worker_cls=GatedRPCProbeWorker,_startup_timeout=90)
     results={}
     try:
-        assert ex.output_rank == 2
+        assert ex.output_rank == 0
         s0=snapshot()
         bad=snapshot();bad.scheduled_new_reqs=[object()]
         try:ex.execute_model(bad)
@@ -68,7 +68,7 @@ def do_rpc(outdir):
         (gate/'release').touch()
         result=f2.result()  # 故意先等第二个：第一个 Future 必须先读取其对应回复。
         assert f1.done() and f1.result() is None
-        assert result.source_rank == 2 and result.req_ids == ['A','B']
+        assert result.source_rank == 0 and result.req_ids == ['A','B']
         observed=ex.collective_rpc('snapshot',timeout=30)
         assert len(observed)==4 and all(asdict(x)==asdict(s0) for x in observed)
         assert ex.collective_rpc('rank_identity',unique_reply_rank=2,timeout=30)==2
@@ -125,7 +125,7 @@ def do_failure():
         abrupt.shutdown()
     assert not directory.exists() and all(not (Path('/dev/shm')/n).exists() for n in names)
     assert all(not h.process.is_alive() for h in abrupt.workers)
-    return {'status':'passed','failed_rank':1,'output_rank':2,'error':error,
+    return {'status':'passed','failed_rank':1,'output_rank':0,'error':error,
             'abrupt_exit_error':abrupt_error,'orphan_shm_cleaned':True,'ipc_directory_cleaned':True,
             'abrupt_worker_exit_codes':[h.process.exitcode for h in abrupt.workers]}
 

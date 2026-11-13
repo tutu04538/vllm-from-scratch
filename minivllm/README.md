@@ -1180,3 +1180,7 @@ V2 支持限定的同 TP、固定 K EAGLE3 eager 执行；各 rank 独立执行�
 ### 多卡 EAGLE3 的 FULL decode Graph（109）
 
 Qwen3 + EAGLE3 的 V2 同 TP 路径支持 `FULL_DECODE_ONLY`：target、draft prefill 和 draft decode 分别捕获与重放，普通 prefill 走 eager。真实 8B/14B 矩阵、固定历史和容量边界见 [109 对齐报告](../docs/step109_alignment.md)；PP/DP、多卡 Graph + prefix caching、动态 K 和异步调度仍不在支持范围内。
+
+### TP 支持边界（110）
+
+本专题仅开放 TP=1/2/4，PP 或 DP 大于 1 在配置期拒绝；多卡 EAGLE3 要求草稿和目标使用相同 TP，模型配置不匹配会提前报错。项目限制与冻结 vLLM 自身限制、真实模型证据及未验范围见 [110 对齐报告](../docs/step110_alignment.md)。
