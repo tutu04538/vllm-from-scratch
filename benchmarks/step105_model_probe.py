@@ -12,7 +12,13 @@ from benchmarks.step103_hooks import install,flush
 from benchmarks.check_step090_models import resolve_snapshot
 
 
+def install_observer(worker):
+ from minivllm.testing.graph_observer import install_graph_observer
+ install_graph_observer()
+
 def graph_stats(worker):
+ from minivllm.testing.graph_observer import install_graph_observer
+ install_graph_observer()
  import torch
  import torch.distributed as dist
  runner=worker.model_runner;manager=runner.target_cudagraph_manager
@@ -48,6 +54,7 @@ def main():
   return ex.collective_rpc(fn,args=args) if a.tp>1 else [fn(ex.driver_worker,*args)]
  try:
   engine=LLMEngine(cfg,ex,tokenizer=None)
+  rpc(install_observer)
   initial=rpc(install,False)
   prompt_ids=prompts(a.model,a.batch);run_id='run0'
   for i,prompt in enumerate(prompt_ids):

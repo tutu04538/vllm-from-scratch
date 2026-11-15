@@ -19,7 +19,7 @@ from spec69_helpers import (CUDAGraphMode, DEVICE, make_engine, requires_cuda,
                             run_to_end, tiny_model)
 from minivllm import SamplingParams
 from minivllm.attention.backend import AttentionCGSupport, min_cudagraph_support
-from minivllm.compilation import CUDAGraphLogging, CUDAGraphStat
+from minivllm.testing.graph_stats import CUDAGraphLogging, CUDAGraphStat
 from minivllm.config import CompilationConfig, CompilationMode
 
 

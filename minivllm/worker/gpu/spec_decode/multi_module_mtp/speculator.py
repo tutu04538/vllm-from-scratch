@@ -1086,7 +1086,7 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
         uniform_token_count: int | None,
         need_eager: bool = False,
     ) -> BatchExecutionDescriptor:
-        """图分派（唯一写入 selection 账本的地方；与 74 的薄封装同形）。"""
+        """图分派（与 74 的薄封装同形）。"""
         manager = self.cudagraph_manager
         if manager is None:
             return BatchExecutionDescriptor(
@@ -1100,16 +1100,7 @@ class MultiModuleMTPSpeculator(DraftModelSpeculator):
             uniform_token_count,
             need_eager=need_eager,
         )
-        manager.record_selection(desc, num_reqs, num_tokens)
         return desc
-
-    @property
-    def cudagraph_selections(self) -> list[dict]:
-        """多模块草稿的“真实选中”账本（与自回归路径同形，测试直接读）。"""
-        manager = self.cudagraph_manager
-        if manager is None:
-            return []
-        return [dict(entry, graph="multi_module") for entry in manager.selections]
 
     def _prepare_inputs(
         self,

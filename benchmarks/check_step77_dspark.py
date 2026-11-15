@@ -38,6 +38,9 @@ from spec76_helpers import run_our_v2_kernel, run_upstream_v2_kernel  # noqa: E4
 from dspark_helpers import (DEVICE, fake_pp_config, make_engine,  # noqa: E402
                             make_spec_config, make_speculator, run_prompts,
                             set_sampling, tiny_pair)
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
+
 from minivllm import ModelConfig, SamplingParams, SpeculativeConfig  # noqa: E402
 from minivllm.config import VllmConfig  # noqa: E402
 from minivllm.testing.torch_dspark import reference_sequential  # noqa: E402

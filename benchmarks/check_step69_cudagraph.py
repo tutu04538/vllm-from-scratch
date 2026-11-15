@@ -29,6 +29,9 @@ sys.path.insert(0, str(ROOT / "tests" / "step69"))
 from spec69_helpers import (CUDAGraphMode, CompilationConfig, DispatcherHarness,  # noqa: E402
                             graph_snapshot, greedy_outputs, kv_digest, make_config,
                             make_engine, run_to_end)
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
+
 from minivllm import SamplingParams  # noqa: E402
 from minivllm.config import CompilationMode  # noqa: E402
 from minivllm.spec_decode.utils import (PADDING_SLOT_ID,  # noqa: E402

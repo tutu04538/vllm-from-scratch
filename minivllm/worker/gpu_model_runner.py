@@ -37,7 +37,7 @@ import torch
 
 from ..attention import Attention, AttentionMetadataBuilder
 from ..attention.backends.torch_sdpa import TorchAttentionBackend
-from ..compilation import (CUDAGraphLogging, CUDAGraphStat, CUDAGraphWrapper, graph_capture,
+from ..compilation import (CUDAGraphWrapper, graph_capture,
                            set_cudagraph_capturing_enabled)
 from ..config import CUDAGraphMode
 from ..core.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
@@ -335,12 +335,7 @@ class GPUModelRunner:
         # 图键 → 捕获时建好的那份 metadata（它的张量就是上面的静态缓冲，每轮原地更新）。
         # **不能每轮新建 metadata**：新对象里的张量是别人的地址，图重放时读不到。
         self._padded_metadata: dict[BatchDescriptor, object] = {}
-        # 真实分派记录（每轮一条）：测试与 profiler 记录"这一轮选了哪个 mode/键"靠它，
-        # 不是靠日志猜。字段名与 README/对齐文档里的表一致。
-        self.cudagraph_selections: list[dict] = []
         self.cudagraph_capture_stats: dict | None = None
-        # 图命中统计（`CUDAGraphLogging`）：`initialize_cudagraph_capture()` 里按最终模式建
-        self.cudagraph_logging: CUDAGraphLogging | None = None
 
     # -------- 初始化 --------
 
@@ -1085,11 +1080,6 @@ class GPUModelRunner:
             min_support = builder_cls.get_cudagraph_support(self.vllm_config)
             mode = self.vllm_config.resolve_cudagraph_mode_and_sizes(
                 min_support, builder_cls.__name__, self.uniform_decode_query_len)
-        # 命中统计（上游 `CUDAGraphStat`/`CUDAGraphLogging`）：**每一轮**都记一条，
-        # 包括"这一轮没走图"（模式 NONE）——验收要能回答"为什么没走图"，而只记命中时
-        # 这个问题的答案恰好缺失。
-        self.cudagraph_logging = CUDAGraphLogging(
-            mode, self.compilation_config.cudagraph_capture_sizes)
         self.cudagraph_dispatcher.initialize_cudagraph_keys(
             mode, self.uniform_decode_query_len)
         # draft 侧单独一套键（上游 `self.drafter.initialize_cudagraph_keys(cudagraph_mode)`）：
@@ -1173,28 +1163,6 @@ class GPUModelRunner:
             num_tokens=num_tokens, uniform_decode=uniform_decode,
             valid_modes={CUDAGraphMode.NONE} if force_eager else None)
         return mode, batch_descriptor
-
-    def _record_selection(self, mode: CUDAGraphMode, batch_descriptor: BatchDescriptor,
-                          num_tokens: int, num_reqs: int) -> None:
-        """记下这一轮**真实**选中的模式与键（验收要求："记录真实选中的 mode/key"）。
-
-        不是日志：测试与 profiler 直接读这个列表，所以它必须由分派的那一处写、别处不写。
-        """
-        self.cudagraph_selections.append({
-            "num_tokens": num_tokens, "num_reqs": num_reqs,
-            "padded_tokens": batch_descriptor.num_tokens,
-            "padded_reqs": batch_descriptor.num_reqs,
-            "uniform": batch_descriptor.uniform,
-            "mode": str(mode), "key": str(batch_descriptor),
-        })
-        # 上游在 `_determine_batch_execution_and_padding()` 里建这条记录、由调用方 observe；
-        # 本仓库把两者放在这一处（同一个写入点），数值口径完全一样。
-        if self.cudagraph_logging is not None:
-            self.cudagraph_logging.observe(CUDAGraphStat(
-                num_unpadded_tokens=num_tokens,
-                num_padded_tokens=batch_descriptor.num_tokens,
-                num_paddings=batch_descriptor.num_tokens - num_tokens,
-                runtime_mode=str(mode)))
 
     def _padded_attn_metadata(self, batch_descriptor: BatchDescriptor):
         """取（或第一次建）这个图键的 attention 元数据对象。
@@ -1649,8 +1617,6 @@ class GPUModelRunner:
             num_tokens=inputs.num_tokens, num_reqs=self.input_batch.num_reqs,
             num_scheduled_tokens=inputs.num_scheduled_tokens,
             max_num_scheduled_tokens=max(inputs.num_scheduled_tokens))
-        self._record_selection(mode, batch_descriptor, inputs.num_tokens,
-                               self.input_batch.num_reqs)
         try:
             if mode == CUDAGraphMode.NONE:
                 hidden_states = self._run_model(inputs)
@@ -2445,4 +2411,3 @@ class GPUModelRunner:
             self._padded_buffers = None
             self._padded_metadata = {}
             self.cudagraph_dispatcher = None
-            self.cudagraph_logging = None

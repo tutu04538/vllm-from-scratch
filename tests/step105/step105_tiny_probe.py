@@ -12,6 +12,8 @@ from step105_hooks import install,flush
 
 
 def graph_stats(worker):
+ from minivllm.testing.graph_observer import install_graph_observer
+ install_graph_observer()
  import torch
  import torch.distributed as dist
  r=worker.model_runner;m=r.target_cudagraph_manager

@@ -115,7 +115,7 @@ def test_dispatch_falls_back_to_eager_when_shape_not_captured():
     assert manager.dispatch(1, 4, 4) == manager._capture_descs[CUDAGraphMode.FULL][-1]
 
 
-def test_record_selection_is_the_only_writer():
+def test_dispatch_observer_records_the_selected_descriptor():
     """验收要"断言实际选中"：账本由分派处唯一写入，且 `replayed` 说清是不是真的重放。"""
     config = make_config(spec_k=3, mode="full_decode_only", capture_sizes=[1, 2, 3, 4, 8])
     manager = CudaGraphManager(config, torch.device("cpu"),
@@ -123,7 +123,6 @@ def test_record_selection_is_the_only_writer():
                                decode_query_len=1, allow_shape_padding=True)
     manager._graphs_captured = True
     desc = manager.dispatch(2, 2, 1)
-    manager.record_selection(desc, 2, 2)
     assert manager.selections == [{
         "num_reqs": 2, "num_tokens": 2, "desc_num_reqs": 2, "desc_num_tokens": 2,
         "mode": "FULL", "replayed": False,   # 没真捕获过图 → 不算重放

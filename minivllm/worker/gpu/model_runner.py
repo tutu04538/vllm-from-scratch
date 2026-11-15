@@ -1414,9 +1414,6 @@ class GPUModelRunner:
                     and batch_desc.cg_mode == CUDAGraphMode.PIECEWISE
                     and batch_req_state.is_prefilling_np.all()):
                 batch_desc = None
-            if batch_desc is not None:
-                self.target_cudagraph_manager.record_selection(
-                    batch_desc, num_reqs, batch_req_state.num_tokens)
         input_batch = self.prepare_inputs(
             scheduler_output, batch_req_state, batch_desc)
         block_tables, slot_mappings = self.prepare_attn(input_batch)

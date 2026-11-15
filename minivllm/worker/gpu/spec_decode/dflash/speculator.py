@@ -268,9 +268,6 @@ class DFlashSpeculator(DraftModelSpeculator):
             need_eager=is_profile,
         ) if self.query_cudagraph_manager is not None else BatchExecutionDescriptor(
             cg_mode=CUDAGraphMode.NONE, num_tokens=num_query_tokens, num_reqs=num_reqs)
-        if self.query_cudagraph_manager is not None:
-            self.query_cudagraph_manager.record_selection(desc, num_reqs, num_query_tokens)
-
         num_reqs_padded = desc.num_reqs or num_reqs
         num_tokens_padded = desc.num_tokens
         if desc.cg_mode == CUDAGraphMode.FULL:

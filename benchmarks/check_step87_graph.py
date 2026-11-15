@@ -13,6 +13,7 @@ trace 只数 kernel/launch，不做吞吐结论；capacity 用同一 prompt/同�
 
 from __future__ import annotations
 
+
 import argparse
 import gc
 import json
@@ -24,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 BENCH = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
 if str(BENCH) not in sys.path:
     sys.path.insert(0, str(BENCH))
 

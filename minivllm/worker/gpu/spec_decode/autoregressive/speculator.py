@@ -431,7 +431,7 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
 
         return self.draft_tokens[:num_reqs]
 
-    # -------- 图分派（薄封装，唯一的写入点是 `record_selection`） --------
+    # -------- 图分派 --------
     def _dispatch_prefill(self, num_reqs: int, num_tokens: int,
                           uniform_token_count: int | None,
                           need_eager: bool = False) -> BatchExecutionDescriptor:
@@ -444,7 +444,6 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         desc = manager.dispatch(
             num_reqs, num_tokens, uniform_token_count, need_eager=need_eager
         )
-        manager.record_selection(desc, num_reqs, num_tokens)
         return desc
 
     def _dispatch_decode(self, num_reqs: int, num_tokens: int,
@@ -457,19 +456,7 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         desc = manager.dispatch(
             num_reqs, num_tokens, uniform_token_count=1, need_eager=need_eager
         )
-        manager.record_selection(desc, num_reqs, num_tokens)
         return desc
-
-    @property
-    def cudagraph_selections(self) -> list[dict]:
-        """两张图各自的"真实选中"账本（prefill + decode，按发生顺序）。"""
-        selections = []
-        for name, manager in (("prefill", self.prefill_cudagraph_manager),
-                              ("decode", self.decode_cudagraph_manager)):
-            if manager is None:
-                continue
-            selections += [dict(entry, graph=name) for entry in manager.selections]
-        return selections
 
     # -------- 前向 --------
 

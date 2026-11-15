@@ -25,6 +25,7 @@ storage；最后一个使用者释放后条目自动消失，不会把旧引擎/
 
 from __future__ import annotations
 
+import itertools
 import threading
 import weakref
 from collections.abc import Mapping
@@ -43,10 +44,11 @@ _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 class _RopeTable:
     """一份共享的紧凑 cos/sin 表；由使用它的 RotaryEmbedding 持有强引用。"""
 
-    __slots__ = ("key", "cos_sin_cache", "__weakref__")
+    __slots__ = ("key", "identity", "cos_sin_cache", "__weakref__")
 
     def __init__(self, key: tuple[Any, ...], cos_sin_cache: torch.Tensor) -> None:
         self.key = key
+        self.identity = next(_ROPE_TABLE_IDS)
         self.cos_sin_cache = cos_sin_cache
 
     @property
@@ -54,7 +56,10 @@ class _RopeTable:
         return self.cos_sin_cache.numel() * self.cos_sin_cache.element_size()
 
 
-# key 的最后两项是 dtype/device；前面的部分由 get_rope 统一生成。
+# 唯一序号区分转换来源，不保留历史表，也不会因对象 id 复用混淆。
+_ROPE_TABLE_IDS = itertools.count()
+
+# 原始表按数学参数、dtype/device 共享；转换表按来源序号和目标共享。
 _ROPE_TABLE_CACHE: "weakref.WeakValueDictionary[tuple[Any, ...], _RopeTable]" = (
     weakref.WeakValueDictionary())
 _ROPE_CACHE_LOCK = threading.Lock()
@@ -82,7 +87,7 @@ def _freeze(value: Any) -> Any:
 
 def _canonical_device(device: torch.device | str | None) -> torch.device:
     if device is None:
-        resolved = torch.device("cpu")
+        resolved = torch.get_default_device()
     else:
         resolved = torch.device(device)
     if resolved.type == "cuda" and resolved.index is None:
@@ -146,7 +151,7 @@ def _compute_compact_cache(
 ) -> torch.Tensor:
     """按上游 `_compute_cos_sin_cache` 的紧凑布局建表。
 
-    先在 CPU FP32 上算（与上游构造时的 CPU 表逐值一致），最后一次性转 dtype/device。
+    和上游一样在构造设备上以 FP32 算表，然后转换到请求的 dtype。
     """
     if base <= 0:
         raise ValueError(f"RoPE base 必须为正，收到 {base}")
@@ -157,27 +162,27 @@ def _compute_compact_cache(
             raise ValueError(
                 f"proportional RoPE 要求 rotary_dim <= head_size，"
                 f"收到 rotary_dim={rotary_dim}, head_size={head_size}")
-        exponents = (torch.arange(0, 2 * rope_angles, 2, dtype=torch.float32)
+        exponents = (torch.arange(0, 2 * rope_angles, 2, dtype=torch.float32, device=device)
                      / head_size)
         inv_freq = 1.0 / (base ** exponents)
         if nope_angles:
             inv_freq = torch.cat(
-                (inv_freq, torch.zeros(nope_angles, dtype=torch.float32)))
+                (inv_freq, torch.zeros(nope_angles, dtype=torch.float32, device=device)))
         apply_dim = head_size
     else:
         inv_freq = 1.0 / (
-            base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32)
+            base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32, device=device)
                      / rotary_dim))
         apply_dim = rotary_dim
 
-    positions = torch.arange(max_position, dtype=torch.float32)
+    positions = torch.arange(max_position, dtype=torch.float32, device=device)
     freqs = torch.einsum("i,j -> ij", positions, inv_freq)
     cache = torch.cat((freqs.cos(), freqs.sin()), dim=-1)
     if cache.shape != (max_position, apply_dim):
         raise AssertionError(
             f"内部错误：cos/sin 表形状 {tuple(cache.shape)} != "
             f"{(max_position, apply_dim)}")
-    return cache.to(dtype=dtype, device=device)
+    return cache.to(dtype=dtype)
 
 
 def _get_table(
@@ -202,6 +207,22 @@ def _get_table(
             table = _RopeTable(key, cache)
             _ROPE_TABLE_CACHE[key] = table
         return table
+
+
+def _convert_table(table: _RopeTable, fn, dtype: torch.dtype,
+                   device: torch.device) -> _RopeTable:
+    """转换现有表的数值；不同初始设备/精度的表不能按目标设备合并。"""
+    device = _canonical_device(device)
+    key = ("converted", table.identity, dtype, device)
+    with _ROPE_CACHE_LOCK:
+        converted = _ROPE_TABLE_CACHE.get(key)
+        if converted is None:
+            value = fn(table.cos_sin_cache)
+            if value.dtype != dtype or value.device != device:
+                raise RuntimeError("RoPE 表转换与设备/精度探测结果不一致")
+            converted = _RopeTable(key, value)
+            _ROPE_TABLE_CACHE[key] = converted
+        return converted
 
 
 def get_rope(
@@ -312,7 +333,6 @@ def _init_rope_module(
     if table.cos_sin_cache.dtype != dtype:
         raise ValueError(
             f"内部错误：表 dtype={table.cos_sin_cache.dtype} 与请求 {dtype} 不一致")
-    module._rope_key_parts = key_parts
     module._rope_table = table
     module.register_buffer(
         "cos_sin_cache", table.cos_sin_cache, persistent=False)
@@ -371,8 +391,8 @@ class RotaryEmbedding(nn.Module):
             probe = torch.empty(0, dtype=cache.dtype, device=cache.device)
             moved = fn(probe)
             if moved.dtype != cache.dtype or moved.device != cache.device:
-                table = _get_table(
-                    self._rope_key_parts, moved.dtype, moved.device)
+                table = _convert_table(
+                    self._rope_table, fn, moved.dtype, moved.device)
                 self._rope_table = table
                 self._buffers["cos_sin_cache"] = table.cos_sin_cache
             else:

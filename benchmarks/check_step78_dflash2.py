@@ -37,6 +37,9 @@ from dflash2_helpers import (DEVICE, make_baseline_engine, make_engine,  # noqa:
                              make_spec_config, make_speculator, make_upstream_conv,
                              make_upstream_selector, model_configs, run_prompts,
                              set_walk_inputs, tiny_pair, walk_case)
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
+
 from minivllm import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,  # noqa: E402
                       SpeculativeConfig, VllmConfig)
 from minivllm.models.qwen3_dflash2 import (CandidateSelector,  # noqa: E402

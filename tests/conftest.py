@@ -1,4 +1,4 @@
-"""`tests/` 的全局环境准备（只做一件事）。
+"""`tests/` 的全局环境准备和显式测试侧 Graph 观察器。
 
 **为什么需要它**：V2 通路（`worker/gpu/`）依赖 UVA，而 UVA 判定
 （`minivllm/.../buffer_utils.py` 与上游 `vllm/v1/worker/gpu/buffer_utils.py`）都被
@@ -19,3 +19,7 @@ pytest 的收集顺序。于是同一组用例：
 import os
 
 os.environ.setdefault("VLLM_WSL2_ENABLE_PIN_MEMORY", "1")
+
+# 分派记录只属于测试观察器，不属于生产 Runner。
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()

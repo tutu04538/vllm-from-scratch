@@ -35,6 +35,9 @@ from spec76_helpers import (DEVICE, MASK_TOKEN_ID, fake_rows,  # noqa: E402
                             run_upstream_v1_kernel, run_upstream_v2_kernel,
                             tiny_dflash_model)
 
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
+
 from minivllm.attention.backends.torch_sdpa import TorchAttentionBackend  # noqa: E402
 from dataclasses import replace  # noqa: E402
 

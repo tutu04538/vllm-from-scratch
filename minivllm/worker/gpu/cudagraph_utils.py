@@ -162,9 +162,7 @@ class CudaGraphManager:
         self._candidates: dict[int, list[BatchExecutionDescriptor]] = {}
         #: 每个模式要捕获哪些键（捕获时按 num_tokens **从大到小**）
         self._capture_descs: dict[CUDAGraphMode, list[BatchExecutionDescriptor]] = {}
-        #: 观测用账本：这一轮真实选中了什么（验收要求"断言实际选中"）
-        self.selections: list[dict] = []
-        #: 真正 `replay()` 了几次（与 `selections` 不是一回事：融合多步 decode 一轮只
+        #: 真正 `replay()` 了几次（融合多步 decode 一轮只
         #: **挑一次键**，但图里走完 K−1 步；逐步路径则是同一个键重放 K−1 次）。
         self.num_replays = 0
 
@@ -277,7 +275,6 @@ class CudaGraphManager:
         self.graphs.clear()
         self._candidates.clear()
         self._capture_descs.clear()
-        self.selections.clear()
 
     # -------- 捕获 --------
 
@@ -382,21 +379,6 @@ class CudaGraphManager:
             num_reqs=num_reqs,
             num_active_loras=num_active_loras,
         )
-
-    def record_selection(self, desc: BatchExecutionDescriptor, num_reqs: int,
-                         num_tokens: int) -> None:
-        """记下这一轮**真实选中**的描述符（"实际选中了哪条路"的唯一写入点）。
-
-        验收要求"断言实际选中 fused/fallback"，所以这不能只是日志：测试直接读这个列表。
-        """
-        self.selections.append({
-            "num_reqs": num_reqs,
-            "num_tokens": num_tokens,
-            "desc_num_reqs": desc.num_reqs,
-            "desc_num_tokens": desc.num_tokens,
-            "mode": str(desc.cg_mode),
-            "replayed": desc in self.graphs,
-        })
 
     def run_fullgraph(self, desc: BatchExecutionDescriptor) -> None:
         """重放一张 FULL 图（上游同名方法）。

@@ -26,6 +26,9 @@ import torch  # noqa: E402
 
 from spec71_helpers import (DOC_TABLE, HF, TINY, RoundRecorder, greedy, make_config,  # noqa: E402
                             make_engine, make_prompt_requests, run_to_end, table_lookup)
+from minivllm.testing.graph_observer import install_graph_observer
+install_graph_observer()
+
 from minivllm import (CacheConfig, DeviceConfig, ModelConfig, SchedulerConfig,  # noqa: E402
                       SpeculativeConfig, VllmConfig)
 from minivllm.core.sched.async_scheduler import AsyncScheduler  # noqa: E402
