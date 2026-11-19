@@ -79204,7 +79204,7 @@
         "gptq": "5.6.0, transformers 4.57.6; tiny CPU quantization passed; real models unrun"
       },
       "public_awq_gptq": {
-        "status": "downloading_not_validated",
+        "status": "download_and_integrity_passed_gpu_not_validated",
         "models": [
           "Qwen/Qwen3-8B-AWQ@4da05a8edb55c6046cce958586c33b61da07bb79",
           "Qwen/Qwen3-14B-AWQ@31c69efc29464b6bb0aee1398b5a7b50a99340c3",
@@ -79213,7 +79213,25 @@
         ],
         "source_revision": "unknown",
         "calibration_leakage": "unknown",
-        "cpu_tests_step114_115_passed": 47
+        "cpu_tests_step114_115_passed": 47,
+        "tensor_inventory": {
+          "awq_8b": {
+            "tensors": 903,
+            "projections": 252
+          },
+          "awq_14b": {
+            "tensors": 1003,
+            "projections": 280
+          },
+          "gptq_8b": {
+            "tensors": 1155,
+            "projections": 252
+          },
+          "gptq_14b": {
+            "tensors": 1283,
+            "projections": 280
+          }
+        }
       }
     },
     "models": {

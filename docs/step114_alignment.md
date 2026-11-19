@@ -71,3 +71,9 @@ Hub 元数据的模型及配置匹配目标：AWQ 为 W4/G128/GEMM/zero point，
 `benchmarks/step114_download_public.py` 按固定 Hub revision 下载至原有 Hub 缓存，对所有文件大小和 SHA256 记录清单，并将 LFS 文件与 Hub SHA256 对账；清单存放 `/data/syh/models/converted/_quant_data/step114_public_manifests/`，只有下载和对账完成才写入。`benchmarks/check_step114_public_tensors.py` 另检查 safetensors 索引以及 qweight/scales/qzeros 成套存在。上游短前向脚本新增公开权重入口：重新检查文件、张量清单和 tokenizer.json 与冻结评测 token 所用 tokenizer 的哈希，同时保留来源与校准泄漏未知状态。只证明预先生成 token 的 tokenizer 文件相符，不证明聊天模板和原始 BF16 revision 相同。
 
 网络的镜像直连曾返回 503 与超时，已切到官方端点及现有代理重试；当前四份权重仍在下载，尚未完成 LFS 对账。四卡均有其他用户计算进程，上游 GPU 前向尚未运行。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step114 tests/step115 -q -ra`：47 passed、0 failed、0 skipped；仅为 CPU 测试。下载、上游加载及完整验收必须待实际完成后更新，不能将本段写成完成证据。
+
+## 2026-11-19：四份公开模型下载完成
+
+四份固定 revision 的公开模型已在 Hub 缓存下载完成，逐文件大小和 SHA256 已登记，所有 LFS 文件与 Hub 摘要一致；四份 manifest 位于 `/data/syh/models/converted/_quant_data/step114_public_manifests/`。执行 `CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python benchmarks/check_step114_public_tensors.py <snapshot>` 等价的四模型批量 CPU 审计：8B AWQ 为 903 tensors / 252 个量化投影，14B AWQ 1003 / 280；8B GPTQ 为 1155 / 252，14B GPTQ 1283 / 280。各 qweight/scales/qzeros 成套、safetensors 索引对账通过。GPTQ scales 的实际 dtype 是 FP16，AWQ scales 为 BF16；未来加载不能仅按激活 dtype 猜测。
+
+上述只证明文件及张量清单，不证明校准无泄漏、BF16 精确源 revision 或 GPU 数值正确。四份公开权重尚未执行冻结 vLLM 短前向或质量对照，114 仍未完成。
