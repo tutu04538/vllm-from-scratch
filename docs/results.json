@@ -79172,11 +79172,41 @@
         "manifest_sha256": "a30018b825396073d1dd79c7ac2381aa43847e719cf84fb615114a94d2230bdd",
         "scale_count": 252,
         "gpu_load": "not_run"
+      },
+      "fp8_14b_cpu_audit": {
+        "status": "passed_cpu_artifact_audit_only",
+        "source_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+        "recipe_sha256": "36023869cf7aff2019bc524329ca694ab0d96c03888d1c97b61b8fea300380e8",
+        "manifest_sha256": "04f321e5d74269e714b2665cc0225dbba0c7a28ebf34d04c33771b3cf301b4a5",
+        "scale_count": 280,
+        "gpu_load": "not_run"
+      },
+      "fp8_8b_upstream_short_forward": {
+        "status": "passed",
+        "device": "GPU3 RTX4090",
+        "tp": 1,
+        "mode": "eager",
+        "attention": "TRITON_ATTN",
+        "activation_dtype": "bfloat16",
+        "kernel": "CutlassFP8ScaledMMLinearKernel",
+        "prompt_tokens": 32,
+        "generated_tokens": [
+          279,
+          18096,
+          3776,
+          19584
+        ],
+        "reference": "benchmarks/results/step114/fp8_8b_vllm_gpu3_retry_reference.json",
+        "initial_probe_failure": "missing isolated-worker pickle serialization setting"
+      },
+      "tool_environment": {
+        "awq": "0.2.9, transformers 4.51.3; tiny CPU quantization passed; real 8B in progress",
+        "gptq": "5.6.0, transformers 4.57.6; tiny CPU quantization passed; real models unrun"
       }
     },
     "models": {
-      "Qwen3-8B": "FP8 converted and CPU audited; upstream load not run; AWQ/GPTQ not generated",
-      "Qwen3-14B": "no quantized artifact"
+      "Qwen3-8B": "FP8 upstream TP1 short forward passed; AWQ in progress; GPTQ not generated",
+      "Qwen3-14B": "FP8 CPU audit passed, upstream load not run; AWQ/GPTQ not generated"
     }
   },
   "step115": {

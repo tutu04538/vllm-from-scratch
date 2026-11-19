@@ -41,3 +41,26 @@ def test_data_audit_rejects_manifest_without_target_models(tmp_path):
     }))
     with pytest.raises(ValueError, match='missing or unexpected target'):
         audit.check(tmp_path)
+
+
+@pytest.mark.parametrize('method', ['awq', 'gptq'])
+def test_busy_quantizer_launcher_never_executes_quantizer(tmp_path, monkeypatch, method):
+    import sys
+    sys.path.insert(0, str(ROOT / 'benchmarks'))
+    try:
+        script = ROOT / 'benchmarks/step114_launch_quantizer.py'
+        launch_spec = importlib.util.spec_from_file_location('step114_awq_launcher', script)
+        module = importlib.util.module_from_spec(launch_spec)
+        launch_spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(ROOT / 'benchmarks'))
+    monkeypatch.setattr(module, 'gpu_occupancy', lambda device: {'status': 'busy'})
+    def forbidden(*args, **kwargs):
+        raise AssertionError('busy device must not start a process')
+    monkeypatch.setattr(module.subprocess, 'run', forbidden)
+    result = tmp_path / 'result.json'
+    code = module.launch(device=0, model='8B', tool_python=tmp_path / 'python', data=tmp_path,
+                         output_root=tmp_path, result_path=result, method=method)
+    assert code == 2
+    import json
+    assert json.loads(result.read_text())['status'] == 'not_run'
