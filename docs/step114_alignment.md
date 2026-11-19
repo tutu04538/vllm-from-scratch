@@ -50,3 +50,9 @@ AutoAWQ 0.2.9 安装在 `/data/syh/models/converted/_tools/step114-awq/`，其�
 GPTQModel 5.6.0 安装在 `/data/syh/models/converted/_tools/step114-gptq/`，Transformers 4.57.6、Torch 2.13.0+cu129；首次隔离构建因找不到 torch 版本失败，指定 `TORCH_VERSION=2.13.0`、`BUILD_CUDA_EXT=0` 重试成功。CPU tiny Qwen3 的 GPTQ 对称 W4/G128、desc_act=false 量化和保存通过；这不证明真实权重或 GPU kernel 可用。两环境分别运行 `tests/step114/step114_tiny_quantizer_probe.py --method awq/gptq`，日志在 `benchmarks/results/step114/`；环境列表 SHA256 分别为 `9f60f95837cc1de6b38a388dda550d99a4fb67a8937163a78c403406189929b3`、`2223532fca852aff6d1824ec707829822397663b07b021619ec57fcc7aab6ad6`。
 
 GPU2 上已启动 8B AWQ：128×2048 固定校准、group 128、zero point true、BF16 model/calibration、串行校准样本；量化任务尚未完成，日志与进度见 `benchmarks/results/step114/awq_8b_gpu2.log`。启动器仅在目标卡计算进程为空时启动，不保证运行期间其他用户不会占卡。GPU0/1/3 目前有其他用户任务，完整 4 卡回归和 14B FP8 GPU 验证待空闲。
+
+## 2026-11-19：调整校准长度
+
+用户同意为加快制备，将 AWQ/GPTQ 校准调整为 128 条 × 512 token。此前 8B AWQ 的 128×2048 运行由本任务主动中止，未完成量化，也没有产生最终 checkpoint；旧日志保留。新方案从已冻结的 128 条 2048-token 训练窗口分别取前 512 token，样本顺序与来源不变，独立 held-out 和 GSM8K 评测数据不变。两模型派生数据按脚本中确定的 JSON 编码计算 SHA256 均为 `3a97ad8d441050599c487ba5f2063eafe7767f64c5be3a64a9748145b4de6f4d`；产物 recipe 会同时登记原始数据及派生数据 hash、截取规则和量化脚本 hash。较短校准可能降低质量，不能替代后续质量评测。
+
+新任务尝试在 GPU2 启动时已有其他进程，启动器返回 not_run；四卡均有人使用，因此没有启动 512-token 真实量化。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step114 tests/step115 -q -ra`：45 passed，0 failed，0 skipped，仅 CPU 测试。114 的真实 AWQ/GPTQ 产物与 GPU 验收仍未完成。

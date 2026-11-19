@@ -1,5 +1,7 @@
 """AWQ/GPTQ 量化工具共享的源模型和校准样本身份检查。"""
 import json
+import hashlib
+import struct
 
 from step114_convert_fp8 import HUB, LFS_MANIFEST, SOURCES, SOURCE_CONTRACT, sha_file
 
@@ -36,6 +38,19 @@ def prepare_inputs(size, data):
     samples = json.loads(data_file.read_text())
     if len(samples) != 128 or any(len(row['token_ids']) != 2048 for row in samples):
         raise ValueError('calibration requires exactly 128 x 2048 tokens')
+    samples, derived_sha256 = derive_calibration(samples)
     return {'source': source, 'name': name, 'revision': revision, 'samples': samples,
+            'derived_calibration_sha256': derived_sha256,
             'data_manifest_sha256': sha_file(manifest_path), 'calibration_sha256': sha_file(data_file),
             'source_lfs_manifest_sha256': sha_file(LFS_MANIFEST)}
+
+
+def derive_calibration(samples):
+    """从冻结训练窗口确定性派生 128 条短校准序列。"""
+    if len(samples) != 128 or any(len(row['token_ids']) != 2048 for row in samples):
+        raise ValueError('source calibration requires exactly 128 x 2048 tokens')
+    derived = [{'id': row['id'], 'token_ids': row['token_ids'][:512]} for row in samples]
+    for row in derived:
+        row['sha256_uint32_le'] = hashlib.sha256(struct.pack('<512I', *row['token_ids'])).hexdigest()
+    payload = json.dumps(derived, sort_keys=True, separators=(',', ':')).encode()
+    return derived, hashlib.sha256(payload).hexdigest()

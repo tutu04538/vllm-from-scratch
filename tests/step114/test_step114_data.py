@@ -64,3 +64,19 @@ def test_busy_quantizer_launcher_never_executes_quantizer(tmp_path, monkeypatch,
     assert code == 2
     import json
     assert json.loads(result.read_text())['status'] == 'not_run'
+
+
+def test_short_calibration_is_deterministic_and_preserves_source():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'benchmarks'))
+    from step114_quantizer_common import derive_calibration
+
+    samples = [{'id': str(i), 'token_ids': list(range(2048))} for i in range(128)]
+    derived, digest = derive_calibration(samples)
+    assert len(derived) == 128
+    assert all(row['token_ids'] == list(range(512)) for row in derived)
+    assert len(samples[0]['token_ids']) == 2048
+    assert derive_calibration(samples)[1] == digest
+    samples[0]['token_ids'][0] = 999
+    assert derive_calibration(samples)[1] != digest

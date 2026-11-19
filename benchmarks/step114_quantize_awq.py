@@ -34,9 +34,11 @@ def main():
               'source_and_calibration_dtype': 'bfloat16', 'autoawq_apply_quant_weight_dtype': 'float16',
               'inference_activation_target': 'bfloat16', 'device_map': 'cpu',
               'duo_scaling': True, 'apply_clip': True,
-              'max_calib_samples': 128, 'max_calib_seq_len': 2048, 'n_parallel_calib_samples': 1,
+              'max_calib_samples': 128, 'max_calib_seq_len': 512, 'n_parallel_calib_samples': 1,
               'data_manifest_sha256': inputs['data_manifest_sha256'],
-              'calibration_sha256': inputs['calibration_sha256'], 'seed': 0,
+              'calibration_sha256': inputs['calibration_sha256'],
+              'derived_calibration_sha256': inputs['derived_calibration_sha256'],
+              'calibration_derivation': 'first 512 tokens of each frozen training window', 'seed': 0,
               'script_sha256': sha_file(Path(__file__)),
               'common_script_sha256': sha_file(Path(__file__).with_name('step114_quantizer_common.py'))}
     digest = hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -56,7 +58,7 @@ def main():
         model.quantize(tokenizer, quant_config={'zero_point': True, 'q_group_size': 128,
                        'w_bit': 4, 'version': 'GEMM'}, calib_data=[r['token_ids'] for r in samples],
                        duo_scaling=True, apply_clip=True, n_parallel_calib_samples=1,
-                       max_calib_samples=128, max_calib_seq_len=2048)
+                       max_calib_samples=128, max_calib_seq_len=512)
         model.save_quantized(str(tmp), safetensors=True, shard_size='5GB')
         tokenizer.save_pretrained(str(tmp))
         files = {p.name: {'sha256': sha_file(p), 'bytes': p.stat().st_size}

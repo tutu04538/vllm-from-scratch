@@ -34,9 +34,11 @@ def main():
               'format': 'gptq', 'pack_dtype': 'int32', 'device': 'cuda:0',
               'source_and_calibration_dtype': 'bfloat16',
               'offload_to_disk': True, 'batch_size': 1, 'calibration_sort': None,
-              'calibration_count': 128, 'calibration_tokens': 2048,
+              'calibration_count': 128, 'calibration_tokens': 512,
               'data_manifest_sha256': inputs['data_manifest_sha256'],
-              'calibration_sha256': inputs['calibration_sha256'], 'seed': 0,
+              'calibration_sha256': inputs['calibration_sha256'],
+              'derived_calibration_sha256': inputs['derived_calibration_sha256'],
+              'calibration_derivation': 'first 512 tokens of each frozen training window', 'seed': 0,
               'script_sha256': sha_file(Path(__file__)),
               'common_script_sha256': sha_file(Path(__file__).with_name('step114_quantizer_common.py'))}
     digest = hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
