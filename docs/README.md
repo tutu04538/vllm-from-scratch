@@ -187,3 +187,7 @@
 [113 量化能力基线（进行中）](step113_alignment.md)：源码与安装包的 CPU 对账通过；GPU 算子、dispatch 和构建尚待验证。
 
 [114 量化产物与评测基线（进行中）](step114_alignment.md)：校准与 held-out 数据身份已固定；六份量化权重和参考值未完成。
+
+[115 量化配置与方法分派（进行中）](step115_alignment.md)：AWQ/GPTQ/FP8 配置及逐层分派已接入，量化执行与 GPU 验证尚未完成。
+
+[116 LinearMethod 与 BF16 回归（进行中）](step116_alignment.md)：普通 Linear 参数创建和局部计算转交方法对象，模型加载接入后处理；真实模型、多卡和 Graph 回归尚未进行。

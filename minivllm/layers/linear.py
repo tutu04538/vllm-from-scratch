@@ -2,7 +2,7 @@
 
 名字保留 vLLM 的 `QKVParallelLinear` / `MergedColumnParallelLinear` / `RowParallelLinear` /
 `VocabParallelEmbedding` / `ParallelLMHead`，是为了**源码映射**：读 vLLM 的 qwen3.py 时能一对
-一找到这些类。普通行列层、QKV、Merged 和普通词表层支持 TP；完整多卡模型仍未开放。
+一找到这些类。普通行列层、QKV、Merged 和普通词表层支持 TP。
 
 它们存在的**真正理由**是权重加载：检查点里 q/k/v 是三个独立权重、gate/up 是两个，而模型里是
 打包的一个参数（少一次 GEMM 的 launch、少一次中间读写）。打包带来的问题就是"怎么把分片的
@@ -30,25 +30,33 @@ from torch.nn.parameter import Parameter
 
 
 def _get_quant_method(layer, quant_config, prefix):
-    if quant_config is None:
-        return None
     from .quantization.config import QuantizationConfig
     from .quantization.methods import UnquantizedLinearMethod
+    if quant_config is None:
+        return UnquantizedLinearMethod()
     if not isinstance(quant_config, QuantizationConfig):
         raise NotImplementedError(f"线性层 {prefix} 不支持此量化配置类型")
     method = quant_config.get_quant_method(layer, prefix)
     if method is None:
         raise ValueError(f"量化配置未识别线性层 {prefix}")
-    if not isinstance(method, UnquantizedLinearMethod):
-        # 115 不开放量化权重分配；明确在分配之前失败，后续关卡实现此接口。
-        method.create_weights(layer)
     return method
 
 
+def _create_method_weights(layer, input_local, outputs_local, input_size, output_size,
+                           dtype=None, **attrs):
+    layer._method_weights_created = False
+    layer.quant_method.create_weights(layer, input_local, outputs_local, input_size,
+                                      output_size, dtype, weight_loader=layer.weight_loader,
+                                      **attrs)
+    layer._method_weights_created = True
+    # 直接构造的 Linear 允许调用者手动填充权重；模型加载器会显式管理加载期间的状态。
+    layer._method_weights_ready = True
+
+
 def _apply_quant_method(layer, x, bias):
-    if layer.quant_method is not None:
-        return layer.quant_method.apply(layer, x, bias)
-    return F.linear(x, layer.weight, bias)
+    if not getattr(layer, '_method_weights_created', False) or not getattr(layer, '_method_weights_ready', False):
+        raise RuntimeError(f"线性层 {layer.prefix} 权重未创建或尚未完成加载和后处理")
+    return layer.quant_method.apply(layer, x, bias)
 
 
 def _reject_shard_id(name: str, shard_id) -> None:
@@ -89,8 +97,8 @@ class ReplicatedLinear(nn.Module):
             raise ValueError('线性层输入和输出维度必须为正')
         self.input_size, self.output_size, self.prefix = input_size, output_size, prefix
         self.skip_bias_add, self.return_bias = skip_bias_add, return_bias
-        self.weight = Parameter(torch.empty(output_size, input_size, dtype=params_dtype))
-        self.weight.weight_loader = self.weight_loader
+        _create_method_weights(self, input_size, [output_size], input_size, output_size,
+                               params_dtype)
         if bias:
             self.bias = Parameter(torch.empty(output_size, dtype=params_dtype))
             self.bias.weight_loader = self.weight_loader
@@ -141,9 +149,8 @@ class QKVParallelLinear(nn.Module):
                              self.kv_size * self.tp_size]
         self.prefix = prefix
         local_size = self.q_size + 2 * self.kv_size
-        self.weight = Parameter(torch.empty(local_size, hidden_size))
-        self.weight.output_dim = 0
-        self.weight.weight_loader = self.weight_loader
+        _create_method_weights(self, hidden_size, [self.q_size, self.kv_size, self.kv_size],
+                               hidden_size, sum(self.output_sizes), output_dim=0)
         if bias:
             self.bias = Parameter(torch.empty(local_size))
             self.bias.output_dim = 0
@@ -233,9 +240,8 @@ class MergedColumnParallelLinear(nn.Module):
             raise ValueError("input_size 必须为正且 output_sizes 不能为空")
         self.input_size, self.output_sizes, self.prefix = input_size, list(output_sizes), prefix
         self.local_output_sizes = [_parallel_dimension(v, self.tp_size, "output_size") for v in self.output_sizes]
-        self.weight = Parameter(torch.empty(sum(self.local_output_sizes), input_size))
-        self.weight.output_dim = 0
-        self.weight.weight_loader = self.weight_loader
+        _create_method_weights(self, input_size, self.local_output_sizes, input_size,
+                               sum(self.output_sizes), output_dim=0)
         if bias:
             self.bias = Parameter(torch.empty(sum(self.local_output_sizes)))
             self.bias.output_dim = 0
@@ -357,10 +363,8 @@ class ColumnParallelLinear(nn.Module):
         self.output_partition_sizes = [self.output_size_per_partition]
         self.gather_output, self.skip_bias_add = gather_output, skip_bias_add
         self.return_bias, self.prefix = return_bias, prefix
-        self.weight = Parameter(torch.empty(self.output_size_per_partition, input_size, dtype=params_dtype))
-        self.weight.output_dim = 0
-        self.weight.tp_size = self.tp_size
-        self.weight.weight_loader = self.weight_loader
+        _create_method_weights(self, input_size, self.output_partition_sizes, input_size,
+                               output_size, params_dtype, output_dim=0, tp_size=self.tp_size)
         if bias:
             self.bias = Parameter(torch.empty(self.output_size_per_partition, dtype=params_dtype))
             self.bias.output_dim = 0
@@ -403,10 +407,9 @@ class RowParallelLinear(nn.Module):
         self.output_partition_sizes = [output_size]
         self.input_is_parallel, self.skip_bias_add = input_is_parallel, skip_bias_add
         self.reduce_results, self.return_bias, self.prefix = reduce_results, return_bias, prefix
-        self.weight = Parameter(torch.empty(output_size, self.input_size_per_partition, dtype=params_dtype))
-        self.weight.input_dim = 1
-        self.weight.tp_size = self.tp_size
-        self.weight.weight_loader = self.weight_loader
+        _create_method_weights(self, self.input_size_per_partition, self.output_partition_sizes,
+                               input_size, output_size, params_dtype, input_dim=1,
+                               tp_size=self.tp_size)
         if bias:
             self.bias = Parameter(torch.empty(output_size, dtype=params_dtype))
             self.bias.tp_size = self.tp_size

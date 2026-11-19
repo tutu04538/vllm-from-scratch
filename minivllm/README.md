@@ -1196,3 +1196,5 @@ Qwen3 + EAGLE3 的 V2 同 TP 路径支持 `FULL_DECODE_ONLY`：target、draft pr
 EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 residual 更新覆盖；CUDA 和 TP2/4 定向差分通过，完整多卡回归仍待完成，历史记录见 [108 对齐报告](../docs/step108_alignment.md)。
 
 量化专题当前仅在准备配置、数据和参考探针；AWQ、GPTQ、FP8 的生产执行尚未开放，详见 [114 状态](../docs/step114_alignment.md) 和 [115 状态](../docs/step115_alignment.md)。
+
+116 将普通 Linear 的本 rank 权重创建与局部计算交给 `LinearMethod`，加载器在权重加载后执行方法后处理；TP 通信仍由 Linear 管理。真实 BF16 多卡及 Graph 回归待做，量化执行仍未开放。详见 [116 状态](../docs/step116_alignment.md)。

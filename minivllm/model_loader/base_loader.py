@@ -122,10 +122,19 @@ class BaseModelLoader:
 
     def load_model(self, model_config, device) -> nn.Module:
         model = self._initialize_model(model_config, device)
+        # 加载期间不允许执行；全部方法后处理成功后才一起开放 forward。
+        linear_layers = [module for module in model.modules()
+                         if getattr(module, '_method_weights_created', False)]
+        for layer in linear_layers:
+            layer._method_weights_ready = False
         loaded = model.load_weights(self.get_all_weights(model))
         if loaded is None:
             raise ValueError(f"{type(model).__name__}.load_weights() 必须返回已加载参数名集合"
                              f"（本关靠它做覆盖检查，不能静默返回 None）")
+        for layer in linear_layers:
+            layer.quant_method.process_weights_after_loading(layer)
+        for layer in linear_layers:
+            layer._method_weights_ready = True
         # 加载完就切推理模式（对应 vLLM 的 `model.eval()`；204 §6 要求的收尾项）。
         # 与 Runner 的 `torch.inference_mode()` 分工不同：eval 改的是模块自身的**行为**
         # （dropout/BN 等训练态分支），inference_mode 管的是**梯度记录**。两者都不能省。
