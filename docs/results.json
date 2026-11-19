@@ -79145,10 +79145,18 @@
       "gsm8k_samples_per_model": 256,
       "calibration_test_window_intersection": 0,
       "cpu_tests_step113_114_115_passed": 26,
-      "gpu_quantization": "not_run"
+      "gpu_quantization": "not_run",
+      "fp8_8b_cpu_audit": {
+        "status": "passed_cpu_artifact_audit_only",
+        "source_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+        "recipe_sha256": "36023869cf7aff2019bc524329ca694ab0d96c03888d1c97b61b8fea300380e8",
+        "manifest_sha256": "a30018b825396073d1dd79c7ac2381aa43847e719cf84fb615114a94d2230bdd",
+        "scale_count": 252,
+        "gpu_load": "not_run"
+      }
     },
     "models": {
-      "Qwen3-8B": "no quantized artifact",
+      "Qwen3-8B": "FP8 converted and CPU audited; upstream load not run; AWQ/GPTQ not generated",
       "Qwen3-14B": "no quantized artifact"
     }
   },

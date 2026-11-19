@@ -5,7 +5,7 @@
 | 需求 | 参考/本地职责 | 状态 |
 |---|---|---|
 | R114.01 | 090 模型 revision 与源身份 | 继承历史身份，待本轮重新对账 |
-| R114.02—05 | AWQ/GPTQ/FP8 真实量化及独立工具环境 | 待实施，GPU 后端身份待 113 |
+| R114.02—05 | AWQ/GPTQ 离线工具与 `benchmarks/step114_convert_fp8.py` | 8B FP8 已转并完成 CPU 审计，14B 转换中；AWQ/GPTQ 工具与真实 GPU 执行待验 |
 | R114.06 | 固定校准与 held-out 数据、精确 token | 已固定 train/test 与 GSM8K 样本、token IDs、模型 tokenizer、hash；尚未应用于离线量化 |
 | R114.07 | 产物路径、hash、manifest | 数据产物已登记；量化权重尚未生成 |
 | R114.08—09 | 冻结 vLLM 真实加载、参考值和容差 | 待 GPU 空闲及产物具备 |
@@ -24,3 +24,14 @@
 产物在 `/data/syh/models/converted/_quant_data/step114_wikitext_gsm8k_20261119/`，manifest SHA256 `3b2799bf8bc959e70616793fe4b038467ff3c81f77b338d6593f99c1ba6d1d0e`；训练与测试的完整 2048-token 窗口 hash 交集为 0，held-out 窗口各不重复。`python benchmarks/check_step114_quant_data.py --data /data/syh/models/converted/_quant_data/step114_wikitext_gsm8k_20261119` 独立检查数据文件与源文件 hash、token IDs、窗口长度、样本数量和交集，通过；它不是语言模型输出对照。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step113 tests/step114 tests/step115 -q -ra`：26 passed，0 failed，0 skipped，均为 CPU 测试。
 
 尚未固定 AWQ/GPTQ 量化工具和量化模型 recipe、未制备六份权重，也未测 vLLM 加载、参考值、量化质量或性能。113、114 均不能关闭。
+
+
+## 2026-11-19：8B FP8 CPU 转换（上游未验）
+
+固定源 8B revision 的 5 个 BF16 权重分片重新逐文件与 090 的 LFS 清单对账；逐张量转换七种投影，每个原始 `[N,K]` 线性权重独立计算 `s=max(abs(w.float()))/448`，全零取 `s=1`，量化值为 `cast_e4m3fn(clamp(w/s,-448,448))`，保存 FP32 反量化 scale。embedding、lm_head、norm 及其他非投影保持源 dtype。转换脚本的 hash、每个源与输出文件 hash、每层 scale 和 recipe hash 保存在产物 manifest；不会覆盖已有目录。
+
+命令：`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/step114_convert_fp8.py --model 8B`。产物 `/data/syh/models/converted/Qwen/Qwen3-8B/b968826d9c46dd6066d109eabc6255188de91218/fp8-36023869cf7aff20`，recipe SHA256 `36023869cf7aff2019bc524329ca694ab0d96c03888d1c97b61b8fea300380e8`，tensor 总字节 9435704304，252 个逻辑投影 scale。产物 manifest SHA256 `a30018b825396073d1dd79c7ac2381aa43847e719cf84fb615114a94d2230bdd`。
+
+`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python benchmarks/check_step114_fp8_artifact.py --artifact <上述目录> --output benchmarks/results/step114/fp8_8b_cpu_audit.json`：CPU 审计通过；核对全部输出文件 hash、651 个 tensor 的索引关系、252 个 scale 的 dtype/数值，并对首层 Q 和末层 down 投影重算 FP8 bytes，抽查 embedding/lm_head 原样。小张量转换测试 3 passed，含零值、异常值拒绝和两份独立输入的重复编码。上述两层是生成公式的 CPU 对账，不是独立质量或 GPU 数值验证。
+
+14B CPU 转换仍在运行，AWQ/GPTQ 工具环境正在准备。**8B 产物尚未由冻结 vLLM 加载或前向，状态是 converted_not_validated_by_vllm，不是 ready。**
