@@ -135,6 +135,10 @@ class Fp8Config(QuantizationConfig):
         return 75
 
     @classmethod
+    def get_supported_act_dtypes(cls):
+        return [torch.bfloat16, torch.float16]
+
+    @classmethod
     def from_config(cls, config, source):
         method = _required(config, "quant_method")
         if not isinstance(method, str):
@@ -157,6 +161,15 @@ _METHODS = {"awq": AutoAWQConfig, "awq_marlin": AutoAWQConfig,
             "fp8": Fp8Config}
 
 
+def get_quantization_config(method: str):
+    if not isinstance(method, str):
+        raise ValueError("量化方法必须为字符串")
+    cls = _METHODS.get(method.lower())
+    if cls is None:
+        raise NotImplementedError(f"尚不支持量化方法 {method!r}")
+    return cls
+
+
 def resolve_quantization_config(user_method: str | None, checkpoint_config: dict | None,
                                 external_config: dict | None = None):
     """按 checkpoint 身份解析配置，冲突直接拒绝，绝不更改 checkpoint 方法。"""
@@ -172,13 +185,18 @@ def resolve_quantization_config(user_method: str | None, checkpoint_config: dict
             raise ValueError("指定量化方法，但 checkpoint 没有量化配置")
         return None
     source = "checkpoint" if checkpoint_config is not None else "external"
+    # 上游外置 AWQ/GPTQ 配置可没有 quant_method；此时格式由显式用户方法确定。
+    # checkpoint 内声明的方法不允许由默认值猜测或覆盖。
+    if source == "external" and "quant_method" not in config and user_method is not None:
+        cls = get_quantization_config(user_method)
+        if cls is Fp8Config:
+            raise ValueError("外置 FP8 配置必须声明 quant_method")
+        config = {**config, "quant_method": "awq" if cls is AutoAWQConfig else "gptq"}
     method = _required(config, "quant_method")
     if not isinstance(method, str):
         raise ValueError("quant_method 必须为字符串")
     method = method.lower()
-    cls = _METHODS.get(method)
-    if cls is None:
-        raise NotImplementedError(f"尚不支持量化方法 {method!r}（来源 {source}）")
+    cls = get_quantization_config(method)
     if user_method is not None:
         if not isinstance(user_method, str) or _METHODS.get(user_method.lower()) is not cls:
             raise ValueError(f"用户量化方法 {user_method!r} 与 {source} 的 {method!r} 冲突")

@@ -150,6 +150,8 @@ class ModelConfig:
     enforce_eager: bool = False
     # 与冻结 vLLM 一致：各 Worker 使用相同模型 seed，不叠加 rank。
     seed: int = 0
+    # 量化方法只声明用户选择；实际格式来自 checkpoint 或量化配置文件。
+    quantization: str | None = None
 
     def __post_init__(self):
         if type(self.seed) is not int or not 0 <= self.seed < 2**32:

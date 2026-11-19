@@ -71,3 +71,40 @@ def test_unquantized_and_loader_rejects_quantized():
 def test_out_of_scope_config_rejected(config):
     with pytest.raises(NotImplementedError):
         resolve_quantization_config(None, config)
+
+
+def test_external_file_method_is_inferred_only_from_explicit_user_method(tmp_path):
+    import json
+    config = {key: value for key, value in AWQ.items() if key != 'quant_method'}
+    (tmp_path / 'quant_config.json').write_text(json.dumps(config))
+    model_config = ModelConfig(model=str(tmp_path), hf_config={}, quantization='awq_marlin')
+    with pytest.raises(NotImplementedError, match='auto_awq.*external'):
+        BaseModelLoader()._initialize_model(model_config, 'cpu')
+    with pytest.raises(ValueError, match='必填'):
+        resolve_quantization_config(None, None, config)
+
+
+def test_checkpoint_source_takes_precedence_over_external_file(tmp_path):
+    import json
+    (tmp_path / 'quant_config.json').write_text(json.dumps(GPTQ))
+    model_config = ModelConfig(model=str(tmp_path), hf_config={'quantization_config': AWQ},
+                               quantization='awq')
+    with pytest.raises(NotImplementedError, match='auto_awq.*checkpoint'):
+        BaseModelLoader()._initialize_model(model_config, 'cpu')
+
+
+def test_multiple_external_files_and_user_checkpoint_conflict(tmp_path):
+    import json
+    for name in ('quant_config.json', 'quantize_config.json'):
+        (tmp_path / name).write_text(json.dumps(AWQ))
+    with pytest.raises(ValueError, match='多个'):
+        BaseModelLoader()._initialize_model(
+            ModelConfig(model=str(tmp_path), hf_config={}, quantization='awq'), 'cpu')
+    with pytest.raises(ValueError, match='冲突'):
+        BaseModelLoader()._initialize_model(
+            ModelConfig(model=str(tmp_path), hf_config={'quantization_config': AWQ},
+                        quantization='gptq'), 'cpu')
+
+
+def test_fp8_supported_dtype_order_matches_frozen_contract():
+    assert Fp8Config.get_supported_act_dtypes() == [torch.bfloat16, torch.float16]

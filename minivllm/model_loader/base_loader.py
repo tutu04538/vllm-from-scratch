@@ -58,9 +58,33 @@ class BaseModelLoader:
         """
         # 在构造模型之前识别 checkpoint 的量化身份。后续关卡提供真实执行方法；
         # 当前不允许把量化权重误当作 BF16 权重加载。
-        from ..layers.quantization import resolve_quantization_config
+        from ..layers.quantization import get_quantization_config, resolve_quantization_config
+        from ..layers.quantization.config import AutoAWQConfig, AutoGPTQConfig
+        import json
+        from pathlib import Path
+
         hf_config = model_config.hf_config or {}
-        quant_config = resolve_quantization_config(None, hf_config.get("quantization_config"))
+        checkpoint_config = hf_config.get("quantization_config")
+        if checkpoint_config is None and isinstance(hf_config.get("text_config"), dict):
+            checkpoint_config = hf_config["text_config"].get("quantization_config")
+        user_method = model_config.quantization
+        external_config = None
+        if checkpoint_config is None and user_method is not None:
+            config_class = get_quantization_config(user_method)
+            if config_class is AutoAWQConfig:
+                filenames = ("quantize_config.json", "quant_config.json")
+            elif config_class is AutoGPTQConfig:
+                filenames = ("quantize_config.json",)
+            else:
+                filenames = ()
+            paths = [Path(model_config.model) / name for name in filenames
+                     if (Path(model_config.model) / name).is_file()]
+            if len(paths) > 1:
+                raise ValueError(f"存在多个外置量化配置文件: {paths}")
+            if paths:
+                with paths[0].open(encoding="utf-8") as stream:
+                    external_config = json.load(stream)
+        quant_config = resolve_quantization_config(user_method, checkpoint_config, external_config)
         if quant_config is not None:
             raise NotImplementedError(
                 f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")

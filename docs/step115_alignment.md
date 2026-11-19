@@ -14,7 +14,7 @@
 |---|---|---|
 | R115.01 | 上游 base_config；`minivllm/layers/quantization/config.py` | 只有配置抽象及注册入口；方法生命周期和逐层分派未实现 |
 | R115.02 | 上游 auto_awq/auto_gptq/fp8；同上 | 解析计划子集、常用字段及三组入口别名；实测上游注册名一致，尚未完成逐字段差分 |
-| R115.03 | 同上 | 解析函数区分 checkpoint/外置来源并拒绝冲突；用户参数和外置文件尚未接入模型入口 |
+| R115.03 | 上游 `get_quant_config`、同上 | `ModelConfig.quantization` 与外置文件已接入加载器；checkpoint 优先、用户方法冲突拒绝；尚未验证所有上游覆盖顺序 |
 | R115.04 | 上游 `is_layer_skipped`、`get_quant_method` | 未实现 |
 | R115.05 | 同上 | 实现部分配置子集拒绝；仍缺层类型、完整格式及 MoE 检查 |
 | R115.06 | 三种配置的 dtype 与 minimum capability | 提供元信息；未接入实际设备检查，kernel `can_implement` 未实现 |
@@ -32,3 +32,10 @@
 - 误启动 `tests/step101/test_step101_tiny.py` 与本关测试：18 passed 后中断，多卡回归未完成。随后误运行 `tests/step58` 未屏蔽 CUDA：41 passed；其中包含 CUDA 用例，不应在设备忙碌时运行。两项不作为本关 GPU 量化验收，后续测试应显式屏蔽 CUDA。
 
 未运行完整回归、融合层排除差分、真实模型、GPU 能力/shape 校验及性能测试。113、114 未验收，115 不能关闭。
+
+
+## 2026-11-19：配置来源接入（CPU 阶段）
+
+`ModelConfig.quantization` 表示用户显式选择；`BaseModelLoader` 优先读取 HF checkpoint 的 `quantization_config`（含 `text_config`），没有 checkpoint 配置且用户明确指定 AWQ/GPTQ 时才寻找冻结上游允许的外置文件。外置文件中省略 `quant_method` 时以用户指定的 AWQ/GPTQ 方法识别；缺少方法/配置、用户方法冲突、同一方法出现多个外置文件均明确报错。按照上游加载顺序，已有 HF 配置时不读取外置配置文件；这与直接调用 `resolve_quantization_config` 且同时给出两份不同配置时的严格冲突检查是两个入口。FP8 activation dtype 的声明顺序改成冻结源码的 BF16、FP16。
+
+`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step113 tests/step114 tests/step115 tests/step090/test_step090_models.py -q -ra`：43 passed、0 failed、0 skipped。当前包内相对路径 hash `b4d1cec140544aa17f5fc7b2733ea0e4bee994a4fdc901affac44b1ad4d5aa6f`。这些测试不包含 GPU，多卡配置仍在 Worker 预检查阶段拒绝量化；逐层方法分派、融合排除和硬件/kernels 检查依然未实现。113/114 的 GPU 前置与真实量化产物尚缺，115 不能关闭。
