@@ -1202,3 +1202,5 @@ EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 res
 117 引入量化 Parameter 的物理轴、打包及逻辑 shard 加载检查，和模型加载后处理顺序；当前不开放量化模型执行，UVA offload 量化后处理尚未验证。详见 [117 状态](../docs/step117_alignment.md)。
 
 118 提供测试侧 W4 packing/反量化参考及冻结 vLLM CPU 对照；这些参考不进入生产调用路径，尚未开放量化 GEMM。详见 [118 状态](../docs/step118_alignment.md)。
+
+119 新增 AWQ W4/G128 checkpoint 的参数加载与标准 packed 转换，可通过显式表示审计入口检查；正常推理仍拒绝量化 forward，Marlin kernel 尚未接入。详见 [119 状态](../docs/step119_alignment.md)。

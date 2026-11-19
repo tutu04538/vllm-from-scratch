@@ -14054,7 +14054,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 198,
-    "sha256": "d22c6eb37917618b05c3f3857b8fa630eba48a6bd2080ab704e87911f2b6f90d",
+    "sha256": "5046414a52d2a9b26da0d69bfc464aee084ebf260ac3795d2e4550a696e8120e",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
   },
@@ -79324,5 +79324,36 @@
       "performance": "not_run"
     },
     "models": {}
+  },
+  "step119": {
+    "results": {
+      "status": "awq_representation_implemented_gpu_verification_deferred",
+      "package_sha256": "5046414a52d2a9b26da0d69bfc464aee084ebf260ac3795d2e4550a696e8120e",
+      "cpu_related_tests_passed": 86,
+      "gpu_tests_deselected": 7,
+      "real_projection_subtensor_checks": 42,
+      "real_subtensor_result_sha256": "2812ccb3f68f0fd134c57c181021ac2dfe65c65d35e266c3410a251e19974e46",
+      "prior_audit_package_sha256": "4eb61bda369dc6b845f0926632a7cce1c59363b367439a4e0e2392ee43f59a0d",
+      "real_8b_full_cpu_representation": "passed",
+      "gpu_tp_graph": "not_run",
+      "awq_forward": "explicitly_rejected",
+      "performance": "not_run",
+      "real_14b_full_cpu_representation": "passed",
+      "real_14b_full_cpu_result_sha256": "f012138f8d3abf50a0c48d847d71c03c90fbfec0b77282b3e85a7d6bd9568b58"
+    },
+    "models": {
+      "8b": {
+        "cpu_representation": "passed",
+        "physical_linear_layers": 144,
+        "parameter_bytes": 6098479104,
+        "peak_rss_kib": 12524172
+      },
+      "14b": {
+        "cpu_representation": "passed",
+        "physical_linear_layers": 160,
+        "parameter_bytes": 9976576000,
+        "peak_rss_kib": 20097896
+      }
+    }
   }
 }

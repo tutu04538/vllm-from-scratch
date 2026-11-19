@@ -83,12 +83,14 @@ def process_weights_after_loading(model, model_config, target_device):
         for module in layers:
             for param in module.parameters(recurse=False):
                 if isinstance(param, BasevLLMParameter):
-                    if param.layout_state != 'kernel':
-                        raise RuntimeError(f'{param.logical_name}: 量化方法未完成布局转换')
+                    expected = getattr(module.quant_method, 'post_load_layout', 'kernel')
+                    if param.layout_state != expected:
+                        raise RuntimeError(f'{param.logical_name}: 量化方法未完成 {expected} 布局转换')
         for module in layers:
             if hasattr(module, '_method_weights_ready'):
                 module._method_weights_ready = True
-        model._quant_postload_state = 'ready'
+        model._quant_postload_state = ('representation_ready' if any(
+            not getattr(m.quant_method, 'supports_execution', True) for m in layers) else 'ready')
     except BaseException:
         model._quant_postload_state = 'failed'
         raise

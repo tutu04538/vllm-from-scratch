@@ -33,6 +33,9 @@ class QuantizationConfig(ABC):
             ignored, mode = (), 'exact'
         if is_layer_skipped(prefix, ignored, self.packed_modules_mapping, match_mode=mode):
             return UnquantizedLinearMethod()
+        if isinstance(self, AutoAWQConfig):
+            from .awq import AutoAWQMarlinLinearMethod
+            return AutoAWQMarlinLinearMethod(self, prefix)
         return PendingQuantizedLinearMethod(self, prefix)
 
     @classmethod

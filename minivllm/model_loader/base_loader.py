@@ -48,7 +48,7 @@ class BaseModelLoader:
                 f"多结构（如投机草稿模型共存）属于 57E 的加载路径")
         return get_model_class(architectures[0])
 
-    def _initialize_model(self, model_config, device) -> nn.Module:
+    def _initialize_model(self, model_config, device, *, representation_only=False) -> nn.Module:
         """构造空模型（权重还是随机/未初始化的 `torch.empty`）。
 
         大模型（Gemma4 E2B 约 5.1B 参数）不能先在 CPU 建 float32 再 `.to()`：那会临时
@@ -98,13 +98,22 @@ class BaseModelLoader:
                     raise NotImplementedError(
                         f"量化方法 {quant_config.get_name()} 需要 SM{quant_config.get_min_capability()}，"
                         f"当前 SM{numeric_capability}")
+            if not representation_only:
+                raise NotImplementedError(
+                    f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")
+            from ..layers.quantization.config import AutoAWQConfig
+            if not isinstance(quant_config, AutoAWQConfig):
+                raise NotImplementedError(f"表示审计尚不支持 {quant_config.get_name()}")
             model_class = self._get_model_class(model_config)
-            # 先在 meta 上分派，不占显存、不为大模型申请实际权重；首个未实现的量化层
-            # 当场拒绝并给出层名。即使所有层被排除，本阶段也不加载量化 checkpoint。
-            with torch.device("meta"):
-                model_class(hf_config, quant_config=quant_config)
-            raise NotImplementedError(
-                f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")
+            old_dtype = torch.get_default_dtype()
+            torch.set_default_dtype(dtype)
+            try:
+                with torch.device(target_device):
+                    return model_class(hf_config, quant_config=quant_config)
+            finally:
+                torch.set_default_dtype(old_dtype)
+        if representation_only:
+            raise ValueError("表示审计入口要求 AWQ checkpoint 配置")
         model_class = self._get_model_class(model_config)
         dtype = _dtype_of(model_config)
         target_device = torch.device(device)
@@ -122,6 +131,17 @@ class BaseModelLoader:
 
     def load_model(self, model_config, device) -> nn.Module:
         model = self._initialize_model(model_config, device)
+        return self._load_initialized_model(model, model_config, device)
+
+    def load_model_for_representation(self, model_config, device) -> nn.Module:
+        """只供 AWQ 参数加载与布局审计；返回的模型不支持量化 forward。"""
+        model = self._initialize_model(model_config, device, representation_only=True)
+        model = self._load_initialized_model(model, model_config, device)
+        if model._quant_postload_state != 'representation_ready':
+            raise ValueError("AWQ 表示审计没有量化线性层")
+        return model
+
+    def _load_initialized_model(self, model, model_config, device) -> nn.Module:
         # 加载期间不允许执行；全部方法后处理成功后才一起开放 forward。
         linear_layers = [module for module in model.modules()
                          if getattr(module, '_method_weights_created', False)]

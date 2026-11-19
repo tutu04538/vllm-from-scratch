@@ -110,10 +110,10 @@ def test_fp8_supported_dtype_order_matches_frozen_contract():
     assert Fp8Config.get_supported_act_dtypes() == [torch.bfloat16, torch.float16]
 
 
-def test_qwen_quantized_checkpoint_names_first_unsupported_layer():
+def test_qwen_quantized_checkpoint_rejects_execution_before_loading():
     from minivllm.testing.tiny_models import tiny_qwen3_config
     hf = {**tiny_qwen3_config('tiny_gqa'), 'quantization_config': AWQ}
-    with pytest.raises(NotImplementedError, match=r'auto_awq.*model.layers.0.self_attn.qkv_proj'):
+    with pytest.raises(NotImplementedError, match=r'量化执行尚未开放: auto_awq'):
         BaseModelLoader()._initialize_model(ModelConfig(model='unused', hf_config=hf, dtype='bfloat16'), 'cpu')
 
 
@@ -224,5 +224,5 @@ def test_real_shape_dispatch_diagnostic_uses_meta_types_without_allocating_weigh
     hf = {**tiny_qwen3_config('tiny_gqa'), 'quantization_config': AWQ}
     result = module.methods_for_qwen(hf)
     assert len(result['linear_layers']) == 4 * hf['num_hidden_layers']
-    assert result['counts'] == {'PendingQuantizedLinearMethod': 4 * hf['num_hidden_layers']}
+    assert result['counts'] == {'AutoAWQMarlinLinearMethod': 4 * hf['num_hidden_layers']}
     assert result['quantized_execution'] == 'not_implemented'
