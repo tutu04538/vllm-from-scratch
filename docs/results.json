@@ -14054,7 +14054,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 198,
-    "sha256": "2d7f0bc5b8595ec1e093b01a5e3e6dd27a5c48d3d9966781ced201297ca34063",
+    "sha256": "d22c6eb37917618b05c3f3857b8fa630eba48a6bd2080ab704e87911f2b6f90d",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
   },
@@ -79296,6 +79296,19 @@
       },
       "real_model_tp_graph_eagle3": "not_run",
       "independent_layer_manual_load_tracking": "not_implemented"
+    },
+    "models": {}
+  },
+  "step117": {
+    "results": {
+      "status": "implementation_partial_gpu_correctness_deferred",
+      "package_sha256": "d22c6eb37917618b05c3f3857b8fa630eba48a6bd2080ab704e87911f2b6f90d",
+      "cpu_step117_passed": 8,
+      "cpu_previous_related_passed": 72,
+      "cpu_previous_deselected_gpu": 7,
+      "uva_quantization_postload": "implemented_not_verified",
+      "real_model_tp_graph": "not_run",
+      "cpu_step115_116_117_passed": 49
     },
     "models": {}
   }

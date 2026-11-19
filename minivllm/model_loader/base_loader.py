@@ -127,12 +127,18 @@ class BaseModelLoader:
                          if getattr(module, '_method_weights_created', False)]
         for layer in linear_layers:
             layer._method_weights_ready = False
-        loaded = model.load_weights(self.get_all_weights(model))
+        model._quant_postload_state = 'loading'
+        try:
+            loaded = model.load_weights(self.get_all_weights(model))
+        except BaseException:
+            model._quant_postload_state = 'failed'
+            raise
         if loaded is None:
+            model._quant_postload_state = 'failed'
             raise ValueError(f"{type(model).__name__}.load_weights() 必须返回已加载参数名集合"
                              f"（本关靠它做覆盖检查，不能静默返回 None）")
-        for layer in linear_layers:
-            layer.quant_method.process_weights_after_loading(layer)
+        from .post_load import process_weights_after_loading
+        process_weights_after_loading(model, model_config, device)
         for layer in linear_layers:
             layer._method_weights_ready = True
         # 加载完就切推理模式（对应 vLLM 的 `model.eval()`；204 §6 要求的收尾项）。

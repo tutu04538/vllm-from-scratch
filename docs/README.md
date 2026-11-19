@@ -191,3 +191,5 @@
 [115 量化配置与方法分派（进行中）](step115_alignment.md)：AWQ/GPTQ/FP8 配置及逐层分派已接入，量化执行与 GPU 验证尚未完成。
 
 [116 LinearMethod 与 BF16 回归（进行中）](step116_alignment.md)：普通 Linear 参数创建和局部计算转交方法对象，模型加载接入后处理；真实模型、多卡和 Graph 回归尚未进行。
+
+[117 量化 Parameter 与加载生命周期（进行中）](step117_alignment.md)：项目内参数布局和逻辑 shard 加载、加载后处理顺序已接入；真实量化方法尚未开放，GPU 正确性和 UVA 后处理尚未验证。

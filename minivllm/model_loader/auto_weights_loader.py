@@ -216,6 +216,10 @@ class AutoWeightsLoader:
         """
         expected = {name for name, _ in self.module.named_parameters()}
         missing = sorted(name for name in expected - loaded if not self._can_skip(name))
+        from ..layers.parameter import BasevLLMParameter
+        for name, param in self.module.named_parameters():
+            if name in loaded and isinstance(param, BasevLLMParameter):
+                param.validate_loaded()
         if missing:
             raise ValueError(
                 f"{type(self.module).__name__} 有 {len(missing)} 个参数没有被加载：{missing}\n"

@@ -28,6 +28,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn.parameter import Parameter
 
+from .parameter import BasevLLMParameter, PerTensorScaleParameter
+
 
 def _get_quant_method(layer, quant_config, prefix):
     from .quantization.config import QuantizationConfig
@@ -107,6 +109,9 @@ class ReplicatedLinear(nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
         _reject_shard_id('ReplicatedLinear', shard_id)
+        if isinstance(param, BasevLLMParameter):
+            param.load_column_parallel_weight(loaded_weight)
+            return
         if param.shape != loaded_weight.shape:
             raise ValueError(f'复制权重形状不匹配：{tuple(param.shape)} != {tuple(loaded_weight.shape)}')
         with torch.no_grad():
@@ -165,6 +170,13 @@ class QKVParallelLinear(nn.Module):
         self._bias_shard_load_counts.clear()
 
     def validate_loaded_shards(self, required: set[str]) -> None:
+        if not hasattr(self, 'weight'):
+            params = [p for p in self.parameters(recurse=False) if isinstance(p, BasevLLMParameter)]
+            if not params:
+                raise ValueError(f"{self.prefix}: 未创建量化参数")
+            for param in params:
+                param.validate_loaded()
+            return
         required = set(required)
         invalid = required - {"q", "k", "v"}
         if invalid:
@@ -203,8 +215,26 @@ class QKVParallelLinear(nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
                       shard_id: str | None = None) -> None:
+        if isinstance(param, BasevLLMParameter):
+            param.update_tp(self.tp_rank, self.tp_size)
+            if shard_id is None:
+                if isinstance(param, PerTensorScaleParameter):
+                    for shard in ('q', 'k', 'v'):
+                        self.weight_loader(param, loaded_weight, shard)
+                elif hasattr(param, 'output_dim'):
+                    sizes = [self.total_num_heads * self.head_size,
+                             self.total_num_kv_heads * self.head_size,
+                             self.total_num_kv_heads * self.v_head_size]
+                    _load_fused_quantized(self, param, loaded_weight, ('q', 'k', 'v'), sizes)
+                else:
+                    param.load_qkv_weight(loaded_weight)
+                return
+            offset, size = self._shard_range(shard_id)
+            param.load_qkv_weight(loaded_weight, shard_id=shard_id, shard_offset=offset,
+                                  shard_size=size, num_heads=self.num_kv_head_replicas)
+            return
         if type(param) is not Parameter:
-            raise NotImplementedError("QKV 暂不支持特殊或量化 Parameter")
+            raise NotImplementedError("QKV 不支持此 Parameter 类型")
         source_sizes = {"q": self.total_num_heads * self.head_size,
                         "k": self.total_num_kv_heads * self.head_size,
                         "v": self.total_num_kv_heads * self.v_head_size}
@@ -256,6 +286,13 @@ class MergedColumnParallelLinear(nn.Module):
         self._bias_shard_load_counts.clear()
 
     def validate_loaded_shards(self, required: set[int]) -> None:
+        if not hasattr(self, 'weight'):
+            params = [p for p in self.parameters(recurse=False) if isinstance(p, BasevLLMParameter)]
+            if not params:
+                raise ValueError(f"{self.prefix}: 未创建量化参数")
+            for param in params:
+                param.validate_loaded()
+            return
         required = set(required)
         if not required <= set(range(len(self.output_sizes))):
             raise ValueError("未知的 Merged shard")
@@ -280,8 +317,24 @@ class MergedColumnParallelLinear(nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor,
                       shard_id: int | None = None) -> None:
+        if isinstance(param, BasevLLMParameter):
+            param.update_tp(self.tp_rank, self.tp_size)
+            if shard_id is None:
+                if isinstance(param, PerTensorScaleParameter):
+                    for shard in range(len(self.output_sizes)):
+                        self.weight_loader(param, loaded_weight, shard)
+                elif hasattr(param, 'output_dim'):
+                    _load_fused_quantized(self, param, loaded_weight,
+                                          range(len(self.output_sizes)), self.output_sizes)
+                else:
+                    param.load_merged_column_weight(loaded_weight)
+                return
+            offset, size = self._shard_range(shard_id)
+            param.load_merged_column_weight(loaded_weight, shard_id=shard_id,
+                                            shard_offset=offset, shard_size=size)
+            return
         if type(param) is not Parameter:
-            raise NotImplementedError("Merged 暂不支持特殊或量化 Parameter")
+            raise NotImplementedError("Merged 不支持此 Parameter 类型")
         if shard_id is None:
             if loaded_weight.ndim != param.ndim or loaded_weight.shape[0] != sum(self.output_sizes) or loaded_weight.shape[1:] != param.shape[1:]:
                 raise ValueError(f"打包权重形状不匹配：收到 {tuple(loaded_weight.shape)}")
@@ -306,6 +359,20 @@ class MergedColumnParallelLinear(nn.Module):
         return _apply_quant_method(self, x, self.bias), None
 
 
+def _load_fused_quantized(layer, param, loaded_weight, shard_ids, output_sizes):
+    """按逻辑输出边界拆分 checkpoint 内已融合的物理张量。"""
+    physical_sizes = list(output_sizes)
+    if getattr(param, 'packed_dim', None) == param.output_dim:
+        physical_sizes = [param.adjust_shard_indexes_for_packing(size, 0)[0]
+                          for size in physical_sizes]
+    if loaded_weight.ndim != param.ndim or loaded_weight.shape[param.output_dim] != sum(physical_sizes):
+        raise ValueError(f'{layer.prefix}: 融合量化权重的输出维大小不匹配')
+    offset = 0
+    for shard, size in zip(shard_ids, physical_sizes):
+        layer.weight_loader(param, loaded_weight.narrow(param.output_dim, offset, size), shard)
+        offset += size
+
+
 def _linear_tp_group(disable_tp: bool):
     """兼容无分布式初始化的单卡；多进程默认组存在时不可静默当成 TP=1。"""
     if disable_tp:
@@ -326,10 +393,17 @@ def _parallel_dimension(size: int, tp_size: int, name: str) -> int:
 
 
 def _load_parallel_parameter(param: Parameter, loaded_weight: torch.Tensor,
-                             dim: int | None, rank: int, shard_id) -> None:
+                             dim: int | None, rank: int, shard_id, *, column: bool = False) -> None:
     _reject_shard_id("并行线性层", shard_id)
+    if isinstance(param, BasevLLMParameter):
+        param.update_tp(rank, param.tp_size)
+        if column:
+            param.load_column_parallel_weight(loaded_weight)
+        else:
+            param.load_row_parallel_weight(loaded_weight)
+        return
     if type(param) is not Parameter:
-        raise NotImplementedError("并行线性层暂不支持特殊或量化 Parameter")
+        raise NotImplementedError("并行线性层不支持此 Parameter 类型")
     if dim is not None and not getattr(param, "is_sharded_weight", False):
         expected = list(param.shape)
         expected[dim] *= param.tp_size
@@ -374,7 +448,9 @@ class ColumnParallelLinear(nn.Module):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
-        _load_parallel_parameter(param, loaded_weight, getattr(param, "output_dim", None), self.tp_rank, shard_id)
+        if isinstance(param, BasevLLMParameter):
+            param.update_tp(self.tp_rank, self.tp_size)
+        _load_parallel_parameter(param, loaded_weight, getattr(param, "output_dim", None), self.tp_rank, shard_id, column=True)
 
     def forward(self, x: torch.Tensor):
         bias = None if self.skip_bias_add else self.bias
@@ -418,6 +494,8 @@ class RowParallelLinear(nn.Module):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor, shard_id=None) -> None:
+        if isinstance(param, BasevLLMParameter):
+            param.update_tp(self.tp_rank, self.tp_size)
         _load_parallel_parameter(param, loaded_weight, getattr(param, "input_dim", None), self.tp_rank, shard_id)
 
     def forward(self, x: torch.Tensor):
