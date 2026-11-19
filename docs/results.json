@@ -79109,5 +79109,22 @@
         ]
       }
     }
+  },
+  "step113": {
+    "results": {
+      "status": "partial: CPU source and identity only; GPU probes not run",
+      "baseline_head": "2c3125c10695d49ff21d50c1f0bc42d1d3aa652e",
+      "package_sha256": "2720f8bfb1f3f2c9e7311d9d4810a3f5cdeb21b883fcb448f6f683b3046517fc",
+      "source_files_verified": 849,
+      "installed_python_verified": 346,
+      "parallel_sources_verified": 342,
+      "cutlass_v4_4_2_commit": "da5e086dab31d63815acafdac9a9c5893b1c69e2",
+      "cpu_pytest_passed": 34,
+      "cpu_pytest_failed": 0,
+      "cpu_pytest_skipped": 0,
+      "gpu_probe": "not run; other users occupy GPUs",
+      "reference": "benchmarks/results/step113/cpu_identity_20261119.json"
+    },
+    "models": {}
   }
 }
