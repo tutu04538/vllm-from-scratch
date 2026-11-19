@@ -79123,7 +79123,15 @@
       "cpu_pytest_failed": 0,
       "cpu_pytest_skipped": 0,
       "gpu_probe": "not run; other users occupy GPUs",
-      "reference": "benchmarks/results/step113/cpu_identity_20261119.json"
+      "reference": "benchmarks/results/step113/cpu_identity_20261119.json",
+      "isolated_probe_preparation": {
+        "status": "implemented_not_gpu_verified",
+        "cpu_import": "passed",
+        "busy_gpu_guard": "passed; GPU0 occupied, no probe launched",
+        "cpu_pytest_passed": 35,
+        "cpu_pytest_failed": 0,
+        "cpu_pytest_skipped": 0
+      }
     },
     "models": {}
   }

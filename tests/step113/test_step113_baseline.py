@@ -37,7 +37,16 @@ def test_package_hash_uses_relative_paths(tmp_path):
 
 def test_unimplemented_gpu_probe_is_not_passed(tmp_path):
     out = tmp_path / 'probe.json'
-    result = subprocess.run([sys.executable, str(PATH), '--compare', '--output', str(out)],
+    result = subprocess.run([sys.executable, str(PATH), '--trace', '--output', str(out)],
                             cwd=ROOT, capture_output=True, text=True, timeout=15)
     assert result.returncode != 0
     assert json.loads(out.read_text())['status'] == 'not_run'
+
+
+def test_busy_gpu_does_not_start_reference_process(monkeypatch, tmp_path):
+    monkeypatch.setattr(probe, 'gpu_occupancy', lambda index: {'status': 'busy', 'device': index})
+    def must_not_run(*args, **kwargs):
+        raise AssertionError('busy GPU must not start a subprocess')
+    monkeypatch.setattr(probe.subprocess, 'run', must_not_run)
+    result = probe.compare_gpu(0, tmp_path / 'result.json')
+    assert result['status'] == 'not_run'

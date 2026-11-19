@@ -151,6 +151,49 @@ def collect_baseline() -> dict:
             'minivllm_quantized_execution': 'not_implemented'}
 
 
+def gpu_occupancy(device_index: int) -> dict:
+    """nvidia-smi 只做只读查询；查询失败时不能假定设备空闲。"""
+    gpu = command(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader,nounits'])
+    processes = command(['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,used_memory',
+                         '--format=csv,noheader,nounits'])
+    if gpu['exit_code'] != 0 or processes['exit_code'] != 0:
+        return {'status': 'unknown', 'gpu_query': gpu, 'process_query': processes}
+    identifiers = {}
+    for line in gpu['stdout'].splitlines():
+        index, uuid = [part.strip() for part in line.split(',', 1)]
+        identifiers[int(index)] = uuid
+    if device_index not in identifiers:
+        return {'status': 'unknown', 'reason': f'GPU {device_index} not found'}
+    uuid = identifiers[device_index]
+    active = [line for line in processes['stdout'].splitlines()
+              if line.split(',', 1)[0].strip() == uuid]
+    return {'status': 'busy' if active else 'idle', 'device': device_index,
+            'uuid': uuid, 'compute_processes': active}
+
+
+def compare_gpu(device_index: int, output: Path, timeout: int = 600) -> dict:
+    occupancy = gpu_occupancy(device_index)
+    if occupancy['status'] != 'idle':
+        return {'kind': 'gpu_probe', 'status': 'not_run', 'occupancy': occupancy,
+                'reason': 'GPU not confirmed idle; reference process not started'}
+    reference_output = output.with_name(output.stem + '_reference.json')
+    cmd = [sys.executable, str(ROOT / 'tests/step113/step113_quant_reference_probe.py'),
+           '--output', str(reference_output)]
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(device_index), VLLM_BATCH_INVARIANT='0',
+               VLLM_DISABLED_KERNELS='', OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
+    try:
+        proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
+        payload = json.loads(reference_output.read_text()) if reference_output.is_file() else None
+        status = 'passed' if proc.returncode == 0 and payload and payload.get('status') == 'passed' else 'failed'
+        return {'kind': 'gpu_probe', 'status': status, 'occupancy': occupancy,
+                'command': cmd, 'exit_code': proc.returncode, 'stdout': proc.stdout,
+                'stderr': proc.stderr, 'reference_output': str(reference_output),
+                'reference': payload}
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        return {'kind': 'gpu_probe', 'status': 'failed', 'occupancy': occupancy,
+                'command': cmd, 'error': f'{type(exc).__name__}: {exc}'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
@@ -158,13 +201,19 @@ def main():
     parser.add_argument('--trace', action='store_true')
     parser.add_argument('--case', choices=('all', 'identity'), default='all')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
     if not any((args.check, args.compare, args.trace)):
         parser.error('select --check, --compare, or --trace')
-    if args.compare or args.trace:
-        result = {'kind': 'gpu_probe', 'status': 'not_run',
-                  'reason': 'GPU probe is not implemented; no GPU result is implied'}
+    if args.device < 0:
+        parser.error('--device must be non-negative')
+    if args.trace:
+        result = {'kind': 'trace', 'status': 'not_run',
+                  'reason': 'performance trace deferred; no GPU result is implied'}
         code = 2
+    elif args.compare:
+        result = compare_gpu(args.device, args.output)
+        code = 0 if result['status'] == 'passed' else 2 if result['status'] == 'not_run' else 1
     else:
         result = collect_baseline()
         code = 0 if result['status'] == 'passed' else 1
