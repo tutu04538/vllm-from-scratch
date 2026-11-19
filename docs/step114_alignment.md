@@ -56,3 +56,18 @@ GPU2 上已启动 8B AWQ：128×2048 固定校准、group 128、zero point true�
 用户同意为加快制备，将 AWQ/GPTQ 校准调整为 128 条 × 512 token。此前 8B AWQ 的 128×2048 运行由本任务主动中止，未完成量化，也没有产生最终 checkpoint；旧日志保留。新方案从已冻结的 128 条 2048-token 训练窗口分别取前 512 token，样本顺序与来源不变，独立 held-out 和 GSM8K 评测数据不变。两模型派生数据按脚本中确定的 JSON 编码计算 SHA256 均为 `3a97ad8d441050599c487ba5f2063eafe7767f64c5be3a64a9748145b4de6f4d`；产物 recipe 会同时登记原始数据及派生数据 hash、截取规则和量化脚本 hash。较短校准可能降低质量，不能替代后续质量评测。
 
 新任务尝试在 GPU2 启动时已有其他进程，启动器返回 not_run；四卡均有人使用，因此没有启动 512-token 真实量化。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step114 tests/step115 -q -ra`：45 passed，0 failed，0 skipped，仅 CPU 测试。114 的真实 AWQ/GPTQ 产物与 GPU 验收仍未完成。
+
+## 2026-11-19：用户改用公开权重
+
+用户决定直接使用公开量化权重，替代先在本机离线制备 AWQ/GPTQ 的计划：选择 Qwen 官方 AWQ 和第三方 JunHowie GPTQ，各 8B/14B。固定版本为：
+
+- `Qwen/Qwen3-8B-AWQ`：`4da05a8edb55c6046cce958586c33b61da07bb79`。
+- `Qwen/Qwen3-14B-AWQ`：`31c69efc29464b6bb0aee1398b5a7b50a99340c3`。
+- `JunHowie/Qwen3-8B-GPTQ-Int4`：`f08c8ea5f60e1fe34ff4a45edb58e8ca958560c3`。
+- `JunHowie/Qwen3-14B-GPTQ-Int4`：`5073a3e15216fb4facc39c953934910dbf0df51b`。
+
+Hub 元数据的模型及配置匹配目标：AWQ 为 W4/G128/GEMM/zero point，GPTQ 为 W4/G128/sym/desc_act=false。两种模型都声明来源为对应 Qwen3 系列；公开模型的原始 BF16 精确 revision、校准数据与配方未独立确认，不声称与 090 同源或与评测集没有交集。这是用户明确选择的新边界，先前 R114.08 同源基线要求不能凭这些候选权重自动算通过。已有自制 FP8 产物与先前生成数据不删除。
+
+`benchmarks/step114_download_public.py` 按固定 Hub revision 下载至原有 Hub 缓存，对所有文件大小和 SHA256 记录清单，并将 LFS 文件与 Hub SHA256 对账；清单存放 `/data/syh/models/converted/_quant_data/step114_public_manifests/`，只有下载和对账完成才写入。`benchmarks/check_step114_public_tensors.py` 另检查 safetensors 索引以及 qweight/scales/qzeros 成套存在。上游短前向脚本新增公开权重入口：重新检查文件、张量清单和 tokenizer.json 与冻结评测 token 所用 tokenizer 的哈希，同时保留来源与校准泄漏未知状态。只证明预先生成 token 的 tokenizer 文件相符，不证明聊天模板和原始 BF16 revision 相同。
+
+网络的镜像直连曾返回 503 与超时，已切到官方端点及现有代理重试；当前四份权重仍在下载，尚未完成 LFS 对账。四卡均有其他用户计算进程，上游 GPU 前向尚未运行。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step114 tests/step115 -q -ra`：47 passed、0 failed、0 skipped；仅为 CPU 测试。下载、上游加载及完整验收必须待实际完成后更新，不能将本段写成完成证据。

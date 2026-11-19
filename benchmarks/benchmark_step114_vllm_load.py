@@ -12,10 +12,40 @@ from benchmark_step113_quant_capability import gpu_occupancy
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def check_public_artifact(artifact, manifest_path, method, expected_tokenizer_sha, target_name):
+    from check_step114_quant_data import sha
+    from step114_download_public import MODELS
+    manifest = json.loads(manifest_path.read_text())
+    repo = manifest['repo']
+    if (repo not in MODELS or manifest['revision'] != MODELS[repo]
+            or Path(manifest['snapshot']).resolve() != artifact.resolve()
+            or manifest['status'] != 'download_and_integrity_passed_gpu_not_validated'):
+        raise ValueError('public checkpoint identity mismatch')
+    name = repo.split('/')[1]
+    expected_name = target_name + ('-AWQ' if method == 'awq' else '-GPTQ-Int4')
+    if method not in ('awq', 'gptq') or name != expected_name:
+        raise ValueError('public checkpoint model or format mismatch')
+    files = manifest['files']
+    for name, entry in files.items():
+        path = artifact / name
+        if not path.is_file() or path.stat().st_size != entry['bytes'] or sha(path) != entry['sha256']:
+            raise ValueError(f'public checkpoint file mismatch: {name}')
+        if entry['hub_lfs_sha256'] and entry['sha256'] != entry['hub_lfs_sha256']:
+            raise ValueError(f'public checkpoint LFS mismatch: {name}')
+    if files['tokenizer.json']['sha256'] != expected_tokenizer_sha:
+        raise ValueError('public checkpoint tokenizer differs from held-out tokenizer')
+    from check_step114_public_tensors import check as check_tensors
+    inventory = check_tensors(artifact)
+    return {'status': 'passed_file_integrity', 'inventory': inventory, 'repo': repo, 'revision': manifest['revision'],
+            'source_bf16_revision': 'unknown', 'calibration_leakage': 'unknown',
+            'tokenizer_json_sha256': expected_tokenizer_sha}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifact', type=Path, required=True)
     parser.add_argument('--tokens', type=Path, required=True)
+    parser.add_argument('--public-manifest', type=Path)
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--format', choices=['fp8', 'awq', 'gptq'], default='fp8')
     parser.add_argument('--output', type=Path, required=True)
@@ -39,13 +69,19 @@ def main():
         if (args.tokens.name != 'heldout.json' or target_name not in data_manifest['targets']
                 or sha(args.tokens) != data_manifest['targets'][target_name]['files']['heldout.json']):
             raise ValueError('held-out token identity mismatch')
-        artifact_manifest = json.loads((args.artifact / 'conversion_manifest.json').read_text())
-        if artifact_manifest['source_revision'] != data_manifest['targets'][target_name]['source_revision']:
-            raise ValueError('checkpoint and held-out tokenizer source revisions differ')
         state['data_audit'] = data_audit
-        if args.format == 'fp8':
-            from check_step114_fp8_artifact import check as check_fp8
-            state['artifact_audit'] = check_fp8(args.artifact)
+        if args.public_manifest:
+            state['artifact_audit'] = check_public_artifact(
+                args.artifact, args.public_manifest, args.format,
+                data_manifest['targets'][target_name]['tokenizer_files']['tokenizer.json'],
+                target_name)
+        else:
+            artifact_manifest = json.loads((args.artifact / 'conversion_manifest.json').read_text())
+            if artifact_manifest['source_revision'] != data_manifest['targets'][target_name]['source_revision']:
+                raise ValueError('checkpoint and held-out tokenizer source revisions differ')
+            if args.format == 'fp8':
+                from check_step114_fp8_artifact import check as check_fp8
+                state['artifact_audit'] = check_fp8(args.artifact)
         state['occupancy_recheck'] = gpu_occupancy(args.device)
         if state['occupancy_recheck']['status'] != 'idle':
             state.update(status='not_run', reason='GPU became busy during input validation')

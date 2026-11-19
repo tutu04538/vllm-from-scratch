@@ -79202,6 +79202,18 @@
       "tool_environment": {
         "awq": "0.2.9, transformers 4.51.3; tiny CPU quantization passed; real 8B in progress",
         "gptq": "5.6.0, transformers 4.57.6; tiny CPU quantization passed; real models unrun"
+      },
+      "public_awq_gptq": {
+        "status": "downloading_not_validated",
+        "models": [
+          "Qwen/Qwen3-8B-AWQ@4da05a8edb55c6046cce958586c33b61da07bb79",
+          "Qwen/Qwen3-14B-AWQ@31c69efc29464b6bb0aee1398b5a7b50a99340c3",
+          "JunHowie/Qwen3-8B-GPTQ-Int4@f08c8ea5f60e1fe34ff4a45edb58e8ca958560c3",
+          "JunHowie/Qwen3-14B-GPTQ-Int4@5073a3e15216fb4facc39c953934910dbf0df51b"
+        ],
+        "source_revision": "unknown",
+        "calibration_leakage": "unknown",
+        "cpu_tests_step114_115_passed": 47
       }
     },
     "models": {
