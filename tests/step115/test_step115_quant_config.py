@@ -211,3 +211,18 @@ def test_compression_checkpoint_is_not_mistaken_for_unquantized_model():
     hf = {'compression_config': {'quant_method': 'compressed-tensors'}}
     with pytest.raises(NotImplementedError, match='compressed-tensors'):
         BaseModelLoader()._initialize_model(ModelConfig(model='unused', hf_config=hf), 'cpu')
+
+
+def test_real_shape_dispatch_diagnostic_uses_meta_types_without_allocating_weights():
+    import importlib.util
+    from pathlib import Path
+    from minivllm.testing.tiny_models import tiny_qwen3_config
+    path = Path(__file__).resolve().parents[2] / 'benchmarks/benchmark_step115_quant_dispatch.py'
+    spec = importlib.util.spec_from_file_location('step115_dispatch_diagnostic', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hf = {**tiny_qwen3_config('tiny_gqa'), 'quantization_config': AWQ}
+    result = module.methods_for_qwen(hf)
+    assert len(result['linear_layers']) == 4 * hf['num_hidden_layers']
+    assert result['counts'] == {'PendingQuantizedLinearMethod': 4 * hf['num_hidden_layers']}
+    assert result['quantized_execution'] == 'not_implemented'

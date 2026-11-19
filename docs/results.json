@@ -79227,6 +79227,13 @@
       "compression_config_guard": {
         "status": "passed_cpu",
         "tests_step115_and_090_passed": 47
+      },
+      "real_fp8_config_cpu_dispatch": {
+        "status": "passed_cpu_dispatch_only",
+        "8b_pending_linear_layers": 144,
+        "14b_pending_linear_layers": 160,
+        "tests_step115_passed": 35,
+        "gpu_execution": "not_run"
       }
     },
     "models": {}
