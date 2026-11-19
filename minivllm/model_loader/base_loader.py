@@ -56,6 +56,14 @@ class BaseModelLoader:
         在目标 device/默认 dtype 下构造，再 `.to()` 只是形状/设备校验。默认 dtype 是
         进程级状态，必须用 try/finally 恢复。
         """
+        # 在构造模型之前识别 checkpoint 的量化身份。后续关卡提供真实执行方法；
+        # 当前不允许把量化权重误当作 BF16 权重加载。
+        from ..layers.quantization import resolve_quantization_config
+        hf_config = model_config.hf_config or {}
+        quant_config = resolve_quantization_config(None, hf_config.get("quantization_config"))
+        if quant_config is not None:
+            raise NotImplementedError(
+                f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")
         model_class = self._get_model_class(model_config)
         dtype = _dtype_of(model_config)
         target_device = torch.device(device)
