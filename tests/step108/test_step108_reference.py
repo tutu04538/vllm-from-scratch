@@ -1,4 +1,4 @@
-"""Real frozen V2 all-rank trace on a shared head-size-32 tiny fixture."""
+"""Frozen V2 all-rank trace with upstream #66546 applied to the oracle."""
 import json
 import os
 from pathlib import Path
@@ -24,7 +24,8 @@ def test_all_rank_frozen_trace(tmp_path, tp, k):
         result = subprocess.run([sys.executable, *map(str, args)], cwd=ROOT, env=env,
                                 capture_output=True, text=True, timeout=180)
         assert result.returncode == 0, result.stdout + '\n' + result.stderr
-    common = ['--tp', tp, '--k', k, '--fixture', fixture]
+    common = ['--tp', tp, '--k', k, '--fixture', fixture,
+              '--reference-boundary-zero-fix']
     run([PROBE, '--implementation', 'frozen', *common, '--output', ref])
     run([PROBE, '--implementation', 'frozen', *common, '--output', repeat])
     run([COMPARE, '--reference', ref, '--other', repeat, '--contract', contract,
@@ -49,7 +50,8 @@ def test_forced_accept_then_reject_matches_frozen_on_each_rank(tmp_path):
         result = subprocess.run([sys.executable, *map(str, args)], cwd=ROOT, env=env,
                                 capture_output=True, text=True, timeout=180)
         assert result.returncode == 0, result.stdout + '\n' + result.stderr
-    common = ['--tp', 2, '--k', 2, '--fixture', fixture]
+    common = ['--tp', 2, '--k', 2, '--fixture', fixture,
+              '--reference-boundary-zero-fix']
     run([PROBE, '--implementation', 'frozen', *common, '--output', natural])
     tokens = json.loads((natural/'summary.json').read_text())['tokens']
     forced = [tokens[1], (tokens[2] + 1) % 11]

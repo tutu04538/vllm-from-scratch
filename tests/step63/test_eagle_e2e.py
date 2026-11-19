@@ -114,11 +114,39 @@ def test_first_pass_inputs_follow_eagle_alignment():
 
     直接看提议者写进工作区的内容（工作区是定长缓冲，只读有效前缀）。
     """
-    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1, draft_seed=0)
+    # 先用同一 target 算出正确前缀；测试侧只替换第一轮交给 Scheduler 的草稿，
+    # 让第一枚候选必然被接受、第二枚必然被拒绝，不依赖 draft 恰好猜中。
+    prompt = [1, 2, 3, 4, 1, 2, 3, 4]
+    baseline, baseline_core, _ = make_engine(with_spec=False, max_num_seqs=1)
     try:
-        # 边界 0 的残差引用按上游改成原地更新后，tiny 草稿接受序列改变；seed=0
-        # 仍能观察到先接受再拒绝，以下逐行断言和最长轮次均保持不变。
-        engine.add_request("a", [1, 2, 3, 4, 1, 2, 3, 4],
+        baseline_outputs, _ = run(baseline, baseline_core, [("a", prompt)], max_tokens=4)
+        expected = baseline_outputs["a"]
+    finally:
+        baseline.shutdown()
+    assert len(expected) >= 4
+    engine, core, runner = make_engine(spec_k=3, budget=64, max_num_seqs=1, draft_seed=0)
+    take_drafts = core.model_executor.take_draft_token_ids
+    forced = False
+
+    def force_first_drafts():
+        nonlocal forced
+        drafts = take_drafts()
+        if not forced and drafts is not None and drafts.req_ids == ["a"]:
+            vocab_size = tiny_qwen3_config("tiny_gqa")["vocab_size"]
+            drafts.draft_token_ids[0] = [expected[1], (expected[2] + 1) % vocab_size, expected[3]]
+            if drafts.draft_probs is not None:
+                # 同步测试候选的点质量 q，避免 ID 和概率协议不一致。
+                drafts.draft_probs = torch.zeros_like(drafts.draft_probs)
+                for i, token in enumerate(drafts.draft_token_ids[0]):
+                    drafts.draft_probs[i, token] = 1
+            if drafts.num_valid_draft_tokens is not None:
+                drafts.num_valid_draft_tokens[0] = 3
+            forced = True
+        return drafts
+
+    core.model_executor.take_draft_token_ids = force_first_drafts
+    try:
+        engine.add_request("a", prompt,
                            SamplingParams(max_tokens=16, temperature=0.0, eos_token_id=999))
         captured = []
         original = runner.proposer.set_inputs_first_pass
@@ -156,6 +184,7 @@ def test_first_pass_inputs_follow_eagle_alignment():
     finally:
         engine.shutdown()
 
+    assert forced, "必须实际替换第一轮草稿"
     # 找一次"有效行 ≥ 2"的调用：只有这时才看得出"错一格"与"扩容行位置"
     entry = next(item for item in captured
                  if len(item["rows"]) == 1 and item["rows"][0].num_valid >= 2
@@ -173,7 +202,9 @@ def test_first_pass_inputs_follow_eagle_alignment():
     bonus_row = row.target_rows - 1 - row.num_rejected
     # 整体左移一格 —— **锚点那一行除外**（它被换成新采出的 token），锚点之后仍是位移副本
     assert input_ids[:bonus_row] == round_tokens[1:1 + bonus_row], "左移一格（锚点之前）"
-    assert input_ids[bonus_row + 1:] == round_tokens[bonus_row + 1:], "锚点之后仍是位移副本"
+    # 锚点之后直到倒数第二行仍取右侧相邻行；最后一行在本项目初始化为原末行。
+    assert input_ids[bonus_row + 1:-1] == round_tokens[bonus_row + 2:], "锚点之后仍按右邻行移位"
+    assert input_ids[-1] == round_tokens[-1], "末行保留本项目初始值"
     # 新 token 打在**最后一枚有效 token 所在的那一行**（= `target_rows − 1 − num_rejected`），
     # 不是"块的最后一行"：上游 padded 通路的 `token_indices_to_sample` 就是这个索引
     # （`prepare_inputs_padded`，69 关已与上游内核逐值对过）。2026-10-08 复核修正，见

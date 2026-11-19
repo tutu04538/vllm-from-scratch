@@ -19,6 +19,22 @@ def flush_rank(worker, directory):
     return flush(worker, str(Path(directory)/f'rank{dist.get_rank()}.pt'))
 
 
+def install_boundary_zero_fix(worker):
+    """Apply upstream #66546 to the frozen oracle in this test worker only."""
+    from types import MethodType
+
+    model = worker.model_runner.model.model
+    original = model._maybe_add_hidden_state
+
+    def corrected(self, aux_hidden_states, layer_idx, hidden_states, residual):
+        if residual is None and layer_idx in self.aux_hidden_state_layers:
+            hidden_states = hidden_states.clone()
+        return original(aux_hidden_states, layer_idx, hidden_states, residual)
+
+    model._maybe_add_hidden_state = MethodType(corrected, model)
+    return 'upstream-66546-boundary-zero-snapshot'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--implementation', choices=['frozen', 'mini'], required=True)
@@ -27,6 +43,8 @@ def main():
     p.add_argument('--fixture', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--alias-probe', action='store_true')
+    p.add_argument('--reference-boundary-zero-fix', action='store_true',
+                   help='apply upstream #66546 in frozen test workers')
     p.add_argument('--force-first', help='JSON list of B=1 candidate IDs')
     args = p.parse_args()
     forced = None if args.force_first is None else [json.loads(args.force_first)]
@@ -50,6 +68,8 @@ def main():
             disable_log_stats=True, seed=0,
             speculative_config={'method': 'eagle3', 'model': str(draft.resolve()),
                                 'num_speculative_tokens': args.k})
+        if args.reference_boundary_zero_fix:
+            engine.collective_rpc(install_boundary_zero_fix)
         identities = engine.collective_rpc(install, args=(True, None, None, 32, forced))
         if args.alias_probe:
             from step108_alias_hooks import install_alias
@@ -88,7 +108,8 @@ def main():
         finally:
             engine.shutdown()
     (args.output/'summary.json').write_text(json.dumps({'implementation': args.implementation, 'tp': args.tp,
-        'k': args.k, 'forced_first': forced, 'tokens': tokens, 'counts': counts, 'identities': identities}, indent=2)+'\n')
+        'k': args.k, 'forced_first': forced, 'tokens': tokens, 'counts': counts, 'identities': identities,
+        'reference_boundary_zero_fix': args.reference_boundary_zero_fix}, indent=2)+'\n')
     print(json.dumps({'status': 'complete', 'implementation': args.implementation, 'tokens': tokens}))
 
 

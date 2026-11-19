@@ -1,4 +1,4 @@
-"""Run the 108 TP speculative matrix and frozen GPU rejection differential."""
+"""Run 108 TP checks with upstream #66546 applied to the frozen trace oracle."""
 import argparse
 import json
 import os
@@ -72,12 +72,14 @@ def main():
                     for implementation, directory, label in (('frozen', ref, 'reference'),
                                                               ('frozen', repeat, 'repeat')):
                         run(f'{name}_{label}', [sys.executable, probe, '--implementation', implementation,
-                            '--tp', str(tp), '--k', str(k), '--fixture', str(fixture), '--output', str(directory)])
+                            '--tp', str(tp), '--k', str(k), '--fixture', str(fixture), '--output', str(directory),
+                            '--reference-boundary-zero-fix'])
                     run(f'{name}_register', [sys.executable, compare, '--reference', str(ref),
                         '--other', str(repeat), '--contract', str(contract), '--register',
                         '--output', str(folder/f'{name}_repeat.json')])
                     run(f'{name}_mini', [sys.executable, probe, '--implementation', 'mini',
-                        '--tp', str(tp), '--k', str(k), '--fixture', str(fixture), '--output', str(mini)])
+                        '--tp', str(tp), '--k', str(k), '--fixture', str(fixture), '--output', str(mini),
+                        '--reference-boundary-zero-fix'])
                     run(f'{name}_compare', [sys.executable, compare, '--reference', str(ref),
                         '--other', str(mini), '--contract', str(contract),
                         '--output', str(folder/f'{name}_comparison.json')])

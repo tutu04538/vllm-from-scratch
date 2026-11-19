@@ -310,7 +310,9 @@ class Qwen3Model(nn.Module):
         aux_hidden_states: list[torch.Tensor] = []
         # 冻结上游的层编号表示层边界：0 是 embedding，i+1 是第 i 层之后。
         if capture_aux and 0 in self.aux_hidden_state_layers:
-            aux_hidden_states.append(hidden_states)
+            # 首层的 CUDA 融合 add-RMSNorm 会原地更新 residual；它最初与
+            # embedding 共用存储。保留边界 0 当时的值，与上游 #66546 一致。
+            aux_hidden_states.append(hidden_states.clone())
         for index, layer in enumerate(self.layers):
             hidden_states, residual = layer(positions, hidden_states, residual)
             if capture_aux and index + 1 in self.aux_hidden_state_layers:

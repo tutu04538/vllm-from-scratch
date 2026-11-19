@@ -14053,10 +14053,10 @@
   },
   "current_package": {
     "root": "minivllm/",
-    "python_files": 194,
-    "sha256": "4f251f57ecf9a6fd740646abf8e1cc69f11fed53b06ffc7af569f4ddff8e8835",
+    "python_files": 196,
+    "sha256": "2720f8bfb1f3f2c9e7311d9d4810a3f5cdeb21b883fcb448f6f683b3046517fc",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；历史各关结果中的摘要保留当次值"
+    "note": "当前包摘要，包含已落地的115配置解析和边界0修复；历史各关结果中的摘要保留当次值"
   },
   "step091": {
     "results": {
@@ -25235,6 +25235,57 @@
     "models": {
       "tiny": "generated deterministic Qwen3/EAGLE3 fixtures, K1/2/4, TP2/4",
       "real_weight_revision_reference": "step106.models and step107.models; 108 real weights used for affected-scope rechecks only"
+    },
+    "boundary_zero_fix_20261117": {
+      "status": "in progress: targeted CUDA/TP comparison passed; full parallel regression interrupted and one failure unresolved",
+      "package_sha256": "5a738fc095c544e59baf458a04cb0cf2beb25e89e4fe6e83e01c8911573b4565",
+      "upstream_pr": "https://github.com/vllm-project/vllm/pull/66546",
+      "changed_semantics": "snapshot selected embedding boundary before fused residual updates",
+      "oracle": "frozen vLLM with test-only upstream #66546 applied; old unmodified frozen traces retained",
+      "cpu_validation": {
+        "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step106/test_step106_aux_boundaries.py tests/step106/test_step106_sharing.py tests/step106/test_step106_vocab_mapping.py tests/step107/test_step107_loader.py tests/step108/test_step108_oracle_fix.py tests/step108/test_step108_config.py tests/step108/test_step108_frozen.py tests/step63/test_eagle_model.py -k 'not cuda' -q -ra",
+        "passed": 29,
+        "failed": 0,
+        "skipped": 3,
+        "deselected": 1
+      },
+      "early_attempt": {
+        "command": "CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step106/test_step106_aux_boundaries.py tests/step108/test_step108_config.py tests/step107/test_step107_loader.py -q -ra",
+        "passed": 8,
+        "failed": 2,
+        "reason": "two configuration tests require two visible GPUs"
+      },
+      "pending": [
+        "reproduce and investigate failure in complete parallel regression",
+        "rerun 089–112 on idle GPUs"
+      ],
+      "oracle_validation": {
+        "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step108/test_step108_oracle_fix.py tests/step106/test_step106_aux_boundaries.py -k 'not cuda' -q -ra",
+        "passed": 4,
+        "failed": 0,
+        "deselected": 1
+      },
+      "package_sha256_current": "2720f8bfb1f3f2c9e7311d9d4810a3f5cdeb21b883fcb448f6f683b3046517fc",
+      "targeted_gpu_validation": {
+        "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 TRITON_F32_DEFAULT=ieee python -m pytest tests/step106/test_step106_aux_boundaries.py tests/step108/test_step108_oracle_fix.py tests/step108/test_step108_reference.py -q -ra",
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0
+      },
+      "legacy_rerun": {
+        "passed": 1289,
+        "failed": 0,
+        "skipped": 23,
+        "initial_run": "1288 passed, 1 failed, 23 skipped; fixture corrected",
+        "log": "benchmarks/results/step108_boundary_zero_20261119/legacy_rerun.log"
+      },
+      "parallel_interrupted": {
+        "progress_passed_markers": 154,
+        "progress_failed_markers": 1,
+        "status": "interrupted: external workloads occupied all GPUs; no final pytest summary",
+        "log": "benchmarks/results/step108_boundary_zero_20261119/parallel_interrupted.log",
+        "suspected_test": "tests/step091/test_step091_parallel.py::test_default_draft_tp_follows_target (inferred from collection order, failure traceback unavailable)"
+      }
     }
   },
   "step109": {

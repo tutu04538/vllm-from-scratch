@@ -1192,3 +1192,5 @@ Qwen3 + EAGLE3 的 V2 同 TP 路径支持 `FULL_DECODE_ONLY`：target、draft pr
 ### 并行专题审计（112）
 
 当前工作树按模型构造设备生成 RoPE 表，转换已有表时保留其原始数值来源；Graph 的逐轮测试记录由测试侧观察器持有。真实模型矩阵、模型文件身份核验和最终回归已通过；状态与风险见 [112 对齐报告](../docs/step112_alignment.md)。
+
+EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 residual 更新覆盖；CUDA 和 TP2/4 定向差分通过，完整多卡回归仍待完成，历史记录见 [108 对齐报告](../docs/step108_alignment.md)。

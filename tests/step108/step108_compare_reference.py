@@ -52,7 +52,15 @@ def main():
     rs = json.loads((a.reference/'summary.json').read_text())
     os = json.loads((a.other/'summary.json').read_text())
     assert rs['tp'] == os['tp'] and rs['k'] == os['k'] and rs['tokens'] == os['tokens']
-    limits = {} if a.register else json.loads(a.contract.read_text())['limits']
+    assert rs.get('reference_boundary_zero_fix', False) == os.get('reference_boundary_zero_fix', False), (
+        'cannot compare traces with different boundary-zero reference semantics')
+    contract = {} if a.register else json.loads(a.contract.read_text())
+    if not a.register:
+        assert contract.get('reference_boundary_zero_fix', False) == rs.get('reference_boundary_zero_fix', False), (
+            'contract and reference have different boundary-zero semantics')
+        assert contract['reference_sha256'] == [sha(a.reference/f'rank{r}.pt') for r in range(rs['tp'])], (
+            'contract does not belong to this reference trace')
+    limits = {} if a.register else contract['limits']
     errors, metrics = [], {}
     for rank in range(rs['tp']):
         left = torch.load(a.reference/f'rank{rank}.pt', weights_only=True)
@@ -104,8 +112,10 @@ def main():
         if not errors:
             a.contract.parent.mkdir(parents=True, exist_ok=True)
             a.contract.write_text(json.dumps({'limits': limits, 'reference_sha256': [
-                sha(a.reference/f'rank{r}.pt') for r in range(rs['tp'])], 'scope': 'frozen repeat only'}, indent=2)+'\n')
+                sha(a.reference/f'rank{r}.pt') for r in range(rs['tp'])], 'scope': 'frozen repeat only',
+                'reference_boundary_zero_fix': rs.get('reference_boundary_zero_fix', False)}, indent=2)+'\n')
     result = {'status': 'failed' if errors else 'passed', 'tp': rs['tp'], 'k': rs['k'],
+              'reference_boundary_zero_fix': rs.get('reference_boundary_zero_fix', False),
               'metrics': metrics, 'errors': errors[:50], 'error_count': len(errors),
               'scope': 'reference repeat' if a.register else 'all-rank natural fixed-history trace'}
     a.output.parent.mkdir(parents=True, exist_ok=True)
