@@ -79311,5 +79311,18 @@
       "cpu_step115_116_117_passed": 49
     },
     "models": {}
+  },
+  "step118": {
+    "results": {
+      "status": "cpu_format_differential_passed_gpu_validation_deferred",
+      "package_sha256": "d22c6eb37917618b05c3f3857b8fa630eba48a6bd2080ab704e87911f2b6f90d",
+      "cpu_tests_passed": 6,
+      "public_checkpoint_subtensors": 4,
+      "public_cpu_result_sha256": "7c35883f2c31228ac950dec6918ed6e62ce26ceb7f40a344168faa7a4655fe8a",
+      "gptq_runtime_zero_offset": "not_implemented_step127",
+      "gpu_model_tp_graph": "not_run",
+      "performance": "not_run"
+    },
+    "models": {}
   }
 }

@@ -193,3 +193,5 @@
 [116 LinearMethod 与 BF16 回归（进行中）](step116_alignment.md)：普通 Linear 参数创建和局部计算转交方法对象，模型加载接入后处理；真实模型、多卡和 Graph 回归尚未进行。
 
 [117 量化 Parameter 与加载生命周期（进行中）](step117_alignment.md)：项目内参数布局和逻辑 shard 加载、加载后处理顺序已接入；真实量化方法尚未开放，GPU 正确性和 UVA 后处理尚未验证。
+
+[118 W4 表示与 packing（进行中）](step118_alignment.md)：手算与四份公开权重首层抽样在 CPU 上对照冻结 vLLM；GPU、完整回归和性能仍待后续。
