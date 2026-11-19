@@ -48,3 +48,8 @@ Qwen3 把量化配置传入投影层，并注册 QKV 与 gate/up 的逻辑 shard
 独立参考进程将 QKV/gate-up 全不排除、全排除、部分排除、融合名以及 exact/substring/suffix 的 9 个 case 与冻结 vLLM 排除函数对照。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step113 tests/step114 tests/step115 tests/step090/test_step090_models.py tests/step096/test_step096_linear.py::test_single_gpu_free_compatibility_and_bias tests/step097/test_step097_packed.py tests/step097/test_step097_qwen_loader.py -k 'not test_true_gpu_and_frozen_or_real' -q -ra`：64 passed、7 deselected；排除的是 GPU 用例，不能算通过。
 
 CPU 回归初次命令误包含需要 CUDA Triton 拒绝采样的 step63 六项，六项因 CPU 不支持失败；另有一项 096 旧负例因传入非法配置对象出现 AttributeError，已恢复为明确拒绝并在上述重测中通过。六项 step63 GPU 回归尚未针对当前包重跑。当前包内相对路径 hash `30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443`（198 个 Python 文件）。尚缺真实 checkpoint 差分、GPU backend `can_implement`、多 rank 接入、完整回归和 113/114 前置，115 仍未完成。
+
+
+## 2026-11-19：拒绝未知压缩 checkpoint
+
+对照冻结加载器发现，HF `compression_config` 也可以声明压缩格式；此前只检查 `quantization_config`，可能将这种 checkpoint 错当未量化模型。现沿冻结入口检查顺序读取 `compression_config`，对未支持的 `compressed-tensors` 明确拒绝，不改变未量化路径。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step115 tests/step090/test_step090_models.py -q -ra`：47 passed。当前包内相对路径 hash `4153a3108c537402d985eba37f1eec56d4edbd2cf8d7c1c77e33a0f7725f6f24`；真实量化权重加载、GPU 和完整回归仍待验。

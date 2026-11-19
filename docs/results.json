@@ -14054,9 +14054,9 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 198,
-    "sha256": "30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443",
+    "sha256": "4153a3108c537402d985eba37f1eec56d4edbd2cf8d7c1c77e33a0f7725f6f24",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；含115线性层配置分派，历史结果摘要保持原值"
+    "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
   },
   "step091": {
     "results": {
@@ -79212,7 +79212,7 @@
   "step115": {
     "results": {
       "status": "partial: config sources and Qwen3 layer dispatch; GPU backend and prerequisites pending",
-      "package_sha256": "30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443",
+      "package_sha256": "4153a3108c537402d985eba37f1eec56d4edbd2cf8d7c1c77e33a0f7725f6f24",
       "cpu_tests_step113_114_115_090_passed": 43,
       "cpu_tests_failed": 0,
       "cpu_tests_skipped": 0,
@@ -79223,7 +79223,11 @@
         "deselected_gpu_cases": 7,
         "frozen_skip_cases": 9
       },
-      "cpu_failed_initial_attempt": "six step63 GPU-only rejection-sampler tests run with CUDA hidden, plus one invalid-config failure now fixed"
+      "cpu_failed_initial_attempt": "six step63 GPU-only rejection-sampler tests run with CUDA hidden, plus one invalid-config failure now fixed",
+      "compression_config_guard": {
+        "status": "passed_cpu",
+        "tests_step115_and_090_passed": 47
+      }
     },
     "models": {}
   }

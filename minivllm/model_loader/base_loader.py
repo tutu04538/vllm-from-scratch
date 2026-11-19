@@ -66,6 +66,8 @@ class BaseModelLoader:
         checkpoint_config = hf_config.get("quantization_config")
         if checkpoint_config is None and isinstance(hf_config.get("text_config"), dict):
             checkpoint_config = hf_config["text_config"].get("quantization_config")
+        if checkpoint_config is None:
+            checkpoint_config = hf_config.get("compression_config")
         user_method = model_config.quantization
         external_config = None
         if checkpoint_config is None and user_method is not None:

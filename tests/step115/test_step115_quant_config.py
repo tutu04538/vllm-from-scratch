@@ -205,3 +205,9 @@ def test_qwen_model_alone_registers_packed_mapping():
     config = resolve_quantization_config(None, {**AWQ, 'modules_to_not_convert': ['q_proj']})
     with torch.device('meta'), pytest.raises(ValueError, match='some but not all'):
         Qwen3Model(tiny_qwen3_config('tiny_gqa'), prefix='model', quant_config=config)
+
+
+def test_compression_checkpoint_is_not_mistaken_for_unquantized_model():
+    hf = {'compression_config': {'quant_method': 'compressed-tensors'}}
+    with pytest.raises(NotImplementedError, match='compressed-tensors'):
+        BaseModelLoader()._initialize_model(ModelConfig(model='unused', hf_config=hf), 'cpu')
