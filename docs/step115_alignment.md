@@ -61,3 +61,7 @@ CPU 回归初次命令误包含需要 CUDA Triton 拒绝采样的 step63 六项�
 ## 2026-11-19：公开 AWQ/GPTQ 配置的 CPU 分派
 
 读取 114 固定的四个公开模型 revision 已下载的 `config.json`，对 Qwen3 每层四种投影调用 CPU 分派诊断：8B AWQ 和 GPTQ 分别选择 `auto_awq`、`auto_gptq`，各 144 个待实现量化投影；14B 相应为各 160 个。该检查不读取权重，下载尚未完成，也不验证 GPU kernel 或加载。CPU 执行方式为调用 `benchmark_step115_quant_dispatch.methods_for_qwen` 并逐一读取对应 Hub snapshot 配置。115 仍未关闭。
+
+## 2026-11-19：布局能力边界
+
+按 R115.05 增加项目范围校验：AWQ 显式 `version` 仅接受 GEMM，GPTQ `pack_dtype` 仅接受 int32；缺失字段保持对应默认值。其他布局明确拒绝，避免误把不同打包方式当作支持。上游还可能支持更多格式，这里是本项目范围限制。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step115 -q -ra`：35 passed；本次未执行 GPU 正确性验收。当前包 hash `e4aae89c0473d27daedf81b60ca8c89cdb20e7051e8f0867f344b1d0146295e0`。kernel `can_implement` 要等后续真实后端实现，115 验收仍待进行。

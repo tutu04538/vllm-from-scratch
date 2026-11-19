@@ -14054,7 +14054,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 198,
-    "sha256": "4153a3108c537402d985eba37f1eec56d4edbd2cf8d7c1c77e33a0f7725f6f24",
+    "sha256": "e4aae89c0473d27daedf81b60ca8c89cdb20e7051e8f0867f344b1d0146295e0",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
   },
@@ -79224,7 +79224,7 @@
   "step115": {
     "results": {
       "status": "partial: config sources and Qwen3 layer dispatch; GPU backend and prerequisites pending",
-      "package_sha256": "4153a3108c537402d985eba37f1eec56d4edbd2cf8d7c1c77e33a0f7725f6f24",
+      "package_sha256": "e4aae89c0473d27daedf81b60ca8c89cdb20e7051e8f0867f344b1d0146295e0",
       "cpu_tests_step113_114_115_090_passed": 43,
       "cpu_tests_failed": 0,
       "cpu_tests_skipped": 0,
@@ -79254,6 +79254,10 @@
         "pending_linear_8b_each": 144,
         "pending_linear_14b_each": 160,
         "weight_download_and_gpu_validation": "pending"
+      },
+      "layout_guard": {
+        "status": "implemented_gpu_correctness_pending",
+        "cpu_tests_passed": 35
       }
     },
     "models": {}

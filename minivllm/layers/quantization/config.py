@@ -239,11 +239,17 @@ def resolve_quantization_config(user_method: str | None, checkpoint_config: dict
             raise NotImplementedError("本项目 AWQ 仅计划支持 W4、group=128、zero_point=true")
         if parsed.lm_head_quantized:
             raise NotImplementedError("本项目暂不支持量化 lm_head")
+        version = config.get("version", "gemm")
+        if not isinstance(version, str) or version.lower() != "gemm":
+            raise NotImplementedError(f"本项目暂不支持 AWQ checkpoint 布局 {version!r}")
     elif isinstance(parsed, AutoGPTQConfig):
         if (parsed.weight_bits, parsed.group_size, parsed.is_sym, parsed.desc_act) != (4, 128, True, False):
             raise NotImplementedError("本项目 GPTQ 仅计划支持 W4、group=128、sym=true、desc_act=false")
         if parsed.lm_head_quantized or parsed.dynamic or parsed.modules_in_block_to_quantize:
             raise NotImplementedError("本项目暂不支持 GPTQ 的 lm_head 或逐层配置")
+        pack_dtype = config.get("pack_dtype", "int32")
+        if pack_dtype != "int32":
+            raise NotImplementedError(f"本项目暂不支持 GPTQ 打包 dtype {pack_dtype!r}")
         checkpoint_format = config.get("checkpoint_format", config.get("format", "gptq"))
         if checkpoint_format != "gptq":
             raise NotImplementedError(f"本项目暂不支持 GPTQ checkpoint 格式 {checkpoint_format!r}")
