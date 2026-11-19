@@ -4,9 +4,9 @@
 
 ## 基线
 
-实现前 HEAD 为 `c7c4886af40c2b3e00213d5c2bfa826302bc5b4d`，生产包 Python hash 为 `48ba37036a952982e667679d3a5c5a6b309c6e7d2acc8db998201f6130834b90`。本地忽略的 `learning_notes/14_vllm_from_scratch/量化完整需求/参考资料/工作区基线_20261119_step115/` 保存了状态、改动补丁、未跟踪文件和逐文件 hash；不是干净 HEAD，也不纳入 Git。
+实现前 HEAD 为 `c7c4886af40c2b3e00213d5c2bfa826302bc5b4d`，按包内相对路径计算的生产包 Python hash 为 `5a738fc095c544e59baf458a04cb0cf2beb25e89e4fe6e83e01c8911573b4565`；此前记录的 `48ba37036a952982e667679d3a5c5a6b309c6e7d2acc8db998201f6130834b90` 使用仓库根目录相对路径，与项目验收工具口径不同。本地忽略的 `learning_notes/14_vllm_from_scratch/量化完整需求/参考资料/工作区基线_20261119_step115/` 保存了状态、改动补丁、未跟踪文件和逐文件 hash；不是干净 HEAD，也不纳入 Git。
 
-当前生产包 Python hash：`162c26384ccc799961a5137a94600032816c5b50c3db2f5f103080f37f366a8f`；包含既有 Qwen3 未提交修改。hash 按相对路径排序、逐文件 SHA256 后以 `路径\0hash\n` 拼接计算。
+当时工作树的包内相对路径 Python hash：`2720f8bfb1f3f2c9e7311d9d4810a3f5cdeb21b883fcb448f6f683b3046517fc`；此前记录的 `162c26384ccc799961a5137a94600032816c5b50c3db2f5f103080f37f366a8f` 使用仓库根目录相对路径。两者均包含当时既有 Qwen3 未提交修改。项目标准 hash 按包内相对路径排序、逐文件 SHA256 后以 `路径\0hash\n` 拼接计算。
 
 ## 实现及缺口
 
