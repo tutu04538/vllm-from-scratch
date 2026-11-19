@@ -57,3 +57,7 @@ CPU 回归初次命令误包含需要 CUDA Triton 拒绝采样的 step63 六项�
 ## 2026-11-19：真实配置的 CPU 分派清单
 
 `benchmark_step115_quant_dispatch.py --check` 使用 114 生成的真实 8B/14B FP8 checkpoint `config.json`，按 Qwen3 真实层数和每层四种投影，构造仅供方法选择的空 layer 类型对象；不构造完整模型、不分配权重，也不执行 GPU kernel。8B 144 个投影、14B 160 个投影均选中 `PendingQuantizedLinearMethod`，表明这些配置识别为待实现量化，而不是支持实际前向。结果分别为 `benchmarks/results/step115/fp8_8b_cpu_dispatch.json` 和 `fp8_14b_cpu_dispatch.json`，`--compare`/`--trace` 明确返回 not_run。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step115 -q -ra`：35 passed；真实 GPU 对照、shape 支持和完整回归尚未运行，115 仍未关闭。
+
+## 2026-11-19：公开 AWQ/GPTQ 配置的 CPU 分派
+
+读取 114 固定的四个公开模型 revision 已下载的 `config.json`，对 Qwen3 每层四种投影调用 CPU 分派诊断：8B AWQ 和 GPTQ 分别选择 `auto_awq`、`auto_gptq`，各 144 个待实现量化投影；14B 相应为各 160 个。该检查不读取权重，下载尚未完成，也不验证 GPU kernel 或加载。CPU 执行方式为调用 `benchmark_step115_quant_dispatch.methods_for_qwen` 并逐一读取对应 Hub snapshot 配置。115 仍未关闭。

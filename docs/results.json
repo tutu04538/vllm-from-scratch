@@ -79246,6 +79246,14 @@
         "14b_pending_linear_layers": 160,
         "tests_step115_passed": 35,
         "gpu_execution": "not_run"
+      },
+      "public_config_cpu_dispatch": {
+        "status": "passed_cpu_dispatch_only",
+        "awq_method": "auto_awq",
+        "gptq_method": "auto_gptq",
+        "pending_linear_8b_each": 144,
+        "pending_linear_14b_each": 160,
+        "weight_download_and_gpu_validation": "pending"
       }
     },
     "models": {}
