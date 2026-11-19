@@ -1,0 +1,43 @@
+"""校准和 held-out 数据身份：CPU 小例与重叠负例。"""
+import importlib.util
+from pathlib import Path
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / 'benchmarks/prepare_step114_quant_data.py'
+spec = importlib.util.spec_from_file_location('step114_quant_data_prepare', SCRIPT)
+data = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(data)
+
+
+def test_windows_keep_non_overlapping_ids_and_hashes():
+    rows = data.windows(list(range(13)), 'train', 3, width=4)
+    assert [r['token_ids'] for r in rows] == [list(range(4)), list(range(4, 8)), list(range(8, 12))]
+    assert [r['id'] for r in rows] == ['train:tokens:0:4', 'train:tokens:4:8', 'train:tokens:8:12']
+    assert rows[0]['sha256_uint32_le'] == data.token_hash([0, 1, 2, 3])
+
+
+def test_detects_content_overlap_despite_distinct_split_ids():
+    train = data.windows([1, 2, 3, 4], 'train', 1, width=4)
+    test = data.windows([1, 2, 3, 4], 'test', 1, width=4)
+    with pytest.raises(ValueError, match='overlap'):
+        data.check_no_leakage(train, test)
+
+
+def test_duplicate_test_content_is_rejected():
+    test = data.windows([1, 2, 1, 2], 'test', 2, width=2)
+    with pytest.raises(ValueError, match='duplicate'):
+        data.check_no_leakage([], test)
+
+
+def test_data_audit_rejects_manifest_without_target_models(tmp_path):
+    import json
+    check_path = ROOT / 'benchmarks/check_step114_quant_data.py'
+    audit_spec = importlib.util.spec_from_file_location('step114_quant_data_audit', check_path)
+    audit = importlib.util.module_from_spec(audit_spec)
+    audit_spec.loader.exec_module(audit)
+    (tmp_path / 'manifest.json').write_text(json.dumps({
+        'kind': 'data_preparation_only', 'sources': {}, 'targets': {},
+    }))
+    with pytest.raises(ValueError, match='missing or unexpected target'):
+        audit.check(tmp_path)

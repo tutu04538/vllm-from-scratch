@@ -79134,5 +79134,22 @@
       }
     },
     "models": {}
+  },
+  "step114": {
+    "results": {
+      "status": "partial: datasets prepared; quantized weights and upstream reference not ready",
+      "data_manifest_sha256": "3b2799bf8bc959e70616793fe4b038467ff3c81f77b338d6593f99c1ba6d1d0e",
+      "data_path": "/data/syh/models/converted/_quant_data/step114_wikitext_gsm8k_20261119",
+      "calibration_windows_per_model": 128,
+      "heldout_windows_per_model": 128,
+      "gsm8k_samples_per_model": 256,
+      "calibration_test_window_intersection": 0,
+      "cpu_tests_step113_114_115_passed": 26,
+      "gpu_quantization": "not_run"
+    },
+    "models": {
+      "Qwen3-8B": "no quantized artifact",
+      "Qwen3-14B": "no quantized artifact"
+    }
   }
 }
