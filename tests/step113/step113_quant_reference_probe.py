@@ -6,6 +6,9 @@ from pathlib import Path
 
 import torch
 from vllm import _custom_ops as ops
+from vllm.config import VllmConfig, set_current_vllm_config
+from vllm.model_executor.layers.quantization import get_quantization_config
+from vllm.model_executor.kernels.linear.scaled_mm.cutlass import CutlassFP8ScaledMMLinearKernel
 from vllm.model_executor.kernels.linear import (
     _POSSIBLE_KERNELS, choose_mp_linear_kernel, init_fp8_linear_kernel,
 )
@@ -24,6 +27,25 @@ def attempt(fn):
         return {'status': 'passed', 'result': fn()}
     except Exception:
         return {'status': 'failed', 'traceback': traceback.format_exc()}
+
+
+def config_resolution():
+    examples = {
+        'awq': {'quant_method': 'awq', 'w_bit': 4, 'q_group_size': 128, 'zero_point': True},
+        'gptq': {'quant_method': 'gptq', 'bits': 4, 'group_size': 128, 'desc_act': False, 'sym': True},
+        'fp8': {'quant_method': 'fp8', 'activation_scheme': 'dynamic'},
+    }
+    aliases = {'awq': ['awq', 'awq_marlin', 'auto_awq'],
+               'gptq': ['gptq', 'gptq_marlin', 'auto_gptq'], 'fp8': ['fp8']}
+    result = {}
+    for kind, names in aliases.items():
+        classes = {name: get_quantization_config(name).__name__ for name in names}
+        cls = get_quantization_config(names[0])
+        cfg = cls.from_config(examples[kind])
+        result[kind] = {'aliases': classes, 'get_name': cfg.get_name(),
+                        'supported_act_dtypes': [str(dtype) for dtype in cfg.get_supported_act_dtypes()],
+                        'min_capability': cfg.get_min_capability()}
+    return result
 
 
 def mp_dispatch(quant_type, zero_point):
@@ -97,10 +119,14 @@ def fp8_gemm(m):
 
 def fp8_dispatch():
     selected = {}
-    for name, activation in [('per_tensor', kFp8DynamicTensorSym), ('per_token', kFp8DynamicTokenSym)]:
-        result = attempt(lambda: type(init_fp8_linear_kernel(
-            activation, kFp8StaticTensorSym, torch.bfloat16, torch.bfloat16, (4096, 4096))).__name__)
-        selected[name] = result
+    # 与上游 kernel 测试相同：自定义算子在初始化时需要当前配置上下文。
+    with set_current_vllm_config(VllmConfig()):
+        for name, activation in [('per_tensor', kFp8DynamicTensorSym), ('per_token', kFp8DynamicTokenSym)]:
+            for mode, forced in [('default', None), ('forced_cutlass', CutlassFP8ScaledMMLinearKernel)]:
+                result = attempt(lambda: type(init_fp8_linear_kernel(
+                    activation, kFp8StaticTensorSym, torch.bfloat16, torch.bfloat16,
+                    (4096, 4096), force_kernel=forced)).__name__)
+                selected[f'{name}_{mode}'] = result
     failures = {name: value for name, value in selected.items() if value['status'] != 'passed'}
     if failures:
         raise RuntimeError('FP8 dispatch failure: ' + json.dumps(failures))
@@ -125,7 +151,8 @@ def main():
     args = parser.parse_args()
     torch.cuda.set_device(0)
     cc = torch.cuda.get_device_capability()
-    results = {'awq_dispatch': attempt(lambda: mp_dispatch(scalar_types.uint4, True)),
+    results = {'config_resolution': attempt(config_resolution),
+               'awq_dispatch': attempt(lambda: mp_dispatch(scalar_types.uint4, True)),
                'gptq_dispatch': attempt(lambda: mp_dispatch(scalar_types.uint4b8, False)),
                'fp8_dispatch': attempt(fp8_dispatch),
                'awq_m1': attempt(lambda: marlin_gemm(1, True)),

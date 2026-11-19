@@ -50,3 +50,8 @@ def test_busy_gpu_does_not_start_reference_process(monkeypatch, tmp_path):
     monkeypatch.setattr(probe.subprocess, 'run', must_not_run)
     result = probe.compare_gpu(0, tmp_path / 'result.json')
     assert result['status'] == 'not_run'
+
+
+def test_gpu_query_failure_is_unknown_not_idle(monkeypatch):
+    monkeypatch.setattr(probe, 'command', lambda args: {'exit_code': 1, 'stdout': '', 'stderr': 'unavailable'})
+    assert probe.gpu_occupancy(0)['status'] == 'unknown'

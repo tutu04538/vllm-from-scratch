@@ -79112,7 +79112,7 @@
   },
   "step113": {
     "results": {
-      "status": "partial: CPU source and identity only; GPU probes not run",
+      "status": "partial: upstream GPU2 probes passed; full shape matrix and GPU failure cleanup pending",
       "baseline_head": "2c3125c10695d49ff21d50c1f0bc42d1d3aa652e",
       "package_sha256": "2720f8bfb1f3f2c9e7311d9d4810a3f5cdeb21b883fcb448f6f683b3046517fc",
       "source_files_verified": 849,
@@ -79131,6 +79131,25 @@
         "cpu_pytest_passed": 35,
         "cpu_pytest_failed": 0,
         "cpu_pytest_skipped": 0
+      },
+      "gpu2_reference": {
+        "status": "passed_upstream_only",
+        "capability": "sm89",
+        "awq_gptq_backend": "MarlinLinearKernel",
+        "fp8_backend": "CutlassFP8ScaledMMLinearKernel",
+        "cases": 11,
+        "reference_sha256": "fa25ddd22523211d20ac0dafe95f3ea42bbeb52499951b554d966ae90110f851",
+        "initial_failure": "test probe missed set_current_vllm_config; fixed and rerun"
+      },
+      "cutlass": {
+        "commit": "da5e086dab31d63815acafdac9a9c5893b1c69e2",
+        "header_count": 1159,
+        "header_tree_sha256": "3cdee752e4b4f1c3ae45191362eaca9637b900bd6fe828bc91d2dcda691ee346",
+        "compiled_project_quant_kernel": "not_run"
+      },
+      "recent_cpu_tests": {
+        "passed": 72,
+        "deselected_gpu_cases": 7
       }
     },
     "models": {}

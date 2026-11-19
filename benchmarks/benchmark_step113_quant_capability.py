@@ -129,7 +129,7 @@ def collect_baseline() -> dict:
     source = check_manifest(manifest, REF / 'vllm_0_28_0')
     installed = installed_check(manifest)
     parallel = parallel_check()
-    gpu = command(['nvidia-smi', '--query-gpu=index,name,driver_version,memory.total,memory.used,utilization.gpu',
+    gpu = command(['nvidia-smi', '--query-gpu=index,name,driver_version,memory.total,memory.used,utilization.gpu,compute_cap',
                    '--format=csv,noheader,nounits'])
     git_head = command(['git', 'rev-parse', 'HEAD'])
     git_status = command(['git', 'status', '--porcelain=v1', '--untracked-files=all'])
@@ -142,6 +142,8 @@ def collect_baseline() -> dict:
             'source_manifest_sha256': sha(manifest_path), 'upstream_commit': manifest['upstream_commit'],
             'source_manifest': source, 'installed_python': installed, 'historical_parallel': parallel,
             'versions': versions(), 'nvcc': command(['nvcc', '--version']), 'gpu_snapshot': gpu,
+            'gpu_topology': command(['nvidia-smi', 'topo', '-m']),
+            'gpu_peer_access': command(['nvidia-smi', 'topo', '-p2p', 'r']),
             'cutlass_tag': command(['git', 'ls-remote', 'https://github.com/NVIDIA/cutlass.git', 'refs/tags/v4.4.2'], timeout=20),
             'environment': {key: os.environ.get(key) for key in
                             ('CUDA_HOME', 'CUDA_VISIBLE_DEVICES', 'VLLM_BATCH_INVARIANT',
