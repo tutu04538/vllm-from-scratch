@@ -5,7 +5,7 @@
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -14,6 +14,26 @@ import torch
 @dataclass(frozen=True)
 class QuantizationConfig(ABC):
     source: str
+    packed_modules_mapping: dict[str, list[str]] = field(default_factory=dict, init=False,
+                                                          repr=False, compare=False)
+
+    def get_quant_method(self, layer, prefix):
+        from ..linear import (ColumnParallelLinear, MergedColumnParallelLinear,
+                              QKVParallelLinear, ReplicatedLinear, RowParallelLinear)
+        from .methods import PendingQuantizedLinearMethod, UnquantizedLinearMethod
+        from .utils import is_layer_skipped
+        if not isinstance(layer, (ColumnParallelLinear, MergedColumnParallelLinear,
+                                  QKVParallelLinear, ReplicatedLinear, RowParallelLinear)):
+            return None
+        if isinstance(self, AutoAWQConfig):
+            ignored, mode = self.modules_to_not_convert, 'substring'
+        elif isinstance(self, Fp8Config):
+            ignored, mode = self.ignored_layers, 'exact'
+        else:
+            ignored, mode = (), 'exact'
+        if is_layer_skipped(prefix, ignored, self.packed_modules_mapping, match_mode=mode):
+            return UnquantizedLinearMethod()
+        return PendingQuantizedLinearMethod(self, prefix)
 
     @classmethod
     @abstractmethod
@@ -79,6 +99,10 @@ class AutoAWQConfig(QuantizationConfig):
         return 75
 
     @classmethod
+    def get_config_filenames(cls):
+        return ["quantize_config.json", "quant_config.json"]
+
+    @classmethod
     def from_config(cls, config, source):
         return cls(source, _integer(_required(config, "w_bit", "bits"), "bits"),
                    _integer(_required(config, "q_group_size", "group_size"), "group_size"),
@@ -104,6 +128,10 @@ class AutoGPTQConfig(QuantizationConfig):
     @classmethod
     def get_min_capability(cls):
         return 60
+
+    @classmethod
+    def get_config_filenames(cls):
+        return ["quantize_config.json"]
 
     @classmethod
     def from_config(cls, config, source):
@@ -137,6 +165,10 @@ class Fp8Config(QuantizationConfig):
     @classmethod
     def get_supported_act_dtypes(cls):
         return [torch.bfloat16, torch.float16]
+
+    @classmethod
+    def get_config_filenames(cls):
+        return []
 
     @classmethod
     def from_config(cls, config, source):

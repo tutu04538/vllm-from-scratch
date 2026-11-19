@@ -108,3 +108,100 @@ def test_multiple_external_files_and_user_checkpoint_conflict(tmp_path):
 
 def test_fp8_supported_dtype_order_matches_frozen_contract():
     assert Fp8Config.get_supported_act_dtypes() == [torch.bfloat16, torch.float16]
+
+
+def test_qwen_quantized_checkpoint_names_first_unsupported_layer():
+    from minivllm.testing.tiny_models import tiny_qwen3_config
+    hf = {**tiny_qwen3_config('tiny_gqa'), 'quantization_config': AWQ}
+    with pytest.raises(NotImplementedError, match=r'auto_awq.*model.layers.0.self_attn.qkv_proj'):
+        BaseModelLoader()._initialize_model(ModelConfig(model='unused', hf_config=hf, dtype='bfloat16'), 'cpu')
+
+
+def test_excluded_linear_matches_unquantized_output():
+    from minivllm.layers.linear import RowParallelLinear
+    config = resolve_quantization_config(None, {**AWQ, 'modules_to_not_convert': ['o_proj']})
+    layer = RowParallelLinear(4, 3, prefix='model.layers.0.self_attn.o_proj', quant_config=config)
+    x = torch.arange(8, dtype=torch.float32).view(2, 4)
+    with torch.no_grad():
+        layer.weight.copy_(torch.arange(12, dtype=torch.float32).view(3, 4))
+    output, _ = layer(x)
+    torch.testing.assert_close(output, torch.nn.functional.linear(x, layer.weight))
+
+
+@pytest.mark.parametrize('ignored,expected', [
+    ([], False), (['q_proj', 'k_proj', 'v_proj'], True),
+    (['model.layers.0.self_attn.qkv_proj'], True),
+])
+def test_packed_awq_skip(ignored, expected):
+    from minivllm.layers.quantization.utils import is_layer_skipped
+    mapping = {'qkv_proj': ['q_proj', 'k_proj', 'v_proj']}
+    assert is_layer_skipped('model.layers.0.self_attn.qkv_proj', ignored, mapping,
+                            match_mode='substring') is expected
+
+
+def test_packed_partial_skip_rejected_before_weights():
+    from minivllm.layers.linear import QKVParallelLinear
+    config = resolve_quantization_config(None, {**AWQ, 'modules_to_not_convert': ['q_proj']})
+    config.packed_modules_mapping.update({'qkv_proj': ['q_proj', 'k_proj', 'v_proj']})
+    with pytest.raises(ValueError, match='some but not all'):
+        QKVParallelLinear(8, 2, 4, prefix='model.layers.0.self_attn.qkv_proj',
+                          quant_config=config)
+
+
+def test_packed_skip_matches_frozen_vllm_in_separate_process():
+    import json
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    from minivllm.layers.quantization.utils import is_layer_skipped
+    script = Path(__file__).with_name('step115_frozen_skip_probe.py')
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                            timeout=120, env={**os.environ, 'CUDA_VISIBLE_DEVICES': ''})
+    assert result.returncode == 0, result.stderr
+    oracle = json.loads(result.stdout.splitlines()[-1])
+    mapping = {'qkv_proj': ['q_proj', 'k_proj', 'v_proj'],
+               'gate_up_proj': ['gate_proj', 'up_proj']}
+    for (prefix, ignored, mode), expected in zip(oracle['cases'], oracle['results']):
+        if expected['status'] == 'error':
+            with pytest.raises(ValueError, match='some but not all'):
+                is_layer_skipped(prefix, ignored, mapping, match_mode=mode)
+        else:
+            assert is_layer_skipped(prefix, ignored, mapping, match_mode=mode) is expected['value']
+
+
+
+def test_qwen_quantized_activation_dtype_and_sm_are_checked(monkeypatch):
+    from minivllm.testing.tiny_models import tiny_qwen3_config
+    hf = {**tiny_qwen3_config('tiny_gqa'), 'quantization_config': AWQ}
+    with pytest.raises(ValueError, match='dtype'):
+        BaseModelLoader()._initialize_model(ModelConfig(model='unused', hf_config=hf), 'cpu')
+    monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: (7, 0))
+    with pytest.raises(NotImplementedError, match='SM75.*SM70'):
+        BaseModelLoader()._initialize_model(
+            ModelConfig(model='unused', hf_config=hf, dtype='bfloat16'), 'cuda:0')
+
+
+def test_non_linear_modules_do_not_get_linear_quant_methods():
+    from minivllm.layers.linear import ParallelLMHead, VocabParallelEmbedding
+    config = resolve_quantization_config(None, AWQ)
+    assert config.get_quant_method(VocabParallelEmbedding(16, 8), 'model.embed_tokens') is None
+    assert config.get_quant_method(ParallelLMHead(16, 8), 'lm_head') is None
+    assert config.get_quant_method(torch.nn.LayerNorm(8), 'model.norm') is None
+
+
+def test_gate_up_mixed_exclusion_rejected():
+    from minivllm.layers.linear import MergedColumnParallelLinear
+    config = resolve_quantization_config(None, {**AWQ, 'modules_to_not_convert': ['gate_proj']})
+    config.packed_modules_mapping.update({'gate_up_proj': ['gate_proj', 'up_proj']})
+    with pytest.raises(ValueError, match='some but not all'):
+        MergedColumnParallelLinear(8, [8, 8], prefix='model.layers.0.mlp.gate_up_proj',
+                                   quant_config=config)
+
+
+def test_qwen_model_alone_registers_packed_mapping():
+    from minivllm.models.qwen3 import Qwen3Model
+    from minivllm.testing.tiny_models import tiny_qwen3_config
+    config = resolve_quantization_config(None, {**AWQ, 'modules_to_not_convert': ['q_proj']})
+    with torch.device('meta'), pytest.raises(ValueError, match='some but not all'):
+        Qwen3Model(tiny_qwen3_config('tiny_gqa'), prefix='model', quant_config=config)

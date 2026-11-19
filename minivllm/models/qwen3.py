@@ -44,7 +44,7 @@ def maybe_prefix(prefix: str, name: str) -> str:
 class Qwen2MLP(nn.Module):
     """Qwen3 复用 Qwen2 的 MLP（vLLM 也是这么复用的：Qwen3Model 继承 Qwen2Model）。"""
 
-    def __init__(self, config: dict, prefix: str = "") -> None:
+    def __init__(self, config: dict, prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
         hidden_size = config["hidden_size"]
         intermediate_size = config["intermediate_size"]
@@ -52,10 +52,11 @@ class Qwen2MLP(nn.Module):
             raise ValueError(f"只支持 silu 激活，收到 {config.get('hidden_act')!r}")
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size, [intermediate_size, intermediate_size],
-            prefix=maybe_prefix(prefix, "gate_up_proj"))
+            prefix=maybe_prefix(prefix, "gate_up_proj"), quant_config=quant_config)
         self.act_fn = SiluAndMul()
         self.down_proj = RowParallelLinear(intermediate_size, hidden_size, bias=False,
-                                           prefix=maybe_prefix(prefix, "down_proj"))
+                                           prefix=maybe_prefix(prefix, "down_proj"),
+                                           quant_config=quant_config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate_up, _ = self.gate_up_proj(x)
@@ -65,7 +66,7 @@ class Qwen2MLP(nn.Module):
 
 
 class Qwen3Attention(nn.Module):
-    def __init__(self, config: dict, prefix: str = "") -> None:
+    def __init__(self, config: dict, prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
         hidden_size = config["hidden_size"]
         num_heads = config["num_attention_heads"]
@@ -76,11 +77,13 @@ class Qwen3Attention(nn.Module):
 
         self.qkv_proj = QKVParallelLinear(hidden_size, head_dim, num_heads, num_kv_heads,
                                           bias=config.get("attention_bias", False),
-                                          prefix=maybe_prefix(prefix, "qkv_proj"))
+                                          prefix=maybe_prefix(prefix, "qkv_proj"),
+                                          quant_config=quant_config)
         self.q_size = self.qkv_proj.q_size
         self.num_heads, self.num_kv_heads = self.qkv_proj.num_heads, self.qkv_proj.num_kv_heads
         self.o_proj = RowParallelLinear(num_heads * head_dim, hidden_size, bias=False,
-                                        prefix=maybe_prefix(prefix, "o_proj"))
+                                        prefix=maybe_prefix(prefix, "o_proj"),
+                                        quant_config=quant_config)
         rope_parameters = dict(config.get("rope_parameters") or {})
         rope_parameters.setdefault(
             "rope_theta", config.get("rope_theta", 10000.0))
@@ -130,11 +133,12 @@ class Qwen3DecoderLayer(nn.Module):
     它返回的是**裸张量**而不是 `(out, residual)`，直接解包会报 "too many values to unpack"。
     """
 
-    def __init__(self, config: dict, prefix: str = "") -> None:
+    def __init__(self, config: dict, prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
         eps = config.get("rms_norm_eps", 1e-6)
-        self.self_attn = Qwen3Attention(config, prefix=maybe_prefix(prefix, "self_attn"))
-        self.mlp = Qwen2MLP(config, prefix=maybe_prefix(prefix, "mlp"))
+        self.self_attn = Qwen3Attention(config, prefix=maybe_prefix(prefix, "self_attn"),
+                                        quant_config=quant_config)
+        self.mlp = Qwen2MLP(config, prefix=maybe_prefix(prefix, "mlp"), quant_config=quant_config)
         self.input_layernorm = RMSNorm(config["hidden_size"], eps=eps)
         self.post_attention_layernorm = RMSNorm(config["hidden_size"], eps=eps)
         # 分段图（PIECEWISE）的两段 + 它们之间的静态缓冲；默认 None = 不开分段图，
@@ -229,6 +233,12 @@ class Qwen3DecoderLayer(nn.Module):
         return self._piece_post(attn_output, residual)
 
 
+QWEN3_PACKED_MODULES_MAPPING = {
+    "qkv_proj": ["q_proj", "k_proj", "v_proj"],
+    "gate_up_proj": ["gate_proj", "up_proj"],
+}
+
+
 class Qwen3Model(nn.Module):
     # 检查点名 → 模型名的打包映射。**放在这里而不是加载器里**：只有模型自己知道它的
     # qkv_proj 里装的是 q/k/v（vLLM 也是把 hf_to_vllm_mapper 挂在 Qwen2Model 上）。
@@ -243,15 +253,18 @@ class Qwen3Model(nn.Module):
         ".up_proj": (".gate_up_proj", 1),
     })
 
-    def __init__(self, config: dict, prefix: str = "") -> None:
+    def __init__(self, config: dict, prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
         self.config = config
+        if quant_config is not None:
+            quant_config.packed_modules_mapping.update(QWEN3_PACKED_MODULES_MAPPING)
         self.vocab_size = config["vocab_size"]
         self.embed_tokens = VocabParallelEmbedding(config["vocab_size"],
                                                    config["hidden_size"],
                                                    prefix=maybe_prefix(prefix, "embed_tokens"))
         self.layers = nn.ModuleList([
-            Qwen3DecoderLayer(config, prefix=maybe_prefix(prefix, f"layers.{index}"))
+            Qwen3DecoderLayer(config, prefix=maybe_prefix(prefix, f"layers.{index}"),
+                              quant_config=quant_config)
             for index in range(config["num_hidden_layers"])
         ])
         self.norm = RMSNorm(config["hidden_size"], eps=config.get("rms_norm_eps", 1e-6))
@@ -346,15 +359,13 @@ class Qwen3Model(nn.Module):
 
 class Qwen3ForCausalLM(nn.Module):
     # 打包映射：检查点里的分离权重 → 模型里的打包参数（AutoWeightsLoader 用它生成 shard_id）
-    packed_modules_mapping = {
-        "qkv_proj": ["q_proj", "k_proj", "v_proj"],
-        "gate_up_proj": ["gate_proj", "up_proj"],
-    }
+    packed_modules_mapping = QWEN3_PACKED_MODULES_MAPPING
 
-    def __init__(self, config: dict, prefix: str = "") -> None:
+    def __init__(self, config: dict, prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
         self.config = config
-        self.model = Qwen3Model(config, prefix=maybe_prefix(prefix, "model"))
+        self.model = Qwen3Model(config, prefix=maybe_prefix(prefix, "model"),
+                                quant_config=quant_config)
         self.lm_head = ParallelLMHead(config["vocab_size"], config["hidden_size"],
                                       prefix=maybe_prefix(prefix, "lm_head"))
         self.logits_processor = LogitsProcessor(config["vocab_size"])

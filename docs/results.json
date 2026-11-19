@@ -14053,10 +14053,10 @@
   },
   "current_package": {
     "root": "minivllm/",
-    "python_files": 196,
-    "sha256": "b4d1cec140544aa17f5fc7b2733ea0e4bee994a4fdc901affac44b1ad4d5aa6f",
+    "python_files": 198,
+    "sha256": "30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；含115配置来源解析，历史各关结果中的摘要保留当次值"
+    "note": "当前包摘要；含115线性层配置分派，历史结果摘要保持原值"
   },
   "step091": {
     "results": {
@@ -79154,12 +79154,19 @@
   },
   "step115": {
     "results": {
-      "status": "partial: config source resolution; layer dispatch and GPU verification pending",
-      "package_sha256": "b4d1cec140544aa17f5fc7b2733ea0e4bee994a4fdc901affac44b1ad4d5aa6f",
+      "status": "partial: config sources and Qwen3 layer dispatch; GPU backend and prerequisites pending",
+      "package_sha256": "30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443",
       "cpu_tests_step113_114_115_090_passed": 43,
       "cpu_tests_failed": 0,
       "cpu_tests_skipped": 0,
-      "quantized_execution": "explicitly rejected"
+      "quantized_execution": "explicitly rejected",
+      "cpu_dispatch_regression": {
+        "passed": 64,
+        "failed": 0,
+        "deselected_gpu_cases": 7,
+        "frozen_skip_cases": 9
+      },
+      "cpu_failed_initial_attempt": "six step63 GPU-only rejection-sampler tests run with CUDA hidden, plus one invalid-config failure now fixed"
     },
     "models": {}
   }

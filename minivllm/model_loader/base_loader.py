@@ -59,7 +59,6 @@ class BaseModelLoader:
         # 在构造模型之前识别 checkpoint 的量化身份。后续关卡提供真实执行方法；
         # 当前不允许把量化权重误当作 BF16 权重加载。
         from ..layers.quantization import get_quantization_config, resolve_quantization_config
-        from ..layers.quantization.config import AutoAWQConfig, AutoGPTQConfig
         import json
         from pathlib import Path
 
@@ -71,12 +70,7 @@ class BaseModelLoader:
         external_config = None
         if checkpoint_config is None and user_method is not None:
             config_class = get_quantization_config(user_method)
-            if config_class is AutoAWQConfig:
-                filenames = ("quantize_config.json", "quant_config.json")
-            elif config_class is AutoGPTQConfig:
-                filenames = ("quantize_config.json",)
-            else:
-                filenames = ()
+            filenames = config_class.get_config_filenames()
             paths = [Path(model_config.model) / name for name in filenames
                      if (Path(model_config.model) / name).is_file()]
             if len(paths) > 1:
@@ -86,6 +80,27 @@ class BaseModelLoader:
                     external_config = json.load(stream)
         quant_config = resolve_quantization_config(user_method, checkpoint_config, external_config)
         if quant_config is not None:
+            architectures = hf_config.get("architectures") or []
+            if architectures != ["Qwen3ForCausalLM"]:
+                raise NotImplementedError(
+                    f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}），"
+                    f"模型结构 {architectures!r}")
+            dtype = _dtype_of(model_config)
+            if dtype not in quant_config.get_supported_act_dtypes():
+                raise ValueError(f"量化方法 {quant_config.get_name()} 不支持激活 dtype {dtype}")
+            target_device = torch.device(device)
+            if target_device.type == "cuda":
+                capability = torch.cuda.get_device_capability(target_device)
+                numeric_capability = capability[0] * 10 + capability[1]
+                if numeric_capability < quant_config.get_min_capability():
+                    raise NotImplementedError(
+                        f"量化方法 {quant_config.get_name()} 需要 SM{quant_config.get_min_capability()}，"
+                        f"当前 SM{numeric_capability}")
+            model_class = self._get_model_class(model_config)
+            # 先在 meta 上分派，不占显存、不为大模型申请实际权重；首个未实现的量化层
+            # 当场拒绝并给出层名。即使所有层被排除，本阶段也不加载量化 checkpoint。
+            with torch.device("meta"):
+                model_class(hf_config, quant_config=quant_config)
             raise NotImplementedError(
                 f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")
         model_class = self._get_model_class(model_config)

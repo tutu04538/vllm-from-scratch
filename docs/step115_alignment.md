@@ -12,13 +12,13 @@
 
 | 项 | 对照及本项目位置 | 当前状态 |
 |---|---|---|
-| R115.01 | 上游 base_config；`minivllm/layers/quantization/config.py` | 只有配置抽象及注册入口；方法生命周期和逐层分派未实现 |
+| R115.01 | 上游 base_config；`minivllm/layers/quantization/config.py`、`methods.py` | 配置与方法接口已建；量化参数和 apply 为明确拒绝的占位，完整字段及覆盖顺序待验 |
 | R115.02 | 上游 auto_awq/auto_gptq/fp8；同上 | 解析计划子集、常用字段及三组入口别名；实测上游注册名一致，尚未完成逐字段差分 |
 | R115.03 | 上游 `get_quant_config`、同上 | `ModelConfig.quantization` 与外置文件已接入加载器；checkpoint 优先、用户方法冲突拒绝；尚未验证所有上游覆盖顺序 |
-| R115.04 | 上游 `is_layer_skipped`、`get_quant_method` | 未实现 |
+| R115.04 | 上游 `is_layer_skipped`、`get_quant_method`；`minivllm/layers/quantization/` | Qwen3 linear 和 fused skip CPU 对照已实现；尚未验证真实产物、MoE/FP8 KV 方法 |
 | R115.05 | 同上 | 实现部分配置子集拒绝；仍缺层类型、完整格式及 MoE 检查 |
-| R115.06 | 三种配置的 dtype 与 minimum capability | 提供元信息；未接入实际设备检查，kernel `can_implement` 未实现 |
-| R115.07 | Qwen3、Linear | 未接入 |
+| R115.06 | 三种配置的 dtype 与 minimum capability | 加载入口校验 dtype/SM；`kernel.can_implement` 和真实 GPU 能力待实现/验收 |
+| R115.07 | Qwen3、Linear | 参数传入 Qwen3 Linear，meta 预检给出不支持层名；多 rank 量化仍在现有 Worker 边界拒绝 |
 | R115.08 | `minivllm/model_loader/base_loader.py` | checkpoint 配置解析后，模型构造前明确拒绝量化执行；不是量化功能开放 |
 
 不能把当前解析结果当作完整上游兼容实现或真实硬件支持。用户参数、外置配置读取及实际 backend 选择等待后续工作；保留用户原有未提交文件，不纳入本次改动。
@@ -39,3 +39,12 @@
 `ModelConfig.quantization` 表示用户显式选择；`BaseModelLoader` 优先读取 HF checkpoint 的 `quantization_config`（含 `text_config`），没有 checkpoint 配置且用户明确指定 AWQ/GPTQ 时才寻找冻结上游允许的外置文件。外置文件中省略 `quant_method` 时以用户指定的 AWQ/GPTQ 方法识别；缺少方法/配置、用户方法冲突、同一方法出现多个外置文件均明确报错。按照上游加载顺序，已有 HF 配置时不读取外置配置文件；这与直接调用 `resolve_quantization_config` 且同时给出两份不同配置时的严格冲突检查是两个入口。FP8 activation dtype 的声明顺序改成冻结源码的 BF16、FP16。
 
 `CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step113 tests/step114 tests/step115 tests/step090/test_step090_models.py -q -ra`：43 passed、0 failed、0 skipped。当前包内相对路径 hash `b4d1cec140544aa17f5fc7b2733ea0e4bee994a4fdc901affac44b1ad4d5aa6f`。这些测试不包含 GPU，多卡配置仍在 Worker 预检查阶段拒绝量化；逐层方法分派、融合排除和硬件/kernels 检查依然未实现。113/114 的 GPU 前置与真实量化产物尚缺，115 不能关闭。
+
+
+## 2026-11-19：Qwen3 线性层分派（CPU 阶段）
+
+Qwen3 把量化配置传入投影层，并注册 QKV 与 gate/up 的逻辑 shard 映射。AWQ 按冻结源码的 substring 模式、FP8 按 exact 模式检查排除；融合层直接命中或全部子层排除时选择普通线性方法，部分排除则抛错。被选中的量化 Linear 在分配权重前明确拒绝并报告方法、来源和层名；加载器用 meta 模型预检，不分配真实模型权重。embedding、norm 和未量化 lm_head 不选择线性量化方法。配置的 activation dtype 和最小 SM 在入口检查，达到最小 SM 仍不代表 kernel 形状可用，后者待真正的后端实现。量化依然未开放。
+
+独立参考进程将 QKV/gate-up 全不排除、全排除、部分排除、融合名以及 exact/substring/suffix 的 9 个 case 与冻结 vLLM 排除函数对照。`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step113 tests/step114 tests/step115 tests/step090/test_step090_models.py tests/step096/test_step096_linear.py::test_single_gpu_free_compatibility_and_bias tests/step097/test_step097_packed.py tests/step097/test_step097_qwen_loader.py -k 'not test_true_gpu_and_frozen_or_real' -q -ra`：64 passed、7 deselected；排除的是 GPU 用例，不能算通过。
+
+CPU 回归初次命令误包含需要 CUDA Triton 拒绝采样的 step63 六项，六项因 CPU 不支持失败；另有一项 096 旧负例因传入非法配置对象出现 AttributeError，已恢复为明确拒绝并在上述重测中通过。六项 step63 GPU 回归尚未针对当前包重跑。当前包内相对路径 hash `30b5bae802894f03009f1e4e459af611f78979a0fed901fd4cacec9726ddb443`（198 个 Python 文件）。尚缺真实 checkpoint 差分、GPU backend `can_implement`、多 rank 接入、完整回归和 113/114 前置，115 仍未完成。

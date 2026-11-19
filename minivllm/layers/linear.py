@@ -29,6 +29,28 @@ from torch import nn
 from torch.nn.parameter import Parameter
 
 
+def _get_quant_method(layer, quant_config, prefix):
+    if quant_config is None:
+        return None
+    from .quantization.config import QuantizationConfig
+    from .quantization.methods import UnquantizedLinearMethod
+    if not isinstance(quant_config, QuantizationConfig):
+        raise NotImplementedError(f"线性层 {prefix} 不支持此量化配置类型")
+    method = quant_config.get_quant_method(layer, prefix)
+    if method is None:
+        raise ValueError(f"量化配置未识别线性层 {prefix}")
+    if not isinstance(method, UnquantizedLinearMethod):
+        # 115 不开放量化权重分配；明确在分配之前失败，后续关卡实现此接口。
+        method.create_weights(layer)
+    return method
+
+
+def _apply_quant_method(layer, x, bias):
+    if layer.quant_method is not None:
+        return layer.quant_method.apply(layer, x, bias)
+    return F.linear(x, layer.weight, bias)
+
+
 def _reject_shard_id(name: str, shard_id) -> None:
     """没打包的参数收到了 shard_id：说明加载器的打包映射指错了目标。
 
@@ -60,8 +82,9 @@ class ReplicatedLinear(nn.Module):
 
     def __init__(self, input_size: int, output_size: int, bias: bool = True,
                  skip_bias_add: bool = False, params_dtype: torch.dtype | None = None,
-                 prefix: str = '', *, return_bias: bool = True) -> None:
+                 prefix: str = '', *, return_bias: bool = True, quant_config=None) -> None:
         super().__init__()
+        self.quant_method = _get_quant_method(self, quant_config, prefix)
         if input_size <= 0 or output_size <= 0:
             raise ValueError('线性层输入和输出维度必须为正')
         self.input_size, self.output_size, self.prefix = input_size, output_size, prefix
@@ -82,7 +105,7 @@ class ReplicatedLinear(nn.Module):
             param.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor):
-        result = F.linear(x, self.weight, None if self.skip_bias_add else self.bias)
+        result = _apply_quant_method(self, x, None if self.skip_bias_add else self.bias)
         if not self.return_bias:
             return result
         return result, self.bias if self.skip_bias_add else None
@@ -93,8 +116,9 @@ class QKVParallelLinear(nn.Module):
 
     def __init__(self, hidden_size: int, head_size: int, total_num_heads: int,
                  total_num_kv_heads: int | None = None, bias: bool = False,
-                 prefix: str = "") -> None:
+                 prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
+        self.quant_method = _get_quant_method(self, quant_config, prefix)
         self.group, self.tp_rank, self.tp_size = _linear_tp_group(False)
         for name, value in (("hidden_size", hidden_size), ("head_size", head_size)):
             if type(value) is not int or value <= 0:
@@ -194,15 +218,16 @@ class QKVParallelLinear(nn.Module):
         self._mark_shard_loaded(param, shard_id)
 
     def forward(self, x: torch.Tensor):
-        return F.linear(x, self.weight, self.bias), None
+        return _apply_quant_method(self, x, self.bias), None
 
 
 class MergedColumnParallelLinear(nn.Module):
     """每个逻辑输出分别分片，打包顺序保持 [shard0_local, shard1_local, ...]。"""
 
     def __init__(self, input_size: int, output_sizes: list[int], bias: bool = False,
-                 prefix: str = "") -> None:
+                 prefix: str = "", *, quant_config=None) -> None:
         super().__init__()
+        self.quant_method = _get_quant_method(self, quant_config, prefix)
         self.group, self.tp_rank, self.tp_size = _linear_tp_group(False)
         if type(input_size) is not int or input_size <= 0 or not output_sizes:
             raise ValueError("input_size 必须为正且 output_sizes 不能为空")
@@ -272,7 +297,7 @@ class MergedColumnParallelLinear(nn.Module):
         counts[shard_id] = counts.get(shard_id, 0) + 1
 
     def forward(self, x: torch.Tensor):
-        return F.linear(x, self.weight, self.bias), None
+        return _apply_quant_method(self, x, self.bias), None
 
 
 def _linear_tp_group(disable_tp: bool):
@@ -321,8 +346,7 @@ class ColumnParallelLinear(nn.Module):
                  params_dtype: torch.dtype | None = None, quant_config=None,
                  disable_tp: bool = False) -> None:
         super().__init__()
-        if quant_config is not None:
-            raise NotImplementedError("并行线性层暂不支持量化参数")
+        self.quant_method = _get_quant_method(self, quant_config, prefix)
         self.group, self.tp_rank, self.tp_size = _linear_tp_group(disable_tp)
         self.input_size = input_size
         self.output_size = output_size
@@ -350,7 +374,7 @@ class ColumnParallelLinear(nn.Module):
 
     def forward(self, x: torch.Tensor):
         bias = None if self.skip_bias_add else self.bias
-        output = F.linear(x, self.weight, bias)
+        output = _apply_quant_method(self, x, bias)
         if self.gather_output and self.tp_size > 1:
             output = self.group.all_gather(output, dim=-1)
         if not self.return_bias:
@@ -367,8 +391,7 @@ class RowParallelLinear(nn.Module):
                  reduce_results: bool = True, quant_config=None,
                  return_bias: bool = True, disable_tp: bool = False) -> None:
         super().__init__()
-        if quant_config is not None:
-            raise NotImplementedError("并行线性层暂不支持量化参数")
+        self.quant_method = _get_quant_method(self, quant_config, prefix)
         self.group, self.tp_rank, self.tp_size = _linear_tp_group(disable_tp)
         self.input_size, self.output_size = input_size, output_size
         self.input_size_per_partition = _parallel_dimension(input_size, self.tp_size, "input_size")
@@ -401,7 +424,7 @@ class RowParallelLinear(nn.Module):
             x = x.narrow(-1, self.tp_rank * self.input_size_per_partition,
                          self.input_size_per_partition).contiguous()
         bias = None if self.tp_rank > 0 or self.skip_bias_add else self.bias
-        output = F.linear(x, self.weight, bias)
+        output = _apply_quant_method(self, x, bias)
         if self.reduce_results and self.tp_size > 1:
             output = self.group.all_reduce(output)
         if not self.return_bias:
