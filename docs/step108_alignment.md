@@ -45,3 +45,5 @@
 58—88 首次回归 1288 passed、1 failed、23 skipped：旧 `test_first_pass_inputs_follow_eagle_alignment` 依赖自然 draft 接受序列，边界 0 修复后不再触发所需场景。以相同 target 的非投机结果强制第一枚接受、第二枚拒绝，并同步点质量 q 后，发现旧断言把锚点之后的移位当作原位副本；按实际整体移位修正并保留逐行、位置和特征断言。定向测试 1 passed。随后同一 58—88 命令完整重跑：1289 passed、23 skipped。跳过项主要是缺失旧真实模型权重，不计为通过。日志见 `benchmarks/results/step108_boundary_zero_20261119/`。
 
 089—112 回归排除了已在前述定向测试运行的 `test_step108_reference.py`；进行中出现 1 个失败，尚未输出失败堆栈时其他用户训练占用四卡，为避免争用而中断。pytest 进度显示 154 个通过标记、1 个失败标记，但中断无最终统计，不能视为整组通过。根据收集顺序，失败可能是 `test_step091_parallel.py::test_default_draft_tp_follows_target`；该测试单独 1 passed，其所在文件单独 56 passed，step090 模型文件加该文件 69 passed，但均不能替代整组重现。另有部分回归与其他用户 GPU 任务重叠，需在空闲时重跑，定位并修复该失败，再完成 089—112 回归。105 历史关闭超时风险仍未解决。
+
+2026-11-20 089—112 联合回归初次为 417 passed、1 failed；失败的 091 ngram 测试不是量化数值差异。pytest 收集 `test_step108_oracle_fix.py` 时导入 `step108_reference_probe`，该探针及其依赖在模块导入期间将 `VLLM_USE_V2_MODEL_RUNNER=1` 写入全局环境，导致 091 的 V1 ngram 配置进入 V2 拒绝分支。现将探针环境设置和引用移入脚本 `main`/worker 调用，新增独立子进程测试证明 import 不修改环境；091/108 对照组合 59 passed。原始失败日志 `benchmarks/results/step122/regression_089_112_20261120.log` 保留。

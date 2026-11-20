@@ -59,3 +59,16 @@ def test_comparison_rejects_mixed_reference_semantics(tmp_path):
     result = run(candidate)
     assert result.returncode != 0
     assert 'different boundary-zero reference semantics' in result.stderr
+
+
+def test_reference_probe_import_does_not_modify_runner_environment():
+    import os
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env.pop('VLLM_USE_V2_MODEL_RUNNER', None)
+    env.pop('VLLM_ALLOW_INSECURE_SERIALIZATION', None)
+    script = ("import os,sys; sys.path.insert(0, 'tests/step108'); "
+              "import step108_reference_probe; "
+              "assert 'VLLM_USE_V2_MODEL_RUNNER' not in os.environ; "
+              "assert 'VLLM_ALLOW_INSECURE_SERIALIZATION' not in os.environ")
+    subprocess.run([sys.executable, '-c', script], cwd=root, env=env, check=True, timeout=60)

@@ -7,14 +7,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(Path(__file__).parent))
-os.environ['VLLM_USE_V2_MODEL_RUNNER'] = '1'
-os.environ['VLLM_ALLOW_INSECURE_SERIALIZATION'] = '1'
-from benchmarks.step106_reference_probe import install, flush
 from benchmarks.check_step090_reference import verify_oracle
 from step108_fixture import create_pair
 
 
 def flush_rank(worker, directory):
+    from benchmarks.step106_reference_probe import flush
     import torch.distributed as dist
     return flush(worker, str(Path(directory)/f'rank{dist.get_rank()}.pt'))
 
@@ -36,6 +34,9 @@ def install_boundary_zero_fix(worker):
 
 
 def main():
+    os.environ['VLLM_USE_V2_MODEL_RUNNER'] = '1'
+    os.environ['VLLM_ALLOW_INSECURE_SERIALIZATION'] = '1'
+    from benchmarks.step106_reference_probe import install
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--implementation', choices=['frozen', 'mini'], required=True)
     p.add_argument('--tp', type=int, choices=[2, 4], required=True)
