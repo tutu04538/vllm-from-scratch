@@ -19,3 +19,11 @@
 当前包内相对路径 SHA256 `d22c6eb37917618b05c3f3857b8fa630eba48a6bd2080ab704e87911f2b6f90d`。GPU/tiny 实机、真实权重、多 rank、Graph、失败资源清理及完整回归均未运行；UVA 量化后处理已接入代码但尚未验证。117 因此不能标记为完全验收，后续实现量化方法时需要继续完成上述边界。
 
 追加检查：在最终 UVA 与失败状态接入之后，`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/step117 tests/step116 tests/step115 -q -ra`：49 passed，0 failed，0 skipped；仅 CPU。
+
+## 2026-11-20：UVA 后处理 GPU 测试及边界修复
+
+真实 CUDA 测试发现 `device_loading_context` 重映射 UVA 参数时绕过默认 cpp 统一入口，并且同进程切换 GPU 时可能把目标 cuda:1 的参数恢复为 cuda:0 视图。原实现 `tests/step117/test_step117_uva_gpu.py` 实测 2 failed、1 passed，日志 `benchmarks/results/step122/step117_uva_before_fix_20261120.log`。
+
+修复改用 `uva_ext.get_cuda_view_from_cpu_tensor`，默认继续 cpp 且不自动回退；参数持有 pinned CPU tensor 以保证借用存储的生命周期，并在目标设备上下文进行 pin/view。由于 pinned allocator 可能复用之前设备关联的内存，仅切换上下文仍可能得到错误设备：现在检查视图设备，错配立即报错而非静默返回错误设备；当前设备在退出上下文时恢复。新测试 3 passed，其中跨设备用例验证正确返回或明确报错，**不代表跨设备缓存错配已支持**。单独构造先在 cuda:0 缓存 pinned 内存，再在 cuda:1 重新映射，实际得到明确拒绝 `UVA 视图设备 cuda:0 与目标 cuda:1 不一致`。
+
+尝试独立实验使用 stable `from_blob` 显式标记 cuda:1 时子进程退出码 139，未将该实验用于生产。原 pybind CUDA 指定设备原型因服务器高 I/O 编译长时间阻塞而中断；尚需安全定位并实现跨设备 pinned 缓存的完整支持。正常单 Worker 当前卡的 UVA 重映射、CPU owner 释放和异常恢复经过 GPU 检查，但不能推广为所有设备组合通过。

@@ -29,11 +29,19 @@ def device_loading_context(module, target_device):
                 param.data = param.data.to(original[name])
             if name in uva_offloaded and not getattr(param, '_vllm_is_uva_offloaded', False):
                 from ..utils.platform_utils import is_pin_memory_available
-                from ..utils.torch_utils import get_accelerator_view_from_cpu_tensor
+                from ..uva_ext import get_cuda_view_from_cpu_tensor
                 cpu_data = param.data.to(device='cpu')
-                if is_pin_memory_available():
-                    cpu_data = cpu_data.pin_memory()
-                param.data = get_accelerator_view_from_cpu_tensor(cpu_data)
+                # C++ UVA 视图借用 pinned CPU 内存；参数必须持有 owner。
+                # 从目标卡创建视图，不能依赖调用者当前的 CUDA 设备。
+                with torch.cuda.device(target_device):
+                    if is_pin_memory_available():
+                        cpu_data = cpu_data.pin_memory()
+                    view = get_cuda_view_from_cpu_tensor(cpu_data)
+                    expected_device = torch.device('cuda', torch.cuda.current_device())
+                    if view.device != expected_device:
+                        raise RuntimeError(f'UVA 视图设备 {view.device} 与目标 {expected_device} 不一致')
+                param._vllm_uva_cpu_data = cpu_data
+                param.data = view
                 param._vllm_is_uva_offloaded = True
 
 
