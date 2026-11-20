@@ -197,3 +197,5 @@
 [118 W4 表示与 packing（进行中）](step118_alignment.md)：手算与四份公开权重首层抽样在 CPU 上对照冻结 vLLM；GPU、完整回归和性能仍待后续。
 
 [119 AWQ 加载与标准格式转换（进行中）](step119_alignment.md)：项目可显式审计公开 AWQ 的加载和标准打包转换；量化 forward、真实 GPU 和完整回归仍未验收。
+
+[120 量化 kernel 与独立扩展（进行中）](step120_alignment.md)：SM89 W4A16 子集能力检查及本地 Marlin CUDA 扩展编译、隔离加载和 meta 检查；GPU 数值与 Graph 未验。

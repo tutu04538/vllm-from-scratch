@@ -14054,7 +14054,7 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 198,
-    "sha256": "5046414a52d2a9b26da0d69bfc464aee084ebf260ac3795d2e4550a696e8120e",
+    "sha256": "40de241ea0d7f4d438970d63c404db4e4e32de3171edc97e1ac59d97c73b2b2b",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
     "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
   },
@@ -79355,5 +79355,20 @@
         "peak_rss_kib": 20097896
       }
     }
+  },
+  "step120": {
+    "results": {
+      "status": "local_extension_compiled_gpu_validation_deferred",
+      "package_sha256": "40de241ea0d7f4d438970d63c404db4e4e32de3171edc97e1ac59d97c73b2b2b",
+      "cpu_tests_passed": 16,
+      "cpu_step115_119_passed": 63,
+      "build_identity_sha256": "be69fade8e7dcd95df49f6705b6e67590b8b0fbc3dd5a5aa6dbd5605591b462e",
+      "library_sha256": "9c541c6441d063f9f8c905434ada76b281f3cb802c386dd4fd9a57a740270e0d",
+      "meta_result_sha256": "fa26f977e091d47a0a2dfb40c914afed8c2af93eb6c0c1357a7966024a237653",
+      "cuda_kernel_execution": "not_run",
+      "graph": "not_run",
+      "performance": "not_run"
+    },
+    "models": {}
   }
 }

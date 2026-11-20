@@ -25,6 +25,12 @@ class AutoAWQMarlinLinearMethod(LinearMethodBase):
         if any(n <= 0 or n % pack for n in output_partition_sizes):
             raise ValueError(f'{self.prefix}: 输出逻辑 shard {output_partition_sizes} 与打包倍数 {pack} 不对齐')
         n = sum(output_partition_sizes)
+        from .kernel_dispatch import MPLinearLayerConfig
+        self.kernel_config = MPLinearLayerConfig(
+            full_weight_shape=(input_size, output_size),
+            partition_weight_shape=(input_size_per_partition, n),
+            weight_type='uint4', act_type=params_dtype or torch.get_default_dtype(),
+            group_size=group, zero_points=True, has_g_idx=False)
         groups = input_size_per_partition // group
         loader = attrs['weight_loader']
         if isinstance(layer, QKVParallelLinear):
