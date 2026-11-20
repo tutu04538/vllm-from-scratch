@@ -79495,7 +79495,20 @@
           "failed": 0,
           "skipped": 0
         },
-        "regression_089_112": "rerun_in_progress"
+        "regression_089_112": {
+          "passed": 419,
+          "failed": 0,
+          "skipped": 0,
+          "package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908"
+        },
+        "regression_113_122_final": {
+          "passed": 140,
+          "failed": 0,
+          "skipped": 0
+        },
+        "fp16_atomic_and_bf16_sm89_guard": "passed_gpu_frozen_and_fp32",
+        "final_real_full_repack_package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908",
+        "final_full_oracle_package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908"
       }
     },
     "models": {}

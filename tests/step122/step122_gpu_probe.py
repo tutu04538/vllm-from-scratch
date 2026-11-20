@@ -9,6 +9,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--backend', choices=('mini', 'vllm'), required=True)
 p.add_argument('--input', required=True)
 p.add_argument('--output', required=True)
+p.add_argument('--atomic', action='store_true')
 args = p.parse_args()
 d = torch.load(args.input, map_location='cpu', weights_only=True)
 if not torch.cuda.is_available():
@@ -22,7 +23,7 @@ if args.backend == 'mini':
     def run(x):
         return marlin_gemm_w4a16(x, items['weight'], items['scales'], items['zeros'],
                                 items['empty'], items['empty'], workspace, size_n=n, size_k=k,
-                                bias=items['bias'])
+                                bias=items['bias'], use_atomic_add=args.atomic)
 else:
     from vllm import _custom_ops as ops
     from vllm.scalar_type import scalar_types
@@ -36,7 +37,7 @@ else:
     def run(x):
         return ops.marlin_gemm(x, None, items['weight'], items['bias'], items['scales'],
                                None, None, items['zeros'], items['empty'], items['empty'],
-                               workspace, scalar_types.uint4, x.shape[0], n, k, True, False, True, False)
+                               workspace, scalar_types.uint4, x.shape[0], n, k, True, args.atomic, True, False)
 outputs = {}
 for m in (1, 2, 7, 16, 32, 128):
     outputs[str(m)] = run(items['x'][:m]).cpu()

@@ -205,3 +205,5 @@
 [122 W4A16 GPU 矩阵计算（进行中）](step122_alignment.md)：GEMM schema、局部 shape/bias/归约及错误检查已实现并做 CPU/meta 检查；GPU oracle、真实尺寸与 trace 未验，前向继续拒绝。
 
 2026-11-20 GPU 补验：公开 AWQ/GPTQ 四模型及 14B FP8 的冻结 vLLM 短前向通过；8B/14B AWQ CUDA 全模型表示、Marlin repack tiny 差分和八个真实投影局部 GEMM 差分通过。量化局部 Linear 可运行，完整模型 Engine、质量和性能仍待后续；见 [121](step121_alignment.md)、[122](step122_alignment.md) 和 [114](step114_alignment.md)。
+
+最终 GPU 回归：58—88 为 1289 passed / 23 skipped；089—112 为 419 passed；113—122 为 140 passed。117 的跨设备 UVA 缓存错配仍明确拒绝；见 [117](step117_alignment.md) 和 [122](step122_alignment.md)。

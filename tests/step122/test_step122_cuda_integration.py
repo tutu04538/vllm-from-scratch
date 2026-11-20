@@ -10,8 +10,8 @@ from minivllm.model_loader.post_load import process_weights_after_loading
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='需真实 CUDA；不算 GPU 通过')
 
 
-def make_layer(n=72, skip_bias_add=False, dtype=torch.bfloat16):
-    k, group = 256, 128
+def make_layer(n=72, skip_bias_add=False, dtype=torch.bfloat16, k=256):
+    group = 128
     generator = torch.Generator().manual_seed(1228 + n)
     q = torch.randint(0, 16, (k, n), dtype=torch.int32, generator=generator)
     z = torch.randint(0, 16, (k // group, n), dtype=torch.int32, generator=generator)
@@ -105,3 +105,41 @@ def test_profile_uses_local_gemm_without_repack(tmp_path):
     assert any('minivllm_quant::marlin_gemm' in name for name in names), names
     assert any('Marlin<' in name for name in names), names
     assert not any('gptq_marlin_repack' in name for name in names), names
+
+
+@pytest.mark.parametrize('dtype,expected_atomic', [(torch.float16, True), (torch.bfloat16, False)])
+def test_opt_in_atomic_strategy_matches_frozen_sm89(monkeypatch, tmp_path, dtype, expected_atomic):
+    from minivllm.layers.quantization import marlin as mod
+    monkeypatch.setenv('VLLM_MARLIN_USE_ATOMIC_ADD', '1')
+    layer, weight, bias = make_layer(n=64, dtype=dtype, k=2048)
+    calls=[]
+    real=mod.marlin_gemm_w4a16
+    def capture(*args, **kwargs):
+        calls.append(kwargs['use_atomic_add'])
+        return real(*args, **kwargs)
+    monkeypatch.setattr(mod, 'marlin_gemm_w4a16', capture)
+    generator=torch.Generator().manual_seed(222)
+    x=(torch.randn((2,2048),generator=generator)*.1).to(dtype).cuda()
+    with torch.inference_mode():
+        out,_=layer(x)
+    assert calls == [expected_atomic]
+    oracle=x.cpu().float() @ weight + bias.float()
+    torch.testing.assert_close(out.cpu().float(),oracle,rtol=2e-2,atol=5e-2)
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    payload={'k':2048, 'n':64, 'weight':layer.qweight.detach().cpu(),
+             'zeros':layer.qzeros.detach().cpu(), 'scales':layer.scales.detach().cpu(),
+             'bias':layer.marlin_bias.detach().cpu(), 'x':x.cpu(),
+             'empty':torch.empty(0,dtype=torch.int32)}
+    input_path, output_path = tmp_path/'input.pt', tmp_path/'upstream.pt'
+    torch.save(payload,input_path)
+    command=[sys.executable,str(Path(__file__).with_name('step122_gpu_probe.py')),
+             '--backend','vllm','--input',str(input_path),'--output',str(output_path)]
+    if expected_atomic:
+        command.append('--atomic')
+    env=dict(os.environ,OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
+    subprocess.run(command,check=True,env=env,timeout=180)
+    upstream=torch.load(output_path,map_location='cpu',weights_only=True)['2']
+    torch.testing.assert_close(out.cpu().float(),upstream.float(),rtol=1e-2,atol=2e-2)

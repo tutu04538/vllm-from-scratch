@@ -45,3 +45,7 @@
 八个真实首层投影后续补充了全部输出列的独立 FP32 oracle 和完整真实 qweight repack 对照：各 M 的本地/上游输出全部逐值相同，FP32 全列最大绝对误差不超过 0.007842；证据 `benchmarks/results/step122/real_*_full_oracle_20261120.json`，包 hash `3fd57c0121f098ac682fc671799d348ca609406769295eb7c09daeac923713a8`。同时 N=64/72/128 和 bias/skip_bias_add 的 BF16 与 FP16 合成 AWQ GPU 集成重测 14 passed。该记录覆盖全输出列，不覆盖 TP/整模型 forward。
 
 最终包 `effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908` 上重跑：八个真实投影的完整 repack、同输入上游 GEMM 和全部输出列 FP32 oracle 均通过（最大绝对误差 0.007842）；BF16/FP16 tiny 集成均包含在 113—122 联合回归的 138 passed 中。旧单卡 58—88 最终重跑 1289 passed、0 failed、23 skipped；跳过项见 `benchmarks/results/step122/regression_58_88_final_20261120.log`。091/108 环境隔离后包含 GPU Engine 的组合回归 62 passed。最终包上的 089—112 完整重跑在提交时仍进行中，不能将初次 417 passed、1 failed 改写为通过。
+
+最终 089—112 多卡重跑：419 passed、0 failed、0 skipped（`benchmarks/results/step122/regression_089_112_final_20261120.log`）；113—122 在两张可见 GPU 下含 atomic 补测的最终联合回归：140 passed、0 failed、0 skipped（`benchmarks/results/step122/regression_113_122_atomic_final_20261120.log`）。新增真实 GPU `VLLM_MARLIN_USE_ATOMIC_ADD=1` 检查：SM89 上 FP16 进入 atomic、BF16 仍按冻结规则关闭；两者分别与独立进程冻结上游及 FP32 oracle 对照通过。无性能测量。
+
+最终包上八个真实投影完整 repack 与全列 oracle 再次通过，结果 `benchmarks/results/step122/real_{8B,14B}_*_full_oracle_final_20261120.json`；最终包 SHA256 `effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908`。117 的 UVA 跨设备 pinned 缓存错配仍仅有明确拒绝，不属于通过支持组合；量化 Engine、TP、完整模型 Graph、质量和性能仍由后续关卡验收。
