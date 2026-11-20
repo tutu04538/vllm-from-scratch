@@ -87,7 +87,7 @@ def test_single_gpu_legacy_configuration_remains_available(monkeypatch):
     assert cfg.parallel_config.world_size==1
 
 
-@pytest.mark.parametrize('kind',['quantized','wrong_model','torch_backend','graph_prefix'])
+@pytest.mark.parametrize('kind',['wrong_model','torch_backend','graph_prefix'])
 def test_production_executor_rejects_known_model_boundary_before_spawning(monkeypatch,kind):
     from minivllm import CacheConfig
     from minivllm.executor.multiproc_executor import MultiprocExecutor
@@ -97,7 +97,6 @@ def test_production_executor_rejects_known_model_boundary_before_spawning(monkey
         calls.append('started');raise AssertionError('must reject before spawning')
     monkeypatch.setattr('minivllm.executor.multiproc_executor.WorkerProc.make_worker_process',forbidden)
     hf=tiny_qwen3_config('tiny_gqa')
-    if kind=='quantized':hf['quantization_config']={'quant_method':'test'}
     if kind=='wrong_model':hf['model_type']='other'
     cfg=VllmConfig(ModelConfig(tiny_qwen3_dir('tiny_gqa'),hf_config=hf,max_model_len=64),
         device_config=DeviceConfig('cuda'),parallel_config=ParallelConfig(tensor_parallel_size=2),

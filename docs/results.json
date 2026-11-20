@@ -14054,9 +14054,9 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 207,
-    "sha256": "9e7e462cfa48299972302ee32ccb0cdaec67dbb851288d68612fcefa7a85e4e2",
+    "sha256": "2e432b85194125261a6b7afb4da0b95d6dcda45b75e01eed8556e53fc1887079",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "AWQ V2 TP1 eager 单卡模型前向已接入；完整验收进行中"
+    "note": "AWQ V2 TP1/TP2 eager 已接入；TP4 实际多卡验收前明确拒绝"
   },
   "step091": {
     "results": {
@@ -79528,7 +79528,39 @@
       "lifecycle": "not_run",
       "failure_injection": "not_run",
       "quality_same_source": "unavailable",
-      "performance": "deferred"
+      "performance": "deferred",
+      "additional_20261120": {
+        "package_sha256": "2e432b85194125261a6b7afb4da0b95d6dcda45b75e01eed8556e53fc1887079",
+        "layerwise_one_prefill": {
+          "8b_tensors": 75,
+          "14b_tensors": 83,
+          "max_abs": 0
+        },
+        "four_prompt_fixed_history": {
+          "8b_mean_abs": [
+            0.10537065,
+            0.08424226,
+            0.0471771,
+            0.04925742
+          ],
+          "14b_mean_abs": [
+            0.10515101,
+            0.07715907,
+            0.0661057,
+            0.05813538
+          ],
+          "status": "failed_starting_logits_tolerances",
+          "upstream_repeat_partial_mean_abs": [
+            0.07988667,
+            0.02899842
+          ],
+          "cause": "batch_composition_and_upstream_variance_under_investigation"
+        },
+        "real_8b_lifecycle_tp1_tp2": "partial_pass",
+        "single_rank_execution_failure": "passed_tp2",
+        "same_source_quality": "unavailable",
+        "performance": "deferred"
+      }
     },
     "models": {
       "8b": "Qwen/Qwen3-8B-AWQ@4da05a8edb55c6046cce958586c33b61da07bb79",
@@ -79545,9 +79577,41 @@
         "skipped": 0
       },
       "tp_partition_cpu": "tp1_tp2_tp4_passed",
-      "real_layer_tp2_tp4": "not_run",
-      "performance": "deferred"
+      "real_layer_tp2_tp4": "144_serial_single_gpu_rank_local_cases_exact_checkpoint_slices_and_same_packed_vllm_gemm",
+      "performance": "deferred",
+      "real_layer_note": "not_multi_gpu_collective_or_independent_upstream_repack"
     },
     "models": {}
+  },
+  "step125": {
+    "results": {
+      "status": "in_progress",
+      "package_sha256": "2e432b85194125261a6b7afb4da0b95d6dcda45b75e01eed8556e53fc1887079",
+      "supported": "qwen3_awq_v2_cuda_bf16_eager_tp1_tp2",
+      "tp4": "explicitly_rejected_pending_real_4gpu",
+      "real_8b_14b_tp2_128_tokens": "same_as_frozen_vllm",
+      "first_four_hidden_logits_kv": "max_abs_0_each_rank",
+      "real_8b_prefix_preempt_cancel_tp1_tp2": "passed",
+      "real_8b_rank1_sampling_failure_tp2": "passed",
+      "real_14b_lifecycle": "not_run",
+      "nccl_failure_timeout": "not_run",
+      "four_prompt_logits": "failed_starting_tolerance_see_step123",
+      "tests_113_125_110_and_hash": {
+        "passed": 212,
+        "failed": 0,
+        "skipped": 0
+      },
+      "regression_58_88": {
+        "passed": 1289,
+        "failed": 0,
+        "skipped": 23
+      },
+      "regression_089_112_full": "not_run_gpu0_busy",
+      "performance": "deferred"
+    },
+    "models": {
+      "8b": "Qwen/Qwen3-8B-AWQ@4da05a8edb55c6046cce958586c33b61da07bb79",
+      "14b": "Qwen/Qwen3-14B-AWQ@31c69efc29464b6bb0aee1398b5a7b50a99340c3"
+    }
   }
 }

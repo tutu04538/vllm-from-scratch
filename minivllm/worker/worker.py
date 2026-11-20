@@ -144,8 +144,9 @@ class Worker:
             raise ValueError("Qwen3 head_dim 必须是正整数")
         if c.model_config.dtype not in ("float32", "fp32", "float16", "half", "bfloat16", "bf16"):
             raise NotImplementedError("101 Qwen3 TP 不支持量化")
-        if hf.get("quantization_config"):
-            raise NotImplementedError("101 Qwen3 TP 不支持量化 checkpoint")
+        quant = hf.get("quantization_config")
+        if quant and str(quant.get("quant_method", "")).lower() not in ("awq", "auto_awq", "awq_marlin"):
+            raise NotImplementedError("多卡量化模型仅支持 AWQ")
 
     def initialize_from_config(self, kv_cache_config) -> None:
         """按上层定下的 KV 规格分配物理缓存并绑定到每个 Attention 层。

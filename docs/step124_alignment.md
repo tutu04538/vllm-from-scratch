@@ -24,7 +24,7 @@
 | QKV | 分别加载 Q/K/V 各自的上列形状 | 同左 | 同左 | Q 独立切；KV head 不足 TP 时，以冻结 head 规则复制三个参数 |
 | Merged | 分别加载 gate/up 各自的上列形状 | 同左 | 同左 | gate/up 先分别按 rank 切，再拼本地输出轴 |
 
-CPU 测试覆盖 TP1/2/4 所有逻辑 rank、GQA 单 KV head 复制、非对称 merged、group 边界拒绝；输入图案不同，逐项比较三种参数的物理分片。`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step124 tests/step117 tests/step119 -q -ra`：30 passed。当前没有声称真实多 GPU 抽层对照；8B/14B 首中末层 TP2/4 逐 rank 的冻结上游差分、常驻峰值与点名 benchmark 尚未完成，性能延后。
+CPU 测试覆盖 TP1/2/4 所有逻辑 rank、GQA 单 KV head 复制、非对称 merged、group 边界拒绝；输入图案不同，逐项比较三种参数的物理分片。`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step124 tests/step117 tests/step119 -q -ra`：30 passed。上述 CPU 测试不是多 GPU 端到端证据；后续真实权重本地分片补验见下文。逐 rank 常驻峰值与点名 benchmark 尚未完成，性能延后。
 
 ## 真实 checkpoint 本地 rank 补验
 

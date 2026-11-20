@@ -40,7 +40,7 @@ def test_supported_boundary_and_unquantized_bypass():
 
 @pytest.mark.parametrize('changes', [
     {'use_v2_model_runner': False}, {'device_config__device': 'cpu'},
-    {'parallel_config__tensor_parallel_size': 2}, {'speculative_config': object()},
+    {'speculative_config': object()},
     {'compilation_config__cudagraph_mode': CUDAGraphMode.FULL},
     {'model_config__dtype': 'float16'},
 ])
