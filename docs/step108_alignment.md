@@ -47,3 +47,5 @@
 089—112 回归排除了已在前述定向测试运行的 `test_step108_reference.py`；进行中出现 1 个失败，尚未输出失败堆栈时其他用户训练占用四卡，为避免争用而中断。pytest 进度显示 154 个通过标记、1 个失败标记，但中断无最终统计，不能视为整组通过。根据收集顺序，失败可能是 `test_step091_parallel.py::test_default_draft_tp_follows_target`；该测试单独 1 passed，其所在文件单独 56 passed，step090 模型文件加该文件 69 passed，但均不能替代整组重现。另有部分回归与其他用户 GPU 任务重叠，需在空闲时重跑，定位并修复该失败，再完成 089—112 回归。105 历史关闭超时风险仍未解决。
 
 2026-11-20 089—112 联合回归初次为 417 passed、1 failed；失败的 091 ngram 测试不是量化数值差异。pytest 收集 `test_step108_oracle_fix.py` 时导入 `step108_reference_probe`，该探针及其依赖在模块导入期间将 `VLLM_USE_V2_MODEL_RUNNER=1` 写入全局环境，导致 091 的 V1 ngram 配置进入 V2 拒绝分支。现将探针环境设置和引用移入脚本 `main`/worker 调用，新增独立子进程测试证明 import 不修改环境；091/108 对照组合 59 passed。原始失败日志 `benchmarks/results/step122/regression_089_112_20261120.log` 保留。
+
+环境隔离修复和 117 UVA 修复后，在最终包 hash `effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908` 以 `CUDA_VISIBLE_DEVICES=2,3,0,1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step089 ... tests/step112 -q -ra` 串行运行完整多卡回归：419 passed、0 failed、0 skipped，14 warnings，日志 `benchmarks/results/step122/regression_089_112_final_20261120.log`。不覆盖历史 105 单次关闭超时尚未定位的风险。
