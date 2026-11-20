@@ -52,6 +52,16 @@ class AutoAWQMarlinLinearMethod(LinearMethodBase):
 
     def process_weights_after_loading(self, layer):
         _convert_awq_to_standard_format(layer)
+        if layer.qweight.device.type == "cuda":
+            from .kernel_dispatch import can_plan_marlin
+            capability = torch.cuda.get_device_capability(layer.qweight.device)
+            ok, reason = can_plan_marlin(self.kernel_config, platform="cuda",
+                                         capability=10 * capability[0] + capability[1])
+            if not ok:
+                raise NotImplementedError(reason)
+            from .marlin import prepare_marlin_weights
+            self.workspace = prepare_marlin_weights(layer, self.kernel_config, getattr(self, "workspace", None))
+            self.post_load_layout = "kernel"
 
     def apply(self, layer, x, bias=None):
         raise NotImplementedError(f'AWQ 量化执行尚未开放: 层 {self.prefix}；需要后续 Marlin kernel')

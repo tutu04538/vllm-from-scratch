@@ -14053,10 +14053,10 @@
   },
   "current_package": {
     "root": "minivllm/",
-    "python_files": 198,
-    "sha256": "40de241ea0d7f4d438970d63c404db4e4e32de3171edc97e1ac59d97c73b2b2b",
+    "python_files": 207,
+    "sha256": "e9f5e902193a420d9ea1b91b7bf26ada03001040e5835c040509c40b0d4224c3",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；含115压缩配置拒绝检查，历史结果摘要保持原值"
+    "note": "当前包摘要；121 CUDA 布局准备尚未经过 GPU 验证，历史结果摘要保持原值"
   },
   "step091": {
     "results": {
@@ -79368,6 +79368,20 @@
       "cuda_kernel_execution": "not_run",
       "graph": "not_run",
       "performance": "not_run"
+    },
+    "models": {}
+  },
+  "step121": {
+    "results": {
+      "status": "implementation_in_progress_gpu_validation_deferred",
+      "package_sha256": "e9f5e902193a420d9ea1b91b7bf26ada03001040e5835c040509c40b0d4224c3",
+      "cpu_related_tests_passed": 86,
+      "gpu_repack_comparison": "not_run",
+      "workspace_gpu_graph": "not_run",
+      "real_model_tp": "not_run",
+      "full_regression": "not_run",
+      "performance": "not_run",
+      "awq_forward": "explicitly_rejected"
     },
     "models": {}
   }

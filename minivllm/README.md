@@ -1206,3 +1206,5 @@ EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 res
 119 新增 AWQ W4/G128 checkpoint 的参数加载与标准 packed 转换，可通过显式表示审计入口检查；正常推理仍拒绝量化 forward，Marlin kernel 尚未接入。详见 [119 状态](../docs/step119_alignment.md)。
 
 120 接入限定 SM89 W4A16 的 kernel 选择计划和项目内 Marlin CUDA 扩展构建，生产 AWQ forward 仍拒绝；GPU 实算、Graph 与 121/122 验证尚未完成。详见 [120 状态](../docs/step120_alignment.md)。
+
+121 接入 AWQ 的 Marlin 布局准备与独立 workspace；CPU 表示审计仍保留标准布局。GPU 重排尚未验证，量化 forward 继续拒绝。详见 [121 状态](../docs/step121_alignment.md)。

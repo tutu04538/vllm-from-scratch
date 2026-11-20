@@ -199,3 +199,5 @@
 [119 AWQ 加载与标准格式转换（进行中）](step119_alignment.md)：项目可显式审计公开 AWQ 的加载和标准打包转换；量化 forward、真实 GPU 和完整回归仍未验收。
 
 [120 量化 kernel 与独立扩展（进行中）](step120_alignment.md)：SM89 W4A16 子集能力检查及本地 Marlin CUDA 扩展编译、隔离加载和 meta 检查；GPU 数值与 Graph 未验。
+
+[121 Marlin 布局与工作区（进行中）](step121_alignment.md)：AWQ CUDA 后处理接入重排与每层 workspace；CPU scale/zero 差分通过，真实 GPU、Graph 和显存仍待验证，量化推理未开放。
