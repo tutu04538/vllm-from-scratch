@@ -13,9 +13,10 @@ from minivllm.testing.tiny_models import tiny_qwen3_config, tiny_qwen3_dir
 from step125_lifecycle_hooks import install, snapshot, fail_rank_one
 
 
-def run(tp, prefix, mode, output):
+def run(tp, prefix, mode, output, model):
     blocks = 5 if mode == 'preempt' else 12
-    model_path = Path('/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-8B-AWQ/snapshots/4da05a8edb55c6046cce958586c33b61da07bb79')
+    revision={'8b': '4da05a8edb55c6046cce958586c33b61da07bb79', '14b': '31c69efc29464b6bb0aee1398b5a7b50a99340c3'}[model]
+    model_path = Path(f'/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-{model.upper()}-AWQ/snapshots') / revision
     hf = json.loads((model_path / 'config.json').read_text())
     cfg = VllmConfig(model_config=ModelConfig(str(model_path), dtype='bfloat16', max_model_len=20 if mode == 'preempt' else 32, hf_config=hf, seed=123),
         cache_config=CacheConfig(block_size=4, num_gpu_blocks=blocks, enable_prefix_caching=prefix),
@@ -104,4 +105,4 @@ def run(tp, prefix, mode, output):
         else: ex.shutdown()
 
 if __name__ == '__main__':
-    p=argparse.ArgumentParser();p.add_argument('--tp',type=int,required=True);p.add_argument('--prefix',action='store_true');p.add_argument('--mode',choices=['prefix','preempt','cancel_before','cancel_after','fail'],required=True);p.add_argument('--output',required=True);a=p.parse_args();run(a.tp,a.prefix,a.mode,a.output)
+    p=argparse.ArgumentParser();p.add_argument('--model',choices=['8b','14b'],default='8b');p.add_argument('--tp',type=int,required=True);p.add_argument('--prefix',action='store_true');p.add_argument('--mode',choices=['prefix','preempt','cancel_before','cancel_after','fail'],required=True);p.add_argument('--output',required=True);a=p.parse_args();run(a.tp,a.prefix,a.mode,a.output,a.model)
