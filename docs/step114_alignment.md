@@ -77,3 +77,7 @@ Hub 元数据的模型及配置匹配目标：AWQ 为 W4/G128/GEMM/zero point，
 四份固定 revision 的公开模型已在 Hub 缓存下载完成，逐文件大小和 SHA256 已登记，所有 LFS 文件与 Hub 摘要一致；四份 manifest 位于 `/data/syh/models/converted/_quant_data/step114_public_manifests/`。执行 `CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python benchmarks/check_step114_public_tensors.py <snapshot>` 等价的四模型批量 CPU 审计：8B AWQ 为 903 tensors / 252 个量化投影，14B AWQ 1003 / 280；8B GPTQ 为 1155 / 252，14B GPTQ 1283 / 280。各 qweight/scales/qzeros 成套、safetensors 索引对账通过。GPTQ scales 的实际 dtype 是 FP16，AWQ scales 为 BF16；未来加载不能仅按激活 dtype 猜测。
 
 上述只证明文件及张量清单，不证明校准无泄漏、BF16 精确源 revision 或 GPU 数值正确。四份公开权重尚未执行冻结 vLLM 短前向或质量对照，114 仍未完成。
+
+## 2026-11-20：公开模型及 14B FP8 上游 GPU 短前向
+
+GPU 空闲后通过 `benchmarks/benchmark_step114_vllm_load.py` 的文件/hash、tokenizer 和忙卡检查，分别用冻结 vLLM 在单卡运行固定 32-token 输入和 greedy 4-token 短前向：公开 8B/14B AWQ、8B/14B GPTQ，以及本地转换的 14B FP8 均 passed。8B FP8 短前向此前已通过。结果分别在 `benchmarks/results/step114/{awq_8b,awq_14b,gptq_8b,gptq_14b,fp8_14b}_vllm_20261120.json`，逐项包含实际命令、backend、采集的 tensor 文件和 log。AWQ/GPTQ 使用 Marlin、FP8 使用 CUTLASS，具体以结果文件中的记录为准。上述是上游短前向，不是本项目端到端或质量评测；公开权重的源 BF16 revision 和校准数据仍未知。
