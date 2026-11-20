@@ -209,3 +209,5 @@
 最终 GPU 回归：58—88 为 1289 passed / 23 skipped；089—112 为 419 passed；113—122 为 140 passed。117 的跨设备 UVA 缓存错配仍明确拒绝；见 [117](step117_alignment.md) 和 [122](step122_alignment.md)。
 
 [123 AWQ 单卡模型（进行中）](step123_alignment.md)：8B/14B V2 eager TP1 的 128 token 与冻结 vLLM 一致；更全面的逐层、生命周期与质量验收仍待完成。
+
+[124 AWQ TP 分片（进行中）](step124_alignment.md)：CPU 按 rank 精确验证打包权重、scale 和 zero 点的切分、GQA 复制及 merged 切分；真实层多卡对照尚待完成。

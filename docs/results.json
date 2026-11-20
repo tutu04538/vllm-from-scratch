@@ -79534,5 +79534,20 @@
       "8b": "Qwen/Qwen3-8B-AWQ@4da05a8edb55c6046cce958586c33b61da07bb79",
       "14b": "Qwen/Qwen3-14B-AWQ@31c69efc29464b6bb0aee1398b5a7b50a99340c3"
     }
+  },
+  "step124": {
+    "results": {
+      "status": "in_progress",
+      "package_sha256": "9e7e462cfa48299972302ee32ccb0cdaec67dbb851288d68612fcefa7a85e4e2",
+      "related_tests": {
+        "passed": 30,
+        "failed": 0,
+        "skipped": 0
+      },
+      "tp_partition_cpu": "tp1_tp2_tp4_passed",
+      "real_layer_tp2_tp4": "not_run",
+      "performance": "deferred"
+    },
+    "models": {}
   }
 }
