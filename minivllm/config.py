@@ -1917,9 +1917,24 @@ class VllmConfig:
         self._validate_parallel_speculation()
         self._validate_attention_backend()
         self._resolve_cudagraph_config()
+        self._validate_quantized_execution()
         # 73 关：V2 入口的支持矩阵在**配置期**校验（上游 `_validate_v2_model_runner` 同位置）。
         # 放在图模式解析之后：那条校验要读"最终解析出来的模式"。
         self.validate_v2_model_runner()
+
+    def _validate_quantized_execution(self) -> None:
+        hf = self.model_config.hf_config or {}
+        text = self.model_config._text_hf_config()
+        quant = (hf.get('quantization_config') or text.get('quantization_config')
+                 or hf.get('compression_config') or self.model_config.quantization)
+        if not quant:
+            return
+        if (not self.use_v2_model_runner or not self.device_config.device.startswith('cuda')
+                or self.parallel_config.tensor_parallel_size != 1
+                or self.speculative_config is not None
+                or self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+                or self.model_config.dtype not in ('bfloat16', 'bf16')):
+            raise NotImplementedError('量化模型当前仅支持 V2、CUDA、BF16、TP1、eager、无投机')
 
     def _validate_parallel_speculation(self) -> None:
         spec = self.speculative_config

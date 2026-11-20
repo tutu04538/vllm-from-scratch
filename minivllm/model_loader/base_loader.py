@@ -98,18 +98,25 @@ class BaseModelLoader:
                     raise NotImplementedError(
                         f"量化方法 {quant_config.get_name()} 需要 SM{quant_config.get_min_capability()}，"
                         f"当前 SM{numeric_capability}")
-            if not representation_only:
-                raise NotImplementedError(
-                    f"量化执行尚未开放: {quant_config.get_name()}（{quant_config.source}）")
             from ..layers.quantization.config import AutoAWQConfig
             if not isinstance(quant_config, AutoAWQConfig):
-                raise NotImplementedError(f"表示审计尚不支持 {quant_config.get_name()}")
+                raise NotImplementedError(f"量化执行尚未开放: {quant_config.get_name()}")
+            if not representation_only and (target_device.type != 'cuda' or dtype != torch.bfloat16):
+                raise NotImplementedError(
+                    f"量化执行尚未开放: {quant_config.get_name()}；当前仅支持 CUDA BF16")
             model_class = self._get_model_class(model_config)
             old_dtype = torch.get_default_dtype()
             torch.set_default_dtype(dtype)
             try:
                 with torch.device(target_device):
-                    return model_class(hf_config, quant_config=quant_config)
+                    model = model_class(hf_config, quant_config=quant_config)
+                if not representation_only:
+                    from ..layers.quantization.awq import AutoAWQMarlinLinearMethod
+                    for module in model.modules():
+                        method = getattr(module, 'quant_method', None)
+                        if isinstance(method, AutoAWQMarlinLinearMethod):
+                            method.supports_execution = True
+                return model
             finally:
                 torch.set_default_dtype(old_dtype)
         if representation_only:
