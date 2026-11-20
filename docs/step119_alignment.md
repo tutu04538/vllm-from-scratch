@@ -29,3 +29,9 @@
 按用户决定，不运行 GPU 正确性、真实 TP/Graph、GPU 峰值、模型质量和性能；`--trace` 返回 not_run。公开 checkpoint 源 BF16 精确 revision 及校准数据依然未知；未据此声称 114 同源基线。119 的真实 GPU 和完整历史回归仍未完成，不能标记为完全验收。
 
 14B 在相同命令、固定 `Qwen/Qwen3-14B-AWQ@31c69efc29464b6bb0aee1398b5a7b50a99340c3` snapshot 下完成完整 CPU 表示审计：160 个物理 Linear / 480 个量化参数完成标准转换，参数字节 9976576000，peak RSS 20097896 KiB；embedding/lm_head 为 BF16，forward 明确拒绝。结果 `benchmarks/results/step119/awq_14b_full_cpu.json` SHA256 `f012138f8d3abf50a0c48d847d71c03c90fbfec0b77282b3e85a7d6bd9568b58`，同样属于前述 `4eb61b...` 包版本的 CPU 表示审计。额外对两个 checkpoint 的 embedding、lm_head、norm 名称读取 safetensors dtype 元数据：8B 147 个、14B 163 个均为 BF16；并非 GPU 输出或质量测试。
+
+## 2026-11-20：真实模型 CUDA 权重表示
+
+使用 `tests/step119/step119_full_cuda_audit.py --model <固定 AWQ snapshot> --output <结果>`，逐模型单卡加载并检查全部量化参数为 CUDA kernel 布局、shard 覆盖完整、空设备 g_idx 和层间独立 workspace。8B：144 层/432 参数，峰值 allocated 6,984,556,544 B；14B：160 层/480 参数，峰值 allocated 11,571,875,840 B。结果为 `benchmarks/results/step119/awq_{8b,14b}_cuda_representation_20261120.json`。本证据不执行整模型前向，也不代替 TP 或质量测试。
+
+上述整模型 CUDA 审计运行时包 hash 为 `b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234`，在随后开放局部前向前执行；不把它记成新包 hash 的实测。
