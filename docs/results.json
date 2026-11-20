@@ -14054,9 +14054,9 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 207,
-    "sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+    "sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；122 GEMM 路径尚未经过 GPU 正确性验收，历史结果摘要保持原值"
+    "note": "AWQ CUDA 局部 Linear 已验证；UVA 跨设备缓存错配明确拒绝；量化模型 Engine 未开放"
   },
   "step091": {
     "results": {
@@ -79232,6 +79232,18 @@
             "projections": 280
           }
         }
+      },
+      "gpu_short_forward_20261120": {
+        "status": "passed_upstream_only",
+        "formats": [
+          "8b_awq",
+          "14b_awq",
+          "8b_gptq",
+          "14b_gptq",
+          "14b_fp8"
+        ],
+        "8b_fp8": "passed_previously",
+        "bf16_source_revision_and_public_calibration": "unknown"
       }
     },
     "models": {
@@ -79308,7 +79320,14 @@
       "cpu_previous_deselected_gpu": 7,
       "uva_quantization_postload": "implemented_not_verified",
       "real_model_tp_graph": "not_run",
-      "cpu_step115_116_117_passed": 49
+      "cpu_step115_116_117_passed": 49,
+      "uva_gpu_20261120": {
+        "status": "partial_cpp_single_device_pass_cross_device_rejects_mismatch",
+        "package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908",
+        "gpu_tests_passed": 3,
+        "before_fix": "2 failed 1 passed",
+        "cross_device_positive_support": "not_verified_when_pinned_cache_points_to_other_device"
+      }
     },
     "models": {}
   },
@@ -79339,7 +79358,14 @@
       "awq_forward": "explicitly_rejected",
       "performance": "not_run",
       "real_14b_full_cpu_representation": "passed",
-      "real_14b_full_cpu_result_sha256": "f012138f8d3abf50a0c48d847d71c03c90fbfec0b77282b3e85a7d6bd9568b58"
+      "real_14b_full_cpu_result_sha256": "f012138f8d3abf50a0c48d847d71c03c90fbfec0b77282b3e85a7d6bd9568b58",
+      "cuda_representation_20261120": {
+        "status": "passed",
+        "package_sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+        "8b_layers": 144,
+        "14b_layers": 160,
+        "model_forward": "not_tested"
+      }
     },
     "models": {
       "8b": {
@@ -79367,7 +79393,14 @@
       "meta_result_sha256": "fa26f977e091d47a0a2dfb40c914afed8c2af93eb6c0c1357a7966024a237653",
       "cuda_kernel_execution": "not_run",
       "graph": "not_run",
-      "performance": "not_run"
+      "performance": "not_run",
+      "cuda_20261120": {
+        "status": "passed_limited_gpu_diff",
+        "package_sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+        "repack": "6 tiny cases exact",
+        "gemm": "tiny M=1,2,7,16,32,128 matches frozen",
+        "model_engine": "not_open"
+      }
     },
     "models": {}
   },
@@ -79381,7 +79414,22 @@
       "real_model_tp": "not_run",
       "full_regression": "not_run",
       "performance": "not_run",
-      "awq_forward": "explicitly_rejected"
+      "awq_forward": "explicitly_rejected",
+      "gpu_20261120": {
+        "status": "partial_verified",
+        "package_sha256": "b9ca6877571f40bc95531375bf37cbf047d550756c6f180a83cc0dbc833607f7",
+        "repack_exact_cases": 6,
+        "gpu_scale_zero_padding_cases": 4,
+        "local_graph_and_workspace": "passed_tiny",
+        "full_model_cuda_representation": "8b/14b passed",
+        "memory_temporary_release": "not fully audited",
+        "performance": "deferred",
+        "repack_package_sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+        "full_model_package_sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+        "real_full_repack_exact_cases": 8,
+        "real_full_repack_package_sha256": "3fd57c0121f098ac682fc671799d348ca609406769295eb7c09daeac923713a8",
+        "final_real_full_repack_package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908"
+      }
     },
     "models": {}
   },
@@ -79397,7 +79445,58 @@
       "workspace_stream_graph": "not_run",
       "trace": "not_run",
       "performance": "deferred",
-      "awq_forward": "explicitly_rejected"
+      "awq_forward": "explicitly_rejected",
+      "gpu_20261120": {
+        "status": "partial_verified_local_forward_open",
+        "package_sha256": "b9ca6877571f40bc95531375bf37cbf047d550756c6f180a83cc0dbc833607f7",
+        "tiny_m": [
+          1,
+          2,
+          7,
+          16,
+          32,
+          128
+        ],
+        "upstream_tiny_max_abs": 0.0,
+        "real_projection_cases": 8,
+        "real_projection_m": [
+          1,
+          2,
+          7,
+          16,
+          32,
+          128
+        ],
+        "real_upstream_max_abs": 0.0,
+        "fp32_oracle_real_columns": 16,
+        "local_graph_stream_workspace": "passed_tiny",
+        "real_qkv_trace": "passed",
+        "model_engine": "not_open",
+        "performance": "deferred",
+        "full_oracle_real_columns": "all",
+        "full_oracle_cases": 8,
+        "full_oracle_package_sha256": "3fd57c0121f098ac682fc671799d348ca609406769295eb7c09daeac923713a8",
+        "full_repack_exact_real_cases": 8,
+        "fp16_tiny": "passed",
+        "upstream_skip_bias_bug": "reproduced_cuda_tiny",
+        "final_package_sha256": "effea1cb00748c482a13ef4ebfd52214e6fb6cdb126e1e621792a7b8cf708908",
+        "final_full_oracle_cases": 8,
+        "final_full_repack_cases": 8,
+        "bf16_fp16_tiny_tests": "passed",
+        "full_oracle_max_abs": 0.00784158706665039,
+        "tests_113_122_passed": 138,
+        "regression_58_88": {
+          "passed": 1289,
+          "failed": 0,
+          "skipped": 23
+        },
+        "regression_091_108": {
+          "passed": 62,
+          "failed": 0,
+          "skipped": 0
+        },
+        "regression_089_112": "rerun_in_progress"
+      }
     },
     "models": {}
   }

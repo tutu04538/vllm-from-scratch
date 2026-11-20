@@ -6,7 +6,7 @@ from ..parameter import GroupQuantScaleParameter, PackedvLLMParameter
 
 
 class AutoAWQMarlinLinearMethod(LinearMethodBase):
-    """加载 AWQ checkpoint；Marlin kernel 接入前仅提供表示审计。"""
+    """加载 AWQ checkpoint；CUDA kernel 布局支持局部 Linear 前向。"""
     post_load_layout = 'standard'
     supports_execution = False
 
@@ -64,8 +64,8 @@ class AutoAWQMarlinLinearMethod(LinearMethodBase):
             self.post_load_layout = "kernel"
 
     def apply(self, layer, x, bias=None):
-        if not self.supports_execution:
-            raise NotImplementedError(f'AWQ 量化执行尚未开放: 层 {self.prefix}；需要 GPU 正确性验收')
+        if self.post_load_layout != 'kernel' or not hasattr(self, 'workspace'):
+            raise NotImplementedError(f'AWQ 量化执行尚未开放: 层 {self.prefix}；需要 CUDA kernel 布局')
         from .marlin import apply_marlin_w4a16
         return apply_marlin_w4a16(layer, x, self.workspace, bias)
 

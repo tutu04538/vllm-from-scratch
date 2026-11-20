@@ -1210,3 +1210,5 @@ EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 res
 121 接入 AWQ 的 Marlin 布局准备与独立 workspace；CPU 表示审计仍保留标准布局。GPU 重排尚未验证，量化 forward 继续拒绝。详见 [121 状态](../docs/step121_alignment.md)。
 
 122 接入受限 W4A16 Marlin GEMM 的调用和局部 shape/bias 处理，保留实际 forward 门禁；GPU 正确性、真实尺寸与 trace 尚未验证。详见 [122 状态](../docs/step122_alignment.md)。
+
+2026-11-20：已验证并开放 SM89、AWQ W4/G128、无 act-order 的 CUDA kernel 布局下局部 Linear 前向；真实 8B/14B 首层投影、tiny Graph、bias 及 workspace 证据见 [122 状态](../docs/step122_alignment.md)。完整量化 Engine 仍未开放。
