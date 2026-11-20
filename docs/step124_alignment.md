@@ -25,3 +25,11 @@
 | Merged | 分别加载 gate/up 各自的上列形状 | 同左 | 同左 | gate/up 先分别按 rank 切，再拼本地输出轴 |
 
 CPU 测试覆盖 TP1/2/4 所有逻辑 rank、GQA 单 KV head 复制、非对称 merged、group 边界拒绝；输入图案不同，逐项比较三种参数的物理分片。`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest tests/step124 tests/step117 tests/step119 -q -ra`：30 passed。当前没有声称真实多 GPU 抽层对照；8B/14B 首中末层 TP2/4 逐 rank 的冻结上游差分、常驻峰值与点名 benchmark 尚未完成，性能延后。
+
+## 真实 checkpoint 本地 rank 补验
+
+8B 与 14B 各取首、中、末三个 Transformer 层，分别检查 QKV、o_proj、gate/up、down_proj；TP2 和 TP4 的每个逻辑 rank 在一张空闲卡上依次创建本地参数。共 144 个本地分片：checkpoint 中 qweight、qzeros、scales 的原始切片与独立索引算出的结果逐元素相同；经本地后处理后，使用相同 packed 参数和输入的本地 Marlin GEMM 与冻结 vLLM CUDA GEMM 最大绝对差为 0。脚本通过 `verify_oracle` 校验安装版与冻结上游的身份。
+
+命令为 `CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python tests/step124/step124_real_tp_layers.py --model <固定 AWQ snapshot> --tp <2 或 4> --output <结果>`，8B/14B 与 TP2/TP4 组合分别运行。原始结果和日志保存在本地 `benchmarks/results/step124/`。第一次调用因测试脚本未将默认 dtype 切为 BF16 而失败，修正脚本后四组均通过。
+
+这里的 TP4 是**同一张 GPU 上串行模拟四个本地 rank**，不涉及四个 Worker、collective，也不能作为 125 的 TP4 端到端证据；同 packed GEMM 对照也不是独立的上游重排差分。性能、逐 rank 显存计账及本关 benchmark 仍待完成。
