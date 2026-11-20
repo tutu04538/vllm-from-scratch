@@ -14054,9 +14054,9 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 207,
-    "sha256": "e9f5e902193a420d9ea1b91b7bf26ada03001040e5835c040509c40b0d4224c3",
+    "sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "当前包摘要；121 CUDA 布局准备尚未经过 GPU 验证，历史结果摘要保持原值"
+    "note": "当前包摘要；122 GEMM 路径尚未经过 GPU 正确性验收，历史结果摘要保持原值"
   },
   "step091": {
     "results": {
@@ -79381,6 +79381,22 @@
       "real_model_tp": "not_run",
       "full_regression": "not_run",
       "performance": "not_run",
+      "awq_forward": "explicitly_rejected"
+    },
+    "models": {}
+  },
+  "step122": {
+    "results": {
+      "status": "implementation_in_progress_gpu_validation_deferred",
+      "package_sha256": "b02bb758ab14ebc6fc32bc2fc5fea92de25d702317c8f9f979d8978a90f16234",
+      "cpu_related_tests_passed": 98,
+      "cpu_step122_final_tests_passed": 12,
+      "gpu_same_packed_diff": "not_run",
+      "gpu_fp32_oracle": "not_run",
+      "real_projection_shapes": "not_run",
+      "workspace_stream_graph": "not_run",
+      "trace": "not_run",
+      "performance": "deferred",
       "awq_forward": "explicitly_rejected"
     },
     "models": {}

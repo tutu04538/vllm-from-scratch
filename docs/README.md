@@ -201,3 +201,5 @@
 [120 量化 kernel 与独立扩展（进行中）](step120_alignment.md)：SM89 W4A16 子集能力检查及本地 Marlin CUDA 扩展编译、隔离加载和 meta 检查；GPU 数值与 Graph 未验。
 
 [121 Marlin 布局与工作区（进行中）](step121_alignment.md)：AWQ CUDA 后处理接入重排与每层 workspace；CPU scale/zero 差分通过，真实 GPU、Graph 和显存仍待验证，量化推理未开放。
+
+[122 W4A16 GPU 矩阵计算（进行中）](step122_alignment.md)：GEMM schema、局部 shape/bias/归约及错误检查已实现并做 CPU/meta 检查；GPU oracle、真实尺寸与 trace 未验，前向继续拒绝。

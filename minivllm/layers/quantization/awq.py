@@ -64,7 +64,10 @@ class AutoAWQMarlinLinearMethod(LinearMethodBase):
             self.post_load_layout = "kernel"
 
     def apply(self, layer, x, bias=None):
-        raise NotImplementedError(f'AWQ 量化执行尚未开放: 层 {self.prefix}；需要后续 Marlin kernel')
+        if not self.supports_execution:
+            raise NotImplementedError(f'AWQ 量化执行尚未开放: 层 {self.prefix}；需要 GPU 正确性验收')
+        from .marlin import apply_marlin_w4a16
+        return apply_marlin_w4a16(layer, x, self.workspace, bias)
 
 
 def _convert_awq_to_standard_format(layer):

@@ -4,7 +4,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from ...quant_ops.ops import gptq_marlin_repack
+from ...quant_ops.ops import gptq_marlin_repack, marlin_gemm_w4a16, prepare_full_extension
 
 
 def marlin_padded_nk(size_n, size_k, group_size):
@@ -50,6 +50,11 @@ def marlin_permute_scales(scales, size_k, size_n, group_size):
     return scales.reshape(-1, len(selected))[:, selected].reshape(-1, size_n).contiguous()
 
 
+def marlin_permute_bias(bias, padded_n):
+    _, perm = _scale_perms()
+    return F.pad(bias, (0, padded_n - bias.numel())).reshape(-1, 32)[:, perm].reshape(padded_n).contiguous()
+
+
 def marlin_zero_points(zero_points, size_n):
     perm, _ = _scale_perms()
     z = zero_points.reshape(-1, 64)[:, perm]
@@ -91,6 +96,8 @@ def prepare_marlin_weights(layer, config, existing_workspace=None):
     if qw.dtype != torch.int32 or qz.dtype != torch.int32 or scales.dtype != config.act_type:
         raise ValueError('量化参数 dtype 不匹配')
     pn, pk = marlin_padded_nk(n, k, config.group_size)
+    # 提前加载完整扩展：只加载 repack 扩展后无法再注册同名 GEMM schema。
+    prepare_full_extension()
     workspace = marlin_make_workspace_new(qw.device, existing=existing_workspace)
     empty_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int32, device=qw.device), requires_grad=False)
     sort_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int32, device=qw.device), requires_grad=False)
@@ -102,9 +109,9 @@ def prepare_marlin_weights(layer, config, existing_workspace=None):
     new_scales = marlin_permute_scales(marlin_pad_scales(scales.data.contiguous(), n, k, pn, pk, 128), pk, pn, 128)
     bias = getattr(layer, 'bias', None)
     if bias is not None:
-        _, perm = _scale_perms()
-        padded_bias = F.pad(bias.data, (0, pn - n))
-        bias.data = padded_bias.reshape(-1, 32)[:, perm].reshape(pn).contiguous()
+        # 保留逻辑 bias，供 skip_bias_add/return_bias 返回；kernel 使用单独布局。
+        marlin_bias = marlin_permute_bias(bias.data, pn)
+        layer.register_buffer("marlin_bias", marlin_bias, persistent=False)
     qw.data, qz.data, scales.data = packed, zeros, new_scales
     for param in (qw, qz, scales):
         param.advance_layout('kernel')
@@ -113,3 +120,46 @@ def prepare_marlin_weights(layer, config, existing_workspace=None):
     layer.marlin_padded_nk = (pn, pk)
     layer.marlin_is_k_full = True
     return workspace
+
+
+def should_use_atomic_add_reduce(m, n, k, device, dtype):
+    """冻结上游默认策略；只在用户显式设置上游变量时启用。"""
+    import os
+    if n >= 2048 or k < 2048 or device.type != 'cuda':
+        return False
+    if os.environ.get('VLLM_MARLIN_USE_ATOMIC_ADD', '0') != '1':
+        return False
+    if torch.cuda.get_device_capability(device)[0] < 9 and dtype == torch.bfloat16:
+        return False
+    return True
+
+
+def apply_marlin_w4a16(layer, x, workspace, bias=None):
+    """仅准备 local W4A16 GEMM；是否开放由 LinearMethod 的验收门禁决定。"""
+    if x.ndim < 1:
+        raise ValueError('输入至少需要一个 K 维度')
+    n, k = layer.marlin_logical_nk
+    pn, pk = layer.marlin_padded_nk
+    if x.shape[-1] != k:
+        raise ValueError('输入末维与本地逻辑 K 不一致')
+    if x.dtype != layer.scales.dtype or x.device != layer.qweight.device:
+        raise ValueError('输入与量化权重设备或 dtype 不一致')
+    if any(p.layout_state != 'kernel' for p in (layer.qweight, layer.qzeros, layer.scales)):
+        raise RuntimeError('Marlin GEMM 要求 kernel 权重布局')
+    flat = x.reshape(-1, k)
+    if pk != k:
+        flat = F.pad(flat, (0, pk - k))
+    kernel_bias = None
+    if bias is not None:
+        if bias is not getattr(layer, 'bias', None) or not hasattr(layer, 'marlin_bias'):
+            raise ValueError('bias 必须是该层已准备的逻辑 bias')
+        kernel_bias = layer.marlin_bias
+    result = marlin_gemm_w4a16(
+        flat, layer.qweight, layer.scales, layer.qzeros, layer.g_idx,
+        layer.g_idx_sort_indices, workspace, size_n=pn, size_k=pk, bias=kernel_bias,
+        is_k_full=layer.marlin_is_k_full,
+        use_atomic_add=should_use_atomic_add_reduce(flat.shape[0], pn, pk, flat.device, flat.dtype),
+        use_fp32_reduce=True)
+    if pn != n:
+        result = result[..., :n].contiguous()
+    return result.reshape(x.shape[:-1] + (n,))
