@@ -79554,7 +79554,13 @@
             0.07988667,
             0.02899842
           ],
-          "cause": "batch_composition_and_upstream_variance_under_investigation"
+          "cause": "batch_composition_and_upstream_variance_under_investigation",
+          "controlled_same_batch": {
+            "tp1_tp2_both_models": "hidden_logits_first_layer_kv_max_abs_0_all_ranks",
+            "first_prefill_all_layer_tensors_max_abs": 0.0,
+            "vllm_tp1_repeat_max_abs": 0.0,
+            "reference_timing": "post_failure_diagnostic_not_preregistered"
+          }
         },
         "real_8b_lifecycle_tp1_tp2": "partial_pass",
         "single_rank_execution_failure": "passed_tp2",
@@ -79595,7 +79601,7 @@
       "real_8b_rank1_sampling_failure_tp2": "passed",
       "real_14b_lifecycle": "not_run",
       "nccl_failure_timeout": "not_run",
-      "four_prompt_logits": "failed_starting_tolerance_see_step123",
+      "four_prompt_logits": "original_different_batch_failed; controlled_same_batch_tp1_tp2_both_models_all_ranks_max_abs_0_post_failure_diagnostic",
       "tests_113_125_110_and_hash": {
         "passed": 212,
         "failed": 0,
