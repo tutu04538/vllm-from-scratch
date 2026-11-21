@@ -40,3 +40,13 @@
 命令示例：`VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python tests/step125/step125_frozen_probe.py --model 8b --tp 1 --batch 4 --teacher-forcing --layer-audit --repeats 2 --output <目录>`；对应 mini 使用 `step125_model_probe.py` 且相同 `--model/--tp/--batch/--teacher-forcing`；逐层与 logits 比较由 `tests/step123/step123_compare_layers.py` 和 `step123_compare_teacher.py --tp <1或2>` 完成。完整原始结果在本地 `benchmarks/results/step123/teacher_forcing/` 和 `benchmarks/results/step125/teacher_forcing/`。
 
 这支持“不同到达时机造成批次形状不同，并进而影响 BF16 数值”的解释；不能说明任意并发调度都零差。受控参考在初次失败之后采集，不冒充在 mini 数据之前预登记的验收合同，因此此补验仍是定位证据，原四请求对照的失败不被抹除。
+
+## 2026-11-21 事前登记的多请求参考和 14B 显存
+
+新增不同于前述定位样本的四条固定 token 历史，分别对 8B/14B、TP1/TP2 先运行冻结 vLLM 两次，再登记参考文件哈希和既定 logits 门槛，之后才运行 mini。合同 `benchmarks/results/step123/teacher_registered_20261121/reference_contract.json` 的 SHA-256 为 `6e084cc5be5e7f4e7ab9f4d0c363132b30aa7f282859ea2da94cf62b4f0c0b12`。上游重复的 hidden、logits 和首层 KV 最大绝对差为 0；mini 各 rank 的四条固定历史与上游这三类张量也均为 0。参考使用 `VLLM_ENABLE_V1_MULTIPROCESSING=0` 控制请求到齐后的批次，TP2 模型仍为两个 Worker。历史上不同批次的失败仍保留，不据此声称任意批次零差。
+
+命令入口为 `tests/step125/step125_frozen_probe.py --teacher-forcing --teacher-variant 1 --batch 4 --repeats 2`，随后执行 `tests/step123/step123_register_teacher.py`，再以 `step125_model_probe.py` 对应参数执行 mini，并用 `tests/step123/step123_compare_teacher.py --contract <合同> --tp <1或2>` 校验。原始目录为本地不跟踪的 `benchmarks/results/step123/teacher_registered_20261121/`。
+
+14B TP1 在 `tests/step125/step125_model_probe.py --model 14b --tp 1 --batch 1` 的固定 192 个 KV 块配置下，模型和 KV 初始化后设备可用显存为 12,270,239,744 字节、设备总显存为 25,393,692,672 字节；模型参数总计 9,976,576,000 字节，其中三类量化参数 6,864,076,800 字节、显式量化 workspace 81,920 字节，KV tensor 503,316,480 字节。加载及运行累计峰值 allocated 为 11,571,880,960 字节、reserved 为 12,626,952,192 字节。设备空闲显存和 allocator 数字不是可直接相加的独立分类；其他库、CUDA context、临时缓冲等未逐项拆分。原始结果在 `benchmarks/results/step123/memory_14b_20261121/`。
+
+质量对比的同源 BF16 前提仍未得到公开 checkpoint 证明；性能和点名 benchmark 按用户要求延后。本次不将这些未完成项标为通过。

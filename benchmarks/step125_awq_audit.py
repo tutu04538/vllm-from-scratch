@@ -1,5 +1,6 @@
 """Test-only rank-local audit of AWQ methods after model load."""
 def audit(worker):
+    import torch
     from minivllm.layers.quantization.awq import AutoAWQMarlinLinearMethod
     model = worker.model_runner.model
     layers = []
@@ -17,6 +18,10 @@ def audit(worker):
                        'logical_nk': list(module.marlin_logical_nk),
                        'padded_nk': list(module.marlin_padded_nk)})
     assert layers and model._quant_postload_state == 'ready'
+    free_bytes, total_bytes = torch.cuda.mem_get_info(worker.device)
     return {'rank': worker.rank or 0, 'state': model._quant_postload_state,
+            'device_free_bytes': free_bytes, 'device_total_bytes': total_bytes,
+            'allocator_allocated_bytes': torch.cuda.memory_allocated(worker.device),
+            'allocator_reserved_bytes': torch.cuda.memory_reserved(worker.device),
             'layers': layers, 'quant_parameter_bytes': sum(x['parameter_bytes'] for x in layers),
             'workspace_bytes': sum(x['workspace_bytes'] for x in layers)}

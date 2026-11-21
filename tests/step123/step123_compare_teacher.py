@@ -1,5 +1,6 @@
 """Report fixed-history logits errors; enforce the initial numeric limits."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import torch
@@ -8,7 +9,13 @@ p = argparse.ArgumentParser()
 p.add_argument('--mini', type=Path, required=True)
 p.add_argument('--reference', type=Path, required=True)
 p.add_argument('--tp', type=int, choices=(1, 2, 4), default=1)
+p.add_argument('--contract', type=Path)
 a = p.parse_args()
+if a.contract:
+    contract = json.loads(a.contract.read_text())
+    assert contract['limits'] == {'rtol': .01, 'atol': .05, 'mean_abs_max': .01}
+    for name, expected in contract['reference_hashes'].items():
+        assert hashlib.sha256((a.contract.parent / name).read_bytes()).hexdigest() == expected
 mini = json.loads((a.mini / 'summary.json').read_text())
 reference = json.loads((a.reference / 'summary.json').read_text())
 assert mini['prompts'] == reference['prompts']

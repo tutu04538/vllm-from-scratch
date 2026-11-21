@@ -17,7 +17,7 @@ from benchmarks.check_step090_models import resolve_snapshot
 def main():
  p=argparse.ArgumentParser();p.add_argument('--model',choices=['8b','14b'],required=True)
  p.add_argument('--tp',type=int,choices=[1,2,4],required=True);p.add_argument('--batch',type=int,choices=[1,4],required=True)
- p.add_argument('--output',type=Path,required=True);p.add_argument('--layer-audit',action='store_true');p.add_argument('--teacher-forcing',action='store_true');p.add_argument('--teacher-index',type=int,choices=range(4));a=p.parse_args()
+ p.add_argument('--output',type=Path,required=True);p.add_argument('--layer-audit',action='store_true');p.add_argument('--teacher-forcing',action='store_true');p.add_argument('--teacher-index',type=int,choices=range(4));p.add_argument('--teacher-variant',type=int,choices=(0,1),default=0);a=p.parse_args()
  a.output.mkdir(parents=True,exist_ok=True)
  path=Path('/data/syh/.cache/huggingface/hub/models--Qwen--Qwen3-'+a.model.upper()+'-AWQ/snapshots')
  path=path / {'8b': '4da05a8edb55c6046cce958586c33b61da07bb79', '14b': '31c69efc29464b6bb0aee1398b5a7b50a99340c3'}[a.model];hf=json.loads((path/'config.json').read_text())
@@ -39,7 +39,8 @@ def main():
    if a.teacher_index is None and a.batch != 4: p.error('teacher forcing requires batch 4 or teacher index')
    fixed=[198,14880,11622,105321]
    sources=prompts(a.model,4)
-   prompt_ids=[sources[i][:32]+fixed[:i] for i in (range(4) if a.teacher_index is None else [a.teacher_index])]
+   offset=8 if a.teacher_variant else 0
+   prompt_ids=[sources[i][offset:offset+32]+fixed[:i] for i in (range(4) if a.teacher_index is None else [a.teacher_index])]
   for i,prompt in enumerate(prompt_ids):
    engine.add_request(str(i),prompt,SamplingParams(temperature=0,max_tokens=1 if a.teacher_forcing else 128,ignore_eos=True))
   outputs={};finished={};steps=0
