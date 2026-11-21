@@ -14054,9 +14054,9 @@
   "current_package": {
     "root": "minivllm/",
     "python_files": 207,
-    "sha256": "2e432b85194125261a6b7afb4da0b95d6dcda45b75e01eed8556e53fc1887079",
+    "sha256": "05c7312a47ae9e793b6f80df0617db7ac591a81899cdadcff44f260f95b2c468",
     "hash_convention": "包内 *.py 按相对路径排序，各自 sha256 后拼成 名字\\0哈希\\n，再取 sha256",
-    "note": "AWQ V2 TP1/TP2 eager 已接入；TP4 实际多卡验收前明确拒绝"
+    "note": "AWQ V2 TP1/TP2/TP4 eager 已接入；性能及同源质量验收待后续"
   },
   "step091": {
     "results": {
@@ -79567,6 +79567,15 @@
         "same_source_quality": "unavailable",
         "performance": "deferred",
         "real_14b_lifecycle_tp1_tp2": "partial_pass"
+      },
+      "additional_20261121": {
+        "package_sha256": "05c7312a47ae9e793b6f80df0617db7ac591a81899cdadcff44f260f95b2c468",
+        "teacher_reference_contract_sha256": "6e084cc5be5e7f4e7ab9f4d0c363132b30aa7f282859ea2da94cf62b4f0c0b12",
+        "preregistered_b4_tp1_tp2_hidden_logits_kv_max_abs": 0.0,
+        "14b_tp1_free_bytes": 12270239744,
+        "14b_tp1_total_bytes": 25393692672,
+        "same_source_quality": "unavailable",
+        "performance": "deferred"
       }
     },
     "models": {
@@ -79586,16 +79595,30 @@
       "tp_partition_cpu": "tp1_tp2_tp4_passed",
       "real_layer_tp2_tp4": "144_serial_single_gpu_rank_local_cases_exact_checkpoint_slices_and_same_packed_vllm_gemm",
       "performance": "deferred",
-      "real_layer_note": "not_multi_gpu_collective_or_independent_upstream_repack"
+      "real_layer_note": "not_multi_gpu_collective_or_independent_upstream_repack",
+      "independent_frozen_repack_20261121": {
+        "cases": 144,
+        "models": [
+          "8b",
+          "14b"
+        ],
+        "tp": [
+          2,
+          4
+        ],
+        "integer_exact": true,
+        "same_packed_gemm_max_abs": 0.0,
+        "execution": "serial_single_gpu_per_logical_rank"
+      }
     },
     "models": {}
   },
   "step125": {
     "results": {
-      "status": "in_progress",
-      "package_sha256": "2e432b85194125261a6b7afb4da0b95d6dcda45b75e01eed8556e53fc1887079",
-      "supported": "qwen3_awq_v2_cuda_bf16_eager_tp1_tp2",
-      "tp4": "explicitly_rejected_pending_real_4gpu",
+      "status": "correctness_partially_verified_performance_deferred",
+      "package_sha256": "05c7312a47ae9e793b6f80df0617db7ac591a81899cdadcff44f260f95b2c468",
+      "supported": "qwen3_awq_v2_cuda_bf16_eager_tp1_tp2_tp4",
+      "tp4": "real_8b_14b_4gpu_passed",
       "real_8b_14b_tp2_128_tokens": "same_as_frozen_vllm",
       "first_four_hidden_logits_kv": "max_abs_0_each_rank",
       "real_8b_prefix_preempt_cancel_tp1_tp2": "passed",
@@ -79613,10 +79636,31 @@
         "failed": 0,
         "skipped": 23
       },
-      "regression_089_112_full": "not_run_gpu0_busy",
+      "regression_089_112_full": {
+        "passed": 418,
+        "failed": 0,
+        "skipped": 0
+      },
       "performance": "deferred",
       "regression_089_090": {
         "passed": 20,
+        "failed": 0,
+        "skipped": 0
+      },
+      "tp4_reference_contract_sha256": "117239e265b928abe122c07ee0f26fe8bb7775be17fe7ad87ba7d8654a268b88",
+      "tp4_numeric": {
+        "comparisons": 192,
+        "max_abs": 0.0,
+        "generation_cases_exact": 40
+      },
+      "tp4_lifecycle": "real_8b_14b_prefix_preempt_cancel_and_rank1_sampling_failure_passed",
+      "faults": {
+        "awq_load": "passed",
+        "nccl_rank_exit": "passed",
+        "rpc_timeout": "passed"
+      },
+      "regression_113_125": {
+        "passed": 163,
         "failed": 0,
         "skipped": 0
       }

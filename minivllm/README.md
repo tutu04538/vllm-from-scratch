@@ -1213,6 +1213,6 @@ EAGLE3 边界 0 辅助特征按上游修复保存快照，避免 CUDA 原地 res
 
 2026-11-20：已验证并开放 SM89、AWQ W4/G128、无 act-order 的 CUDA kernel 布局下局部 Linear 前向；真实 8B/14B 首层投影、tiny Graph、bias 及 workspace 证据见 [122 状态](../docs/step122_alignment.md)。完整量化 Engine 仍未开放。
 
-123 开始接入 AWQ 真实模型：当前限 V2、CUDA BF16、TP1、eager、无投机；8B/14B 各一条 128 token 链与冻结 vLLM 一致。完整验收状态见 [123 状态](../docs/step123_alignment.md)。
+123 开始接入 AWQ 真实模型：当时限 V2、CUDA BF16、TP1、eager、无投机；8B/14B 各一条 128 token 链与冻结 vLLM 一致。完整验收状态见 [123 状态](../docs/step123_alignment.md)。
 
-125 开放 AWQ V2 eager TP2；TP4 在真实四卡验收完成前仍拒绝，Graph 和投机仍未开放。真实模型和混合批次数值证据见 [125 状态](../docs/step125_alignment.md)及 [123 状态](../docs/step123_alignment.md)。
+125 开放 AWQ V2 eager TP1/TP2/TP4；Graph 和投机仍未开放。真实模型和混合批次数值证据见 [125 状态](../docs/step125_alignment.md)及 [123 状态](../docs/step123_alignment.md)。

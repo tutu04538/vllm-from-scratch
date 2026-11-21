@@ -212,4 +212,4 @@
 
 [124 AWQ TP 分片（进行中）](step124_alignment.md)：CPU 按 rank 精确验证打包权重、scale 和 zero 点的切分、GQA 复制及 merged 切分；真实层多卡对照尚待完成。
 
-[125 AWQ TP 端到端（进行中）](step125_alignment.md)：TP1/TP2 已接入并有两种真实模型的冻结对照，TP4 仍在验收前拒绝；四请求批次差异的定位和其余未测场景详见 123/125 报告。
+[125 AWQ TP 端到端（进行中）](step125_alignment.md)：TP1/TP2/TP4 已接入并有两种真实模型的冻结对照；四请求批次差异的定位和其余未测场景详见 123/125 报告。

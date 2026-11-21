@@ -7,7 +7,7 @@ from minivllm.config import (CompilationConfig, DeviceConfig, ModelConfig,
 from minivllm.testing.tiny_models import tiny_qwen3_config, tiny_qwen3_dir
 
 
-@pytest.mark.parametrize('tp', [1, 2])
+@pytest.mark.parametrize('tp', [1, 2, 4])
 def test_awq_v2_eager_tp_configuration(monkeypatch, tp):
     monkeypatch.setenv('VLLM_USE_V2_MODEL_RUNNER', '1')
     monkeypatch.setattr(torch.cuda, 'device_count', lambda: 4)
@@ -21,21 +21,6 @@ def test_awq_v2_eager_tp_configuration(monkeypatch, tp):
                      compilation_config=CompilationConfig(cudagraph_mode='none'),
                      attention_backend='triton')
     assert cfg.parallel_config.tensor_parallel_size == tp
-
-
-def test_awq_tp4_requires_real_multi_gpu_validation(monkeypatch):
-    monkeypatch.setenv('VLLM_USE_V2_MODEL_RUNNER', '1')
-    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 4)
-    hf = tiny_qwen3_config('tiny_gqa')
-    hf['quantization_config'] = {'quant_method': 'awq', 'bits': 4,
-                                  'group_size': 128, 'zero_point': True}
-    with pytest.raises(NotImplementedError, match='TP4.*验收尚未完成'):
-        VllmConfig(ModelConfig(tiny_qwen3_dir('tiny_gqa'), hf_config=hf,
-                               dtype='bfloat16', max_model_len=64),
-                   device_config=DeviceConfig('cuda'),
-                   parallel_config=ParallelConfig(tensor_parallel_size=4),
-                   compilation_config=CompilationConfig(cudagraph_mode='none'),
-                   attention_backend='triton')
 
 
 def test_unknown_quantization_is_rejected_before_spawning(monkeypatch):

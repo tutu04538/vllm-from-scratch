@@ -1934,8 +1934,6 @@ class VllmConfig:
             parsed = resolve_quantization_config(self.model_config.quantization, quant)
             if not isinstance(parsed, AutoAWQConfig):
                 raise NotImplementedError('量化模型当前仅支持 AWQ')
-        if self.parallel_config.tensor_parallel_size == 4:
-            raise NotImplementedError('量化模型 TP4 真实多卡验收尚未完成')
         if (not self.use_v2_model_runner or not self.device_config.device.startswith('cuda')
                 or self.speculative_config is not None
                 or self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
