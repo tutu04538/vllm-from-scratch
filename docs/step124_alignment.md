@@ -33,3 +33,9 @@ CPU 测试覆盖 TP1/2/4 所有逻辑 rank、GQA 单 KV head 复制、非对称 
 命令为 `CUDA_VISIBLE_DEVICES=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python tests/step124/step124_real_tp_layers.py --model <固定 AWQ snapshot> --tp <2 或 4> --output <结果>`，8B/14B 与 TP2/TP4 组合分别运行。原始结果和日志保存在本地 `benchmarks/results/step124/`。第一次调用因测试脚本未将默认 dtype 切为 BF16 而失败，修正脚本后四组均通过。
 
 这里的 TP4 是**同一张 GPU 上串行模拟四个本地 rank**，不涉及四个 Worker、collective，也不能作为 125 的 TP4 端到端证据；同 packed GEMM 对照也不是独立的上游重排差分。性能、逐 rank 显存计账及本关 benchmark 仍待完成。
+
+## 2026-11-21 独立上游 repack 补验
+
+在真实 8B/14B checkpoint 的首、中、末层，分别对 QKV、o_proj、gate/up、down_proj 的 TP2/TP4 所有本地 rank 进行完整 repack 比较，共 144 个分片。对每个分片，以本地准备的相同标准 packed 输入分别调用本项目 CUDA repack 与冻结 vLLM CUDA repack，整个整数输出逐元素一致；同 packed 的后续 GEMM 最大绝对差仍为 0。参考算子 `_custom_ops.py` 已对照冻结文件 SHA-256。原始 JSON/log 在本地 `benchmarks/results/step124/repack_*_20261121.*`。
+
+该测试在单张 GPU 上串行执行所有逻辑 rank；真实四进程模型及通信验证另见 [125](step125_alignment.md)。性能及点名 benchmark 按用户约定留待后续集中测试，逐 rank 显存见 125 报告。

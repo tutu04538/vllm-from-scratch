@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from minivllm.layers import linear
 from minivllm.layers.quantization import resolve_quantization_config
 from minivllm.model_loader.post_load import process_weights_after_loading
+from minivllm.layers.quantization import marlin as local_marlin
 from benchmarks.check_step090_reference import verify_oracle
 from vllm import _custom_ops as ops
 from vllm.scalar_type import scalar_types
@@ -28,6 +29,17 @@ p.add_argument('--tp', type=int, choices=(2, 4), required=True)
 a = p.parse_args()
 verify_oracle()
 torch.set_default_dtype(torch.bfloat16)
+# Compare each real local shard's entire repack result with the frozen CUDA op.
+import hashlib
+frozen_ops = ROOT / 'learning_notes/14_vllm_from_scratch/量化完整需求/参考资料/vllm_0_28_0/vllm/_custom_ops.py'
+assert hashlib.sha256(Path(ops.__file__).read_bytes()).digest() == hashlib.sha256(frozen_ops.read_bytes()).digest()
+original_repack = local_marlin.gptq_marlin_repack
+def check_repack(qweight, perm, k, n):
+    actual = original_repack(qweight, perm, k, n)
+    reference = ops.gptq_marlin_repack(qweight, perm, k, n, 4, False)
+    assert torch.equal(actual, reference), 'rank-local repack differs from frozen vLLM'
+    return actual
+local_marlin.gptq_marlin_repack = check_repack
 hf = json.loads((a.model / 'config.json').read_text())
 index = json.loads((a.model / 'model.safetensors.index.json').read_text())['weight_map']
 qcfg = resolve_quantization_config(None, hf['quantization_config'])
